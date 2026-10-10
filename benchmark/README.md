@@ -29,8 +29,18 @@ A deliberately reviewable Flask e-commerce API plus **12 matched PR pairs**
 python benchmark/evaluate.py --mode lgtm            # full pipeline
 python benchmark/evaluate.py --mode sast-only       # Semgrep baseline
 python benchmark/evaluate.py --mode llm-only        # LLM-only baseline
+python benchmark/evaluate.py --split dev            # development set only
+python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 ```
+
+**Dev/eval protocol:** pairs 1–3 of each category are the development set,
+pairs 4–6 the held-out evaluation set (each split: 6 vulnerable + 6 safe).
+Tune prompts, rules, and config against `--split dev` only; quote final
+numbers from `--split eval`. To scale the dataset, extract additional
+SQL-injection cases from public corpora such as the OWASP Benchmark
+(Java — translate to Python/Flask idioms) while keeping the
+positive/negative balance.
 
 For each case the harness:
 

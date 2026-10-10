@@ -102,6 +102,9 @@ You have read-only tools operating on the BASE branch:
 - read_file(path, start_line, end_line): read code with line numbers
 - grep_repo(pattern, file_glob): regex search across the repo
 - search_policy(query): search the security policy / API spec / README
+- search_code(query): semantic search over the source code — use it to \
+find auth middleware/decorators or related endpoints without knowing \
+their file names
 
 RULES:
 - You have a strict budget of {max_tool_calls} tool calls. Typical plan: \

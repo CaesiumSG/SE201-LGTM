@@ -32,10 +32,11 @@ class PolicyRetriever:
     def __init__(self, repo: str | Path, config: LGTMConfig | None = None):
         self.config = config or LGTMConfig()
         self.repo = Path(repo).resolve()
-        self._collection = None
+        self._collections: dict[str, object] = {}
 
-    def _get_collection(self):
-        if self._collection is None:
+    def _get_collection(self, name: str | None = None):
+        name = name or self.config.chroma_collection
+        if name not in self._collections:
             import chromadb
 
             persist_dir = self.config.chroma_dir_for(self.repo)
@@ -45,8 +46,8 @@ class PolicyRetriever:
                     "Run `lgtm index --repo <path>` first."
                 )
             client = chromadb.PersistentClient(path=str(persist_dir))
-            self._collection = client.get_collection(self.config.chroma_collection)
-        return self._collection
+            self._collections[name] = client.get_collection(name)
+        return self._collections[name]
 
     def is_available(self) -> bool:
         try:
@@ -55,10 +56,15 @@ class PolicyRetriever:
         except Exception:  # noqa: BLE001
             return False
 
-    def retrieve(self, query: str, top_k: int | None = None) -> list[RetrievedChunk]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int | None = None,
+        collection_name: str | None = None,
+    ) -> list[RetrievedChunk]:
         """Return the top-k most relevant documentation chunks for a query."""
         top_k = top_k or self.config.rag_top_k
-        collection = self._get_collection()
+        collection = self._get_collection(collection_name)
         n_available = collection.count()
         if n_available == 0:
             return []
@@ -87,8 +93,30 @@ class PolicyRetriever:
         return chunks
 
     def format_results(self, query: str, top_k: int | None = None) -> str:
-        """Retrieve and render results as a single string for agent prompts."""
+        """Retrieve and render doc results as a string for agent prompts."""
         chunks = self.retrieve(query, top_k)
         if not chunks:
             return "No relevant documentation found for this query."
+        return "\n\n---\n\n".join(c.format() for c in chunks)
+
+    def retrieve_code(
+        self, query: str, top_k: int | None = None
+    ) -> list[RetrievedChunk]:
+        """Return the top-k most relevant source-code chunks for a query."""
+        try:
+            return self.retrieve(
+                query, top_k, collection_name=self.config.chroma_code_collection
+            )
+        except Exception as exc:  # noqa: BLE001 - older indexes lack this collection
+            logger.warning("Code collection unavailable: %s", exc)
+            return []
+
+    def format_code_results(self, query: str, top_k: int | None = None) -> str:
+        """Retrieve and render code results as a string for agent prompts."""
+        chunks = self.retrieve_code(query, top_k)
+        if not chunks:
+            return (
+                "No relevant source code found for this query. "
+                "(The code index may be missing — try grep_repo instead.)"
+            )
         return "\n\n---\n\n".join(c.format() for c in chunks)

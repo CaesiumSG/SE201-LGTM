@@ -109,11 +109,54 @@ def chunk_document(
     return chunks
 
 
-def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
-    """Index all documentation files of ``repo`` into ChromaDB.
+def _chunk_files(
+    repo: Path, files: list[Path], config: LGTMConfig
+) -> list[DocChunk]:
+    chunks: list[DocChunk] = []
+    for path in files:
+        rel = str(path.relative_to(repo))
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("Skipping unreadable file %s: %s", rel, exc)
+            continue
+        file_chunks = chunk_document(
+            text, rel, config.rag_chunk_size, config.rag_chunk_overlap
+        )
+        chunks.extend(file_chunks)
+        logger.debug("Chunked %s into %d chunks", rel, len(file_chunks))
+    return chunks
 
-    Returns the number of chunks indexed. Re-indexing replaces the existing
-    collection so the index never goes stale.
+
+def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
+    """Drop and recreate a collection (idempotent re-index)."""
+    try:
+        client.delete_collection(name)
+    except Exception:  # noqa: BLE001 - collection may not exist yet
+        pass
+    collection = client.create_collection(name, metadata={"hnsw:space": "cosine"})
+    if chunks:
+        collection.add(
+            ids=[c.chunk_id for c in chunks],
+            documents=[c.content for c in chunks],
+            metadatas=[
+                {
+                    "source": c.source,
+                    "start_line": c.start_line,
+                    "end_line": c.end_line,
+                }
+                for c in chunks
+            ],
+        )
+
+
+def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
+    """Index documentation (and, if enabled, source code) into ChromaDB.
+
+    Docs go into ``chroma_collection`` (used by ``search_policy``); source
+    files go into ``chroma_code_collection`` (used by ``search_code``).
+    Returns the total number of chunks indexed. Re-indexing replaces the
+    collections so the index never goes stale.
     """
     import chromadb
 
@@ -124,48 +167,25 @@ def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
 
     doc_files = find_doc_files(repo, config.doc_extensions)
     logger.info("Found %d documentation files to index", len(doc_files))
-
-    all_chunks: list[DocChunk] = []
-    for doc_path in doc_files:
-        rel = str(doc_path.relative_to(repo))
-        try:
-            text = doc_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            logger.warning("Skipping unreadable file %s: %s", rel, exc)
-            continue
-        chunks = chunk_document(
-            text, rel, config.rag_chunk_size, config.rag_chunk_overlap
-        )
-        all_chunks.extend(chunks)
-        logger.debug("Chunked %s into %d chunks", rel, len(chunks))
+    doc_chunks = _chunk_files(repo, doc_files, config)
 
     client = chromadb.PersistentClient(path=str(persist_dir))
-    # Replace any previous index for idempotency
-    try:
-        client.delete_collection(config.chroma_collection)
-    except Exception:  # noqa: BLE001 - collection may not exist yet
-        pass
-    collection = client.create_collection(
-        config.chroma_collection, metadata={"hnsw:space": "cosine"}
-    )
+    _replace_collection(client, config.chroma_collection, doc_chunks)
 
-    if all_chunks:
-        collection.add(
-            ids=[c.chunk_id for c in all_chunks],
-            documents=[c.content for c in all_chunks],
-            metadatas=[
-                {
-                    "source": c.source,
-                    "start_line": c.start_line,
-                    "end_line": c.end_line,
-                }
-                for c in all_chunks
-            ],
-        )
+    code_chunks: list[DocChunk] = []
+    code_files: list[Path] = []
+    if config.index_source_code:
+        code_files = find_doc_files(repo, config.code_extensions)
+        logger.info("Found %d source files to index", len(code_files))
+        code_chunks = _chunk_files(repo, code_files, config)
+        _replace_collection(client, config.chroma_code_collection, code_chunks)
+
+    total = len(doc_chunks) + len(code_chunks)
     logger.info(
-        "Indexed %d chunks from %d files into %s",
-        len(all_chunks),
-        len(doc_files),
+        "Indexed %d doc chunks + %d code chunks from %d files into %s",
+        len(doc_chunks),
+        len(code_chunks),
+        len(doc_files) + len(code_files),
         persist_dir,
     )
-    return len(all_chunks)
+    return total

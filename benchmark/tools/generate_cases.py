@@ -44,6 +44,14 @@ class Case:
         variant = self.id.rsplit("_", 1)[1]
         return f"case_{num}_{variant}.patch"
 
+    @property
+    def split(self) -> str:
+        """Pairs 1-3 of each category are the development set, 4-6 the
+        held-out evaluation set. Both splits stay balanced because every
+        pair contributes one vulnerable and one safe case."""
+        num = int(self.id.split("_")[1])
+        return "dev" if num <= 3 else "eval"
+
 
 # ---------------------------------------------------------------------------
 # Shared import tweaks
@@ -811,6 +819,7 @@ def main() -> None:
                 {
                     "id": case.id,
                     "category": case.category,
+                    "split": case.split,
                     "expected_verdict": case.expected_verdict,
                     "cwe": case.cwe,
                     "file": case.file,

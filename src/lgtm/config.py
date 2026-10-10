@@ -35,6 +35,8 @@ class LGTMConfig:
     embedding_model: str = "all-MiniLM-L6-v2"
     chroma_persist_dir: str = ".lgtm/chroma"
     chroma_collection: str = "lgtm_docs"
+    chroma_code_collection: str = "lgtm_code"
+    index_source_code: bool = True  # also index source files for search_code
 
     # Git
     git_timeout: int = 60
@@ -47,6 +49,8 @@ class LGTMConfig:
 
     # Doc file extensions indexed for RAG
     doc_extensions: tuple[str, ...] = (".md", ".txt", ".rst")
+    # Source file extensions indexed for code retrieval
+    code_extensions: tuple[str, ...] = (".py",)
 
     # Internal
     extra: dict = field(default_factory=dict)

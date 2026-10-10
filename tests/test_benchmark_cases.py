@@ -57,6 +57,16 @@ class TestLabels:
         allowed = {"CWE-89", "CWE-639", "CWE-862", "CWE-863"}
         assert {c["cwe"] for c in LABELS["cases"]} <= allowed
 
+    def test_dev_eval_split_balanced(self):
+        from collections import Counter
+
+        counts = Counter(
+            (c["split"], c["expected_verdict"]) for c in LABELS["cases"]
+        )
+        # 6 vulnerable + 6 safe in each split
+        assert all(counts[(s, v)] == 6 for s in ("dev", "eval")
+                   for v in ("vulnerable", "safe"))
+
 
 @pytest.mark.parametrize("case", LABELS["cases"], ids=lambda c: c["id"])
 def test_patch_applies_cleanly(base_repo, case):

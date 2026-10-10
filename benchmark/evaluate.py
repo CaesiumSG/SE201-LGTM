@@ -204,6 +204,13 @@ def main() -> None:
         "--cases", nargs="*", default=None, help="Subset of case ids to run"
     )
     parser.add_argument(
+        "--split",
+        choices=["dev", "eval", "all"],
+        default="all",
+        help="Run only the development set, the held-out evaluation set, "
+        "or everything (default). Tune on dev; report on eval.",
+    )
+    parser.add_argument(
         "--output", default=None, help="Results dir (default benchmark/results/<mode>)"
     )
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -218,6 +225,8 @@ def main() -> None:
 
     labels = json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))
     cases = labels["cases"]
+    if args.split != "all":
+        cases = [c for c in cases if c.get("split", "eval") == args.split]
     if args.cases:
         wanted = set(args.cases)
         cases = [c for c in cases if c["id"] in wanted]
@@ -225,7 +234,10 @@ def main() -> None:
         if missing:
             parser.error(f"unknown case ids: {sorted(missing)}")
 
-    out_dir = Path(args.output) if args.output else BENCH / "results" / args.mode
+    suffix = f"-{args.split}" if args.split != "all" else ""
+    out_dir = (
+        Path(args.output) if args.output else BENCH / "results" / f"{args.mode}{suffix}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []

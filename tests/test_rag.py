@@ -62,11 +62,12 @@ class TestChunkDocument:
 
 class TestPolicyRetriever:
     def _retriever_with_stub(self, tmp_path, query_result) -> PolicyRetriever:
-        retriever = PolicyRetriever(tmp_path, LGTMConfig())
+        config = LGTMConfig()
+        retriever = PolicyRetriever(tmp_path, config)
         collection = MagicMock()
         collection.count.return_value = 3
         collection.query.return_value = query_result
-        retriever._collection = collection
+        retriever._collections[config.chroma_collection] = collection
         return retriever
 
     def test_retrieve_maps_metadata(self, tmp_path):
@@ -95,3 +96,23 @@ class TestPolicyRetriever:
     def test_missing_index_raises_filenotfound(self, tmp_path):
         retriever = PolicyRetriever(tmp_path, LGTMConfig())
         assert not retriever.is_available()
+
+    def test_retrieve_code_uses_code_collection(self, tmp_path):
+        config = LGTMConfig()
+        retriever = PolicyRetriever(tmp_path, config)
+        collection = MagicMock()
+        collection.count.return_value = 1
+        collection.query.return_value = {
+            "documents": [["def require_role(r): ..."]],
+            "metadatas": [[{"source": "app/auth.py", "start_line": 10, "end_line": 20}]],
+            "distances": [[0.1]],
+        }
+        retriever._collections[config.chroma_code_collection] = collection
+        chunks = retriever.retrieve_code("role check decorator")
+        assert chunks[0].source == "app/auth.py"
+        assert "app/auth.py" in retriever.format_code_results("role check")
+
+    def test_retrieve_code_missing_collection_returns_empty(self, tmp_path):
+        retriever = PolicyRetriever(tmp_path, LGTMConfig())
+        assert retriever.retrieve_code("anything") == []
+        assert "No relevant source code" in retriever.format_code_results("x")

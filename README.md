@@ -26,6 +26,7 @@ while an evidence validator keeps the LLM honest.
             │    does the change respect the documented policy?│
             │    Tools (read-only, base branch, max 5 calls):  │
             │    read_file · grep_repo · search_policy         │
+            │    search_code (semantic RAG over source)        │
             └───────────────┬──────────────────────────────────┘
                             ▼
             ┌──────────────────────────────────────────────────┐
@@ -102,9 +103,31 @@ false-positive rate on safe controls, evidence grounding rate,
 `possible` / `insufficient_evidence` rates, median latency and estimated
 tokens per PR. See `benchmark/README.md` for details.
 
-Reference run (sast-only baseline, local semgrep + bundled CWE-89 rules):
-SQLi recall 1.0 but 83% FP rate on the safe SQLi controls, and 0 recall on
-authorization cases — precisely the gap the LLM stages close.
+The 24 cases carry a balanced **dev/eval split** (pairs 1–3 vs 4–6 of each
+category): tune prompts and config on `--split dev`, report results on the
+held-out `--split eval`.
+
+Reference results (all 24 cases, `qwen2.5-coder:7b` local, 2026-10-10):
+
+| Mode | Precision | Recall | F1 | FP rate (safe controls) | Median latency |
+|---|---|---|---|---|---|
+| sast-only | 0.55 | 0.50 | 0.52 | 0.42 (sqli: 0.83) | 1.2s |
+| **lgtm** | **0.85** | **0.92** | **0.88** | **0.17** | 15.6s |
+| llm-only | 0.86 | 1.00 | 0.92 | 0.17 | 13.2s |
+
+SAST alone has perfect SQLi recall but an 83% false-positive rate on the
+parameterized controls and 0 recall on authorization flaws; the LLM stages
+close both gaps. (At n=24 a single flipped case moves F1 by ~0.04 — hence
+the roadmap below.)
+
+### Dataset roadmap
+
+- Grow the case set by extracting SQL-injection cases from public
+  datasets (e.g. the OWASP Benchmark — note it is Java, so cases must be
+  translated to Python/Flask idioms), keeping positives and negatives
+  balanced.
+- Keep the dev/eval separation strict: all prompt and config tuning on the
+  dev split only.
 
 ## Project layout
 

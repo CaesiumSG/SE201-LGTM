@@ -31,6 +31,8 @@ You have read-only tools that operate on the BASE branch of the repository:
 - read_file(path, start_line, end_line): read code with line numbers
 - grep_repo(pattern, file_glob): regex search across the repo
 - search_policy(query): search project documentation / security policy
+- search_code(query): semantic search over the source code — use it when \
+you don't know which file or symbol to look for
 
 RULES:
 - You have a strict budget of {max_tool_calls} tool calls. Spend them wisely: \
