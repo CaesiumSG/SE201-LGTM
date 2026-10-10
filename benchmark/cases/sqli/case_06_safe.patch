@@ -1,0 +1,37 @@
+diff --git a/app/routes/orders.py b/app/routes/orders.py
+index 71cec5f..cde639e 100644
+--- a/app/routes/orders.py
++++ b/app/routes/orders.py
+@@ -10,6 +10,8 @@ from __future__ import annotations
+ 
+ from flask import Blueprint, g, jsonify, request
+ 
++from sqlalchemy import text
++
+ from app.auth import is_owner_or_admin, require_auth, require_role
+ from app.models import Order, get_session
+ 
+@@ -54,3 +56,23 @@ def all_orders():
+     session = get_session()
+     orders = session.query(Order).order_by(Order.created_at.desc()).all()
+     return jsonify([o.to_dict() for o in orders])
++@orders_bp.route("/bulk", methods=["POST"])
++@require_role("manager")
++def bulk_create_orders():
++    """Bulk-import orders from a JSON array."""
++    items = request.get_json(silent=True) or []
++    session = get_session()
++    if items:
++        session.execute(
++            text("INSERT INTO orders (user_id, status, total) VALUES (:user_id, :status, :total)"),
++            [
++                {
++                    "user_id": int(item.get("user_id", 0)),
++                    "status": str(item.get("status", "pending")),
++                    "total": float(item.get("total", 0.0)),
++                }
++                for item in items
++            ],
++        )
++        session.commit()
++    return jsonify({"imported": len(items)}), 201
