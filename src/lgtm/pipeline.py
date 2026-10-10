@@ -167,21 +167,43 @@ class ReviewPipeline:
     def _run_sast(
         self, diffs: list[FileDiff], base: str, pr: str
     ) -> tuple[list[SemgrepFinding], int]:
-        """Run semgrep on changed python files; returns (in-diff, total)."""
+        """Run semgrep on the PR version of the changed python files.
+
+        The repo's working tree may be on any branch, so the changed files
+        are materialized at the PR ref into a temp directory and scanned
+        there (scanning only — PR code is never executed).
+        """
+        import tempfile
+
+        from lgtm.diff.git_diff import GitError, read_file_at_ref
+
         changed_files = [d.path for d in diffs if d.path.endswith(".py")]
         if not changed_files:
             return [], 0
         semgrep_config = self.config.semgrep_config
         if semgrep_config == "auto":
-            # Prefer bundled rules + auto registry when offline registry
-            # access fails, semgrep still runs the local rules.
+            # Bundled CWE-89 rules work offline; "auto" needs registry access.
             bundled = Path(__file__).parent / "sast" / "rules"
             if bundled.is_dir():
                 semgrep_config = str(bundled)
         try:
-            all_findings = run_semgrep(
-                self.repo, changed_files, semgrep_config, self.config.semgrep_timeout
-            )
+            with tempfile.TemporaryDirectory(prefix="lgtm-sast-") as tmpdir:
+                tmp = Path(tmpdir)
+                materialized: list[str] = []
+                for rel in changed_files:
+                    try:
+                        content = read_file_at_ref(
+                            self.repo, pr, rel, self.config.git_timeout
+                        )
+                    except GitError:
+                        continue  # deleted or unreadable at the PR ref
+                    target = tmp / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                    materialized.append(rel)
+                all_findings = run_semgrep(
+                    tmp, materialized, semgrep_config, self.config.semgrep_timeout
+                )
         except SemgrepError as exc:
             logger.error("Semgrep failed, continuing without SAST: %s", exc)
             return [], 0

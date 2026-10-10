@@ -50,11 +50,25 @@ class SemgrepFinding:
         return "sql" in haystack and ("inject" in haystack or "format" in haystack or "query" in haystack)
 
 
+def _semgrep_executable() -> list[str]:
+    """Locate semgrep: PATH, next to the interpreter, or `-m semgrep`."""
+    import shutil
+    import sys
+
+    found = shutil.which("semgrep")
+    if found:
+        return [found]
+    sibling = Path(sys.executable).parent / "semgrep"
+    if sibling.is_file():
+        return [str(sibling)]
+    return [sys.executable, "-m", "semgrep"]
+
+
 def _semgrep_cmd(
     targets: list[str], config: str, repo: str | Path
 ) -> list[str]:
     return [
-        "semgrep",
+        *_semgrep_executable(),
         "scan",
         "--config",
         config,
@@ -116,7 +130,32 @@ def run_semgrep(
             f"Could not parse semgrep JSON output: {result.stdout[:500]!r}"
         ) from exc
 
-    return parse_semgrep_json(payload)
+    findings = parse_semgrep_json(payload)
+    _fill_matched_code(findings, repo)
+    return findings
+
+
+def _fill_matched_code(findings: list[SemgrepFinding], repo: Path) -> None:
+    """Populate matched_code from the scanned files.
+
+    Recent semgrep CE versions redact ``extra.lines`` (emitting the literal
+    string 'requires login'), so the matched snippet is read from disk.
+    """
+    cache: dict[str, list[str]] = {}
+    for f in findings:
+        if f.matched_code and "requires login" not in f.matched_code:
+            continue
+        if f.path not in cache:
+            try:
+                cache[f.path] = (
+                    (repo / f.path).read_text(encoding="utf-8", errors="replace")
+                ).splitlines()
+            except OSError:
+                cache[f.path] = []
+        lines = cache[f.path]
+        lo = max(1, f.start_line)
+        hi = min(len(lines), max(f.end_line, f.start_line))
+        f.matched_code = "\n".join(lines[lo - 1 : hi])
 
 
 def parse_semgrep_json(payload: dict) -> list[SemgrepFinding]:

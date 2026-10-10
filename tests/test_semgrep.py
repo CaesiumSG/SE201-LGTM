@@ -97,7 +97,7 @@ class TestRunSemgrep:
             findings = run_semgrep(tmp_path, ["app.py"])
         assert len(findings) == 2
         cmd = run_mock.call_args[0][0]
-        assert cmd[0] == "semgrep"
+        assert "semgrep" in cmd[0] or "semgrep" in cmd[:3]
         assert "--json" in cmd
 
     def test_skips_missing_files(self, tmp_path):
