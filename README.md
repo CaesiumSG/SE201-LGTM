@@ -87,10 +87,12 @@ confirmed `vulnerable` findings (CI-friendly).
 ## Benchmark
 
 `benchmark/` contains **Shoply**, a Flask e-commerce API with token auth
-and RBAC, plus **12 matched PR pairs** (24 cases): 6 SQL-injection pairs
-(vulnerable vs parameterized-but-SAST-triggering controls) and 6
-authorization pairs (IDOR, missing/incorrect role checks, API-key scope
-violations — invisible to SAST by design).
+and RBAC, plus **18 matched PR pairs** (36 cases): 12 SQL-injection pairs
+(6 hand-written + 6 derived from the OWASP Benchmark SQLi taxonomy,
+translated to Python/Flask; vulnerable vs
+parameterized-but-SAST-triggering controls) and 6 authorization pairs
+(IDOR, missing/incorrect role checks, API-key scope violations —
+invisible to SAST by design).
 
 ```bash
 python benchmark/evaluate.py --mode lgtm
@@ -103,29 +105,35 @@ false-positive rate on safe controls, evidence grounding rate,
 `possible` / `insufficient_evidence` rates, median latency and estimated
 tokens per PR. See `benchmark/README.md` for details.
 
-The 24 cases carry a balanced **dev/eval split** (pairs 1–3 vs 4–6 of each
-category): tune prompts and config on `--split dev`, report results on the
+The 36 cases carry a balanced **dev/eval split** (9 vulnerable + 9 safe in
+each): tune prompts and config on `--split dev`, report results on the
 held-out `--split eval`.
 
-Reference results (all 24 cases, `qwen2.5-coder:7b` local, 2026-10-10):
+Reference results (all 36 cases, `qwen2.5-coder:7b` local, `search_code`
+enabled, 2026-10-10):
 
-| Mode | Precision | Recall | F1 | FP rate (safe controls) | Median latency |
-|---|---|---|---|---|---|
-| sast-only | 0.55 | 0.50 | 0.52 | 0.42 (sqli: 0.83) | 1.2s |
-| **lgtm** | **0.85** | **0.92** | **0.88** | **0.17** | 15.6s |
-| llm-only | 0.86 | 1.00 | 0.92 | 0.17 | 13.2s |
+| Mode | Precision | Recall | F1 | FP rate (safe controls) | Grounding | Median latency |
+|---|---|---|---|---|---|---|
+| sast-only | 0.55 | 0.61 | 0.58 | 0.50 (sqli: 0.75) | 1.00 | 1.2s |
+| **lgtm** | **0.85** | **0.94** | **0.90** | **0.17** | 0.91 | 17.4s |
+| llm-only | 0.90 | 0.94 | 0.92 | 0.11 | 0.88 | 13.7s |
 
-SAST alone has perfect SQLi recall but an 83% false-positive rate on the
-parameterized controls and 0 recall on authorization flaws; the LLM stages
-close both gaps. (At n=24 a single flipped case moves F1 by ~0.04 — hence
-the roadmap below.)
+Held-out eval split only (n=18): sast-only F1 0.63 · lgtm F1 0.80 ·
+llm-only F1 0.89.
+
+SAST alone has near-perfect SQLi recall but a 75% false-positive rate on
+the parameterized controls and 0 recall on authorization flaws; the LLM
+stages close both gaps. llm-only and lgtm are within 1–2 flipped cases of
+each other at this dataset size, so their ranking should not be
+over-read — growing the eval set (roadmap below) is what will separate
+them.
 
 ### Dataset roadmap
 
-- Grow the case set by extracting SQL-injection cases from public
-  datasets (e.g. the OWASP Benchmark — note it is Java, so cases must be
-  translated to Python/Flask idioms), keeping positives and negatives
-  balanced.
+- ✅ 6 SQLi pairs derived from the OWASP Benchmark taxonomy (Java →
+  Python/Flask translation), keeping positives and negatives balanced.
+- Next: more OWASP patterns (stacked queries, second-order injection) and
+  authorization cases mined from CVE-linked PRs.
 - Keep the dev/eval separation strict: all prompt and config tuning on the
   dev split only.
 

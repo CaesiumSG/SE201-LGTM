@@ -1,18 +1,23 @@
 # LGTM Benchmark — Shoply
 
-A deliberately reviewable Flask e-commerce API plus **12 matched PR pairs**
-(24 cases) used to evaluate the LGTM PR security agent.
+A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
+(36 cases) used to evaluate the LGTM PR security agent.
 
 ## Layout
 
 - `app/` — the Shoply application (Flask + SQLAlchemy, token auth, RBAC).
 - `security-policy.md`, `api-spec.md` — project documents indexed by LGTM's
   RAG system; the authorization agent judges PRs against these.
-- `cases/sqli/` — 6 SQL-injection pairs (CWE-89). Each `*_vulnerable.patch`
-  interpolates request data into SQL; the matching `*_safe.patch` implements
-  the same feature with bound parameters or an allowlist. The safe versions
-  still look SQL-ish enough to trigger SAST, which is the false-positive
-  test.
+- `cases/sqli/` — 12 SQL-injection pairs (CWE-89): 6 hand-written pairs
+  plus 6 pairs derived from the **OWASP Benchmark** SQLi taxonomy
+  (source × propagation × sink, translated from Java/servlet to
+  Python/Flask idioms — header/cookie/JSON-body sources, propagation
+  through variable chains and clause builders, DB-API / SQLAlchemy sinks;
+  labels carry `origin: owasp-derived`). Each `*_vulnerable.patch`
+  interpolates request data into SQL; the matching `*_safe.patch`
+  implements the same feature with bound parameters or an allowlist. The
+  safe versions still look SQL-ish enough to trigger SAST, which is the
+  false-positive test.
 - `cases/authz/` — 6 authorization pairs (CWE-639 / CWE-862 / CWE-863).
   These are invisible to SAST by design; only policy-aware review can catch
   them.
@@ -34,13 +39,12 @@ python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 ```
 
-**Dev/eval protocol:** pairs 1–3 of each category are the development set,
-pairs 4–6 the held-out evaluation set (each split: 6 vulnerable + 6 safe).
-Tune prompts, rules, and config against `--split dev` only; quote final
-numbers from `--split eval`. To scale the dataset, extract additional
-SQL-injection cases from public corpora such as the OWASP Benchmark
-(Java — translate to Python/Flask idioms) while keeping the
-positive/negative balance.
+**Dev/eval protocol:** pairs alternate between splits in blocks of three
+(pairs 1–3 and 7–9 → dev; pairs 4–6 and 10–12 → eval), so each split holds
+9 vulnerable + 9 safe cases. Tune prompts, rules, and config against
+`--split dev` only; quote final numbers from `--split eval`. To scale
+further, extract more cases from public corpora (more OWASP Benchmark
+patterns, CVE-derived PRs) while keeping the positive/negative balance.
 
 For each case the harness:
 
