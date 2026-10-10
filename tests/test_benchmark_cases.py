@@ -36,13 +36,14 @@ def base_repo(tmp_path_factory) -> Path:
 
 
 class TestLabels:
-    def test_24_cases_12_pairs(self):
+    def test_case_counts_and_balance(self):
         cases = LABELS["cases"]
-        assert len(cases) == 24
-        assert sum(1 for c in cases if c["category"] == "sqli") == 12
+        assert len(cases) == 36
+        assert sum(1 for c in cases if c["category"] == "sqli") == 24
         assert sum(1 for c in cases if c["category"] == "authz") == 12
-        assert sum(1 for c in cases if c["expected_verdict"] == "vulnerable") == 12
-        assert sum(1 for c in cases if c["expected_verdict"] == "safe") == 12
+        assert sum(1 for c in cases if c["expected_verdict"] == "vulnerable") == 18
+        assert sum(1 for c in cases if c["expected_verdict"] == "safe") == 18
+        assert sum(1 for c in cases if c["origin"] == "owasp-derived") == 12
 
     def test_patch_files_exist(self):
         for case in LABELS["cases"]:
@@ -63,8 +64,8 @@ class TestLabels:
         counts = Counter(
             (c["split"], c["expected_verdict"]) for c in LABELS["cases"]
         )
-        # 6 vulnerable + 6 safe in each split
-        assert all(counts[(s, v)] == 6 for s in ("dev", "eval")
+        # 9 vulnerable + 9 safe in each split
+        assert all(counts[(s, v)] == 9 for s in ("dev", "eval")
                    for v in ("vulnerable", "safe"))
 
 

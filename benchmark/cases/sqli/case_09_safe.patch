@@ -1,0 +1,36 @@
+diff --git a/app/routes/orders.py b/app/routes/orders.py
+index 71cec5f..13ed395 100644
+--- a/app/routes/orders.py
++++ b/app/routes/orders.py
+@@ -10,6 +10,8 @@ from __future__ import annotations
+ 
+ from flask import Blueprint, g, jsonify, request
+ 
++from sqlalchemy import text
++
+ from app.auth import is_owner_or_admin, require_auth, require_role
+ from app.models import Order, get_session
+ 
+@@ -54,3 +56,22 @@ def all_orders():
+     session = get_session()
+     orders = session.query(Order).order_by(Order.created_at.desc()).all()
+     return jsonify([o.to_dict() for o in orders])
++@orders_bp.route("/batch-status", methods=["GET"])
++@require_role("manager")
++def batch_order_status():
++    """Fetch the status of several orders by comma-separated ids."""
++    raw_ids = request.args.get("ids", "")
++    try:
++        id_list = [int(part) for part in raw_ids.split(",") if part.strip()]
++    except ValueError:
++        return jsonify({"error": "ids must be integers"}), 400
++    if not id_list:
++        return jsonify([])
++    params = {f"id{i}": value for i, value in enumerate(id_list)}
++    placeholders = ", ".join(":" + key for key in params)
++    session = get_session()
++    rows = session.execute(
++        text("SELECT id, status FROM orders WHERE id IN (" + placeholders + ")"),
++        params,
++    )
++    return jsonify([dict(r._mapping) for r in rows])

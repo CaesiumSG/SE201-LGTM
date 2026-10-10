@@ -37,6 +37,7 @@ class Case:
     replacements: list[tuple[str, str]] = field(default_factory=list)
     vuln_markers: list[str] = field(default_factory=list)
     description: str = ""
+    origin: str = "custom"  # "custom" | "owasp-derived"
 
     @property
     def patch_name(self) -> str:
@@ -46,11 +47,11 @@ class Case:
 
     @property
     def split(self) -> str:
-        """Pairs 1-3 of each category are the development set, 4-6 the
-        held-out evaluation set. Both splits stay balanced because every
-        pair contributes one vulnerable and one safe case."""
+        """Alternate blocks of three pairs between dev and eval (1-3 dev,
+        4-6 eval, 7-9 dev, 10-12 eval, ...). Both splits stay balanced
+        because every pair contributes one vulnerable and one safe case."""
         num = int(self.id.split("_")[1])
-        return "dev" if num <= 3 else "eval"
+        return "dev" if ((num - 1) % 6) < 3 else "eval"
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +400,380 @@ def bulk_create_orders():
     return jsonify({"imported": len(items)}), 201
 ''',
     description="Same bulk import using executemany-style bound parameters.",
+))
+
+# ===========================================================================
+# OWASP-BENCHMARK-DERIVED SQLI PAIRS (CWE-89)
+#
+# Patterns adapted from the OWASP Benchmark SQLi taxonomy (source x
+# propagation x sink) and translated from Java/servlet idioms to
+# Python/Flask: header/cookie/body sources, propagation through variable
+# chains and clause builders, DB-API / SQLAlchemy sinks.
+# ===========================================================================
+
+ORDERS_ADD_ENGINE_IMPORT = (
+    "from app.models import Order, get_session",
+    "from app.models import Order, get_engine, get_session",
+)
+
+# --- Pair 7: header source -> string concat -> DB-API cursor ---------------
+CASES.append(Case(
+    id="sqli_07_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_ENGINE_IMPORT],
+    append='''
+
+@orders_bp.route("/export", methods=["GET"])
+@require_role("manager")
+def export_orders():
+    """Export orders filtered by the X-Report-Filter header."""
+    status_filter = request.headers.get("X-Report-Filter", "shipped")
+    conn = get_engine().raw_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, status, total FROM orders WHERE status = '"
+            + status_filter + "'"
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return jsonify([list(r) for r in rows])
+''',
+    vuln_markers=["+ status_filter +"],
+    description="OWASP-derived: request header concatenated into a DB-API "
+                "cursor query.",
+))
+
+CASES.append(Case(
+    id="sqli_07_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_ENGINE_IMPORT],
+    append='''
+
+@orders_bp.route("/export", methods=["GET"])
+@require_role("manager")
+def export_orders():
+    """Export orders filtered by the X-Report-Filter header."""
+    status_filter = request.headers.get("X-Report-Filter", "shipped")
+    conn = get_engine().raw_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, status, total FROM orders WHERE status = ?",
+            (status_filter,),
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return jsonify([list(r) for r in rows])
+''',
+    description="Same header-driven export with a DB-API placeholder.",
+))
+
+# --- Pair 8: cookie source -> f-string -> SQLAlchemy text ------------------
+CASES.append(Case(
+    id="sqli_08_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/users.py",
+    origin="owasp-derived",
+    replacements=[USERS_ADD_TEXT_IMPORT],
+    append='''
+
+@users_bp.route("/recent-search", methods=["GET"])
+@require_auth
+def recent_search():
+    """Re-run the user's last search stored in a cookie."""
+    last_search = request.cookies.get("last_search", "")
+    session = get_session()
+    rows = session.execute(
+        text(f"SELECT id, username FROM users WHERE username LIKE '%{last_search}%'")
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    vuln_markers=["LIKE '%{last_search}%'"],
+    description="OWASP-derived: cookie value interpolated into a LIKE query.",
+))
+
+CASES.append(Case(
+    id="sqli_08_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/users.py",
+    origin="owasp-derived",
+    replacements=[USERS_ADD_TEXT_IMPORT],
+    append='''
+
+@users_bp.route("/recent-search", methods=["GET"])
+@require_auth
+def recent_search():
+    """Re-run the user's last search stored in a cookie."""
+    last_search = request.cookies.get("last_search", "")
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, username FROM users WHERE username LIKE :pattern"),
+        {"pattern": f"%{last_search}%"},
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    description="Same cookie-driven search with a bound :pattern parameter.",
+))
+
+# --- Pair 9: param -> propagation chain -> IN clause -----------------------
+CASES.append(Case(
+    id="sqli_09_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_TEXT_IMPORT],
+    append='''
+
+@orders_bp.route("/batch-status", methods=["GET"])
+@require_role("manager")
+def batch_order_status():
+    """Fetch the status of several orders by comma-separated ids."""
+    raw_ids = request.args.get("ids", "")
+    id_list = raw_ids.split(",")
+    joined = ", ".join(id_list)
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, status FROM orders WHERE id IN (" + joined + ")")
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    vuln_markers=['IN (" + joined'],
+    description="OWASP-derived: parameter propagated through split/join into "
+                "an IN clause.",
+))
+
+CASES.append(Case(
+    id="sqli_09_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_TEXT_IMPORT],
+    append='''
+
+@orders_bp.route("/batch-status", methods=["GET"])
+@require_role("manager")
+def batch_order_status():
+    """Fetch the status of several orders by comma-separated ids."""
+    raw_ids = request.args.get("ids", "")
+    try:
+        id_list = [int(part) for part in raw_ids.split(",") if part.strip()]
+    except ValueError:
+        return jsonify({"error": "ids must be integers"}), 400
+    if not id_list:
+        return jsonify([])
+    params = {f"id{i}": value for i, value in enumerate(id_list)}
+    placeholders = ", ".join(":" + key for key in params)
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, status FROM orders WHERE id IN (" + placeholders + ")"),
+        params,
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    description="Same IN-clause lookup: ids validated as integers and bound "
+                "as named parameters (clause assembly still trips SAST).",
+))
+
+# --- Pair 10: numeric-context LIMIT/OFFSET interpolation -------------------
+CASES.append(Case(
+    id="sqli_10_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_TEXT_IMPORT],
+    append='''
+
+@orders_bp.route("/paged", methods=["GET"])
+@require_role("manager")
+def paged_orders():
+    """List orders with limit/offset pagination."""
+    limit = request.args.get("limit", "20")
+    offset = request.args.get("offset", "0")
+    session = get_session()
+    rows = session.execute(
+        text(f"SELECT id, user_id, status, total FROM orders LIMIT {limit} OFFSET {offset}")
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    vuln_markers=["LIMIT {limit} OFFSET {offset}"],
+    description="OWASP-derived: pagination parameters interpolated into a "
+                "numeric SQL context.",
+))
+
+CASES.append(Case(
+    id="sqli_10_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/orders.py",
+    origin="owasp-derived",
+    replacements=[ORDERS_ADD_TEXT_IMPORT],
+    append='''
+
+@orders_bp.route("/paged", methods=["GET"])
+@require_role("manager")
+def paged_orders():
+    """List orders with limit/offset pagination."""
+    try:
+        limit = int(request.args.get("limit", "20"))
+        offset = int(request.args.get("offset", "0"))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, user_id, status, total FROM orders LIMIT :limit OFFSET :offset"),
+        {"limit": limit, "offset": offset},
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    description="Same pagination with int() validation and bound parameters.",
+))
+
+# --- Pair 11: JSON body source -> %-format -> exec_driver_sql --------------
+CASES.append(Case(
+    id="sqli_11_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/admin.py",
+    origin="owasp-derived",
+    replacements=ADMIN_SQLI_IMPORTS,
+    append='''
+
+@admin_bp.route("/purge-user", methods=["POST"])
+@require_role("admin")
+def purge_user_data():
+    """Purge a departed user's orders (data-erasure request)."""
+    payload = request.get_json(silent=True) or {}
+    username = payload.get("username", "")
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.exec_driver_sql(
+            "DELETE FROM orders WHERE user_id = "
+            "(SELECT id FROM users WHERE username = '%s')" % username
+        )
+        conn.commit()
+    return jsonify({"status": "purged"})
+''',
+    vuln_markers=["= '%s')\" % username"],
+    description="OWASP-derived: JSON body value %-formatted into a driver "
+                "SQL delete.",
+))
+
+CASES.append(Case(
+    id="sqli_11_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/admin.py",
+    origin="owasp-derived",
+    replacements=ADMIN_SQLI_IMPORTS,
+    append='''
+
+@admin_bp.route("/purge-user", methods=["POST"])
+@require_role("admin")
+def purge_user_data():
+    """Purge a departed user's orders (data-erasure request)."""
+    payload = request.get_json(silent=True) or {}
+    username = payload.get("username", "")
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.exec_driver_sql(
+            "DELETE FROM orders WHERE user_id = "
+            "(SELECT id FROM users WHERE username = ?)",
+            (username,),
+        )
+        conn.commit()
+    return jsonify({"status": "purged"})
+''',
+    description="Same purge using a driver-level placeholder parameter.",
+))
+
+# --- Pair 12: parameter map -> WHERE-clause builder -------------------------
+CASES.append(Case(
+    id="sqli_12_vulnerable",
+    category="sqli",
+    expected_verdict="vulnerable",
+    cwe="CWE-89",
+    file="app/routes/users.py",
+    origin="owasp-derived",
+    replacements=[USERS_ADD_TEXT_IMPORT],
+    append='''
+
+@users_bp.route("/filter", methods=["GET"])
+@require_role("manager")
+def filter_users():
+    """Filter users by arbitrary field=value query parameters."""
+    clauses = []
+    for field, value in request.args.items():
+        clauses.append(f"{field} = '{value}'")
+    where = " AND ".join(clauses) or "1=1"
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, username, role FROM users WHERE " + where)
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    vuln_markers=["f\"{field} = '{value}'\""],
+    description="OWASP-derived: request parameter map folded into a WHERE "
+                "clause (both identifiers and values attacker-controlled).",
+))
+
+CASES.append(Case(
+    id="sqli_12_safe",
+    category="sqli",
+    expected_verdict="safe",
+    cwe="CWE-89",
+    file="app/routes/users.py",
+    origin="owasp-derived",
+    replacements=[USERS_ADD_TEXT_IMPORT],
+    append='''
+
+ALLOWED_FILTER_FIELDS = {"username", "role", "email"}
+
+
+@users_bp.route("/filter", methods=["GET"])
+@require_role("manager")
+def filter_users():
+    """Filter users by allowlisted field=value query parameters."""
+    clauses = []
+    params = {}
+    for field, value in request.args.items():
+        if field not in ALLOWED_FILTER_FIELDS:
+            return jsonify({"error": "cannot filter on that field"}), 400
+        clauses.append(f"{field} = :{field}")
+        params[field] = value
+    where = " AND ".join(clauses) or "1=1"
+    session = get_session()
+    rows = session.execute(
+        text("SELECT id, username, role FROM users WHERE " + where),
+        params,
+    )
+    return jsonify([dict(r._mapping) for r in rows])
+''',
+    description="Same filter: field names allowlisted, values bound as named "
+                "parameters (clause assembly still trips SAST).",
 ))
 
 # ===========================================================================
@@ -820,6 +1195,7 @@ def main() -> None:
                     "id": case.id,
                     "category": case.category,
                     "split": case.split,
+                    "origin": case.origin,
                     "expected_verdict": case.expected_verdict,
                     "cwe": case.cwe,
                     "file": case.file,
