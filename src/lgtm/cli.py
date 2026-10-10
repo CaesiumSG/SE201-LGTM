@@ -1,0 +1,111 @@
+"""LGTM command-line interface.
+
+Usage:
+    lgtm index  --repo <path>
+    lgtm review --repo <path> --base <branch> --pr <branch> \
+                [--model <ollama_model>] [--output <dir>] [--mode lgtm|sast-only|llm-only]
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import click
+
+from lgtm import __version__
+from lgtm.config import LGTMConfig, setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+@click.group()
+@click.version_option(__version__, prog_name="lgtm")
+def main() -> None:
+    """LGTM — Context-Aware PR Security Agent."""
+
+
+def _load_config(config_file: str | None, **overrides) -> LGTMConfig:
+    config = LGTMConfig.from_file(config_file) if config_file else LGTMConfig()
+    for key, value in overrides.items():
+        if value is not None:
+            setattr(config, key, value)
+    return config
+
+
+@main.command()
+@click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository to index.")
+@click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def index(repo: str, config_file: str | None, verbose: bool) -> None:
+    """Index project documentation into ChromaDB for policy retrieval."""
+    setup_logging(verbose)
+    from lgtm.rag.indexer import index_repo_docs
+
+    config = _load_config(config_file)
+    count = index_repo_docs(repo, config)
+    click.echo(f"Indexed {count} documentation chunks from {repo}")
+
+
+@main.command()
+@click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository under review.")
+@click.option("--base", required=True, help="Base branch (trusted).")
+@click.option("--pr", required=True, help="PR branch (untrusted changes).")
+@click.option("--model", default=None, help="Ollama model name (default: qwen2.5:7b).")
+@click.option("--ollama-url", default=None, help="Ollama base URL.")
+@click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
+@click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
+@click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
+@click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def review(
+    repo: str,
+    base: str,
+    pr: str,
+    model: str | None,
+    ollama_url: str | None,
+    output_dir: str | None,
+    mode: str,
+    semgrep_config: str | None,
+    config_file: str | None,
+    verbose: bool,
+) -> None:
+    """Run the full security review pipeline on a PR."""
+    setup_logging(verbose)
+    from lgtm.pipeline import ReviewPipeline
+
+    config = _load_config(
+        config_file,
+        ollama_model=model,
+        ollama_base_url=ollama_url,
+        semgrep_config=semgrep_config,
+    )
+    config.mode = mode
+    out = Path(output_dir or config.output_dir)
+
+    try:
+        pipeline = ReviewPipeline(repo, config)
+        result = pipeline.run(base, pr, out)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        logger.error("Review failed: %s", exc, exc_info=verbose)
+        click.echo(f"ERROR: {exc}", err=True)
+        sys.exit(2)
+
+    vulnerable = sum(1 for f in result.findings if f.verdict == "vulnerable")
+    possible = sum(1 for f in result.findings if f.verdict == "possible")
+    click.echo("")
+    click.echo(f"Review complete in {result.meta.duration_seconds:.1f}s")
+    click.echo(
+        f"  Findings: {len(result.findings)} "
+        f"(vulnerable: {vulnerable}, possible: {possible})"
+    )
+    if result.json_path:
+        click.echo(f"  JSON report:     {result.json_path}")
+        click.echo(f"  Markdown report: {result.md_path}")
+    # Exit code 1 signals confirmed findings (useful in CI)
+    sys.exit(1 if vulnerable else 0)
+
+
+if __name__ == "__main__":
+    main()
