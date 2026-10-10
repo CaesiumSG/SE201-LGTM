@@ -76,6 +76,28 @@ class TestJsonExtraction:
     def test_no_json(self):
         assert extract_json_object("no json here") is None
 
+    def test_unescaped_docstring_quotes_repaired(self):
+        # Exact failure mode observed with qwen2.5-coder:7b: a Python
+        # docstring pasted verbatim into a JSON string value.
+        text = (
+            '{\n'
+            '  "verdict": "vulnerable",\n'
+            '  "evidence": [\n'
+            '    {"type": "code", "file": "a.py",\n'
+            '     "content": "def get_order(order_id):\\n    """Fetch one."""\\n    return x"}\n'
+            '  ]\n'
+            '}'
+        )
+        data = extract_json_object(text)
+        assert data is not None
+        assert data["verdict"] == "vulnerable"
+        assert 'Fetch one.' in data["evidence"][0]["content"]
+
+    def test_literal_newlines_in_strings_repaired(self):
+        text = '{"explanation": "line one\nline two", "verdict": "safe"}'
+        data = extract_json_object(text)
+        assert data == {"explanation": "line one\nline two", "verdict": "safe"}
+
 
 class TestParseAgentOutput:
     def test_full_finding(self):

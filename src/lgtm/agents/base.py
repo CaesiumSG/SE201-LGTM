@@ -57,17 +57,76 @@ class AgentFinding(BaseModel):
         return self
 
 
+def repair_json(candidate: str) -> str:
+    """Escape unescaped double quotes inside JSON string values.
+
+    Small local models often paste code (docstrings included) verbatim into
+    JSON strings. A quote inside a string is treated as literal when the
+    next non-whitespace character is not a structural delimiter.
+    """
+    out: list[str] = []
+    in_str = False
+    i = 0
+    n = len(candidate)
+    while i < n:
+        ch = candidate[i]
+        if not in_str:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        # Inside a string
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(candidate[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and candidate[j] in " \t\r\n":
+                j += 1
+            if j >= n or candidate[j] in ",:}]":
+                in_str = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+        if ch == "\n":
+            out.append("\\n")  # literal newlines are invalid in JSON strings
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_lenient(candidate: str) -> dict | None:
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    try:
+        repaired = repair_json(candidate)
+        data = json.loads(repaired)
+        logger.debug("JSON parsed only after repair")
+        return data
+    except json.JSONDecodeError:
+        return None
+
+
 def extract_json_object(text: str) -> dict | None:
     """Extract the first plausible JSON object from LLM output.
 
-    Handles fenced code blocks, leading prose, and trailing commentary.
+    Handles fenced code blocks, leading prose, trailing commentary, and
+    common escaping mistakes (unescaped quotes/newlines in string values).
     """
     # Try fenced blocks first
     for match in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
+        data = _loads_lenient(match.group(1))
+        if data is not None:
+            return data
     # Then scan for balanced top-level braces
     start = text.find("{")
     while start != -1:
@@ -89,12 +148,15 @@ def extract_json_object(text: str) -> dict | None:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        candidate = text[start : i + 1]
-                        try:
-                            return json.loads(candidate)
-                        except json.JSONDecodeError:
-                            break
+                        data = _loads_lenient(text[start : i + 1])
+                        if data is not None:
+                            return data
+                        break
         start = text.find("{", start + 1)
+    # Last resort: first "{" through last "}" with repair
+    first, last = text.find("{"), text.rfind("}")
+    if first != -1 and last > first:
+        return _loads_lenient(text[first : last + 1])
     return None
 
 
