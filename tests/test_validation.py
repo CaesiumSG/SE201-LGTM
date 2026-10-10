@@ -1,0 +1,134 @@
+"""Tests for the evidence validator."""
+
+from __future__ import annotations
+
+from lgtm.agents.base import AgentFinding, EvidenceItem
+from lgtm.diff.git_diff import get_pr_diff
+from lgtm.validation.evidence import EvidenceValidator
+
+
+def make_finding(**kwargs) -> AgentFinding:
+    defaults = {"finding_id": "f1", "verdict": "vulnerable", "confidence": 0.9}
+    defaults.update(kwargs)
+    return AgentFinding(**defaults)
+
+
+class TestEvidenceValidator:
+    def test_valid_code_evidence(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="code",
+                    file="app.py",
+                    lines=[2, 2],
+                    content='cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))',
+                )
+            ]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is True
+        assert finding.evidence_issues == []
+
+    def test_missing_file_flagged(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[EvidenceItem(type="code", file="ghost.py", content="x")]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+        assert any("does not exist" in i for i in finding.evidence_issues)
+
+    def test_fabricated_snippet_flagged(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="code",
+                    file="app.py",
+                    lines=[1, 3],
+                    content="os.system('rm -rf /')  # totally made up",
+                )
+            ]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+        assert any("snippet not found" in i for i in finding.evidence_issues)
+
+    def test_out_of_range_lines_flagged(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[EvidenceItem(type="code", file="app.py", lines=[500, 600], content="")]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+        assert any("out of range" in i for i in finding.evidence_issues)
+
+    def test_snippet_from_pr_diff_accepted(self, git_repo):
+        diffs = get_pr_diff(git_repo, "main", "pr")
+        validator = EvidenceValidator(git_repo, "main", diffs)
+        finding = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="code",
+                    file="app.py",
+                    content="cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")",
+                )
+            ]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is True
+
+    def test_policy_evidence_checked(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        good = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="policy",
+                    source="policy.md",
+                    content="All SQL must use bound parameters.",
+                )
+            ]
+        )
+        validator.validate(good)
+        assert good.evidence_valid is True
+
+        bad = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="policy",
+                    source="policy.md",
+                    content="Users must rotate passwords every 7 days.",
+                )
+            ]
+        )
+        validator.validate(bad)
+        assert bad.evidence_valid is False
+
+    def test_missing_policy_doc_flagged(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[EvidenceItem(type="policy", source="imaginary.md", content="rule")]
+        )
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+
+    def test_strong_verdict_without_evidence_flagged(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(verdict="vulnerable", evidence=[])
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+        assert any("without any evidence" in i for i in finding.evidence_issues)
+
+    def test_weak_verdict_without_evidence_ok(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(verdict="insufficient_evidence", evidence=[])
+        validator.validate(finding)
+        assert finding.evidence_valid is True
+
+    def test_validate_all(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        findings = [make_finding(verdict="possible"), make_finding(verdict="possible")]
+        out = validator.validate_all(findings)
+        assert len(out) == 2
+        assert all(f.evidence_valid is not None for f in out)

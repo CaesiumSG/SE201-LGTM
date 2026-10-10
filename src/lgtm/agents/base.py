@@ -149,6 +149,7 @@ def parse_agent_output(
         confidence = float(data.get("confidence", 0.0))
     except (TypeError, ValueError):
         confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
 
     finding = AgentFinding(
         finding_id=str(data.get("finding_id") or finding_id),
