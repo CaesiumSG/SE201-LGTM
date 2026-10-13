@@ -235,3 +235,41 @@ diff --git a/app/routes/orders.py b/app/routes/orders.py
         diffs = parse_unified_diff(self.DIFF)
         diffs[0].status = "deleted"
         assert extract_changed_endpoints(diffs) == []
+
+
+class TestTextToolCalls:
+    """qwen2.5-coder writes tool calls as JSON text instead of native calls."""
+
+    def test_text_tool_call_is_executed(self, git_repo):
+        from lgtm.agents.base import parse_text_tool_calls
+
+        assert parse_text_tool_calls(
+            '{"name": "read_file", "arguments": {"path": "app.py"}}', {"read_file"}
+        ) == [{"name": "read_file", "args": {"path": "app.py"}, "id": "text_call_0"}]
+
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _FakeLLM([
+            _ai_message('{"name": "read_file", "arguments": {"path": "app.py"}}'),
+            _ai_message('{"verdict": "safe"}'),
+        ])
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", LGTMConfig())
+        assert out == '{"verdict": "safe"}'
+        assert toolbox.calls_used == 1
+
+    def test_tagged_and_unknown_text_calls(self):
+        from lgtm.agents.base import parse_text_tool_calls
+
+        tagged = '<tool_call>\n{"name": "grep_repo", "arguments": {"pattern": "x"}}\n</tool_call>'
+        assert parse_text_tool_calls(tagged, {"grep_repo"})[0]["name"] == "grep_repo"
+        assert parse_text_tool_calls('{"name": "rm_rf", "arguments": {}}', {"read_file"}) == []
+        # A final verdict is never mistaken for a tool call
+        assert parse_text_tool_calls('{"verdict": "safe", "name": "read_file"}', {"read_file"}) == []
+
+
+def test_string_arguments_parsed():
+    from lgtm.agents.base import parse_text_tool_calls
+
+    calls = parse_text_tool_calls(
+        '{"name": "read_file", "arguments": "{\\"path\\": \\"app.py\\"}"}', {"read_file"}
+    )
+    assert calls and calls[0]["args"] == {"path": "app.py"}

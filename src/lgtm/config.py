@@ -15,7 +15,7 @@ class LGTMConfig:
     """Central configuration for all LGTM components."""
 
     # LLM
-    ollama_model: str = "qwen2.5:7b"
+    ollama_model: str = "qwen2.5-coder:7b"
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
@@ -27,6 +27,15 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
+    # Experiments (round 4, off by default — see docs/evaluation-log.md):
+    # push back once if an agent answers before using any tool
+    require_tool_use: bool = False
+    # give agents deterministic AST facts (query construction, decorators)
+    # and give SAST triage the same policy pre-retrieval authz gets
+    static_facts: bool = False
+    # tell the authz agent to judge ownership checks by what the policy lets
+    # the endpoint's required role access (round 5)
+    authz_role_guidance: bool = False
 
     # RAG
     rag_chunk_size: int = 500  # approx tokens per chunk
@@ -44,7 +53,7 @@ class LGTMConfig:
     # Output
     output_dir: str = "lgtm-output"
 
-    # Pipeline modes: "lgtm" (SAST + LLM), "sast-only", "llm-only"
+    # Pipeline modes: "lgtm" (SAST + LLM), "sast-only", "llm-only", "lgtm-no-sast"
     mode: str = "lgtm"
 
     # Doc file extensions indexed for RAG

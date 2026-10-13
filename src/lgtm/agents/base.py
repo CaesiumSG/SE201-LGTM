@@ -237,6 +237,39 @@ def build_llm(config: LGTMConfig):
     )
 
 
+TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
+    """Recover tool calls that a model wrote as plain text.
+
+    Some local models (qwen2.5-coder via Ollama) advertise tool support but
+    answer with ``{"name": "read_file", "arguments": {...}}`` in the message
+    body instead of a native tool call. Without this fallback the loop takes
+    that text as the final answer and the agent never uses its tools.
+    """
+    if not content or not tool_names:
+        return []
+    blocks = TOOL_CALL_TAG_RE.findall(content)
+    candidates = [extract_json_object(b) for b in blocks] if blocks else [
+        extract_json_object(content)
+    ]
+    calls: list[dict] = []
+    for i, data in enumerate(candidates):
+        if not isinstance(data, dict) or "verdict" in data:
+            continue  # a final answer, not a tool call
+        name = data.get("name")
+        args = data.get("arguments", data.get("parameters", {}))
+        if isinstance(args, str):  # OpenAI style: arguments as a JSON string
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except json.JSONDecodeError:
+                continue
+        if name in tool_names and isinstance(args, dict):
+            calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
+    return calls
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -254,14 +287,37 @@ def run_tool_loop(
     tool_map = {t.name: t for t in tools}
     llm_with_tools = llm.bind_tools(tools)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    tools_used = 0
+    pushed_back = False
 
     for iteration in range(config.max_agent_iterations):
         response = llm_with_tools.invoke(messages)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
+        content = response.content if isinstance(response.content, str) else str(response.content)
+        text_calls = False
         if not tool_calls:
-            return response.content if isinstance(response.content, str) else str(response.content)
+            tool_calls = parse_text_tool_calls(content, set(tool_map))
+            text_calls = bool(tool_calls)
+            if not tool_calls:
+                if config.require_tool_use and tools and not tools_used and not pushed_back:
+                    # The model answered from the prompt alone; ask it once
+                    # to verify against the repository first.
+                    pushed_back = True
+                    messages.append(
+                        HumanMessage(
+                            content=(
+                                "Before giving a verdict, verify your reasoning "
+                                "against the repository: call at least one tool "
+                                "(e.g. read the auth decorators or the function "
+                                "you are judging). Then give your final JSON."
+                            )
+                        )
+                    )
+                    continue
+                return content
 
+        tools_used += len(tool_calls)
         for call in tool_calls:
             name = call.get("name")
             args = call.get("args", {}) or {}
@@ -275,7 +331,17 @@ def run_tool_loop(
                 except Exception as exc:  # noqa: BLE001 - surface to the model
                     logger.warning("Tool %s raised: %s", name, exc)
                     result = f"ERROR: tool failed: {exc}"
-            messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+            if text_calls:
+                # No native tool_call to attach a ToolMessage to: return the
+                # result as a user turn instead.
+                messages.append(
+                    HumanMessage(
+                        content=f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
+                        "Call another tool, or give your final JSON verdict."
+                    )
+                )
+            else:
+                messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
 
     # Iteration cap reached: force a final answer without tools.
     logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)

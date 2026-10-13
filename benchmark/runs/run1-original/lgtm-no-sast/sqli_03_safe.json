@@ -1,0 +1,82 @@
+{
+  "id": "sqli_03_safe",
+  "category": "sqli",
+  "expected": "safe",
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 16.28,
+  "est_tokens": 631,
+  "findings": [
+    {
+      "finding_id": "llm-only.sql-sink-heuristic:app/routes/orders.py:70",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The SQL query is constructed using a user-controlled input (`sort_by`) without parameterization, which makes it vulnerable to SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            70
+          ],
+          "source": null,
+          "content": "rows = session.execute(text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\"))"
+        }
+      ],
+      "suggested_fix": "Use parameterized queries to mitigate SQL injection. For example:\n\n```python\ntext_query = text(\"SELECT id, user_id, status, total FROM orders ORDER BY :sort_by\")\nrows = session.execute(text_query, {'sort_by': sort_by})\n```",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 70,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/sorted[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-639",
+      "explanation": "The endpoint does not verify ownership of the orders being sorted, which violates the policy rule that 'A user may view ONLY their own orders'. The code allows any manager to sort orders by any column without checking if they own those orders.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            56,
+            70
+          ],
+          "source": null,
+          "content": "def sorted_orders():\n    \"\"\"List orders sorted by an allowlisted column.\"\"\"\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    if sort_by not in ALLOWED_SORT_COLUMNS:\n        return jsonify({\"error\": \"invalid sort column\"}), 400\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md:3-10",
+          "content": "- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data."
+        }
+      ],
+      "suggested_fix": "Add a check to ensure the current user owns the orders being sorted: `if not is_owner_or_admin(g.current_user, order.user_id): return jsonify({\"error\": \"Unauthorized access\"}), 403`",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 62,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "split": "dev",
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "FP"
+}

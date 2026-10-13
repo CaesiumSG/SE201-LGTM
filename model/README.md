@@ -28,7 +28,8 @@ deploy/connect.sh ── ssh -J origami <node> -L 11435:127.0.0.1:<port> ─▶ 
 ```
 
 - **The notebooks are the serving code.** `serve_model.ipynb` runs the same
-  way in a `mynotebook` session (*Run All*) and headless in a Slurm job
+  way in a `mynotebook` session (leave the shutdown cell unexecuted) and
+  headless in a Slurm job
   (`jobs/lib.sh` runs its code cells as one script, so output streams into
   the job log). They use only the standard library and avoid IPython magics
   for that reason.
@@ -50,23 +51,106 @@ deploy/connect.sh ── ssh -J origami <node> -L 11435:127.0.0.1:<port> ─▶ 
 - **Model weights stay on the cluster** in `$SCRATCH_DIR/ollama-models`;
   nothing is downloaded to the laptop.
 
-## One-time setup
+## One-time cluster setup
 
-1. **Network:** SMU WLAN with a healthy ClearPass, or the SMU VPN off campus.
-2. **SSH key** (PowerShell on the laptop):
-   ```powershell
-   ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\id_ed25519_origami
-   type $env:USERPROFILE\.ssh\id_ed25519_origami.pub | ssh <user>@10.193.104.102 "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
-   # Administrator PowerShell, once:
-   Get-Service ssh-agent | Set-Service -StartupType Automatic; Start-Service ssh-agent
-   # normal PowerShell:
-   ssh-add $env:USERPROFILE\.ssh\id_ed25519_origami
-   ```
-   The scripts call the Windows OpenSSH client so they can use this agent;
-   the jump to the compute node relies on the agent holding the key.
-3. `cp model/.env.example model/.env` and fill it in.
-4. `model/deploy/provision.sh` pre-downloads `$MODELS` in a CPU job. Re-run
-   after changing `MODELS`; present models are skipped.
+Each teammate runs these steps on their own laptop using their own SCIS
+cluster account. You need permission to submit GPU jobs and a writable
+scratch directory. Do not share passwords, private SSH keys, or `model/.env`.
+The steps below use Windows PowerShell for SSH setup and Git Bash for the
+scripts; Git must be installed and this repository cloned locally.
+
+### 1. Check cluster access
+
+Connect to SMU WLAN with a healthy ClearPass, or the SMU VPN off campus.
+In PowerShell, replace `YOUR_USERNAME` with your cluster username:
+
+```powershell
+ssh YOUR_USERNAME@10.193.104.102
+```
+
+On first connection, verify the host fingerprint against the cluster's
+trusted instructions before accepting it. Enter your cluster password,
+run `myinfo` to check your Slurm account, partition and QOS, then `exit`
+to return to your laptop. If you cannot log in or lack GPU-job access,
+resolve that with the cluster administrator before continuing.
+
+### 2. Set up your SSH key
+
+In normal PowerShell, create a key and upload **only the public key**.
+If this key already exists, reuse it rather than overwriting it.
+
+```powershell
+ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\id_ed25519_origami
+Get-Content $env:USERPROFILE\.ssh\id_ed25519_origami.pub | ssh YOUR_USERNAME@10.193.104.102 "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
+```
+
+Use a passphrase when prompted. Open PowerShell **as Administrator** once:
+
+```powershell
+Get-Service ssh-agent | Set-Service -StartupType Automatic
+Start-Service ssh-agent
+```
+
+Back in normal PowerShell, load the key and check password-free login:
+
+```powershell
+ssh-add $env:USERPROFILE\.ssh\id_ed25519_origami
+ssh -i $env:USERPROFILE\.ssh\id_ed25519_origami -o BatchMode=yes YOUR_USERNAME@10.193.104.102 "whoami"
+```
+
+The last command should print your cluster username without asking for a
+password. The scripts use Windows OpenSSH and its SSH agent for the jump
+to the compute node. If authentication fails, check the username, uploaded
+public key, and `ssh-add -l` before running the scripts.
+
+### 3. Fill in your local settings
+
+Open Git Bash in the repository root. If `model/.env` already exists,
+skip the copy and edit it instead:
+
+```bash
+cp model/.env.example model/.env
+```
+
+Open `model/.env` in your editor and replace every `<...>` placeholder:
+
+| Setting | What to enter |
+|---|---|
+| `ORIGAMI_USER` | Your cluster username, not your email address |
+| `ORIGAMI_SSH_KEY` | `~/.ssh/id_ed25519_origami`, or the path to your own private key |
+| `NOTIFY_EMAIL` | Your email address for job notifications |
+| `SCRATCH_DIR` | Your writable cluster scratch path; the template uses `/common/scratch/users/<initial>/<smu-username>`—confirm your actual path |
+| `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_QOS` | Values allowed for your account, checked with `myinfo`; use `se201`, `student`, `studentqos` only if you have access |
+
+Leave the other settings at their defaults for the first run. `model/.env`
+is gitignored and is a shell settings file: do not put your cluster password
+or private-key contents in it. Each account gets its own remote files and
+model cache.
+
+### 4. Download the model and start a job
+
+In Git Bash, from the repository root:
+
+```bash
+model/deploy/provision.sh
+model/deploy/up.sh
+```
+
+`provision.sh` downloads the configured models into your scratch directory
+using a CPU job; wait for `COMPLETED` before starting the server. Re-run it
+if you change `MODELS`; models already present are skipped.
+
+`up.sh` uploads the notebook code, submits a GPU job using your account,
+waits for the model to be ready, and opens the SSH tunnel. Keep that
+terminal open. In a second Git Bash terminal, check the connection:
+
+```bash
+curl http://127.0.0.1:11435/api/tags
+```
+
+You should see JSON listing `qwen2.5:7b`. The model runs only while the job
+is active (8 hours by default); the tunnel exposes it on your laptop, not
+publicly. To stop the job, run `model/deploy/down.sh` from another terminal.
 
 ## Daily use (Git Bash, from the repo root)
 
@@ -80,16 +164,22 @@ deploy/connect.sh ── ssh -J origami <node> -L 11435:127.0.0.1:<port> ─▶ 
 | Stop | `model/deploy/down.sh [jobid\|all]` |
 
 **Interactive alternative:** start `mynotebook` (GPU, Python-only is
-enough), open `~/llm-serve/notebooks/serve_model.ipynb`, *Run All*, then run
-`model/deploy/connect.sh` on the laptop. Run the notebook's last cell (or end
-the session) to stop it.
+enough), open `~/llm-serve/notebooks/serve_model.ipynb`, run the cells up to
+and including endpoint publishing, then run `model/deploy/connect.sh` on
+the laptop. Leave the final shutdown cell unexecuted while serving.
+Run the notebook's last cell (or end the session) to stop it.
 
 With the tunnel open:
 
 ```bash
 curl http://127.0.0.1:11435/api/tags
-lgtm review ... --ollama-url http://127.0.0.1:11435 --model qwen2.5:7b
+lgtm review --repo /path/to/repo --base main --pr feature-branch --gpu-cluster
+python benchmark/evaluate.py --gpu-cluster
 ```
+
+`--gpu-cluster` selects `http://127.0.0.1:11435` and `qwen2.5:7b`; it does
+not start the server or tunnel. `--model` and `--ollama-url` override these
+defaults, including when the tunnel uses a different local port.
 
 ## Cluster facts (verified 2026-10-13)
 

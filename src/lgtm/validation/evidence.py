@@ -29,6 +29,28 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _locator_candidates(path: str) -> list[str]:
+    """``path`` as cited, then with ``#anchor`` / ``:12-20`` / ``:symbol``
+    / ``:line:col`` suffixes progressively removed.
+
+    The raw path comes first so real file names containing ``:`` or ``#``
+    still resolve.
+    """
+    raw = path.strip()
+    candidates = [raw]
+    current = raw.split("#", 1)[0].strip()
+    for _ in range(3):
+        if current and current not in candidates:
+            candidates.append(current)
+        stripped = re.sub(r":[\w.-]*$", "", current).strip()
+        if stripped == current:
+            break
+        current = stripped
+    if current and current not in candidates:
+        candidates.append(current)
+    return candidates
+
+
 class EvidenceValidator:
     def __init__(
         self,
@@ -69,6 +91,14 @@ class EvidenceValidator:
                     self._file_cache[path] = None
         return self._file_cache[path]
 
+    def _resolve_path(self, path: str) -> str:
+        """The first locator candidate that exists (base branch or PR diff)."""
+        candidates = _locator_candidates(path)
+        for candidate in candidates:
+            if candidate in self._diff_added or self._read_base_file(candidate) is not None:
+                return candidate
+        return candidates[-1]
+
     def _snippet_in_text(self, snippet: str, haystack: str) -> bool:
         snippet_n = _normalize(snippet)
         if not snippet_n:
@@ -80,13 +110,27 @@ class EvidenceValidator:
         if window > len(haystack):
             ratio = difflib.SequenceMatcher(None, snippet_n, haystack).ratio()
             return ratio >= FUZZY_THRESHOLD
-        step = max(1, window // 2)
-        for i in range(0, len(haystack) - window + 1, step):
-            ratio = difflib.SequenceMatcher(
+        # Coarse-to-fine search. A plain window // 2 stride skipped the
+        # aligned offset and rejected near-verbatim snippets with one elided
+        # line; a stride of 1 everywhere took ~40s on a 1000-line file. So:
+        # score a grid of offsets, then search stride-1 around the best few.
+        def score(i: int) -> float:
+            matcher = difflib.SequenceMatcher(
                 None, snippet_n, haystack[i : i + window + 20]
-            ).ratio()
-            if ratio >= FUZZY_THRESHOLD:
-                return True
+            )
+            if matcher.quick_ratio() < FUZZY_THRESHOLD:
+                return 0.0
+            return matcher.ratio()
+
+        last = len(haystack) - window
+        step = max(1, window // 8)
+        coarse = [(score(i), i) for i in range(0, last + 1, step)]
+        if any(r >= FUZZY_THRESHOLD for r, _ in coarse):
+            return True
+        for _, best in sorted(coarse, reverse=True)[:3]:
+            for i in range(max(0, best - step), min(last, best + step) + 1):
+                if score(i) >= FUZZY_THRESHOLD:
+                    return True
         return False
 
     # ------------------------------------------------------------------
@@ -95,6 +139,7 @@ class EvidenceValidator:
         if not item.file:
             issues.append("code evidence has no file path")
             return issues
+        item.file = self._resolve_path(item.file)
         lines = self._read_base_file(item.file)
         in_diff = item.file in self._diff_added
 
@@ -138,8 +183,7 @@ class EvidenceValidator:
         if not source:
             issues.append("policy evidence has no source document")
             return issues
-        # Strip ":<lines>" suffixes agents sometimes add
-        source_path = re.sub(r":\d+(-\d+)?$", "", source).strip()
+        source_path = self._resolve_path(source)
         lines = self._read_base_file(source_path)
         if lines is None:
             issues.append(f"cited policy document does not exist: {source_path}")

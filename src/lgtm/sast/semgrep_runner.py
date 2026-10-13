@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -130,7 +131,7 @@ def run_semgrep(
             f"Could not parse semgrep JSON output: {result.stdout[:500]!r}"
         ) from exc
 
-    findings = parse_semgrep_json(payload)
+    findings = parse_semgrep_json(payload, config)
     _fill_matched_code(findings, repo)
     return findings
 
@@ -158,8 +159,42 @@ def _fill_matched_code(findings: list[SemgrepFinding], repo: Path) -> None:
         f.matched_code = "\n".join(lines[lo - 1 : hi])
 
 
-def parse_semgrep_json(payload: dict) -> list[SemgrepFinding]:
+def _local_rule_prefixes(config: str | None) -> list[str]:
+    """Dotted path prefixes Semgrep puts in front of local rule ids.
+
+    With a local rules directory, ``check_id`` comes back as e.g.
+    ``Users.alice.repo.src.lgtm.sast.rules.lgtm-python-sqli-format``. That
+    leaks the machine's absolute path into prompts and reports, and makes
+    the prompt (and so the model's verdict) depend on where the repo is
+    checked out.
+    """
+    if not config or config == "auto" or config.startswith(("p/", "r/", "http")):
+        return []
+    path = Path(config)
+    folders = {path, path.resolve()}
+    folders |= {f.parent for f in list(folders) if f.suffix in (".yaml", ".yml")}
+    return sorted(
+        {
+            re.sub(r"[^a-zA-Z0-9._-]", "", ".".join(f.parts).lstrip("./")) + "."
+            for f in folders
+        },
+        key=len,
+        reverse=True,
+    )
+
+
+def _short_rule_id(check_id: str, prefixes: list[str]) -> str:
+    for prefix in prefixes:
+        if check_id.startswith(prefix):
+            return check_id[len(prefix):]
+    return check_id
+
+
+def parse_semgrep_json(
+    payload: dict, config: str | None = None
+) -> list[SemgrepFinding]:
     """Convert a semgrep ``--json`` payload into SemgrepFinding objects."""
+    prefixes = _local_rule_prefixes(config)
     findings: list[SemgrepFinding] = []
     for res in payload.get("results", []):
         extra = res.get("extra", {})
@@ -170,7 +205,7 @@ def parse_semgrep_json(payload: dict) -> list[SemgrepFinding]:
         cwe = [_normalize_cwe(c) for c in cwe_raw]
         findings.append(
             SemgrepFinding(
-                rule_id=res.get("check_id", "unknown"),
+                rule_id=_short_rule_id(res.get("check_id", "unknown"), prefixes),
                 path=res.get("path", "").replace("\\", "/"),
                 start_line=res.get("start", {}).get("line", 0),
                 end_line=res.get("end", {}).get("line", 0),

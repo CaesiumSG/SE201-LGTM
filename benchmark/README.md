@@ -21,7 +21,7 @@ A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
 - `cases/authz/` — 6 authorization pairs (CWE-639 / CWE-862 / CWE-863).
   These are invisible to SAST by design; only policy-aware review can catch
   them.
-- `labels.json` — ground truth for all 24 cases.
+- `labels.json` — ground truth for all 36 cases (with dev/eval split).
 - `evaluate.py` — runs LGTM on every case and reports metrics.
 - `tools/generate_cases.py` — regenerates all patches and `labels.json`
   from the case definitions (patches are produced by real `git diff`, so
@@ -33,11 +33,18 @@ A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
 # From the repository root (install LGTM first: pip install -e .)
 python benchmark/evaluate.py --mode lgtm            # full pipeline
 python benchmark/evaluate.py --mode sast-only       # Semgrep baseline
-python benchmark/evaluate.py --mode llm-only        # LLM-only baseline
+python benchmark/evaluate.py --mode llm-only        # LLM-only baseline (no SAST/RAG/tools)
+python benchmark/evaluate.py --mode lgtm-no-sast    # ablation: LGTM minus Semgrep
+python benchmark/evaluate.py --mode lgtm --rescore  # re-score a saved run, no LLM calls
 python benchmark/evaluate.py --split dev            # development set only
 python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 ```
+
+Use `--gpu-cluster` to connect through the existing tunnel at
+`http://127.0.0.1:11435` with `qwen2.5:7b`. Server and tunnel startup stay
+separate; see [`model/README.md`](../model/README.md). Explicit `--model`
+and `--ollama-url` options override the cluster defaults.
 
 **Dev/eval protocol:** pairs alternate between splits in blocks of three
 (pairs 1–3 and 7–9 → dev; pairs 4–6 and 10–12 → eval), so each split holds
@@ -55,11 +62,18 @@ For each case the harness:
 4. scores the predicted verdict against `labels.json`.
 
 Results (per-case JSON + a metrics summary) are written to
-`benchmark/results/<mode>/`.
+`benchmark/results/<mode>/` (git-ignored scratch space). Runs we report on
+are copied into `benchmark/runs/` and committed; see `benchmark/runs/README.md`
+and `docs/evaluation-log.md`.
 
 ## Metrics reported
 
-- Precision / recall / F1 — overall and per category (sqli, authz).
+- Precision / recall / F1 — overall, per category (sqli, authz), and per
+  dev/eval split.
+- "Grounded" variants of the above: a detection only counts if the evidence
+  validator accepted its citations.
+- Off-category alarm rate: cases where an agent flags the category the case
+  does *not* test (e.g. an ownership warning on a SQLi case).
 - False-positive rate on the safe controls.
 - Evidence grounding rate (findings whose citations all check out).
 - `insufficient_evidence` rate and `possible` rate.
