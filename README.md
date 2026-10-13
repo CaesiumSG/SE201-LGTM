@@ -51,7 +51,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" semgrep
 
 # 2. Install Ollama and pull the model
-ollama pull qwen2.5:7b          # default; any tool-calling model works
+ollama pull qwen2.5-coder:7b    # default; any tool-calling model works
 ollama serve                    # if not already running
 ```
 
@@ -63,11 +63,14 @@ lgtm index --repo /path/to/repo
 
 # Review a PR (diff of pr-branch against base-branch)
 lgtm review --repo /path/to/repo --base main --pr feature-branch \
-            --model qwen2.5:7b --output lgtm-output
+            --model qwen2.5-coder:7b --output lgtm-output
 
 # Baselines for comparison
-lgtm review ... --mode sast-only   # Semgrep only, no LLM
-lgtm review ... --mode llm-only    # LLM agents without Semgrep seeding
+lgtm review ... --mode sast-only     # Baseline A: Semgrep only, no LLM
+lgtm review ... --mode llm-only      # Baseline B: one LLM call on the diff,
+                                     #   no Semgrep, no RAG, no tools
+lgtm review ... --mode lgtm-no-sast  # Ablation: LGTM agents + RAG + tools,
+                                     #   regex SQL detector instead of Semgrep
 ```
 
 Outputs `lgtm-output/report.json` (machine-readable findings) and
@@ -109,24 +112,43 @@ The 36 cases carry a balanced **dev/eval split** (9 vulnerable + 9 safe in
 each): tune prompts and config on `--split dev`, report results on the
 held-out `--split eval`.
 
-Reference results (all 36 cases, `qwen2.5-coder:7b` local, `search_code`
-enabled, 2026-10-10):
+Reference results (13 Oct 2026, all 36 cases, `qwen2.5-coder:7b` local;
+baselines from `benchmark/runs/run3-bugfixes/`, LGTM from the final clean
+run in `benchmark/runs/run6-final/`):
 
-| Mode | Precision | Recall | F1 | FP rate (safe controls) | Grounding | Median latency |
-|---|---|---|---|---|---|---|
-| sast-only | 0.55 | 0.61 | 0.58 | 0.50 (sqli: 0.75) | 1.00 | 1.2s |
-| **lgtm** | **0.85** | **0.94** | **0.90** | **0.17** | 0.91 | 17.4s |
-| llm-only | 0.90 | 0.94 | 0.92 | 0.11 | 0.88 | 13.7s |
+| Mode | Precision | Recall | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounding | Median latency |
+|---|---|---|---|---|---|---|---|---|
+| A: sast-only | 0.57 | 0.67 | 0.62 | 0.73 | 0.00 | 0.50 (SQLi 0.75) | 1.00 | 1.8s |
+| B: llm-only | 0.86 | 0.67 | 0.75 | 0.92 | 0.00 | 0.11 | 0.78 | 11.9s |
+| ablation: lgtm-no-sast | 0.90 | 0.94 | 0.92 | 0.92 | 0.92 | 0.11 | 0.90 | 20.5s |
+| **C: lgtm** | **0.94** | **0.94** | **0.94** | **0.96** | **0.92** | **0.06** | 0.93 | 21.3s |
 
-Held-out eval split only (n=18): sast-only F1 0.63 · lgtm F1 0.80 ·
-llm-only F1 0.89.
+Held-out eval split only (n=18): sast-only F1 0.63 · llm-only 0.75 ·
+lgtm-no-sast 0.89 · **lgtm 0.89**. Counting only detections whose evidence
+validated, lgtm's eval F1 is 0.82.
 
-SAST alone has near-perfect SQLi recall but a 75% false-positive rate on
-the parameterized controls and 0 recall on authorization flaws; the LLM
-stages close both gaps. llm-only and lgtm are within 1–2 flipped cases of
-each other at this dataset size, so their ranking should not be
-over-read — growing the eval set (roadmap below) is what will separate
-them.
+What the numbers say:
+
+- **Policy retrieval is what makes authorization review possible.** The
+  bare LLM (Baseline B) catches 0 of 6 authz flaws. Without the policy it
+  can only say `possible`, and it says that about safe PRs too.
+- **SAST + triage removes SAST's false positives.** Semgrep false-alarms
+  on 75% of the safe parameterized SQL; LGTM on 0%. It catches 11 of 12
+  SQLi flaws; the miss (`sqli_04`) is a triage error that flips between
+  runs.
+- **LGTM vs its no-SAST ablation is within one case** (0.94 vs 0.92). Most
+  of the gain over the baselines comes from the policy-grounded LLM, not
+  from Semgrep.
+- **Known weaknesses** (details in `docs/evaluation-log.md`):
+  - The authz agent raises *off-category* ownership warnings on about 60% of
+    endpoints in the SQLi cases. Case-level F1 doesn't count these.
+  - The 7B model almost never uses its tools unless forced.
+  - Verdicts can flip on irrelevant prompt changes. With 18 eval cases, one
+    flip is ±0.05 F1.
+
+The full history of rounds, failures, fixes and lessons is in
+[`docs/evaluation-log.md`](docs/evaluation-log.md); the checkpoint report
+is [`docs/checkpoint.md`](docs/checkpoint.md).
 
 ### Dataset roadmap
 
@@ -143,7 +165,7 @@ them.
 src/lgtm/
 ├── cli.py                  # click CLI: lgtm index / lgtm review
 ├── config.py               # LGTMConfig dataclass
-├── pipeline.py             # orchestrator (lgtm / sast-only / llm-only)
+├── pipeline.py             # orchestrator (lgtm / sast-only / llm-only / lgtm-no-sast)
 ├── diff/git_diff.py        # git diff extraction + unified diff parser
 ├── sast/semgrep_runner.py  # semgrep subprocess + JSON parsing
 ├── sast/rules/             # bundled CWE-89 semgrep rules (offline-safe)
@@ -152,10 +174,11 @@ src/lgtm/
 ├── agents/tools.py         # read-only tools + call budget + sandboxing
 ├── agents/sast_triage.py   # CWE-89 triage agent
 ├── agents/authz_reviewer.py# CWE-639/862/863 reviewer + endpoint extraction
+├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports
-tests/                      # 105 tests, no Ollama/Semgrep needed
-benchmark/                  # Shoply app, 24 cases, evaluate.py
+tests/                      # 152 tests, no Ollama needed
+benchmark/                  # Shoply app, 36 cases, evaluate.py
 ```
 
 ## Development
