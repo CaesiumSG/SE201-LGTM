@@ -88,7 +88,7 @@ Flagged code:
 {diff_text}
 ```
 
-Investigate with your tools (max {max_tool_calls} calls), then output your \
+{extra_context}Investigate with your tools (max {max_tool_calls} calls), then output your \
 final JSON verdict.
 """
 
@@ -105,13 +105,35 @@ class SASTTriageAgent:
         self.llm = llm or build_llm(self.config)
 
     def triage(
-        self, finding: SemgrepFinding, file_diff: FileDiff | None
+        self,
+        finding: SemgrepFinding,
+        file_diff: FileDiff | None,
+        facts: str = "",
     ) -> AgentFinding:
         """Triage one Semgrep finding; returns a structured AgentFinding."""
         self.toolbox.reset_budget()
         tools = self.toolbox.build_tools()
 
         diff_text = file_diff.hunk_text() if file_diff else "(diff unavailable)"
+        extra_context = ""
+        if self.config.static_facts:
+            if facts:
+                extra_context += (
+                    "## Static facts (computed by AST analysis of the PR code)\n\n"
+                    f"{facts}\n\n"
+                )
+            if self.toolbox.retriever is not None:
+                try:
+                    policy = self.toolbox.retriever.format_results(
+                        "SQL query construction parameterized bound parameters "
+                        "allowlist dynamic identifiers"
+                    )
+                    extra_context += (
+                        "## Relevant security policy excerpts (retrieved "
+                        f"automatically)\n\n{policy[:3000]}\n\n"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Policy pre-retrieval failed: %s", exc)
         system = SYSTEM_PROMPT.format(max_tool_calls=self.config.max_tool_calls)
         user = USER_PROMPT.format(
             finding_id=finding.finding_id,
@@ -123,6 +145,7 @@ class SASTTriageAgent:
             message=finding.message,
             matched_code=finding.matched_code[:1500],
             diff_text=diff_text[:6000],
+            extra_context=extra_context,
             max_tool_calls=self.config.max_tool_calls,
         )
 

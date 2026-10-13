@@ -154,3 +154,33 @@ diff --git a/app.py b/app.py
         near = self._finding("app.py", 9)  # 2 lines past the last add (7)
         assert filter_to_diff([near], diffs, slack=2) == [near]
         assert filter_to_diff([near], diffs, slack=0) == []
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("semgrep") is None
+    and not __import__("pathlib").Path(".venv/bin/semgrep").exists(),
+    reason="semgrep not installed",
+)
+def test_bundled_rules_catch_concat_with_trailing_literal(tmp_path):
+    """Regression: benchmark sqli_07 was missed by Semgrep in run 1."""
+    from pathlib import Path
+
+    from lgtm.sast.semgrep_runner import run_semgrep
+
+    (tmp_path / "q.py").write_text(
+        "def f(cursor, status):\n"
+        "    cursor.execute(\n"
+        "        \"SELECT * FROM orders WHERE status = '\"\n"
+        "        + status + \"'\"\n"
+        "    )\n"
+        "def g(cursor, status):\n"
+        "    cursor.execute(\"SELECT * FROM orders WHERE status = %s\", (status,))\n",
+        encoding="utf-8",
+    )
+    rules = Path(__file__).resolve().parent.parent / "src/lgtm/sast/rules"
+    findings = run_semgrep(tmp_path, ["q.py"], str(rules), 120)
+    assert [f.start_line for f in findings] == [2]
+    # Regression: local rule ids used to carry the absolute rules path
+    # (leaking the user's home dir into prompts and changing verdicts).
+    assert findings[0].rule_id == "lgtm-python-sqli-format"
+    assert findings[0].finding_id.startswith("lgtm-python-sqli-format:")

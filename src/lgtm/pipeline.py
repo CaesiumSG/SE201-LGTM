@@ -7,10 +7,13 @@ Stages:
 4. Evidence validation — every citation is checked against the repo.
 5. Reporting — JSON + Markdown.
 
-Supports three modes for benchmarking:
-- ``lgtm``: full pipeline (SAST + LLM agents + RAG).
-- ``sast-only``: semgrep findings reported directly, no LLM.
-- ``llm-only``: LLM agents without semgrep seeding (heuristic SQL sinks).
+Supports four modes for benchmarking:
+- ``lgtm``: full pipeline (SAST + LLM agents + RAG + tools).
+- ``sast-only``: semgrep findings reported directly, no LLM (Baseline A).
+- ``llm-only``: one tool-free LLM call over the diff — no SAST output, no
+  RAG, no tools (Baseline B, as defined in the proposal).
+- ``lgtm-no-sast``: ablation — the LGTM agents with RAG and tools, but a
+  regex SQL-sink detector replaces Semgrep. Isolates what Semgrep adds.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ from lgtm.agents.authz_reviewer import (
     extract_changed_endpoints,
 )
 from lgtm.agents.base import AgentFinding, build_llm
+from lgtm.analysis.facts import endpoint_facts, sql_sink_facts
+from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
@@ -42,7 +47,7 @@ from lgtm.validation.evidence import EvidenceValidator
 
 logger = logging.getLogger(__name__)
 
-# Heuristic SQL sink detector for llm-only mode
+# Heuristic SQL sink detector for the lgtm-no-sast ablation
 SQL_SINK_RE = re.compile(
     r"\.(execute|executemany|exec_driver_sql)\s*\(|text\s*\(|"
     r"\b(SELECT|INSERT|UPDATE|DELETE)\b.*\b(FROM|INTO|SET|WHERE)\b",
@@ -81,7 +86,7 @@ class ReviewPipeline:
         logger.info("PR changes %d file(s)", len(diffs))
 
         retriever: PolicyRetriever | None = None
-        if mode != "sast-only":
+        if mode in ("lgtm", "lgtm-no-sast"):
             retriever = PolicyRetriever(self.repo, self.config)
             if not retriever.is_available():
                 logger.warning(
@@ -92,7 +97,7 @@ class ReviewPipeline:
 
         semgrep_total = 0
         semgrep_in_diff: list[SemgrepFinding] = []
-        if mode != "llm-only":
+        if mode in ("lgtm", "sast-only"):
             semgrep_in_diff, semgrep_total = self._run_sast(diffs, base, pr)
 
         meta = ReviewMetadata(
@@ -109,22 +114,28 @@ class ReviewPipeline:
 
         if mode == "sast-only":
             findings = [self._sast_finding_to_agent_finding(f) for f in semgrep_in_diff]
+        elif mode == "llm-only":
+            llm = self._llm or build_llm(self.config)
+            findings = PlainLLMReviewer(self.config, llm).review(diffs)
         else:
             llm = self._llm or build_llm(self.config)
             toolbox = AgentToolbox(self.repo, base, retriever, self.config)
             diff_by_path = {d.path: d for d in diffs}
 
             # ---- Stage 2: SAST triage --------------------------------
-            if mode == "llm-only":
+            if mode == "lgtm-no-sast":
                 semgrep_in_diff = self._heuristic_sql_findings(diffs)
                 logger.info(
-                    "llm-only mode: %d heuristic SQL sink(s) to triage",
+                    "lgtm-no-sast mode: %d heuristic SQL sink(s) to triage",
                     len(semgrep_in_diff),
                 )
             triage_agent = SASTTriageAgent(toolbox, self.config, llm)
             for sf in semgrep_in_diff:
                 fd = diff_by_path.get(sf.path) or self._match_diff(sf.path, diffs)
-                findings.append(triage_agent.triage(sf, fd))
+                facts = ""
+                if self.config.static_facts:
+                    facts = sql_sink_facts(self._pr_source(pr, sf.path), sf.start_line)
+                findings.append(triage_agent.triage(sf, fd, facts))
 
             # ---- Stage 3: authorization review -----------------------
             endpoints = extract_changed_endpoints(diffs)
@@ -137,7 +148,12 @@ class ReviewPipeline:
                     for sf in semgrep_in_diff
                     if sf.path == ep.file
                 )
-                findings.append(authz_agent.review(ep, fd, notes))
+                facts = ""
+                if self.config.static_facts:
+                    facts = endpoint_facts(
+                        self._pr_source(pr, ep.file), ep.decorator_line
+                    )
+                findings.append(authz_agent.review(ep, fd, notes, facts))
 
         # ---- Stage 4: evidence validation ----------------------------
         validator = EvidenceValidator(self.repo, base, diffs, self.config)
@@ -210,6 +226,15 @@ class ReviewPipeline:
         in_diff = filter_to_diff(all_findings, diffs)
         return in_diff, len(all_findings)
 
+    def _pr_source(self, pr: str, path: str) -> str:
+        """PR-version file content for static analysis (parsed, never run)."""
+        from lgtm.diff.git_diff import GitError, read_file_at_ref
+
+        try:
+            return read_file_at_ref(self.repo, pr, path, self.config.git_timeout)
+        except GitError:
+            return ""
+
     @staticmethod
     def _match_diff(path: str, diffs: list[FileDiff]) -> FileDiff | None:
         for d in diffs:
@@ -245,7 +270,7 @@ class ReviewPipeline:
 
     @staticmethod
     def _heuristic_sql_findings(diffs: list[FileDiff]) -> list[SemgrepFinding]:
-        """llm-only baseline: flag added lines that look like SQL sinks."""
+        """lgtm-no-sast ablation: flag added lines that look like SQL sinks."""
         findings: list[SemgrepFinding] = []
         for fd in diffs:
             if not fd.path.endswith(".py"):
@@ -255,7 +280,7 @@ class ReviewPipeline:
                     if SQL_SINK_RE.search(change.content):
                         findings.append(
                             SemgrepFinding(
-                                rule_id="llm-only.sql-sink-heuristic",
+                                rule_id="lgtm-no-sast.sql-sink-heuristic",
                                 path=fd.path,
                                 start_line=change.new_lineno or hunk.new_start,
                                 end_line=change.new_lineno or hunk.new_start,

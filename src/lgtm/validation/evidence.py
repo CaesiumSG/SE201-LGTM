@@ -29,6 +29,12 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _strip_locator(path: str) -> str:
+    """Drop the ``:12-20`` / ``:symbol`` / ``#anchor`` suffixes agents add."""
+    path = path.strip().split("#", 1)[0]
+    return re.sub(r":[\w.-]*$", "", path).strip()
+
+
 class EvidenceValidator:
     def __init__(
         self,
@@ -80,12 +86,18 @@ class EvidenceValidator:
         if window > len(haystack):
             ratio = difflib.SequenceMatcher(None, snippet_n, haystack).ratio()
             return ratio >= FUZZY_THRESHOLD
-        step = max(1, window // 2)
-        for i in range(0, len(haystack) - window + 1, step):
-            ratio = difflib.SequenceMatcher(
+        # Stride 1: a coarser stride (window // 2) skipped the aligned offset
+        # and rejected near-verbatim snippets with one elided line. The cheap
+        # upper bounds prune most windows before the full ratio().
+        for i in range(0, len(haystack) - window + 1):
+            matcher = difflib.SequenceMatcher(
                 None, snippet_n, haystack[i : i + window + 20]
-            ).ratio()
-            if ratio >= FUZZY_THRESHOLD:
+            )
+            if (
+                matcher.real_quick_ratio() >= FUZZY_THRESHOLD
+                and matcher.quick_ratio() >= FUZZY_THRESHOLD
+                and matcher.ratio() >= FUZZY_THRESHOLD
+            ):
                 return True
         return False
 
@@ -95,6 +107,7 @@ class EvidenceValidator:
         if not item.file:
             issues.append("code evidence has no file path")
             return issues
+        item.file = _strip_locator(item.file)
         lines = self._read_base_file(item.file)
         in_diff = item.file in self._diff_added
 
@@ -138,8 +151,7 @@ class EvidenceValidator:
         if not source:
             issues.append("policy evidence has no source document")
             return issues
-        # Strip ":<lines>" suffixes agents sometimes add
-        source_path = re.sub(r":\d+(-\d+)?$", "", source).strip()
+        source_path = _strip_locator(source)
         lines = self._read_base_file(source_path)
         if lines is None:
             issues.append(f"cited policy document does not exist: {source_path}")

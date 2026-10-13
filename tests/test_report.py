@@ -58,7 +58,7 @@ def sample_findings() -> list[AgentFinding]:
 def meta() -> ReviewMetadata:
     return ReviewMetadata(
         repo="/tmp/repo", base="main", pr="feature", mode="lgtm",
-        model="qwen2.5:7b", duration_seconds=12.3,
+        model="qwen2.5-coder:7b", duration_seconds=12.3,
         semgrep_findings_total=5, semgrep_findings_in_diff=2,
         endpoints_reviewed=1,
     )

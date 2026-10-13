@@ -158,9 +158,24 @@ USER_PROMPT = """\
 {diff_text}
 ```
 
-{semgrep_context}
-Review the endpoint's authorization against the policy using your tools \
+{semgrep_context}{facts_context}
+{guidance}Review the endpoint's authorization against the policy using your tools \
 (max {max_tool_calls} calls), then output your final JSON verdict.
+"""
+
+
+ROLE_GUIDANCE = """\
+## How to judge role-restricted endpoints
+
+1. Identify the role or scope the endpoint REQUIRES (its decorators).
+2. Find what the policy allows THAT role or scope to access. Roles above \
+"user" are often allowed to see every user's records.
+3. Report a missing ownership check (CWE-639) only if the policy restricts \
+this data to its owner FOR THE REQUIRED ROLE. A manager-only endpoint that \
+lists all orders is not an IDOR if managers may list all orders.
+4. If the policy is silent or ambiguous for this role, use "possible", not \
+"vulnerable".
+
 """
 
 
@@ -180,6 +195,7 @@ class AuthzReviewerAgent:
         endpoint: ChangedEndpoint,
         file_diff: FileDiff | None,
         semgrep_notes: str = "",
+        facts: str = "",
     ) -> AgentFinding:
         """Review one changed endpoint for authorization flaws."""
         self.toolbox.reset_budget()
@@ -200,6 +216,13 @@ class AuthzReviewerAgent:
         semgrep_context = (
             f"## Related SAST findings\n\n{semgrep_notes}\n\n" if semgrep_notes else ""
         )
+        facts_context = ""
+        if self.config.static_facts and facts:
+            facts_context = (
+                "## Static facts (computed by AST analysis of the PR code)\n\n"
+                f"{facts}\n\n"
+            )
+        guidance = ROLE_GUIDANCE if self.config.authz_role_guidance else ""
         system = SYSTEM_PROMPT.format(max_tool_calls=self.config.max_tool_calls)
         user = USER_PROMPT.format(
             finding_id=endpoint.endpoint_id,
@@ -209,6 +232,8 @@ class AuthzReviewerAgent:
             policy_context=policy_context[:5000],
             diff_text=diff_text[:6000],
             semgrep_context=semgrep_context,
+            facts_context=facts_context,
+            guidance=guidance,
             max_tool_calls=self.config.max_tool_calls,
         )
 
