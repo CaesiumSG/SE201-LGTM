@@ -154,3 +154,52 @@ diff --git a/app.py b/app.py
         near = self._finding("app.py", 9)  # 2 lines past the last add (7)
         assert filter_to_diff([near], diffs, slack=2) == [near]
         assert filter_to_diff([near], diffs, slack=0) == []
+
+
+def _semgrep_available() -> bool:
+    import shutil
+    import sys
+    from pathlib import Path
+
+    return bool(shutil.which("semgrep")) or (Path(sys.executable).parent / "semgrep").exists()
+
+
+def test_local_rule_prefix_stripped(tmp_path):
+    from lgtm.sast.semgrep_runner import _local_rule_prefixes, _short_rule_id
+
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    (rules / "sqli.yaml").write_text("rules: []\n")
+    dotted = str(rules.resolve()).strip("/").replace("/", ".")
+    for config in (str(rules), str(rules) + "/", str(rules / "sqli.yaml")):
+        prefixes = _local_rule_prefixes(config)
+        assert _short_rule_id(f"{dotted}.my-rule", prefixes) == "my-rule"
+    # Registry and auto configs are left alone
+    assert _local_rule_prefixes("auto") == [] and _local_rule_prefixes("p/python") == []
+    assert _short_rule_id("python.lang.security.x", []) == "python.lang.security.x"
+
+
+@pytest.mark.skipif(not _semgrep_available(), reason="semgrep not installed")
+def test_bundled_rules_catch_concat_with_trailing_literal(tmp_path):
+    """Regression: benchmark sqli_07 was missed by Semgrep in run 1."""
+    from pathlib import Path
+
+    from lgtm.sast.semgrep_runner import run_semgrep
+
+    (tmp_path / "q.py").write_text(
+        "def f(cursor, status):\n"
+        "    cursor.execute(\n"
+        "        \"SELECT * FROM orders WHERE status = '\"\n"
+        "        + status + \"'\"\n"
+        "    )\n"
+        "def g(cursor, status):\n"
+        "    cursor.execute(\"SELECT * FROM orders WHERE status = %s\", (status,))\n",
+        encoding="utf-8",
+    )
+    rules = Path(__file__).resolve().parent.parent / "src/lgtm/sast/rules"
+    findings = run_semgrep(tmp_path, ["q.py"], str(rules), 120)
+    assert [f.start_line for f in findings] == [2]
+    # Regression: local rule ids used to carry the absolute rules path
+    # (leaking the user's home dir into prompts and changing verdicts).
+    assert findings[0].rule_id == "lgtm-python-sqli-format"
+    assert findings[0].finding_id.startswith("lgtm-python-sqli-format:")

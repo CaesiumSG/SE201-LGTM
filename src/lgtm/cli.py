@@ -3,7 +3,8 @@
 Usage:
     lgtm index  --repo <path>
     lgtm review --repo <path> --base <branch> --pr <branch> \
-                [--model <ollama_model>] [--output <dir>] [--mode lgtm|sast-only|llm-only]
+                [--model <ollama_model>] [--output <dir>]
+                [--mode lgtm|sast-only|llm-only|lgtm-no-sast]
 """
 
 from __future__ import annotations
@@ -52,10 +53,10 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository under review.")
 @click.option("--base", required=True, help="Base branch (trusted).")
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
-@click.option("--model", default=None, help="Ollama model name (default: qwen2.5:7b).")
+@click.option("--model", default=None, help="Ollama model name (default: qwen2.5-coder:7b).")
 @click.option("--ollama-url", default=None, help="Ollama base URL.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
-@click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
+@click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
 @click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")

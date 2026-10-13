@@ -1,0 +1,83 @@
+{
+  "id": "sqli_10_safe",
+  "category": "sqli",
+  "expected": "safe",
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 22.28,
+  "est_tokens": 808,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:69",
+      "verdict": "safe",
+      "confidence": 1.0,
+      "cwe_id": "CWE-89",
+      "explanation": "The query uses bound parameters (LIMIT and OFFSET) with a separate params argument, which mitigates SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            69,
+            72
+          ],
+          "source": null,
+          "content": "rows = session.execute(\n    text(\"SELECT id, user_id, status, total FROM orders LIMIT :limit OFFSET :offset\"),\n    {\"limit\": limit, \"offset\": offset},\n)"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 69,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/paged[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-639",
+      "explanation": "The endpoint does not verify ownership of the orders being fetched, which violates the policy rule that 'A user may view ONLY their own orders' and 'Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data.'",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            56,
+            70
+          ],
+          "source": null,
+          "content": "def paged_orders():\n    \"\"\"List orders with limit/offset pagination.\"\"\"\n    try:\n        limit = int(request.args.get(\"limit\", \"20\"))\n        offset = int(request.args.get(\"offset\", \"0\"))\n    except ValueError:\n        return jsonify({\"error\": \"limit and offset must be integers\"}), 400\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, user_id, status, total FROM orders LIMIT :limit OFFSET :offset\"),\n        {\"limit\": limit, \"offset\": offset},\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md:3-4",
+          "content": "- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data."
+        }
+      ],
+      "suggested_fix": "Add a check to ensure the current user owns the orders being fetched. For example:\n\n@orders_bp.route(\"/paged\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef paged_orders():\n    \"\"\"List orders with limit/offset pagination.\"\"\"\n    try:\n        limit = int(request.args.get(\"limit\", \"20\"))\n        offset = int(request.args.get(\"offset\", \"0\"))\n    except ValueError:\n        return jsonify({\"error\": \"limit and offset must be integers\"}), 400\n    session = get_session()\n    user_id = g.user.id  # Assuming the current user is stored in g.user\n    rows = session.execute(\n        text(\"SELECT id, user_id, status, total FROM orders WHERE user_id = :user_id LIMIT :limit OFFSET :offset\"),\n        {\"user_id\": user_id, \"limit\": limit, \"offset\": offset},\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "split": "eval",
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}
