@@ -171,7 +171,7 @@ def parse_semgrep_json(payload: dict) -> list[SemgrepFinding]:
         findings.append(
             SemgrepFinding(
                 rule_id=res.get("check_id", "unknown"),
-                path=res.get("path", ""),
+                path=res.get("path", "").replace("\\", "/"),
                 start_line=res.get("start", {}).get("line", 0),
                 end_line=res.get("end", {}).get("line", 0),
                 message=extra.get("message", ""),

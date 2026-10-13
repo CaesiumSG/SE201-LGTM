@@ -90,7 +90,7 @@ class AgentToolbox:
             except ValueError:
                 raise PermissionError(f"Path outside repository: {path}") from None
         rel = (self.repo / p).resolve()
-        if not str(rel).startswith(str(self.repo) + "/") and rel != self.repo:
+        if rel != self.repo and self.repo not in rel.parents:
             raise PermissionError(f"Path outside repository: {path}")
         return str(p).replace("\\", "/")
 

@@ -93,7 +93,9 @@ def estimate_tokens(findings: list[dict], meta: dict) -> int:
 def evaluate_case(case: dict, config: LGTMConfig) -> dict:
     patch_path = BENCH / case["patch_file"]
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix=f"lgtm-eval-{case['id']}-") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"lgtm-eval-{case['id']}-", ignore_cleanup_errors=True
+    ) as tmpdir:
         tmp = Path(tmpdir)
         build_case_repo(tmp, patch_path)
         if config.mode != "sast-only":
@@ -201,6 +203,9 @@ def main() -> None:
     )
     parser.add_argument("--model", default=None, help="Ollama model override")
     parser.add_argument(
+        "--ollama-url", default=None, help="Ollama base URL override"
+    )
+    parser.add_argument(
         "--cases", nargs="*", default=None, help="Subset of case ids to run"
     )
     parser.add_argument(
@@ -222,6 +227,8 @@ def main() -> None:
     config.mode = args.mode
     if args.model:
         config.ollama_model = args.model
+    if args.ollama_url:
+        config.ollama_base_url = args.ollama_url
 
     labels = json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))
     cases = labels["cases"]
