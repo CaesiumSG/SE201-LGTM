@@ -1,0 +1,82 @@
+{
+  "id": "sqli_12_vulnerable",
+  "category": "sqli",
+  "expected": "vulnerable",
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 20.94,
+  "est_tokens": 730,
+  "findings": [
+    {
+      "finding_id": "llm-only.sql-sink-heuristic:app/routes/users.py:67",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The SQL query is constructed using user-controlled input without parameterization, making it vulnerable to SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            67
+          ],
+          "source": null,
+          "content": "rows = session.execute(text(\"SELECT id, username, role FROM users WHERE \" + where))"
+        }
+      ],
+      "suggested_fix": "Use parameterized queries to mitigate SQL injection risk.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 67,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/filter[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-862",
+      "explanation": "The endpoint `/filter` is accessible to users with the 'manager' role, but it does not verify ownership of any resources before returning data. The policy requires that endpoints fetching an order by its identifier must verify ownership with `is_owner_or_admin(current_user, user_id)`.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            53,
+            67
+          ],
+          "source": null,
+          "content": "def filter_users():\n    \"\"\"Filter users by arbitrary field=value query parameters.\"\"\"\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md:2-4",
+          "content": "- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check."
+        }
+      ],
+      "suggested_fix": "Modify the `filter_users` function to include a check that verifies ownership of each resource before returning data. For example:\n\n```python\ndef filter_users():\n    \"\"\"Filter users by arbitrary field=value query parameters.\"\"\"\n    clauses = []\n    for field, value in request.args.items():\n        if field == 'id':  # Example check for user ID\n            if not is_owner_or_admin(current_user, int(value)):\n                return jsonify({'error': 'Unauthorized'}), 403\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "split": "eval",
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}
