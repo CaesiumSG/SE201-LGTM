@@ -156,11 +156,30 @@ diff --git a/app.py b/app.py
         assert filter_to_diff([near], diffs, slack=0) == []
 
 
-@pytest.mark.skipif(
-    __import__("shutil").which("semgrep") is None
-    and not __import__("pathlib").Path(".venv/bin/semgrep").exists(),
-    reason="semgrep not installed",
-)
+def _semgrep_available() -> bool:
+    import shutil
+    import sys
+    from pathlib import Path
+
+    return bool(shutil.which("semgrep")) or (Path(sys.executable).parent / "semgrep").exists()
+
+
+def test_local_rule_prefix_stripped(tmp_path):
+    from lgtm.sast.semgrep_runner import _local_rule_prefixes, _short_rule_id
+
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    (rules / "sqli.yaml").write_text("rules: []\n")
+    dotted = str(rules.resolve()).strip("/").replace("/", ".")
+    for config in (str(rules), str(rules) + "/", str(rules / "sqli.yaml")):
+        prefixes = _local_rule_prefixes(config)
+        assert _short_rule_id(f"{dotted}.my-rule", prefixes) == "my-rule"
+    # Registry and auto configs are left alone
+    assert _local_rule_prefixes("auto") == [] and _local_rule_prefixes("p/python") == []
+    assert _short_rule_id("python.lang.security.x", []) == "python.lang.security.x"
+
+
+@pytest.mark.skipif(not _semgrep_available(), reason="semgrep not installed")
 def test_bundled_rules_catch_concat_with_trailing_literal(tmp_path):
     """Regression: benchmark sqli_07 was missed by Semgrep in run 1."""
     from pathlib import Path

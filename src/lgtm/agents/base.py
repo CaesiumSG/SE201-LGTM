@@ -260,6 +260,11 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
             continue  # a final answer, not a tool call
         name = data.get("name")
         args = data.get("arguments", data.get("parameters", {}))
+        if isinstance(args, str):  # OpenAI style: arguments as a JSON string
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except json.JSONDecodeError:
+                continue
         if name in tool_names and isinstance(args, dict):
             calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
     return calls

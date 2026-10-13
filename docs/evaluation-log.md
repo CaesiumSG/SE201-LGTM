@@ -192,8 +192,9 @@ Two problems were left: the authz agent's **off-category false alarms**
 (1.7) and **unused tools** (1.4, second half). Fixing them means changing
 prompts and context. Doing that while looking at the eval split would leak
 the held-out cases, so both changes sit behind config flags and were
-measured on the **dev split only**. Round 3's dev split (flags off) is the
-control.
+measured on the **dev split only**. The control is a fresh flags-off run
+of the dev split from the same snapshot (`run4-dev-experiments/control`); it
+reproduced round 3's dev outcomes case for case.
 
 - **`static_facts`:** deterministic AST facts in the prompt
   (`analysis/facts.py`). For triage, e.g. "line 54: `execute()` receives a
@@ -278,7 +279,9 @@ Data: `benchmark/runs/run5-dev-role-guidance/`.
   and SQLi stays perfect.
 - ✅ **The guidance cut off-category alarms from 11 to 7.** The model now
   writes "the endpoint requires the 'manager' role, which is allowed to
-  list all orders according to the policy" on 5 endpoints it used to flag.
+  list all orders according to the policy" on 4 endpoints it used to flag
+  (`sqli_01_safe`, `sqli_02_safe`, `sqli_09_safe`, `sqli_09_vulnerable`),
+  and raises no new ones.
 - ❌ **It over-corrected and destroyed authz recall (3/3 → 0/3).**
   - Rule 4 ("if ambiguous, use `possible`") made the model hedge on *clear*
     violations. It correctly said authz_01 "does not check if the user is
@@ -342,8 +345,9 @@ them as known failures rather than tuning on them.
    (75% → 0%). The regex-seeded ablation is close but consistently one case
    worse.
 4. **Aggregate F1 hides the most important failure.** The authz agent
-   raised ownership alarms on about 60% of SQLi-case endpoints, which a
-   developer would experience as noise on most PRs. Only a per-finding
+   raised ownership alarms on 22 of the 24 SQLi cases (92%), on endpoints
+   that already had the right role check. A developer would experience this
+   as noise on most PRs. Only a per-finding
    audit and the off-category metric exposed it.
 5. **Small local models don't use tools well.** Left alone, the model
    never called a tool; forced, it used all of them every time at 6.6×
@@ -352,10 +356,12 @@ them as known failures rather than tuning on them.
 6. **Determinism is not robustness.** Identical prompts gave identical
    verdicts, but an irrelevant file path in the prompt flipped one. Treat
    single-case changes as noise; report variance; grow the eval set.
-7. **Keep a strict dev/eval protocol.** Every failure we diagnosed in
-   round 1 was on the *eval* split. Fixing them directly would have made
-   the "held-out" numbers meaningless. We fixed only genuine bugs on eval
-   cases, and tuned prompts on dev only. Two of three prompt experiments
+7. **Keep a strict dev/eval protocol.** Most of the case-level failures
+   left after the round-1 bug fixes were on the *eval* split (`sqli_04`,
+   `sqli_11`, `authz_06`); only `sqli_07` and `sqli_03_safe` were dev
+   cases. Tuning prompts to fix the eval cases would have made the
+   "held-out" numbers meaningless. We fixed only genuine bugs on eval
+   cases, and tuned prompts and rules on dev only. Two of three prompt experiments
    then turned out to be harmful on dev.
 8. **The benchmark needs to grow.** Dev is saturated (F1 1.00), eval has
    18 cases (one flip = ±0.05 F1), and the SQLi cases were never labelled
@@ -367,7 +373,7 @@ them as known failures rather than tuning on them.
 
 | Problem | Why not fixed yet | Idea |
 |---|---|---|
-| Off-category authz alarms (~60%) | The guidance prompt that reduced them destroyed recall (round 5) | Separate "which rule applies to this role" retrieval from the verdict step; or a second-pass verifier that only reviews `vulnerable` authz findings |
+| Off-category authz alarms (22 of 24 SQLi cases) | The guidance prompt that reduced them destroyed recall (round 5) | Separate "which rule applies to this role" retrieval from the verdict step; or a second-pass verifier that only reviews `vulnerable` authz findings |
 | `authz_06_safe` false positive (API-key report endpoint) | Same root cause as above; it is an eval case, so we must not tune on it | Fixing the general role/scope reasoning should fix it |
 | Category bleed (SQL flaw influences the authz verdict) | Found in round 5 | Give the authz agent only route, decorators and policy, not the SQL body; measure on dev |
 | The validator checks existence, not relevance | A real policy line quoted for the wrong reason passes | Check that the cited policy chunk is among the chunks retrieved for this endpoint |

@@ -140,8 +140,9 @@ What the numbers say:
   of the gain over the baselines comes from the policy-grounded LLM, not
   from Semgrep.
 - **Known weaknesses** (details in `docs/evaluation-log.md`):
-  - The authz agent raises *off-category* ownership warnings on about 60% of
-    endpoints in the SQLi cases. Case-level F1 doesn't count these.
+  - The authz agent raises *off-category* ownership warnings on 22 of the
+    24 SQLi cases (92%), on endpoints that already have the right role
+    check. Case-level F1 doesn't count these.
   - The 7B model almost never uses its tools unless forced.
   - Verdicts can flip on irrelevant prompt changes. With 18 eval cases, one
     flip is ±0.05 F1.
@@ -177,7 +178,7 @@ src/lgtm/
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports
-tests/                      # 152 tests, no Ollama needed
+tests/                      # 158 tests, no Ollama needed
 benchmark/                  # Shoply app, 36 cases, evaluate.py
 ```
 

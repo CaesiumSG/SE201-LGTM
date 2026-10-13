@@ -264,3 +264,12 @@ class TestTextToolCalls:
         assert parse_text_tool_calls('{"name": "rm_rf", "arguments": {}}', {"read_file"}) == []
         # A final verdict is never mistaken for a tool call
         assert parse_text_tool_calls('{"verdict": "safe", "name": "read_file"}', {"read_file"}) == []
+
+
+def test_string_arguments_parsed():
+    from lgtm.agents.base import parse_text_tool_calls
+
+    calls = parse_text_tool_calls(
+        '{"name": "read_file", "arguments": "{\\"path\\": \\"app.py\\"}"}', {"read_file"}
+    )
+    assert calls and calls[0]["args"] == {"path": "app.py"}

@@ -32,7 +32,7 @@ it, is in [`evaluation-log.md`](evaluation-log.md).
   - Semgrep wrongly flags 75% of safe parameterized SQL; LGTM's triage
     brings that to 0%.
 - **What doesn't work yet:**
-  - The authz agent raises ownership warnings on most endpoints in the
+  - The authz agent raises ownership warnings on 22 of 24 endpoints in the
     SQLi cases, which case-level scoring doesn't count.
   - The 7B model doesn't use its tools unless forced, and forcing costs
     6.6× latency for no gain.
@@ -146,7 +146,7 @@ evidence and validation results) are committed in `benchmark/runs/`.
 | Prompt injection from PR content | PR diff is labelled untrusted; tools read only the base branch; tools are read-only and capped | Not adversarially tested yet: no benchmark case contains an injection attempt |
 | Privacy / IP | Model runs locally via Ollama, so no code leaves the machine | None for local use |
 | Automation bias | LGTM reports and never auto-fixes; a human decides | Users may still over-trust a confident "safe" |
-| Non-determinism | Temperature 0 | Verdicts still flip between identical runs; see the evaluation log |
+| Non-determinism | Temperature 0; identical prompts gave identical verdicts across runs | Verdicts flip when *irrelevant* prompt text changes (a file path in a rule ID flipped one); see the evaluation log |
 
 ## 7. Actions before the 18 Oct submission
 

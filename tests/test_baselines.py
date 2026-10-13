@@ -118,3 +118,45 @@ class TestCaseScoring:
         assert set(summary["per_split"]) == {"dev", "eval"}
         assert summary["overall"]["recall"] == 1.0
         assert summary["grounded_only"]["overall"]["recall"] == 0.0
+
+
+class TestRescore:
+    def _run_dir(self, tmp_path):
+        out = tmp_path / "run"
+        out.mkdir()
+        cases = [
+            {"id": "a", "category": "authz", "split": "dev", "expected_verdict": "vulnerable"},
+            {"id": "b", "category": "authz", "split": "eval", "expected_verdict": "safe"},
+        ]
+        (out / "a.json").write_text(json.dumps({
+            "id": "a", "category": "authz", "expected": "vulnerable",
+            "findings": [_f("authz", "vulnerable")], "latency_seconds": 1, "est_tokens": 1,
+        }))
+        # An error result in the pre-grounding format (no outcome_grounded)
+        (out / "b.json").write_text(json.dumps({
+            "id": "b", "category": "authz", "expected": "safe", "predicted": "error",
+            "outcome": "TN", "correct": True, "findings": [], "latency_seconds": 0,
+            "est_tokens": 0,
+        }))
+        (out / "summary.json").write_text(json.dumps({
+            "mode": "lgtm", "model": "m", "generated_at": "then", "git_commit": "abc",
+            "split": "all", "experiments": {"static_facts": True},
+            "outcomes": {"a": "TP", "b": "TN"}, "summary": {},
+        }))
+        return out, cases
+
+    def test_keeps_provenance_and_handles_old_errors(self, tmp_path):
+        out, cases = self._run_dir(tmp_path)
+        evaluate.rescore(out, cases, "lgtm")
+        saved = json.loads((out / "summary.json").read_text())
+        assert saved["generated_at"] == "then" and saved["git_commit"] == "abc"
+        assert saved["experiments"] == {"static_facts": True}
+        assert "rescored_at_commit" in saved
+        assert saved["outcomes"] == {"a": "TP", "b": "TN"}
+
+    def test_refuses_partial_rescore(self, tmp_path):
+        import pytest
+
+        out, cases = self._run_dir(tmp_path)
+        with pytest.raises(SystemExit):
+            evaluate.rescore(out, cases[:1], "lgtm")

@@ -374,14 +374,21 @@ def git_commit() -> str:
 def write_summary(
     out_dir: Path, results: list[dict], mode: str, model: str, extra: dict | None = None
 ) -> None:
-    summary = summarize(results)
     payload = {
         "mode": mode,
         "model": model,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "git_commit": git_commit(),
-        "outcomes": {r["id"]: r["outcome"] for r in results},
         **(extra or {}),
+    }
+    _write_payload(out_dir, results, payload)
+
+
+def _write_payload(out_dir: Path, results: list[dict], payload: dict) -> None:
+    summary = summarize(results)
+    payload = {
+        **payload,
+        "outcomes": {r["id"]: r["outcome"] for r in results},
         "summary": summary,
     }
     summary_path = out_dir / "summary.json"
@@ -393,10 +400,25 @@ def write_summary(
 
 
 def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
-    """Re-apply the current scoring rules to a saved run."""
-    old = {}
+    """Re-apply the current scoring rules to a saved run.
+
+    Run provenance (model, generation time and commit, split, experiment
+    flags) is kept from the existing summary; the rescoring time and commit
+    are recorded separately. Rescoring a subset of a saved run is refused,
+    because it would overwrite the full summary with a partial one.
+    """
+    old: dict = {}
     if (out_dir / "summary.json").exists():
         old = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    selected = {c["id"] for c in cases if (out_dir / f"{c['id']}.json").exists()}
+    saved = set(old.get("outcomes", {}))
+    if saved and selected != saved:
+        raise SystemExit(
+            f"refusing to rescore {out_dir}: the selected cases ({len(selected)}) "
+            f"differ from the saved run ({len(saved)}). Match the run's "
+            "--split/--cases, or rescore into a copy."
+        )
+
     results = []
     for case in cases:
         path = out_dir / f"{case['id']}.json"
@@ -405,15 +427,22 @@ def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
             continue
         result = json.loads(path.read_text(encoding="utf-8"))
         result["split"] = case.get("split", "eval")
-        if result.get("predicted") != "error":
+        if result.get("predicted") == "error":
+            # Error results saved before grounded scoring existed
+            result.setdefault("predicted_grounded", "error")
+            result.setdefault("outcome_grounded", result["outcome"])
+        else:
             result = score_case(result)
         path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         results.append(result)
-    model = old.get("model", "unknown") if mode != "sast-only" else "none"
-    write_summary(
-        out_dir, results, mode, model,
-        {"rescored_from_run_at": old.get("generated_at", "unknown")},
-    )
+
+    payload = {k: v for k, v in old.items() if k not in ("outcomes", "summary")}
+    payload.setdefault("mode", mode)
+    payload.setdefault("model", "none" if mode == "sast-only" else "unknown")
+    payload.pop("rescored_from_run_at", None)  # superseded key from earlier versions
+    payload["rescored_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    payload["rescored_at_commit"] = git_commit()
+    _write_payload(out_dir, results, payload)
 
 
 if __name__ == "__main__":
