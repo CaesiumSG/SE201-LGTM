@@ -41,6 +41,11 @@ python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 ```
 
+Use `--gpu-cluster` to connect through the existing tunnel at
+`http://127.0.0.1:11435` with `qwen2.5:7b`. Server and tunnel startup stay
+separate; see [`model/README.md`](../model/README.md). Explicit `--model`
+and `--ollama-url` options override the cluster defaults.
+
 **Dev/eval protocol:** pairs alternate between splits in blocks of three
 (pairs 1–3 and 7–9 → dev; pairs 4–6 and 10–12 → eval), so each split holds
 9 vulnerable + 9 safe cases. Tune prompts, rules, and config against

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -173,7 +174,12 @@ def _local_rule_prefixes(config: str | None) -> list[str]:
     folders = {path, path.resolve()}
     folders |= {f.parent for f in list(folders) if f.suffix in (".yaml", ".yml")}
     return sorted(
-        {str(f).strip("/").replace("/", ".") + "." for f in folders}, key=len, reverse=True
+        {
+            re.sub(r"[^a-zA-Z0-9._-]", "", ".".join(f.parts).lstrip("./")) + "."
+            for f in folders
+        },
+        key=len,
+        reverse=True,
     )
 
 
@@ -200,7 +206,7 @@ def parse_semgrep_json(
         findings.append(
             SemgrepFinding(
                 rule_id=_short_rule_id(res.get("check_id", "unknown"), prefixes),
-                path=res.get("path", ""),
+                path=res.get("path", "").replace("\\", "/"),
                 start_line=res.get("start", {}).get("line", 0),
                 end_line=res.get("end", {}).get("line", 0),
                 message=extra.get("message", ""),

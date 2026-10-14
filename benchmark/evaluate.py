@@ -135,7 +135,9 @@ def score_case(result: dict) -> dict:
 def evaluate_case(case: dict, config: LGTMConfig) -> dict:
     patch_path = BENCH / case["patch_file"]
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix=f"lgtm-eval-{case['id']}-") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"lgtm-eval-{case['id']}-", ignore_cleanup_errors=True
+    ) as tmpdir:
         tmp = Path(tmpdir)
         build_case_repo(tmp, patch_path)
         if config.mode != "sast-only":
@@ -255,6 +257,14 @@ def main() -> None:
     )
     parser.add_argument("--model", default=None, help="Ollama model override")
     parser.add_argument(
+        "--ollama-url", default=None, help="Ollama base URL override"
+    )
+    parser.add_argument(
+        "--gpu-cluster", action="store_true",
+        help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 "
+        "with qwen2.5:7b. Does not start the server or tunnel.",
+    )
+    parser.add_argument(
         "--cases", nargs="*", default=None, help="Subset of case ids to run"
     )
     parser.add_argument(
@@ -292,8 +302,13 @@ def main() -> None:
 
     config = LGTMConfig()
     config.mode = args.mode
+    if args.gpu_cluster:
+        config.ollama_model = "qwen2.5:7b"
+        config.ollama_base_url = "http://127.0.0.1:11435"
     if args.model:
         config.ollama_model = args.model
+    if args.ollama_url:
+        config.ollama_base_url = args.ollama_url
     config.require_tool_use = args.require_tool_use
     config.static_facts = args.static_facts
     config.authz_role_guidance = args.authz_role_guidance

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,6 +58,25 @@ class TestParseSemgrepJson:
         assert f.cwe == ["CWE-89"]  # normalized, description stripped
         assert f.confidence == "HIGH"
         assert f.finding_id == "python.lang.security.sqli.fstring:app.py:6"
+
+    def test_local_rule_and_windows_path_normalized(self, tmp_path):
+        rules = tmp_path / "rules"
+        rules.mkdir()
+        prefix = re.sub(r"[^a-zA-Z0-9._-]", "", rules.resolve().as_posix().strip("/").replace("/", "."))
+        payload = {
+            "results": [{
+                **SEMGREP_PAYLOAD["results"][0],
+                "check_id": f"{prefix}.sqli.fstring",
+                "path": r"app\routes.py",
+            }],
+        }
+
+        findings = parse_semgrep_json(payload, str(rules))
+        assert findings[0].rule_id == "sqli.fstring"
+        assert findings[0].path == "app/routes.py"
+        assert findings[0].finding_id == "sqli.fstring:app/routes.py:6"
+        diffs = parse_unified_diff(TestFilterToDiff.DIFF.replace("app.py", "app/routes.py"))
+        assert filter_to_diff(findings, diffs) == findings
 
     def test_is_sqli_heuristics(self):
         findings = parse_semgrep_json(SEMGREP_PAYLOAD)
@@ -164,13 +184,14 @@ def _semgrep_available() -> bool:
     return bool(shutil.which("semgrep")) or (Path(sys.executable).parent / "semgrep").exists()
 
 
-def test_local_rule_prefix_stripped(tmp_path):
+@pytest.mark.parametrize("folder", ["rules", "rules with spaces"])
+def test_local_rule_prefix_stripped(tmp_path, folder):
     from lgtm.sast.semgrep_runner import _local_rule_prefixes, _short_rule_id
 
-    rules = tmp_path / "rules"
+    rules = tmp_path / folder
     rules.mkdir()
     (rules / "sqli.yaml").write_text("rules: []\n")
-    dotted = str(rules.resolve()).strip("/").replace("/", ".")
+    dotted = re.sub(r"[^a-zA-Z0-9._-]", "", rules.resolve().as_posix().strip("/").replace("/", "."))
     for config in (str(rules), str(rules) + "/", str(rules / "sqli.yaml")):
         prefixes = _local_rule_prefixes(config)
         assert _short_rule_id(f"{dotted}.my-rule", prefixes) == "my-rule"

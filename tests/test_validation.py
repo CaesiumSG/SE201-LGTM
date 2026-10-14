@@ -180,10 +180,19 @@ class TestValidatorRegressions:
 def test_real_paths_with_colon_or_hash_resolve(git_repo):
     import subprocess
 
-    (git_repo / "docs").mkdir()
-    (git_repo / "docs" / "a:b.md").write_text("Rule: admins only.\n", encoding="utf-8")
     (git_repo / "c#.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(git_repo), "add", "-A"], check=True)
+    blob = subprocess.run(
+        ["git", "-C", str(git_repo), "hash-object", "-w", "--stdin"],
+        input="Rule: admins only.\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(git_repo), "config", "core.protectNTFS", "false"], check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repo), "update-index", "--add", "--cacheinfo",
+         f"100644,{blob},docs/a:b.md"], check=True,
+    )
     subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "odd names"], check=True)
     validator = EvidenceValidator(git_repo, "main")
     finding = make_finding(evidence=[

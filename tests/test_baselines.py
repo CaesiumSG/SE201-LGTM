@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.config import LGTMConfig
 from lgtm.pipeline import ReviewPipeline
@@ -118,6 +120,60 @@ class TestCaseScoring:
         assert set(summary["per_split"]) == {"dev", "eval"}
         assert summary["overall"]["recall"] == 1.0
         assert summary["grounded_only"]["overall"]["recall"] == 0.0
+
+
+@pytest.mark.parametrize("experiments", [False, True])
+def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypatch, experiments):
+    (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
+    config = LGTMConfig()
+    summary = MagicMock()
+    monkeypatch.setattr(evaluate, "BENCH", tmp_path)
+    monkeypatch.setattr(evaluate, "LGTMConfig", lambda: config)
+    monkeypatch.setattr(evaluate, "write_summary", summary)
+    argv = [
+        "evaluate.py", "--ollama-url", "http://127.0.0.1:11435",
+        "--model", "qwen2.5:7b", "--mode", "lgtm-no-sast",
+    ]
+    if experiments:
+        argv.extend(["--require-tool-use", "--static-facts", "--authz-role-guidance"])
+    monkeypatch.setattr("sys.argv", argv)
+
+    evaluate.main()
+
+    assert config.ollama_base_url == "http://127.0.0.1:11435"
+    assert config.ollama_model == "qwen2.5:7b"
+    assert config.mode == "lgtm-no-sast"
+    assert config.require_tool_use is experiments
+    assert config.static_facts is experiments
+    assert config.authz_role_guidance is experiments
+    assert summary.call_args.args[4]["experiments"] == {
+        "require_tool_use": experiments,
+        "static_facts": experiments,
+        "authz_role_guidance": experiments,
+    }
+
+
+@pytest.mark.parametrize("options,model,url", [
+    ([], "qwen2.5-coder:7b", "http://localhost:11434"),
+    (["--gpu-cluster"], "qwen2.5:7b", "http://127.0.0.1:11435"),
+    (["--gpu-cluster", "--model", "custom:7b"], "custom:7b", "http://127.0.0.1:11435"),
+    (["--gpu-cluster", "--ollama-url", "http://127.0.0.1:12000"],
+     "qwen2.5:7b", "http://127.0.0.1:12000"),
+])
+def test_benchmark_model_connection(tmp_path, monkeypatch, options, model, url):
+    (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
+    summary = MagicMock()
+    monkeypatch.setattr(evaluate, "BENCH", tmp_path)
+    monkeypatch.setattr(evaluate, "write_summary", summary)
+    monkeypatch.setattr("sys.argv", ["evaluate.py", *options])
+    config = LGTMConfig()
+    monkeypatch.setattr(evaluate, "LGTMConfig", lambda: config)
+
+    evaluate.main()
+
+    assert config.ollama_model == model
+    assert config.ollama_base_url == url
+    assert summary.call_args.args[3] == model
 
 
 class TestRescore:

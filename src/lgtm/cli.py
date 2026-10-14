@@ -55,6 +55,7 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
 @click.option("--model", default=None, help="Ollama model name (default: qwen2.5-coder:7b).")
 @click.option("--ollama-url", default=None, help="Ollama base URL.")
+@click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen2.5:7b. Does not start the server or tunnel.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
 @click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
 @click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
@@ -66,6 +67,7 @@ def review(
     pr: str,
     model: str | None,
     ollama_url: str | None,
+    gpu_cluster: bool,
     output_dir: str | None,
     mode: str,
     semgrep_config: str | None,
@@ -76,6 +78,9 @@ def review(
     setup_logging(verbose)
     from lgtm.pipeline import ReviewPipeline
 
+    if gpu_cluster:
+        model = model or "qwen2.5:7b"
+        ollama_url = ollama_url or "http://127.0.0.1:11435"
     config = _load_config(
         config_file,
         ollama_model=model,
