@@ -144,6 +144,7 @@ def local_project(tmp_path):
 def _case(case_id, construction, base, pr, fix):
     return {
         "id": case_id, "ghsa": "GHSA-aaaa-bbbb-cccc", "construction": construction,
+        "repo_url": "https://github.com/example/proj",
         "fix_commits": [fix], "touched_files": ["a.py", "c.py"],
         "base_ref": base, "pr_ref": pr,
     }
@@ -182,6 +183,46 @@ class TestPrepareCase:
         case["touched_files"] = ["a.py"]
         with pytest.raises(fetch.FetchError, match="touched_files mismatch"):
             fetch.prepare_case(case, repo)
+
+    def test_policy_variant_adds_only_the_policy_file(self, local_project):
+        repo, pre, fix = local_project
+        case = _case("x_vuln", "synthetic-revert", fix, None, fix)
+        base, pr = fetch.prepare_case(case, repo)
+        bp, pp = fetch.prepare_policy(case, repo, base, pr, "# policy\nrule\n")
+        show = lambda ref, path: fetch.git(repo, "show", f"{ref}:{path}")  # noqa: E731
+        assert show(bp, "security-policy.md") == "# policy\nrule\n"
+        assert show(pp, "security-policy.md") == "# policy\nrule\n"
+        # the project's own tree is otherwise untouched, and so is the PR diff
+        assert fetch.git(repo, "diff", "--name-only", base, bp).split() == ["security-policy.md"]
+        assert fetch.git(repo, "diff", base, pr) == fetch.git(repo, "diff", bp, pp)
+        assert fetch.git(repo, "rev-parse", "rw/x_vuln/base-policy").strip() == bp
+        assert fetch.git(repo, "rev-parse", "rw/x_vuln/pr-policy").strip() == pp
+
+    def test_policy_shas_are_reproducible(self, local_project):
+        repo, _pre, fix = local_project
+        case = _case("x_vuln", "synthetic-revert", fix, None, fix)
+        base, pr = fetch.prepare_case(case, repo)
+        first = fetch.prepare_policy(case, repo, base, pr, "p\n")
+        assert fetch.prepare_policy(case, repo, base, pr, "p\n") == first
+
+    def test_policy_refuses_to_shadow_an_existing_file(self, local_project):
+        repo, pre, fix = local_project
+        (repo / "security-policy.md").write_text("project's own\n", newline="\n")
+        fetch.git(repo, "add", "-A", env=IDENT)
+        fetch.git(repo, "commit", "-q", "-m", "own policy", env=IDENT)
+        head = fetch.git(repo, "rev-parse", "HEAD").strip()
+        case = _case("x_safe", "fix-commit", pre, fix, fix)
+        with pytest.raises(fetch.FetchError, match="already exists"):
+            fetch.prepare_policy(case, repo, head, fix, "p\n")
+
+    def test_shipped_policies_cite_sources_and_name_no_advisory(self):
+        policies = sorted((RW / "policies").glob("*.md"))
+        assert {p.stem for p in policies} == {"aegra", "langflow", "litellm"}
+        for p in policies:
+            text = p.read_text(encoding="utf-8")
+            assert "https://" in text, p.name
+            assert not re.search(r"CVE-\d{4}|GHSA-", text), p.name
+            assert len(text) < 5000, f"{p.name} would be cut by the 5000-char prompt cap"
 
     def test_interrupted_clone_is_rejected(self, tmp_path):
         dest = tmp_path / "half"
