@@ -415,9 +415,10 @@ def main(argv: list[str] | None = None) -> int:
     scrubs = path_replacements(args.cache, args.output)
     args.output.mkdir(parents=True, exist_ok=True)
 
-    env_info: dict = {}
+    # Also for --summarize-only: every summary.json records the environment it
+    # was built in, and a rebuild must not drop those fields.
+    env_info = preflight(args.modes, config)
     if not args.summarize_only:
-        env_info = preflight(args.modes, config)
         missing = [fetch.project_of(c) for c in cases
                    if not (args.cache / fetch.project_of(c) / ".git").is_dir()]
         if missing:

@@ -178,6 +178,24 @@ class TestIndexOnlyNeverWritesResults:
         assert saved["predicted"] == "error" and saved["outcome"] == "TN"
 
 
+class TestSummarizeOnlyKeepsTheEnvironment:
+    """Regression: --summarize-only skipped preflight and so rewrote every
+    summary.json without python / semgrep / ollama_version."""
+
+    def test_environment_fields_survive_a_rebuild(self, tmp_path, monkeypatch):
+        out = tmp_path / "out"
+        (out / "lgtm").mkdir(parents=True)
+        result = TestResultsAndSummary._result("pyload_sqli_vulnerable", "vulnerable", "TP", "sqli")
+        (out / "lgtm" / "pyload_sqli_vulnerable.json").write_text(json.dumps(result))
+        monkeypatch.setattr(er, "preflight",
+                            lambda modes, config: {"python": "3.14.5", "ollama_version": "0.40.4"})
+        er.main(["--summarize-only", "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own"])
+        summary = json.loads((out / "lgtm" / "summary.json").read_text(encoding="utf-8"))
+        assert summary["python"] == "3.14.5"
+        assert summary["ollama_version"] == "0.40.4"
+
+
 class TestResultsAndSummary:
     @staticmethod
     def _result(cid, expected, outcome, category="authz"):
