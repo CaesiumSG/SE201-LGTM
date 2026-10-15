@@ -181,7 +181,31 @@ def _semgrep_available() -> bool:
     import sys
     from pathlib import Path
 
-    return bool(shutil.which("semgrep")) or (Path(sys.executable).parent / "semgrep").exists()
+    # which() with an explicit dir applies PATHEXT, so this finds semgrep.exe
+    # in a Windows venv's Scripts dir even when the venv is not activated.
+    return bool(shutil.which("semgrep")) or bool(
+        shutil.which("semgrep", path=str(Path(sys.executable).parent))
+    )
+
+
+def test_semgrep_found_next_to_interpreter_when_not_on_path(tmp_path, monkeypatch):
+    """Regression: on Windows the venv ships semgrep.exe. With the venv not
+    activated, the old lookup missed it, fell back to `python -m semgrep`
+    (rejected by semgrep >= 1.38, exit 2) and the pipeline then silently ran
+    with no SAST findings at all."""
+    import os
+    import sys
+
+    from lgtm.sast import semgrep_runner
+
+    exe = tmp_path / ("semgrep.exe" if os.name == "nt" else "semgrep")
+    exe.write_text("")
+    exe.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # semgrep not on PATH
+
+    cmd = semgrep_runner._semgrep_executable()
+    assert len(cmd) == 1 and os.path.samefile(cmd[0], exe)
 
 
 @pytest.mark.parametrize("folder", ["rules", "rules with spaces"])
