@@ -447,8 +447,8 @@ def main(argv: list[str] | None = None) -> int:
             result = error_result(case, mode, variant, exc)
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
-        if result is None:
-            continue
+        if result is None or args.index_only:
+            continue  # an index-only failure is printed, never a case result
         out_dir = out_dir_for(args.output, mode, variant)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{case['id']}.json").write_text(

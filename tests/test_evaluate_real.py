@@ -141,6 +141,43 @@ class TestIndexMarker:
         assert cfg.chroma_persist_dir == before
 
 
+class TestIndexOnlyNeverWritesResults:
+    """Regression: an --index-only failure fell through to the normal result
+    path and wrote an *error case result*, which --resume then skipped."""
+
+    def test_failure_is_printed_not_recorded(self, tmp_path, monkeypatch, capsys):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+
+        def boom(*args, **kwargs):
+            raise ValueError("Batch size of 6011 is greater than max batch size of 5461")
+
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", boom)
+        code = er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                        "--variants", "own", "--cases", "aegra_authz_safe",
+                        "--index-only"])
+        assert code == 0
+        assert "ERROR" in capsys.readouterr().out
+        assert not list(out.rglob("*.json"))
+
+    def test_normal_run_still_records_a_crash_as_a_result(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", boom)
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text(encoding="utf-8"))
+        assert saved["predicted"] == "error" and saved["outcome"] == "TN"
+
+
 class TestResultsAndSummary:
     @staticmethod
     def _result(cid, expected, outcome, category="authz"):
