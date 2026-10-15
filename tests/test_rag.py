@@ -60,6 +60,63 @@ class TestChunkDocument:
         assert len(ids) == len(set(ids))
 
 
+class TestReplaceCollectionBatching:
+    """Regression: Chroma rejects an add() larger than the backend's max batch
+    size (5461 on some SQLite builds), so indexing a repo with more chunks than
+    that crashed with "Batch size of N is greater than max batch size"."""
+
+    class _Collection:
+        def __init__(self):
+            self.batches: list[list[str]] = []
+
+        def add(self, ids, documents, metadatas):
+            self.batches.append(list(ids))
+
+    class _Client:
+        def __init__(self, limit):
+            self.limit = limit
+            self.collection = TestReplaceCollectionBatching._Collection()
+
+        def get_max_batch_size(self):
+            return self.limit
+
+        def delete_collection(self, name):
+            pass
+
+        def create_collection(self, name, metadata=None):
+            return self.collection
+
+    @staticmethod
+    def _chunks(n):
+        from lgtm.rag.indexer import DocChunk
+
+        return [DocChunk(f"id{i}", "a.py", 1, 1, f"text {i}") for i in range(n)]
+
+    def test_adds_in_batches_no_larger_than_the_backend_limit(self):
+        from lgtm.rag.indexer import _replace_collection
+
+        client = self._Client(limit=4)
+        _replace_collection(client, "code", self._chunks(10))
+        sizes = [len(b) for b in client.collection.batches]
+        assert max(sizes) <= 4
+        assert sum(sizes) == 10
+
+    def test_every_chunk_is_added_exactly_once_in_order(self):
+        from lgtm.rag.indexer import _replace_collection
+
+        client = self._Client(limit=3)
+        _replace_collection(client, "code", self._chunks(7))
+        flat = [i for batch in client.collection.batches for i in batch]
+        assert flat == [f"id{i}" for i in range(7)]
+
+    def test_small_index_is_still_one_call(self):
+        from lgtm.rag.indexer import _replace_collection
+
+        client = self._Client(limit=5461)
+        _replace_collection(client, "docs", self._chunks(5))
+        assert len(client.collection.batches) == 1
+
+
 class TestPolicyRetriever:
     def _retriever_with_stub(self, tmp_path, query_result) -> PolicyRetriever:
         config = LGTMConfig()
