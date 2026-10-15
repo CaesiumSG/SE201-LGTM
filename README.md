@@ -155,8 +155,12 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
 
 - ✅ 6 SQLi pairs derived from the OWASP Benchmark taxonomy (Java →
   Python/Flask translation), keeping positives and negatives balanced.
+- ✅ 6 published CVEs in real Python web projects (3 SQLi, 3 authz) as 12
+  held-out cases, with a project-policy variant for the authz cases. LGTM did
+  not reproduce its Shoply results there; see
+  [`docs/real-world-eval.md`](docs/real-world-eval.md).
 - Next: more OWASP patterns (stacked queries, second-order injection) and
-  authorization cases mined from CVE-linked PRs.
+  more CVE-linked cases, including real vulnerable PRs rather than reverts.
 - Keep the dev/eval separation strict: all prompt and config tuning on the
   dev split only.
 

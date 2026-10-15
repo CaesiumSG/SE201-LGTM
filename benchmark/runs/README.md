@@ -20,6 +20,7 @@ failed, why, what changed) is in
 | `run4-dev-experiments/` | 2026-10-13 | + `analysis/facts.py`, experiment flags, path-free rule IDs | lgtm (dev split): `control`, `facts`, `tools` | Tuning experiments, dev split only |
 | `run5-dev-role-guidance/` | 2026-10-13 | + facts v2, `authz_role_guidance` | lgtm (dev split) | Rejected on dev (authz recall 3/3 → 0/3) |
 | `run6-final/` | 2026-10-13 | shipped config (all flags off) | lgtm | The clean final numbers quoted in the README |
+| `real_world/` | 2026-10-15 | `683e2a2` → `fef5a75`; summaries rebuilt at `0f8f527` | sast-only, llm-only, lgtm, lgtm-no-sast on 12 real-world CVE cases; `*-policy` = the two lgtm modes on the 6 authz cases with a project policy | Held-out: no tuning. Per-case JSON also holds diff size, detected endpoints, index time and `index_skipped`. Which commit produced which case is in [`docs/real-world-eval.md`](../../docs/real-world-eval.md). `git_commit` is a real SHA here (frozen git worktree) |
 
 Re-score any run with the current scoring rules (no model calls):
 
