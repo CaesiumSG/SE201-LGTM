@@ -275,6 +275,11 @@ def main() -> None:
         "or everything (default). Tune on dev; report on eval.",
     )
     parser.add_argument(
+        "--labels",
+        default=None,
+        help="Path to labels.json (default: benchmark/labels.json)",
+    )
+    parser.add_argument(
         "--output", default=None, help="Results dir (default benchmark/results/<mode>)"
     )
     parser.add_argument(
@@ -288,6 +293,14 @@ def main() -> None:
     parser.add_argument(
         "--authz-role-guidance", action="store_true",
         help="Experiment: role-scope guidance in the authz prompt.",
+    )
+    parser.add_argument(
+        "--strip-comments", action="store_true",
+        help="Mitigation: strip comments and docstrings from PR code in prompts.",
+    )
+    parser.add_argument(
+        "--detect-prompt-injection", action="store_true",
+        help="Mitigation: detect reviewer-directed instructions in diff.",
     )
     parser.add_argument(
         "--rescore",
@@ -312,8 +325,11 @@ def main() -> None:
     config.require_tool_use = args.require_tool_use
     config.static_facts = args.static_facts
     config.authz_role_guidance = args.authz_role_guidance
+    config.strip_comments = args.strip_comments
+    config.detect_prompt_injection = args.detect_prompt_injection
 
-    labels = json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))
+    labels_path = Path(args.labels) if args.labels else BENCH / "labels.json"
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
     cases = labels["cases"]
     if args.split != "all":
         cases = [c for c in cases if c.get("split", "eval") == args.split]

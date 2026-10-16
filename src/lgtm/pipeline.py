@@ -112,15 +112,19 @@ class ReviewPipeline:
 
         findings: list[AgentFinding] = []
 
+        from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
+
+        llm_diffs = sanitize_diffs(diffs) if self.config.strip_comments else diffs
+
         if mode == "sast-only":
             findings = [self._sast_finding_to_agent_finding(f) for f in semgrep_in_diff]
         elif mode == "llm-only":
             llm = self._llm or build_llm(self.config)
-            findings = PlainLLMReviewer(self.config, llm).review(diffs)
+            findings = PlainLLMReviewer(self.config, llm).review(llm_diffs)
         else:
             llm = self._llm or build_llm(self.config)
             toolbox = AgentToolbox(self.repo, base, retriever, self.config)
-            diff_by_path = {d.path: d for d in diffs}
+            diff_by_path = {d.path: d for d in llm_diffs}
 
             # ---- Stage 2: SAST triage --------------------------------
             if mode == "lgtm-no-sast":
@@ -131,7 +135,7 @@ class ReviewPipeline:
                 )
             triage_agent = SASTTriageAgent(toolbox, self.config, llm)
             for sf in semgrep_in_diff:
-                fd = diff_by_path.get(sf.path) or self._match_diff(sf.path, diffs)
+                fd = diff_by_path.get(sf.path) or self._match_diff(sf.path, llm_diffs)
                 facts = ""
                 if self.config.static_facts:
                     facts = sql_sink_facts(self._pr_source(pr, sf.path), sf.start_line)
@@ -154,6 +158,9 @@ class ReviewPipeline:
                         self._pr_source(pr, ep.file), ep.decorator_line
                     )
                 findings.append(authz_agent.review(ep, fd, notes, facts))
+
+        if self.config.detect_prompt_injection:
+            findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------
         validator = EvidenceValidator(self.repo, base, diffs, self.config)

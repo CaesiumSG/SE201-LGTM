@@ -60,6 +60,8 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
 @click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
+@click.option("--strip-comments", is_flag=True, help="Mitigation: strip comments and docstrings from PR code in prompts.")
+@click.option("--detect-prompt-injection", is_flag=True, help="Mitigation: detect reviewer-directed instructions in diff.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def review(
     repo: str,
@@ -72,6 +74,8 @@ def review(
     mode: str,
     semgrep_config: str | None,
     config_file: str | None,
+    strip_comments: bool,
+    detect_prompt_injection: bool,
     verbose: bool,
 ) -> None:
     """Run the full security review pipeline on a PR."""
@@ -88,6 +92,10 @@ def review(
         semgrep_config=semgrep_config,
     )
     config.mode = mode
+    if strip_comments:
+        config.strip_comments = True
+    if detect_prompt_injection:
+        config.detect_prompt_injection = True
     out = Path(output_dir or config.output_dir)
 
     try:
