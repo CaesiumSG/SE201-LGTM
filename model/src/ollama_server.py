@@ -17,7 +17,6 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -86,6 +85,8 @@ class OllamaServer:
         env["OLLAMA_HOST"] = f"127.0.0.1:{self.port}"
         env["OLLAMA_MODELS"] = str(self.models_dir)
         env.update({k: self.config[k] for k in SERVER_ENV_KEYS if self.config.get(k)})
+        # llama-server defaults to the node's core count, not the job's CPU allocation
+        env.setdefault("LLAMA_ARG_THREADS", str(len(os.sched_getaffinity(0))))
 
         log = open(self.log_path, "ab")
         self.proc = subprocess.Popen(
@@ -101,7 +102,7 @@ class OllamaServer:
                 self._request("GET", "/api/version", timeout=2)
                 print(f"ollama running at {self.url} (log {self.log_path})")
                 return
-            except (urllib.error.URLError, ConnectionError):
+            except OSError:
                 time.sleep(1)
         raise RuntimeError(f"ollama did not answer within {timeout}s; see {self.log_path}")
 
