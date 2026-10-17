@@ -135,17 +135,25 @@ def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
     except Exception:  # noqa: BLE001 - collection may not exist yet
         pass
     collection = client.create_collection(name, metadata={"hnsw:space": "cosine"})
-    if chunks:
+    # Chroma refuses an add() larger than the backend's max batch size (5461
+    # on SQLite builds with a 32766 variable limit), so a big repo's chunks
+    # must go in several calls. What is indexed is unchanged.
+    try:
+        batch = max(1, int(client.get_max_batch_size()))
+    except Exception:  # noqa: BLE001 - older clients have no such method
+        batch = 5000
+    for start in range(0, len(chunks), batch):
+        part = chunks[start : start + batch]
         collection.add(
-            ids=[c.chunk_id for c in chunks],
-            documents=[c.content for c in chunks],
+            ids=[c.chunk_id for c in part],
+            documents=[c.content for c in part],
             metadatas=[
                 {
                     "source": c.source,
                     "start_line": c.start_line,
                     "end_line": c.end_line,
                 }
-                for c in chunks
+                for c in part
             ],
         )
 

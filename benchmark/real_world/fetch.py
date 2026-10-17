@@ -19,6 +19,11 @@ Usage:
     python benchmark/real_world/fetch.py
     python benchmark/real_world/fetch.py --cases aegra_authz_vulnerable
     python benchmark/real_world/fetch.py --record-pr-refs   # write built SHAs
+    python benchmark/real_world/fetch.py --policies         # + policy variants
+
+``--policies`` also builds ``rw/<id>/base-policy`` and ``rw/<id>/pr-policy``:
+the same trees plus ``policies/<project>.md`` as ``security-policy.md``, so
+the authorization agent can be run with and without a project policy.
 """
 
 from __future__ import annotations
@@ -34,6 +39,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CASES_FILE = HERE / "cases.json"
 DEFAULT_CACHE = HERE / ".cache"
+POLICY_DIR = HERE / "policies"
+# Same file name Shoply uses, so LGTM's doc indexer and validator treat it
+# exactly like the synthetic benchmark's policy.
+POLICY_PATH = "security-policy.md"
 
 # Fixed identity and date: the synthetic revert commit must hash identically
 # on every machine.
@@ -239,11 +248,64 @@ def prepare_case(case: dict, repo: Path) -> tuple[str, str]:
     return base, pr
 
 
+def policy_text(case: dict) -> str | None:
+    """The project's policy (LF-normalised), or None if it has none.
+
+    Normalising keeps the blob SHA identical whatever core.autocrlf did to
+    the working-tree copy.
+    """
+    path = POLICY_DIR / f"{project_of(case)}.md"
+    if not path.is_file():
+        return None
+    return path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def _commit_with_policy(repo: Path, tree_ish: str, blob: str, parent: str,
+                        project: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="lgtm-rw-") as tmp:
+        env = {**REVERT_ENV, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        git(repo, "read-tree", tree_ish, env=env)
+        git(repo, "update-index", "--add", "--cacheinfo",
+            f"100644,{blob},{POLICY_PATH}", env=env)
+        tree = git(repo, "write-tree", env=env).strip()
+        return git(repo, "commit-tree", tree, "-p", parent, "-m",
+                   f"Add {POLICY_PATH} (access-control policy for {project})",
+                   env=env).strip()
+
+
+def prepare_policy(case: dict, repo: Path, base: str, pr: str,
+                   text: str) -> tuple[str, str]:
+    """Build ``rw/<id>/base-policy`` and ``rw/<id>/pr-policy``.
+
+    Both are the plain base / PR trees plus one extra file, the project's
+    policy, so the PR's own diff is unchanged and the only difference from
+    the own-docs variant is what the doc index contains.
+    """
+    for ref in (base, pr):
+        if git(repo, "ls-tree", ref, "--", POLICY_PATH).strip():
+            raise FetchError(
+                f"{POLICY_PATH} already exists at {ref[:8]} in {repo.name}; "
+                "the policy would shadow the project's own file"
+            )
+    blob = git(repo, "hash-object", "-w", "--stdin", stdin=text).strip()
+    project = project_of(case)
+    base_policy = _commit_with_policy(repo, base, blob, base, project)
+    pr_policy = _commit_with_policy(repo, pr, blob, base_policy, project)
+    if git(repo, "diff", base, pr) != git(repo, "diff", base_policy, pr_policy):
+        raise FetchError("policy variant changed the PR diff")
+    for role, sha in (("base-policy", base_policy), ("pr-policy", pr_policy)):
+        git(repo, "update-ref", f"refs/heads/{branch(case['id'], role)}", sha)
+    return base_policy, pr_policy
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cases", nargs="*", help="subset of case ids")
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE,
                         help="clone directory (default: benchmark/real_world/.cache)")
+    parser.add_argument("--policies", action="store_true",
+                        help="also build rw/<id>/{base,pr}-policy for projects "
+                        "that have a file in policies/")
     parser.add_argument("--record-pr-refs", action="store_true",
                         help="write the built synthetic-revert SHAs into cases.json")
     args = parser.parse_args(argv)
@@ -271,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 base, pr = prepare_case(case, repo)
                 stat = git(repo, "diff", "--shortstat", base, pr).strip()
+                policy = policy_text(case) if args.policies else None
+                if policy is not None:
+                    prepare_policy(case, repo, base, pr, policy)
+                    stat += "  +policy variant"
             except FetchError as exc:
                 print(f"  FAIL {case['id']}: {exc}", file=sys.stderr)
                 failures += 1
