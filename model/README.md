@@ -188,13 +188,13 @@ defaults, including when the tunnel uses a different local port.
 | Login | `10.193.104.102` = `origami.smu.edu.sg`; Slurm cluster `crimson` |
 | Account / partition / QOS | `se201` / `student` / `studentqos` |
 | `studentqos` limits | 2 running · 4 submitted · 4 CPU · 32G RAM · 1 GPU · 1 day per job |
-| GPU | MIG slice `1g.24gb` (24 GB) of an RTX PRO 6000 Blackwell on `block` |
+| GPU | RTX 3090 (24 GB); MIG slice `1g.24gb` (24 GB) of an RTX PRO 6000 Blackwell on `block` when no 3090 is free |
 | Python | `Python/3.11.11-GCCcore-13.3.0` (the docs' `3.11.7` does not exist); `module` needs a login shell, hence `#!/bin/bash -l` |
 | Ollama | `/common/public/ollama/bin/ollama` v0.34.2; shared models in `/common/public/ollama/models` are read-only |
 | Internet from compute nodes | Ollama registry, PyPI, GitHub and Hugging Face reachable |
 | Storage | home and scratch share one 704 TB filesystem; `myinfo`'s quota line is broken |
 
-Model sizing for a 24 GB slice: `qwen2.5:7b` (~4.7 GB) fits with ample room
+Model sizing for a 24 GB GPU: `qwen2.5:7b` (~4.7 GB) fits with ample room
 for context. LGTM needs a model that returns structured tool calls through
 Ollama; `qwen2.5-coder` writes them as plain text and fails the agent loop.
 A `mynotebook` session counts against the 2-running-jobs limit.

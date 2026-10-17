@@ -19,7 +19,7 @@ fi
 release=$(current_release)
 
 model=${1:-}
-id=$(JOB_TIME="${2:-${SESSION_TIME:-}}" submit serve "$release" ${model:+"$model"})
+id=$(JOB_TIME="${2:-${SESSION_TIME:-}}" submit_gpu serve "$release" ${model:+"$model"})
 record_job serve "$id" "$release"
 echo "submitted serve job $id (${model:-$DEFAULT_MODEL})"
 
