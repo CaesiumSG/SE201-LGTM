@@ -77,6 +77,13 @@ Outputs `lgtm-output/report.json` (machine-readable findings) and
 `lgtm-output/report.md` (human-readable review). Exit code 1 signals
 confirmed `vulnerable` findings (CI-friendly).
 
+`--gpu-model qwen3.8-27b` connects through the existing GPU cluster
+tunnel at `http://127.0.0.1:11435` with the model `qwen3.8:27b` and
+thinking disabled. It cannot be combined with `--gpu-cluster` or
+`--model`; `--ollama-url` overrides the URL. The registry URL assumes
+`LOCAL_OLLAMA_PORT=11435`. `benchmark/evaluate.py` and
+`benchmark/real_world/evaluate_real.py` accept the same flag.
+
 ## Guardrails
 
 - Agent tools are **read-only**; file access is sandboxed to the repo.
@@ -107,6 +114,12 @@ Reported metrics: precision / recall / F1 (overall and per category),
 false-positive rate on safe controls, evidence grounding rate,
 `possible` / `insufficient_evidence` rates, median latency and estimated
 tokens per PR. See `benchmark/README.md` for details.
+
+A case where the pipeline raises, or where an agent reports an
+execution, LLM or unparsable-output failure, is recorded as `ERROR`.
+Errors are left out of TP/FP/TN/FN and out of precision, recall and F1.
+The summary reports `scored`, `errors`, `error_rate` and `error_cases`,
+and metrics that cannot be computed are `null`.
 
 The 36 cases carry a balanced **dev/eval split** (9 vulnerable + 9 safe in
 each): tune prompts and config on `--split dev`, report results on the

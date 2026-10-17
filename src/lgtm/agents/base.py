@@ -230,10 +230,12 @@ def build_llm(config: LGTMConfig):
     """Construct the ChatOllama LLM from config."""
     from langchain_ollama import ChatOllama
 
+    kwargs = {} if config.reasoning is None else {"reasoning": config.reasoning}
     return ChatOllama(
         model=config.ollama_model,
         base_url=config.ollama_base_url,
         temperature=config.llm_temperature,
+        **kwargs,
     )
 
 

@@ -36,15 +36,29 @@ python benchmark/evaluate.py --mode sast-only       # Semgrep baseline
 python benchmark/evaluate.py --mode llm-only        # LLM-only baseline (no SAST/RAG/tools)
 python benchmark/evaluate.py --mode lgtm-no-sast    # ablation: LGTM minus Semgrep
 python benchmark/evaluate.py --mode lgtm --rescore  # re-score a saved run, no LLM calls
+python benchmark/evaluate.py --mode lgtm --resume   # skip completed cases, re-run error results
 python benchmark/evaluate.py --split dev            # development set only
 python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
+python benchmark/evaluate.py --gpu-model qwen3.8-27b
 ```
 
 Use `--gpu-cluster` to connect through the existing tunnel at
 `http://127.0.0.1:11435` with `qwen2.5:7b`. Server and tunnel startup stay
 separate; see [`model/README.md`](../model/README.md). Explicit `--model`
 and `--ollama-url` options override the cluster defaults.
+
+`--gpu-model qwen3.8-27b` uses the same tunnel with `qwen3.8:27b` and
+thinking disabled; it cannot be combined with `--gpu-cluster` or
+`--model`, and `--ollama-url` overrides the URL. The summary records
+`model` and `reasoning`.
+
+`--resume` skips cases whose result JSON exists and is not an error,
+re-runs error results, leaves completed results untouched, and rebuilds
+`summary.json` from all case JSONs. Each output directory holds a
+`run.json` manifest (`model`, `ollama_base_url`, `reasoning`, `mode`);
+`--resume` refuses to continue a directory whose manifest has a
+different model or reasoning setting.
 
 **Dev/eval protocol:** pairs alternate between splits in blocks of three
 (pairs 1–3 and 7–9 → dev; pairs 4–6 and 10–12 → eval), so each split holds
@@ -78,6 +92,11 @@ and `docs/evaluation-log.md`.
 - Evidence grounding rate (findings whose citations all check out).
 - `insufficient_evidence` rate and `possible` rate.
 - Median latency per case and estimated tokens per PR.
+- Errors — cases where the pipeline raised or an agent reported an
+  execution or LLM failure — are counted separately (`errors`,
+  `error_rate`, `error_cases`) and excluded from every other metric;
+  `scored` is the number of cases the metrics cover. `--rescore` applies
+  the same classification to saved results.
 
 ## Regenerating cases
 

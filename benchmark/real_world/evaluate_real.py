@@ -8,8 +8,9 @@ branch in the cached clone, indexes it when an agent will actually run, runs
 ``ReviewPipeline`` and writes one result JSON.
 
 The run is meant to be done in short foreground chunks: ``--resume`` skips
-cases whose result JSON already exists, and ``--budget`` stops starting new
-cases after N seconds so a call ends well inside a shell time limit.
+units with a completed (non-error) result JSON and re-runs error results, and
+``--budget`` stops starting new cases after N seconds so a call ends well
+inside a shell time limit.
 
 Variants:
 - ``own``: only the repository's own docs are indexed (default branch pair).
@@ -63,7 +64,7 @@ evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 fetch = _load("lgtm_rw_fetch", HERE / "fetch.py")
 
 from lgtm.agents.authz_reviewer import extract_changed_endpoints  # noqa: E402
-from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
@@ -71,7 +72,7 @@ from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
 DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
 DEFAULT_OUTPUT = BENCH / "results" / "real_world"
-INFRA_PREFIXES = ("Agent execution failed", "LLM call failed")
+INFRA_PREFIXES = evaluate.INFRA_PREFIXES
 
 
 # ----------------------------------------------------------------------
@@ -137,10 +138,10 @@ def work_units(cases, modes, variants):
 
 
 def pending_units(units, output: Path, resume: bool):
-    """Drop units whose result JSON already exists when resuming."""
+    """Drop units with a completed result JSON when resuming."""
     for case, variant, mode in units:
-        done = (out_dir_for(output, mode, variant) / f"{case['id']}.json").exists()
-        if resume and done:
+        path = out_dir_for(output, mode, variant) / f"{case['id']}.json"
+        if resume and evaluate.is_done(path):
             continue
         yield case, variant, mode
 
@@ -227,20 +228,16 @@ def diff_stats(diffs) -> dict:
 
 
 def error_result(case: dict, mode: str, variant: str, exc: Exception) -> dict:
-    """Same semantics as evaluate.main(): a crash scores as 'not flagged'."""
-    vulnerable = case["expected_verdict"] == "vulnerable"
-    outcome = "FN" if vulnerable else "TN"
-    return {
+    """A crash is recorded as an error result and is not scored."""
+    base = {
         "id": case["id"], "category": case["category"], "split": "real_world",
-        "expected": case["expected_verdict"], "predicted": "error",
-        "outcome": outcome, "correct": not vulnerable,
-        "predicted_grounded": "error", "outcome_grounded": outcome,
-        "error": f"{type(exc).__name__}: {exc}",
+        "expected": case["expected_verdict"],
         "n_findings": 0, "verdicts": [], "grounded": 0, "grounding_rate": None,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
     }
+    return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
 
 
 def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
@@ -295,9 +292,6 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     if extra["index_skipped"] and mode in DOC_MODES and findings:
         raise RuntimeError("index was skipped but an agent produced findings")
     grounded = [f for f in findings if f.get("evidence_valid")]
-    infra = [f["finding_id"] for f in findings
-             if str(f.get("explanation", "")).startswith(INFRA_PREFIXES)
-             or f.get("finding_id") == "plain:unparsable"]
     extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
     return evaluate.score_case({
         "id": cid, "category": case["category"], "split": "real_world",
@@ -307,7 +301,6 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         "latency_seconds": round(latency, 2),
         "case_seconds": round(time.monotonic() - case_started, 2),
         "est_tokens": evaluate.estimate_tokens(findings, {}),
-        "infra_failures": len(infra), "infra_failure_ids": infra,
         "findings": findings, **extra,
     })
 
@@ -320,7 +313,7 @@ def write_dir_summary(out_dir: Path, mode: str, variant: str, expected: set[str]
     """Rebuild summary.json from every case JSON in ``out_dir``."""
     results = []
     for path in sorted(out_dir.glob("*.json")):
-        if path.name == "summary.json":
+        if path.name in ("summary.json", "run.json"):
             continue
         results.append(json.loads(path.read_text(encoding="utf-8")))
     if not results:
@@ -385,7 +378,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variants", choices=("own", "policy", "both"), default="both")
     parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--resume", action="store_true",
-                        help="skip units whose result JSON already exists")
+                        help="skip units with a completed (non-error) result JSON; "
+                        "re-run error results")
     parser.add_argument("--budget", type=float, default=None,
                         help="start no new unit after this many seconds")
     parser.add_argument("--index-only", action="store_true",
@@ -394,11 +388,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="rebuild summary.json files from existing results")
     parser.add_argument("--model", default=None)
     parser.add_argument("--ollama-url", default=None)
+    parser.add_argument("--gpu-model", choices=sorted(GPU_MODELS), default=None,
+                        help="Use the GPU cluster tunnel with a registered model "
+                        "(thinking off). Cannot be combined with --model.")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
+    if args.gpu_model and args.model:
+        parser.error("--gpu-model cannot be combined with --model")
     setup_logging(args.verbose)
 
     config = LGTMConfig()  # defaults: every experiment flag off
+    if args.gpu_model:
+        apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:
@@ -429,6 +430,12 @@ def main(argv: list[str] | None = None) -> int:
 
     units = list(pending_units(work_units(cases, args.modes, variants),
                                args.output, args.resume and not args.index_only))
+    if not args.summarize_only and not args.index_only:
+        evaluate.write_run_manifest(
+            Path(args.output),
+            {"model": config.ollama_model, "ollama_base_url": config.ollama_base_url,
+             "reasoning": config.reasoning, "mode": None, "modes": list(args.modes)},
+            args.resume, parser)
     started = time.monotonic()
     touched: set[tuple[str, str]] = set()
     done = 0
@@ -446,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                               config, index_only=args.index_only)
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
             result = error_result(case, mode, variant, exc)
+        if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
         if result is None or args.index_only:
@@ -455,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         (out_dir / f"{case['id']}.json").write_text(
             json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
         touched.add((mode, variant))
-        if result["predicted"] != "error":
+        if not evaluate.result_is_error(result):
             if result.get("index_seconds") is not None:
                 index_note = f"index {result['index_seconds']}s"
                 index_note += " (reused)" if result.get("index_reused") else ""
@@ -473,12 +481,14 @@ def main(argv: list[str] | None = None) -> int:
     for mode, variant in sorted(targets):
         summary = write_dir_summary(
             out_dir_for(args.output, mode, variant), mode, variant,
-            expected_ids(all_cases, mode, variant), config.ollama_model, env_info)
+            expected_ids(all_cases, mode, variant), config.ollama_model,
+            {**env_info, "reasoning": config.reasoning})
         if summary:
             o = summary["summary"]["overall"]
             print(f"summary {mode}{variant_suffix(variant)}: cases={o['cases']} "
-                  f"tp={o['tp']} fp={o['fp']} fn={o['fn']} tn={o['tn']} f1={o['f1']} "
-                  f"complete={summary['complete']}")
+                  f"scored={o['scored']} errors={o['errors']} "
+                  f"tp={o['tp']} fp={o['fp']} fn={o['fn']} tn={o['tn']} "
+                  f"f1={o['f1']} complete={summary['complete']}")
     return 0
 
 

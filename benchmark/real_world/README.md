@@ -83,9 +83,13 @@ PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes lgtm --resume 
 ```
 
 `evaluate_real.py` reuses the scoring of `benchmark/evaluate.py`. It is built
-for short foreground chunks (`--resume` skips cases whose result JSON exists,
-`--budget` stops starting new cases after N seconds) and builds a document
-index only when an agent can actually run. Results go to
+for short foreground chunks (`--resume` skips units whose result JSON exists
+and is not an error, re-runs error results, `--budget` stops starting new cases
+after N seconds) and builds a document index only when an agent can actually
+run. Each output root holds a `run.json` manifest; `--resume` refuses to
+continue a root produced with a different model or reasoning setting.
+`--gpu-model qwen3.8-27b` selects the GPU tunnel model with thinking disabled
+and cannot be combined with `--model`. Results go to
 `benchmark/results/real_world/` (git-ignored); curated runs are in
 [`benchmark/runs/real_world/`](../runs/real_world/), and the results and
 every miss are explained in [`docs/real-world-eval.md`](../../docs/real-world-eval.md).
