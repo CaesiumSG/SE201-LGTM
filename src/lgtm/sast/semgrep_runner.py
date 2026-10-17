@@ -59,9 +59,13 @@ def _semgrep_executable() -> list[str]:
     found = shutil.which("semgrep")
     if found:
         return [found]
-    sibling = Path(sys.executable).parent / "semgrep"
-    if sibling.is_file():
-        return [str(sibling)]
+    # which() with an explicit dir applies PATHEXT, so a Windows venv's
+    # semgrep.exe is found even when the venv is not activated. (A bare
+    # Path(...)/"semgrep" check missed it and fell through to `-m semgrep`,
+    # which semgrep >= 1.38 rejects.)
+    sibling = shutil.which("semgrep", path=str(Path(sys.executable).parent))
+    if sibling:
+        return [sibling]
     return [sys.executable, "-m", "semgrep"]
 
 
