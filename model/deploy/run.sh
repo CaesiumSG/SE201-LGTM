@@ -11,7 +11,7 @@ notebook=${1:-}
 "$DEPLOY_DIR/sync.sh"
 release=$(current_release)
 
-id=$(JOB_TIME="${2:-}" submit notebook "$release" "$notebook")
+id=$(JOB_TIME="${2:-}" submit_gpu notebook "$release" "$notebook")
 record_job notebook "$id" "$release"
 echo "submitted notebook job $id ($notebook, release $release)"
 echo "  progress: deploy/logs.sh $id -f"

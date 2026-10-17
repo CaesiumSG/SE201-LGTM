@@ -17,6 +17,7 @@ set +a
 
 : "${REMOTE_ROOT:=llm-serve}"
 : "${LOCAL_OLLAMA_PORT:=11435}"
+: "${FALLBACK_GRES:=gpu:rtx_pro_6000_blackwell_max:1}"
 
 # Only the Windows OpenSSH client can use the Windows ssh-agent service.
 if [[ -x /c/Windows/System32/OpenSSH/ssh.exe ]]; then
@@ -87,19 +88,35 @@ current_release() {
 }
 
 # Usage: submit <job> <release> [job args...]; prints the job id.
-# Set JOB_TIME to override the walltime in the sbatch file.
+# Set JOB_TIME or JOB_GRES to override the walltime or GPU request in the sbatch file.
 submit() {
   local job=$1 release=$2
   shift 2
-  local time_arg="" args=""
+  local time_arg="" gres_arg="" args=""
   [[ -n "${JOB_TIME:-}" ]] && time_arg="--time=$JOB_TIME"
+  [[ -n "${JOB_GRES:-}" ]] && gres_arg="--gres=$JOB_GRES"
   (($#)) && args=$(printf '%q ' "$@")
   remote "cd ~/$REMOTE_ROOT && sbatch --parsable \
     --account=$SLURM_ACCOUNT --partition=$SLURM_PARTITION --qos=$SLURM_QOS \
-    --mail-user=$NOTIFY_EMAIL --mail-type=END,FAIL $time_arg \
+    --mail-user=$NOTIFY_EMAIL --mail-type=END,FAIL $time_arg $gres_arg \
     --output=logs/%x-%j.out \
     --export=ALL,LLM_SERVE_ROOT=\$HOME/$REMOTE_ROOT,LLM_SERVE_APP=\$HOME/$REMOTE_ROOT/app/$release \
     app/$release/jobs/$job.sbatch $args" | tr -d '\r' | cut -d';' -f1
+}
+
+# Like submit, but resubmits with FALLBACK_GRES when the sbatch file's GPU type has
+# no free card. Jobs held by a QOS limit stay queued.
+submit_gpu() {
+  local id state reason
+  id=$(submit "$@")
+  for _ in {1..10}; do
+    read -r state reason < <(remote "squeue -h -j $id -o '%T %r'" | tr -d '\r') || true
+    [[ "$state" == PENDING && "$reason" =~ ^(None|Resources|Priority)$ ]] || { echo "$id"; return 0; }
+    sleep 3
+  done
+  remote "scancel $id"
+  echo "no free GPU for job $id; resubmitting with $FALLBACK_GRES" >&2
+  JOB_GRES=$FALLBACK_GRES submit "$@"
 }
 
 # Progress goes to stderr so callers can capture the result on stdout.

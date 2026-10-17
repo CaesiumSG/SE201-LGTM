@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:3090:1
 #SBATCH --time=08:00:00
 
 # Usage: serve.sbatch [model]   (default: DEFAULT_MODEL from cluster.env)
