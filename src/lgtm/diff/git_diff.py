@@ -19,6 +19,18 @@ HUNK_HEADER_RE = re.compile(
     r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
 )
 
+# The two paths on a "diff --git" line, quoted or plain (plain may have spaces)
+DIFF_GIT_RE = re.compile(
+    r'^diff --git (?P<old>"(?:[^"\\]|\\.)*"|a/.*?) (?P<new>"(?:[^"\\]|\\.)*"|b/.*)$'
+)
+
+# Escapes inside a quoted path: octal bytes (\303) or C escapes (\t, \")
+QUOTED_ESCAPE_RE = re.compile(rb'\\([0-7]{3}|[abtnvfr"\\])')
+C_ESCAPES = {
+    b"a": b"\a", b"b": b"\b", b"t": b"\t", b"n": b"\n", b"v": b"\v",
+    b"f": b"\f", b"r": b"\r", b'"': b'"', b"\\": b"\\",
+}
+
 
 class GitError(RuntimeError):
     """Raised when a git subprocess call fails."""
@@ -92,11 +104,21 @@ class FileDiff:
 
 
 def _run_git(args: list[str], repo: str | Path, timeout: int = 60) -> str:
+    """Run a git command in ``repo`` and return its output.
+
+    Some files aren't UTF-8 (e.g. Latin-1). Bytes that can't be decoded
+    become "�" instead of crashing the review. Line numbers don't change.
+    """
     cmd = ["git", "-C", str(repo), *args]
     logger.debug("Running: %s", " ".join(cmd))
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise GitError(f"git command timed out after {timeout}s: {' '.join(cmd)}") from exc
@@ -135,6 +157,32 @@ def read_file_at_ref(
     return _run_git(["show", f"{ref}:{path}"], repo, timeout)
 
 
+def _unquote_path(path: str) -> str:
+    """Turn a path git has quoted back into the real path.
+
+    git quotes paths with unusual characters, e.g. ``café.py`` becomes
+    ``"caf\\303\\251.py"``. Unquoted paths are returned as they are.
+    """
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return path
+    raw = QUOTED_ESCAPE_RE.sub(
+        lambda m: bytes([int(m.group(1), 8)])
+        if len(m.group(1)) == 3
+        else C_ESCAPES[m.group(1)],
+        path[1:-1].encode("utf-8"),
+    )
+    return raw.decode("utf-8", errors="replace")
+
+
+def _diff_path(token: str, prefix: str) -> str:
+    """Unquote a diff path, then remove its ``a/`` or ``b/`` prefix.
+
+    Unquote first: in ``"b/caf\\303\\251.py"`` the prefix is inside the quotes.
+    """
+    path = _unquote_path(token)
+    return path[len(prefix):] if path.startswith(prefix) else path
+
+
 def parse_unified_diff(diff_text: str) -> list[FileDiff]:
     """Parse unified diff text into structured FileDiff objects."""
     files: list[FileDiff] = []
@@ -146,10 +194,10 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
         if line.startswith("diff --git "):
             current = None
             hunk = None
-            # Paths are resolved from the ---/+++ lines that follow.
-            match = re.match(r'^diff --git "?a/(.*?)"? "?b/(.*?)"?$', line)
-            old_p = match.group(1) if match else None
-            new_p = match.group(2) if match else None
+            # Fallback paths; the ---/+++ lines override them when present
+            match = DIFF_GIT_RE.match(line)
+            old_p = _diff_path(match.group("old"), "a/") if match else None
+            new_p = _diff_path(match.group("new"), "b/") if match else None
             current = FileDiff(path=new_p or "", old_path=old_p)
             files.append(current)
             continue
@@ -163,20 +211,20 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
             continue
         if line.startswith("rename from "):
             current.status = "renamed"
-            current.old_path = line[len("rename from "):].strip()
+            current.old_path = _unquote_path(line[len("rename from "):].strip())
             continue
         if line.startswith("rename to "):
-            current.path = line[len("rename to "):].strip()
+            current.path = _unquote_path(line[len("rename to "):].strip())
             continue
         if line.startswith("--- "):
             path = line[4:].strip()
             if path != "/dev/null":
-                current.old_path = path[2:] if path.startswith("a/") else path
+                current.old_path = _diff_path(path, "a/")
             continue
         if line.startswith("+++ "):
             path = line[4:].strip()
             if path != "/dev/null":
-                current.path = path[2:] if path.startswith("b/") else path
+                current.path = _diff_path(path, "b/")
             elif current.old_path:
                 current.path = current.old_path
             continue
