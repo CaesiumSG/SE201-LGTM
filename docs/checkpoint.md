@@ -12,13 +12,16 @@ specification:
   scope changes, and the AI use log.
 
 The detailed experiment history, with every failure we hit and how we fixed
-it, is in [`evaluation-log.md`](evaluation-log.md).
+it, is in [`evaluation-log.md`](evaluation-log.md). The evaluation on
+published CVEs in real open-source projects is in
+[`real-world-eval.md`](real-world-eval.md).
 
 ## Summary
 
 - **Status:** all architecture components are built, connected and
-  evaluated.
-- **Final results** (36 cases; held-out eval split in brackets):
+  evaluated, on our synthetic benchmark and on real-world CVEs.
+- **Results on the synthetic benchmark** (Shoply, 36 cases; held-out eval
+  split in brackets):
 
   | Mode | F1 |
   |---|---|
@@ -26,19 +29,33 @@ it, is in [`evaluation-log.md`](evaluation-log.md).
   | LLM-only baseline | 0.75 (0.75) |
   | SAST-only baseline | 0.62 (0.63) |
 
-- **What the AI adds:**
+- **Results on real-world CVEs** (6 published advisories in open-source
+  Python projects, 12 cases, held out, nothing tuned on them):
+
+  | Mode | F1 |
+  |---|---|
+  | LGTM | 0.44 |
+  | **LLM-only baseline** | **0.80** |
+  | SAST-only baseline | 0.44 |
+
+  **LGTM did not reproduce its synthetic result on real code.** SQL
+  injection triage carried over (SQLi F1 0.80 vs 0.67 for SAST alone).
+  Authorization detection did not (F1 0.00): in 4 of 6 cases our
+  pattern-based endpoint detector never sent the code to the agent. See §3a.
+- **What the AI adds (synthetic benchmark):**
   - Without the security policy, the bare LLM catches 0 of 6
     authorization flaws; LGTM catches all 6.
   - Semgrep wrongly flags 75% of safe parameterized SQL; LGTM's triage
     brings that to 0%.
 - **What doesn't work yet:**
+  - On real projects the agents only run where a regex-style detector
+    fires, and they see only the changed file, so authorization checks that
+    live elsewhere are invisible to them.
+  - The 7B model doesn't use its tools: 0 tool calls on all 54 real-world
+    findings, and on Shoply forcing tool use cost 6.6× latency for no gain.
   - The authz agent raises ownership warnings on 22 of 24 endpoints in the
-    SQLi cases, which case-level scoring doesn't count.
-  - The 7B model doesn't use its tools unless forced, and forcing costs
-    6.6× latency for no gain.
+    Shoply SQLi cases, which case-level scoring doesn't count.
   - Verdicts can flip on irrelevant prompt changes.
-- **Not met:** commit history from every team member, and per-member AI
-  use entries. These are team actions.
 
 
 ## 1. Architecture: in place and connected
@@ -48,7 +65,7 @@ end from one command (`lgtm review`):
 
 | Stage | Component | Status |
 |---|---|---|
-| 1. Context building | `diff/git_diff.py` (git diff), `sast/semgrep_runner.py` (Semgrep CE, bundled CWE-89 rules), `rag/` (ChromaDB index of policy docs + source code) | ✅ working |
+| 1. Context building | `diff/git_diff.py` (git diff), `sast/semgrep_runner.py` (Semgrep CE, bundled CWE-89 rules), `rag/` (ChromaDB index of policy docs + source code) | ✅ working; the diff reader was hardened for real repos (non-UTF-8 files, quoted paths) |
 | 2. SAST triage agent | `agents/sast_triage.py` — CWE-89 true/false positive | ✅ working |
 | 3. Authorization agent | `agents/authz_reviewer.py` — CWE-639/862/863 against the retrieved policy | ✅ working |
 | Agent tools | `agents/tools.py` — `read_file`, `grep_repo`, `search_policy`, `search_code`; read-only, base branch only, 5-call budget | ⚠️ implemented, but rarely used by the model (see below) |
@@ -56,6 +73,8 @@ end from one command (`lgtm review`):
 | 5. Report builder | `reporting/report_builder.py` — `report.json` + `report.md`, CWE, evidence, suggested fix | ✅ working |
 | Baselines | `--mode sast-only` (A), `--mode llm-only` (B), plus ablation `--mode lgtm-no-sast` | ✅ working |
 | Benchmark harness | `benchmark/evaluate.py` — 36 cases, dev/eval split, all proposal metrics | ✅ working |
+| Real-world benchmark | `benchmark/real_world/` — 12 cases from 6 published CVEs; `fetch.py` rebuilds them from the upstream fix commits, `evaluate_real.py` scores them with the same metrics | ✅ working |
+| Model server (optional) | `model/` — serves the Ollama model from the SCIS GPU cluster and tunnels it to the laptop; LGTM uses it via `--ollama-url` | ✅ working; not yet used for a benchmark run |
 
 ### Simplified or stubbed components (honest list)
 
@@ -63,20 +82,31 @@ end from one command (`lgtm review`):
   and we fixed a parsing bug so that text-form tool calls are executed. But
   `qwen2.5-coder:7b` answers from the pre-retrieved context and almost never
   calls them. We tested forcing tool use as an experiment (see the evaluation
-  log). The "agentic workflow" claim should be read with this in mind.
+  log). On the real-world cases it made 0 tool calls across 54 findings.
+  The "agentic workflow" claim should be read with this in mind.
 - **SAST is SQL-injection only**, using 4 hand-written pattern rules. These
   are not Semgrep taint-mode rules, and not the Semgrep registry, so the tool
   works offline.
-- **Endpoint detection is pattern-based**: Flask/FastAPI route decorators
-  only.
+- **Endpoint detection is pattern-based**: single-line Flask/FastAPI route
+  decorators, and only inside a changed hunk. The real-world evaluation
+  showed this is the main reason LGTM misses real authorization flaws: the
+  check is often far from the decorator, or the decorator spans several
+  lines.
+- **The authz agent sees only the endpoint file's diff.** An ownership
+  check in another module (e.g. a CRUD layer) is not in its prompt.
 - **Suggested fixes are prose, not patches.** The proposal said "propose a
   patch"; we output a textual fix suggestion. Patch generation is not built.
 - **No GitHub integration.** LGTM is a CLI over two git refs; it does not
   post PR comments. A CLI is acceptable per the spec.
 - **"Tokens per PR" is an estimate** (characters ÷ 4 of the findings), not
   the model's real token count.
-- **The benchmark is synthetic**: one small Flask app (Shoply) with 18
-  generated vulnerable/safe PR pairs. It is not mined from real-world PRs.
+- **The main benchmark is synthetic**: one small Flask app (Shoply) with 18
+  generated vulnerable/safe PR pairs. The real-world benchmark is real code
+  but small (12 cases), and its vulnerable PRs are synthetic reverts of the
+  upstream fix, not PRs a developer actually opened.
+- **The OWASP cases are translated, not extracted.** OWASP Benchmark is a
+  Java test suite; our 6 OWASP-derived pairs re-implement its SQLi patterns
+  in Python/Flask, because LGTM targets Python.
 
 ## 2. Core feature demonstration
 
@@ -106,6 +136,63 @@ evidence and validation results) are committed in `benchmark/runs/`.
   repaired. Every citation is validated after the fact.
 - **Tool calling:** implemented, but under-used (see §1).
 
+## 3a. Real-world evaluation
+
+Following instructor feedback, we tested LGTM on code we did not write.
+Full write-up: [`real-world-eval.md`](real-world-eval.md); cases and
+reproduction: [`benchmark/real_world/`](../benchmark/real_world/).
+
+- **Cases:** 6 published advisories (GHSA/CVE) in pyload, postgraas_server,
+  alerta (SQLi, CWE-89) and aegra, langflow, litellm (authz, CWE-639/863).
+  Each gives a safe case (the real fix commit) and a vulnerable case (the
+  fix reverted on top of it). Advisory ids and SHAs were checked against
+  the GitHub API, and `fetch.py` re-verifies them on every run.
+- **Protocol:** held out. All experiment flags off, and no prompt, rule or
+  config was changed for these cases. Authz cases were run twice: with the
+  project's own docs, and with a short policy written from its public
+  documentation before any model run.
+
+| Mode | TP | FP | FN | TN | Precision | Recall | F1 | SQLi F1 | Authz F1 |
+|---|---|---|---|---|---|---|---|---|---|
+| sast-only | 2 | 1 | 4 | 5 | 0.67 | 0.33 | 0.44 | 0.67 | 0.00 |
+| llm-only | 4 | 0 | 2 | 6 | 1.00 | 0.67 | 0.80 | 0.80 | 0.80 |
+| lgtm | 2 | 1 | 4 | 5 | 0.67 | 0.33 | 0.44 | 0.80 | 0.00 |
+| lgtm-no-sast | 2 | 1 | 4 | 5 | 0.67 | 0.33 | 0.44 | 0.80 | 0.00 |
+
+**What failed, and why** (each cause is traced to a run file in the
+write-up):
+
+1. **The agent runs only where a detector fires.** 7 of 12 LGTM cases ran
+   no agent at all. For authz, 4 of 6 cases had no detected endpoint,
+   because the route decorator was outside the changed lines or spanned
+   several lines.
+2. **The agent sees only the endpoint file.** In langflow the fix's
+   ownership check is in `crud.py`, so the agent called the *fixed* code
+   vulnerable. It made no tool call to look further.
+3. **Authentication was accepted as authorization** when the retrieved
+   text was not an access rule.
+4. **The validator checks existence, not relevance.** A link sentence from
+   `SECURITY.md`, and a policy rule about deleting *user accounts*, both
+   passed validation and were cited as the rule for API keys.
+5. **The SQLi sink pattern is narrow.** In alerta the injection is not an
+   `execute()` call in the diff, so Semgrep and the heuristic found nothing.
+6. **The LLM-only score is inflated by how the cases are built.** In two
+   authz cases the vulnerable diff visibly *deletes* the guard, and the
+   baseline's explanations say exactly that. A real vulnerable PR that never
+   had the check would not show this.
+
+**What carried over:** SQLi triage still removed the Semgrep false alarm
+(pyload), and every case with a real `execute()` sink was caught.
+
+**Learning.** On Shoply, decorator and check sit together in one file, and
+our pre-retrieval design worked. On real projects, the context the reviewer
+needs is spread across files, which is the scenario where the agent should
+fetch code itself. It didn't: our detectors skip the agent before it can
+use its tools, and the 7B model doesn't call them anyway. Next steps are to
+let the agent run when no endpoint is detected in the diff, to put the
+relevant callees in its context, and to test a larger model (via the GPU
+model server) to see whether tool use improves.
+
 ## 4. Progress against the proposal's checkpoint targets
 
 | Target (from proposal §6) | Status | Notes |
@@ -117,17 +204,18 @@ evidence and validation results) are committed in `benchmark/runs/`.
 | Evidence validation | ✅ Met | Two validator bugs found and fixed during evaluation |
 | Connected architecture, stubs documented | ✅ Met | §1 above |
 | Benchmark: base repo + ≥4 seeded cases | ✅ Exceeded | 36 cases (18 pairs), balanced dev/eval split |
-| Initial evaluation round | ✅ Exceeded | Five rounds + a final clean run; see `evaluation-log.md` |
+| Initial evaluation round | ✅ Exceeded | Five rounds + a final clean run on Shoply (`evaluation-log.md`), plus a held-out real-world run (§3a) |
 | README + setup instructions | ✅ Met | `README.md` |
-| Contribution history from all five members | ❌ **Not met** | Almost every commit is from one account so far. Each member must commit their own work before 18 Oct (see §7) |
+| Contribution history from all five members | ⚠️ In progress | Commits so far: Jia Jun (pipeline, benchmark, evaluation), Kai Zhe (real-world benchmark and evaluation), Jin Rae (GPU model server), Hsu (diff reader hardening). Brian's prompt-injection work is in progress |
 | Progress / scope-change notes | ✅ Met | This document |
-| AI-use disclosure log | ⚠️ Partial | [`ai-use-log.md`](ai-use-log.md): entries reconstructed from git history; every member still needs to add their own |
+| AI-use disclosure log | ⚠️ Partial | [`ai-use-log.md`](ai-use-log.md): Jia Jun and Kai Zhe have entries; the other members are adding theirs |
 
 ## 5. Changes to scope, design and technology since the proposal
 
 | Change | Why |
 |---|---|
-| Benchmark grew from 24 to **36 cases** (added 6 OWASP-Benchmark-derived SQLi pairs) | Instructor feedback: dataset too small; positives and negatives stay balanced |
+| Benchmark grew from 24 to **36 cases** (added 6 OWASP-Benchmark-derived SQLi pairs, translated from Java to Python/Flask) | Instructor feedback: dataset too small; positives and negatives stay balanced. OWASP Benchmark is Java-only, so we re-implemented its SQLi patterns rather than extracting cases directly |
+| Added a **real-world benchmark**: 12 cases from 6 published CVEs (§3a) | Instructor feedback: test on real projects, not only our own toy app |
 | Held-out set grew from "4 pairs" to a **balanced 9 vulnerable + 9 safe eval split** | Instructor feedback; a fixed dev/eval protocol to stop us tuning on test data |
 | Added a `search_code` tool (semantic RAG over the source) | Instructor feedback: retrieve code, not only docs |
 | **ChromaDB** chosen over FAISS; embedding model `all-MiniLM-L6-v2` | Persistent local store with metadata (line numbers) for citations |
@@ -136,22 +224,32 @@ evidence and validation results) are committed in `benchmark/runs/`.
 | **LLM-only baseline rebuilt** (13 Oct) to match the proposal: no SAST, no RAG, no tools | The first version gave the baseline the same RAG and tools as LGTM, so the comparison could not show what they add. The old setup is kept as the ablation `lgtm-no-sast` |
 | Added "grounded" metrics and an off-category false-alarm metric | Proposal success criterion 3 requires detections *with appropriate evidence*; case-level scoring was hiding authz false alarms on SQLi cases |
 | Added experimental flags `static_facts` and `require_tool_use` | Fixes for failures found in evaluation (see the evaluation log) |
+| Added an optional **GPU-cluster model server** (`model/`, `--ollama-url`) | Laptop runs of the 7B model were slow (about 5 tokens/s in the real-world run), and the cluster lets us try larger models |
+| Hardened the git diff reader | Real repositories contain non-UTF-8 files and paths that git quotes, which crashed reviews |
 
 ## 6. Responsible AI: risks and mitigations so far
 
 | Risk | Mitigation in LGTM | Residual risk observed |
 |---|---|---|
-| Hallucinated evidence | Evidence validator checks every cited file, line, snippet and policy quote; results are reported with and without ungrounded findings | The model still invents policy file names (e.g. `security_policy.md`) and documentation URLs; the validator cannot check *relevance*, only existence |
+| Hallucinated evidence | Evidence validator checks every cited file, line, snippet and policy quote; results are reported with and without ungrounded findings | The model still invents policy file names (e.g. `security_policy.md`) and documentation URLs; the validator cannot check *relevance*, only existence. On real projects, irrelevant but real text (a link sentence, a rule about a different resource) passed validation and was cited as the governing rule |
 | Over-confident verdicts | Four-way verdict scheme including `possible` / `insufficient_evidence` | With context, the model almost never hedges (0 `possible` in LGTM runs) |
 | Prompt injection from PR content | PR diff is labelled untrusted; tools read only the base branch; tools are read-only and capped | Not adversarially tested yet: no benchmark case contains an injection attempt |
 | Privacy / IP | Model runs locally via Ollama, so no code leaves the machine | None for local use |
 | Automation bias | LGTM reports and never auto-fixes; a human decides | Users may still over-trust a confident "safe" |
 | Non-determinism | Temperature 0; identical prompts gave identical verdicts across runs | Verdicts flip when *irrelevant* prompt text changes (a file path in a rule ID flipped one); see the evaluation log |
 
-## 7. Actions before the 18 Oct submission
+## 7. Next steps towards the final submission
 
-1. **Every member commits their own work** to the shared repo. The spec
-   checks for "a commit history showing contributions from every team
-   member".
-2. **Every member adds their AI-tool usage** to `docs/ai-use-log.md`.
-3. Confirm the instructor has read access to `CaesiumSG/SE201-LGTM`.
+1. **Prompt-injection testing** (Brian): adversarial PRs whose comments or
+   strings try to make LGTM call vulnerable code safe, with attack success
+   rates before and after mitigation.
+2. **Field trial on ordinary merged PRs** (Hsu): crash rate, latency and
+   false-alarm rate on real open-source PRs.
+3. **Reduce off-category authz false alarms** (open problem in the
+   evaluation log): input scoping or a second-pass verifier, tuned on dev
+   only.
+4. **Address the real-world failures** (§3a): run the agent when no
+   endpoint is detected, give it the relevant callees, and test a larger
+   model on the GPU server.
+5. **Grow the benchmark**: more OWASP-derived and real-world cases, so one
+   flipped verdict no longer moves F1 by about 0.05.
