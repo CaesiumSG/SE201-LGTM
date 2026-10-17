@@ -90,6 +90,13 @@ thinking disabled. It cannot be combined with `--gpu-cluster` or
 - Code and docs are read from the **base branch only** — PR changes are
   treated as untrusted data (analyzed, never executed or obeyed).
 - Tool calls are **capped** (default 5 per agent invocation).
+- LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
+  before an agent run is reported as failed.
+- Tool arguments are **validated** against each tool's schema before the
+  tool runs. Invalid calls return an error to the agent without using the
+  tool-call budget, and the third invalid call in a run forces the final
+  answer.
+- Final answers that are not valid JSON are **re-requested** up to 3 times.
 - Every citation is **validated** post-hoc; ungrounded findings are flagged
   with `evidence_valid: false`.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.

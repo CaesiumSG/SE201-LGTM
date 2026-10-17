@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Literal
+import time
+from collections.abc import Callable
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -272,6 +274,95 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
     return calls
 
 
+_sleep = time.sleep
+
+FORCED_FINAL_MESSAGE = (
+    "You have used all available analysis steps. Produce your final "
+    "JSON verdict NOW based on the evidence gathered so far. "
+    "Respond with ONLY the JSON object."
+)
+REASK_MESSAGE = (
+    "Your last answer was not a valid JSON object. Reply with ONLY the "
+    "JSON verdict object, with no prose and no tool calls."
+)
+
+
+def message_text(response) -> str:
+    return response.content if isinstance(response.content, str) else str(response.content)
+
+
+def is_json_object(text: str) -> bool:
+    return isinstance(extract_json_object(text), dict)
+
+
+def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
+    attempts = max(0, config.llm_retries) + 1
+    delays = tuple(config.llm_backoff_seconds)
+    for attempt in range(1, attempts + 1):
+        try:
+            return llm.invoke(messages)
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            delay = delays[min(attempt - 1, len(delays) - 1)] if delays else 0.0
+            logger.warning(
+                "LLM call failed (attempt %d of %d): %s: %s; retrying in %.1fs",
+                attempt,
+                attempts,
+                type(exc).__name__,
+                str(exc)[:200],
+                delay,
+            )
+            _sleep(delay)
+
+
+def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None:
+    if not isinstance(name, str) or name not in tool_map:
+        available = ", ".join(sorted(tool_map)) or "none"
+        details = f"unknown tool; available tools: {available}"
+    elif not isinstance(args, dict):
+        details = "arguments must be a JSON object"
+    else:
+        schema = getattr(tool_map[name], "args_schema", None)
+        if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            return None
+        try:
+            schema.model_validate(args)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(str(p) for p in e['loc']) or 'arguments'}: {e['msg']}"
+                for e in exc.errors()
+            )
+        else:
+            return None
+    details = details[:300].rstrip(". ")
+    return (
+        f"ERROR: invalid input for tool '{name}': {details}. "
+        "Fix the arguments and call the tool again."
+    )
+
+
+def request_valid_answer(
+    llm,
+    messages: list,
+    content: str,
+    config: LGTMConfig,
+    is_valid: Callable[[str], bool],
+) -> str:
+    from langchain_core.messages import HumanMessage
+
+    reasks = 0
+    cap = max(0, config.max_answer_reasks)
+    while not is_valid(content) and reasks < cap:
+        reasks += 1
+        logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
+        messages.append(HumanMessage(content=REASK_MESSAGE))
+        response = invoke_with_retry(llm, messages, config)
+        messages.append(response)
+        content = message_text(response)
+    return content
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -281,8 +372,10 @@ def run_tool_loop(
 ) -> str:
     """Run a manual tool-calling loop and return the final text response.
 
-    The loop stops when the model answers without tool calls or when the
-    iteration cap is reached (the model is then forced to answer).
+    The loop stops when the model answers without tool calls, when the
+    iteration cap is reached, or when the invalid tool input cap is reached
+    (the model is then forced to answer). Final answers that are not JSON
+    objects are re-asked up to ``max_answer_reasks`` times.
     """
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
@@ -291,12 +384,14 @@ def run_tool_loop(
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     tools_used = 0
     pushed_back = False
+    invalid_inputs = 0
+    cap = config.max_invalid_tool_inputs
 
     for iteration in range(config.max_agent_iterations):
-        response = llm_with_tools.invoke(messages)
+        response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
-        content = response.content if isinstance(response.content, str) else str(response.content)
+        content = message_text(response)
         text_calls = False
         if not tool_calls:
             tool_calls = parse_text_tool_calls(content, set(tool_map))
@@ -317,19 +412,21 @@ def run_tool_loop(
                         )
                     )
                     continue
-                return content
+                return request_valid_answer(llm, messages, content, config, is_json_object)
 
-        tools_used += len(tool_calls)
         for call in tool_calls:
             name = call.get("name")
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
-            tool_fn = tool_map.get(name)
-            if tool_fn is None:
-                result = f"ERROR: unknown tool '{name}'"
+            error = validate_tool_call(name, tool_map, args)
+            if error:
+                invalid_inputs += 1
+                logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
+                result = error
             else:
+                tools_used += 1
                 try:
-                    result = tool_fn.invoke(args)
+                    result = tool_map[name].invoke(args)
                 except Exception as exc:  # noqa: BLE001 - surface to the model
                     logger.warning("Tool %s raised: %s", name, exc)
                     result = f"ERROR: tool failed: {exc}"
@@ -338,23 +435,20 @@ def run_tool_loop(
                 # result as a user turn instead.
                 messages.append(
                     HumanMessage(
-                        content=f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
+                        content=f"Result of {name}({json.dumps(args, default=str)}):\n{result}\n\n"
                         "Call another tool, or give your final JSON verdict."
                     )
                 )
             else:
                 messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+        if cap > 0 and invalid_inputs >= cap:
+            break
 
-    # Iteration cap reached: force a final answer without tools.
-    logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
-    messages.append(
-        HumanMessage(
-            content=(
-                "You have used all available analysis steps. Produce your final "
-                "JSON verdict NOW based on the evidence gathered so far. "
-                "Respond with ONLY the JSON object."
-            )
-        )
-    )
-    response = llm.invoke(messages)
-    return response.content if isinstance(response.content, str) else str(response.content)
+    if cap > 0 and invalid_inputs >= cap:
+        logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
+    else:
+        logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
+    messages.append(HumanMessage(content=FORCED_FINAL_MESSAGE))
+    response = invoke_with_retry(llm, messages, config)
+    messages.append(response)
+    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)

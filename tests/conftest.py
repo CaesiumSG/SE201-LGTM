@@ -54,3 +54,15 @@ def git_repo(tmp_path: Path) -> Path:
     git(repo, "commit", "-q", "-m", "add find_user")
     git(repo, "checkout", "-q", "main")
     return repo
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep(monkeypatch):
+    monkeypatch.setattr("lgtm.agents.base._sleep", lambda seconds: None)
+
+
+@pytest.fixture
+def sleeps(monkeypatch) -> list[float]:
+    recorded: list[float] = []
+    monkeypatch.setattr("lgtm.agents.base._sleep", recorded.append)
+    return recorded

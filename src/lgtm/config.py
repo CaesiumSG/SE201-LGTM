@@ -20,6 +20,10 @@ class LGTMConfig:
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
     reasoning: bool | None = None  # None leaves the model's default thinking behaviour
+    llm_retries: int = 3
+    llm_backoff_seconds: tuple[float, ...] = (2.0, 4.0, 8.0)
+    max_invalid_tool_inputs: int = 3
+    max_answer_reasks: int = 3
 
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules

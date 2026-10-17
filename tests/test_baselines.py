@@ -11,7 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
+from lgtm.agents.plain_reviewer import DEFAULT_CWE
 from lgtm.config import LGTMConfig
+from lgtm.diff.git_diff import parse_unified_diff
 from lgtm.pipeline import ReviewPipeline
 
 _spec = importlib.util.spec_from_file_location(
@@ -619,3 +621,82 @@ class TestResume:
         assert evaluate.is_done(corrupt) is False
         assert evaluate.is_done(empty) is True
         assert evaluate.is_done(tmp_path / "missing.json") is False
+
+
+class _ScriptedPlainLLM:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        raise AssertionError("llm-only baseline must not use tools")
+
+    def invoke(self, messages):
+        self.calls += 1
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        msg = MagicMock()
+        msg.content = item
+        msg.tool_calls = []
+        return msg
+
+
+_DIFF = """diff --git a/app/routes/orders.py b/app/routes/orders.py
+--- a/app/routes/orders.py
++++ b/app/routes/orders.py
+@@ -40,3 +40,12 @@ def existing():
+     return x
++
++
++@orders_bp.route("/<int:order_id>", methods=["GET"])
++@require_auth
++def get_order(order_id):
++    return fetch(order_id)
++
++@api.get("/ping")
++def ping():
++    return "pong"
+"""
+
+
+class TestPlainReviewerResilience:
+    def _review(self, llm):
+        reviewer = PlainLLMReviewer(LGTMConfig(), llm=llm)
+        return reviewer.review(parse_unified_diff(_DIFF))
+
+    def test_retries_llm_call_with_backoff(self, sleeps):
+        llm = _ScriptedPlainLLM([RuntimeError("down"), ASSESSMENTS])
+        findings = self._review(llm)
+        assert sleeps == [2.0]
+        assert len(findings) == 2
+        assert llm.calls == 2
+        assert [(f.category, f.verdict) for f in findings] == [
+            ("sqli", "vulnerable"), ("authz", "safe"),
+        ]
+
+    def test_failure_after_retries_reports_llm_call_failed(self, sleeps):
+        llm = _ScriptedPlainLLM([RuntimeError("down")] * 4)
+        findings = self._review(llm)
+        assert sorted(f.category for f in findings) == sorted(DEFAULT_CWE)
+        assert all(f.explanation.startswith("LLM call failed") for f in findings)
+        assert llm.calls == 4
+        assert sleeps == [2.0, 4.0, 8.0]
+        assert all(f.verdict == "insufficient_evidence" for f in findings)
+        assert {f.category: f.cwe_id for f in findings} == DEFAULT_CWE
+
+    def test_unparsable_answer_is_reasked(self):
+        llm = _ScriptedPlainLLM(["I think it is fine.", ASSESSMENTS])
+        findings = self._review(llm)
+        assert llm.calls == 2
+        assert [(f.category, f.verdict) for f in findings] == [
+            ("sqli", "vulnerable"), ("authz", "safe"),
+        ]
+        assert all(f.finding_id != "plain:unparsable" for f in findings)
+
+    def test_gives_up_after_three_reasks(self):
+        llm = _ScriptedPlainLLM(["I think it is fine."] * 4)
+        findings = self._review(llm)
+        assert llm.calls == 4
+        assert [f.finding_id for f in findings] == ["plain:unparsable"]
+        assert findings[0].verdict == "insufficient_evidence"
