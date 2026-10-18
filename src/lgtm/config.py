@@ -19,6 +19,7 @@ class LGTMConfig:
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
+    llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
 
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules
