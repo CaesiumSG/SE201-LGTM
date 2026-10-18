@@ -44,7 +44,7 @@ python benchmark/evaluate.py --gpu-model qwen3.8-27b
 ```
 
 Use `--gpu-cluster` to connect through the existing tunnel at
-`http://127.0.0.1:11435` with `qwen2.5:7b`. Server and tunnel startup stay
+`http://127.0.0.1:11435` with `qwen3.8:27b`. Server and tunnel startup stay
 separate; see [`model/README.md`](../model/README.md). Explicit `--model`
 and `--ollama-url` options override the cluster defaults.
 

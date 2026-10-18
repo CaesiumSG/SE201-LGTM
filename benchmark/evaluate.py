@@ -348,7 +348,7 @@ def main() -> None:
     parser.add_argument(
         "--gpu-cluster", action="store_true",
         help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 "
-        "with qwen2.5:7b. Does not start the server or tunnel.",
+        "with qwen3.8:27b. Does not start the server or tunnel.",
     )
     parser.add_argument(
         "--gpu-model", choices=sorted(GPU_MODELS), default=None,
@@ -417,7 +417,7 @@ def main() -> None:
     if args.gpu_model:
         apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.gpu_cluster:
-        config.ollama_model = "qwen2.5:7b"
+        config.ollama_model = "qwen3.8:27b"
         config.ollama_base_url = "http://127.0.0.1:11435"
     if args.model:
         config.ollama_model = args.model

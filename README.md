@@ -51,7 +51,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" semgrep
 
 # 2. Install Ollama and pull the model
-ollama pull qwen2.5-coder:7b    # default; any tool-calling model works
+ollama pull qwen3.8:27b         # default; any tool-calling model works
 ollama serve                    # if not already running
 ```
 
@@ -63,7 +63,7 @@ lgtm index --repo /path/to/repo
 
 # Review a PR (diff of pr-branch against base-branch)
 lgtm review --repo /path/to/repo --base main --pr feature-branch \
-            --model qwen2.5-coder:7b --output lgtm-output
+            --model qwen3.8:27b --output lgtm-output
 
 # Baselines for comparison
 lgtm review ... --mode sast-only     # Baseline A: Semgrep only, no LLM

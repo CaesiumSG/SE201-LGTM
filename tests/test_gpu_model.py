@@ -41,13 +41,13 @@ class TestRegistry:
 
 
 class TestConfig:
-    def test_reasoning_defaults_to_none(self):
-        assert LGTMConfig().reasoning is None
+    def test_reasoning_defaults_to_off(self):
+        assert LGTMConfig().reasoning is False
 
     def test_reasoning_loads_from_config_file(self, tmp_path):
         path = tmp_path / "lgtm.json"
-        path.write_text(json.dumps({"reasoning": False}), encoding="utf-8")
-        assert LGTMConfig.from_file(path).reasoning is False
+        path.write_text(json.dumps({"reasoning": True}), encoding="utf-8")
+        assert LGTMConfig.from_file(path).reasoning is True
 
 
 class _RecordingChatOllama:
@@ -58,7 +58,7 @@ class _RecordingChatOllama:
 class TestBuildLlm:
     def test_reasoning_omitted_when_none(self, monkeypatch):
         monkeypatch.setattr("langchain_ollama.ChatOllama", _RecordingChatOllama)
-        llm = build_llm(LGTMConfig())
+        llm = build_llm(LGTMConfig(reasoning=None))
         assert "reasoning" not in llm.kwargs
 
     @pytest.mark.parametrize("reasoning", [False, True])
@@ -69,4 +69,4 @@ class TestBuildLlm:
 
     def test_installed_chatollama_accepts_reasoning(self):
         assert build_llm(LGTMConfig(reasoning=False)).reasoning is False
-        assert build_llm(LGTMConfig()).reasoning is None
+        assert build_llm(LGTMConfig(reasoning=None)).reasoning is None

@@ -7,11 +7,11 @@ from lgtm.cli import main
 
 
 @pytest.mark.parametrize("options,model,url", [
-    ([], "qwen2.5-coder:7b", "http://localhost:11434"),
-    (["--gpu-cluster"], "qwen2.5:7b", "http://127.0.0.1:11435"),
+    ([], "qwen3.8:27b", "http://localhost:11434"),
+    (["--gpu-cluster"], "qwen3.8:27b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--model", "custom:7b"], "custom:7b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--ollama-url", "http://127.0.0.1:12000"],
-     "qwen2.5:7b", "http://127.0.0.1:12000"),
+     "qwen3.8:27b", "http://127.0.0.1:12000"),
 ])
 def test_review_model_connection(tmp_path, monkeypatch, options, model, url):
     pipeline = MagicMock()
@@ -129,7 +129,7 @@ def test_gpu_model_rejects_unknown_key(tmp_path, monkeypatch):
     assert result.exit_code == 2
 
 
-def test_reasoning_unset_without_gpu_model(tmp_path, monkeypatch):
+def test_reasoning_off_without_gpu_model(tmp_path, monkeypatch):
     pipeline = _mock_pipeline(monkeypatch)
 
     result = CliRunner().invoke(main, [
@@ -137,4 +137,4 @@ def test_reasoning_unset_without_gpu_model(tmp_path, monkeypatch):
     ])
 
     assert result.exit_code == 0, result.output
-    assert pipeline.call_args.args[1].reasoning is None
+    assert pipeline.call_args.args[1].reasoning is False

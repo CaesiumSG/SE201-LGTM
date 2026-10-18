@@ -148,7 +148,7 @@ terminal open. In a second Git Bash terminal, check the connection:
 curl http://127.0.0.1:11435/api/tags
 ```
 
-You should see JSON listing `qwen2.5:7b`. The model runs only while the job
+You should see JSON listing `qwen3.8:27b`. The model runs only while the job
 is active (8 hours by default); the tunnel exposes it on your laptop, not
 publicly. To stop the job, run `model/deploy/down.sh` from another terminal.
 
@@ -177,7 +177,7 @@ lgtm review --repo /path/to/repo --base main --pr feature-branch --gpu-cluster
 python benchmark/evaluate.py --gpu-cluster
 ```
 
-`--gpu-cluster` selects `http://127.0.0.1:11435` and `qwen2.5:7b`; it does
+`--gpu-cluster` selects `http://127.0.0.1:11435` and `qwen3.8:27b`; it does
 not start the server or tunnel. `--model` and `--ollama-url` override these
 defaults, including when the tunnel uses a different local port.
 
@@ -194,8 +194,8 @@ defaults, including when the tunnel uses a different local port.
 | Internet from compute nodes | Ollama registry, PyPI, GitHub and Hugging Face reachable |
 | Storage | home and scratch share one 704 TB filesystem; `myinfo`'s quota line is broken |
 
-Model sizing for a 24 GB GPU: `qwen2.5:7b` (~4.7 GB) fits with ample room
-for context. LGTM's agent loop also recovers tool calls written as plain text
+Model sizing for a 24 GB GPU: `qwen3.8:27b` (~17 GB) fits fully in GPU
+memory at 32768 context (table below). LGTM's agent loop also recovers tool calls written as plain text
 (`parse_text_tool_calls` in `src/lgtm/agents/base.py`). A `mynotebook` session
 counts against the 2-running-jobs limit.
 

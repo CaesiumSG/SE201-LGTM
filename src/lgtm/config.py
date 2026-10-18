@@ -15,11 +15,11 @@ class LGTMConfig:
     """Central configuration for all LGTM components."""
 
     # LLM
-    ollama_model: str = "qwen2.5-coder:7b"
+    ollama_model: str = "qwen3.8:27b"
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
-    reasoning: bool | None = None  # None leaves the model's default thinking behaviour
+    reasoning: bool | None = False  # None leaves the model's default thinking behaviour
     llm_retries: int = 3
     llm_backoff_seconds: tuple[float, ...] = (2.0, 4.0, 8.0)
     max_invalid_tool_inputs: int = 3

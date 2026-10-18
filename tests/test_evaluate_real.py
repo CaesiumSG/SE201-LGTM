@@ -381,4 +381,4 @@ class TestGpuModel:
         without_flag = json.loads(summary_path.read_text(encoding="utf-8"))
 
         assert with_flag["reasoning"] is False
-        assert without_flag["reasoning"] is None
+        assert without_flag["reasoning"] is False

@@ -53,9 +53,9 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository under review.")
 @click.option("--base", required=True, help="Base branch (trusted).")
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
-@click.option("--model", default=None, help="Ollama model name (default: qwen2.5-coder:7b).")
+@click.option("--model", default=None, help="Ollama model name (default: qwen3.8:27b).")
 @click.option("--ollama-url", default=None, help="Ollama base URL.")
-@click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen2.5:7b. Does not start the server or tunnel.")
+@click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen3.8:27b. Does not start the server or tunnel.")
 @click.option("--gpu-model", type=click.Choice(sorted(GPU_MODELS)), default=None, help="Use the GPU cluster tunnel at http://127.0.0.1:11435 with a registered model (thinking off). Cannot be combined with --gpu-cluster or --model; --ollama-url overrides the URL.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
 @click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
@@ -87,7 +87,7 @@ def review(
     from lgtm.pipeline import ReviewPipeline
 
     if gpu_cluster:
-        model = model or "qwen2.5:7b"
+        model = model or "qwen3.8:27b"
         ollama_url = ollama_url or "http://127.0.0.1:11435"
     config = _load_config(
         config_file,

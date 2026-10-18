@@ -157,11 +157,11 @@ def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("options,model,url", [
-    ([], "qwen2.5-coder:7b", "http://localhost:11434"),
-    (["--gpu-cluster"], "qwen2.5:7b", "http://127.0.0.1:11435"),
+    ([], "qwen3.8:27b", "http://localhost:11434"),
+    (["--gpu-cluster"], "qwen3.8:27b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--model", "custom:7b"], "custom:7b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--ollama-url", "http://127.0.0.1:12000"],
-     "qwen2.5:7b", "http://127.0.0.1:12000"),
+     "qwen3.8:27b", "http://127.0.0.1:12000"),
 ])
 def test_benchmark_model_connection(tmp_path, monkeypatch, options, model, url):
     (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
@@ -259,10 +259,10 @@ def test_benchmark_gpu_model_connection(tmp_path, monkeypatch, extra, url):
     assert summary.call_args.args[4]["reasoning"] is False
 
 
-def test_benchmark_default_records_reasoning_none(tmp_path, monkeypatch):
+def test_benchmark_default_records_reasoning_off(tmp_path, monkeypatch):
     _, summary = _run_benchmark(tmp_path, monkeypatch, [])
 
-    assert summary.call_args.args[4]["reasoning"] is None
+    assert summary.call_args.args[4]["reasoning"] is False
     assert summary.call_args.args[4]["cases_expected"] == 0
 
 
@@ -610,7 +610,7 @@ class TestResume:
         assert set(manifest) == {"model", "ollama_base_url", "reasoning", "mode"}
         assert manifest["model"] == "m:1"
         assert manifest["ollama_base_url"] == "http://127.0.0.1:11435"
-        assert manifest["reasoning"] is None
+        assert manifest["reasoning"] is False
         assert manifest["mode"] == "lgtm"
 
     def test_is_done_treats_unreadable_json_as_pending(self, tmp_path):
