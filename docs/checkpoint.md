@@ -89,17 +89,16 @@ red-teaming is in [`prompt-injection.md`](prompt-injection.md).
 
 ## 1. Architecture: in place and connected
 
-All five stages from the proposal (Figure 1) are implemented and run end to
-end from one command (`lgtm review`):
+All five stages from the proposal are implemented and run end to end from
+one command (`lgtm review`). Figure 1 shows the components as built:
 
-![Figure 1: LGTM architecture](architecture.png)
+![Figure 1: LGTM architecture as implemented](architecture.svg)
 
-**Figure 1:** LGTM architecture, as proposed. It is built as drawn, with
-two additions since the proposal: a fourth tool, `search_code` (semantic
-retrieval over the source, added after instructor feedback), and source
-code alongside the policy docs in the RAG index. One simplification: the
-evidence validator checks that every citation *exists*, not yet that it
-supports the claim (§6).
+**Figure 1:** LGTM architecture as implemented. Solid arrows are the data
+flow of one review; dashed arrows are on-demand lookups the agents may
+make through the read-only tools. Compared with the proposal's diagram
+(`docs/original_architecture.drawio`), the only additions are the
+`search_code` tool and source code in the RAG index.
 
 | Stage | Component | Status |
 |---|---|---|
