@@ -5,7 +5,7 @@ wrong, why, what we changed, and what we learned. The aim of the project is
 to *learn* where an LLM helps pre-merge security review, so failures are
 recorded as carefully as successes.
 
-- **Setup for all rounds:** `qwen2.5-coder:7b` on Ollama (local, temperature
+- **Setup for rounds 1–6:** `qwen2.5-coder:7b` on Ollama (local, temperature
   0), Semgrep CE with the bundled rules, and the Shoply benchmark. The
   benchmark has 36 cases (12 SQLi pairs + 6 authz pairs), split 50/50 into
   dev and eval sets.
@@ -329,6 +329,44 @@ them as known failures rather than tuning on them.
 
 ---
 
+## Round 7: qwen3.8:27b on a GPU (18 Oct)
+
+**What we ran:** the same pipeline and both suites with `qwen3.8:27b`
+(Q4_K_M) on one 24 GB GPU, at commit `a9b380b`. Setup, all tables and caveats:
+[`docs/gpu-model-eval.md`](gpu-model-eval.md). Data:
+[`benchmark/runs/gpu-qwen3.8-27b/`](../benchmark/runs/gpu-qwen3.8-27b/).
+
+**Headline F1** (baseline `qwen2.5-coder:7b` → `qwen3.8:27b`):
+
+| Mode | Shoply (36) | Real-world (12) |
+|---|---|---|
+| sast-only | 0.615 | 0.444 |
+| llm-only | 0.750 → 0.944 | 0.800 → 1.000 |
+| lgtm | 0.944 → 1.000 | 0.444 → 0.667 |
+| lgtm-no-sast | 0.919 → 1.000 | 0.444 → 0.667 |
+
+### What worked / what didn't
+
+- **Worked:** Shoply llm-only authz F1 went from 0.000 to 0.833. lgtm reached
+  F1 1.000 on the authz, SQLi, dev and eval slices.
+- **Did not work:** lgtm and lgtm-no-sast miss `aegra_authz_vulnerable`,
+  `alerta_sqli_vulnerable` and `litellm_authz_vulnerable`; the policy modes
+  miss `aegra_authz_vulnerable` and `litellm_authz_vulnerable`. The three
+  remaining misses were also misses in the qwen2.5-coder:7b run.
+  `langflow_authz_safe` moved FP → TN and `langflow_authz_vulnerable` FN → TP.
+- **Did not work (grounding):** real-world evidence grounding rate fell (lgtm
+  0.833 → 0.500, lgtm-no-sast 0.750 → 0.667); grounded-only F1 fell for
+  lgtm-no-sast (0.444 → 0.286) and the policy modes (0.500 → 0.000).
+- **Watch:** the Shoply gains are not attributable to the model alone. Code
+  changes (`4bf1cb6`, `886305d`, `efe14ca`) landed between the baselines and
+  this run.
+
+### Learning
+
+> **The Shoply numbers moved; the real-world misses did not.**
+
+---
+
 ## Cross-cutting lessons
 
 1. **Audit the evaluator before trusting the system.** Our first headline
@@ -378,45 +416,3 @@ them as known failures rather than tuning on them.
 | Category bleed (SQL flaw influences the authz verdict) | Found in round 5 | Give the authz agent only route, decorators and policy, not the SQL body; measure on dev |
 | The validator checks existence, not relevance | A real policy line quoted for the wrong reason passes | Check that the cited policy chunk is among the chunks retrieved for this endpoint |
 | Ungrounded detections still count as detections in the main score | We report grounded metrics alongside; making them the default changes the headline | Decide as a team which score is primary for the final presentation |
-
----
-
-## Round 7: qwen3.8:27b on a GPU (18 Oct)
-
-**What we ran:** the same pipeline and both suites with `qwen3.8:27b`
-(Q4_K_M) on one 24 GB GPU, at commit `a9b380b`. Modes: lgtm, lgtm-no-sast
-and llm-only on Shoply (36 cases) and real-world (12 cases, plus the 6-case
-authz policy variant). sast-only does not call the model. Setup, all tables
-and caveats: [`docs/gpu-model-eval.md`](gpu-model-eval.md). Data:
-[`benchmark/runs/gpu-qwen3.8-27b/`](../benchmark/runs/gpu-qwen3.8-27b/).
-
-**Headline F1** (baseline `qwen2.5-coder:7b` → `qwen3.8:27b`; the baselines
-ran on older code and other hardware):
-
-| Mode | Shoply (36) | Real-world (12) |
-|---|---|---|
-| sast-only | 0.615 | 0.444 |
-| llm-only | 0.750 → 0.944 | 0.800 → 1.000 |
-| lgtm | 0.944 → 1.000 | 0.444 → 0.667 |
-| lgtm-no-sast | 0.919 → 1.000 | 0.444 → 0.667 |
-
-- Shoply: lgtm and lgtm-no-sast classified all 36 cases correctly.
-- Real-world: every LGTM mode misses `aegra_authz_vulnerable`,
-  `alerta_sqli_vulnerable` and `litellm_authz_vulnerable`. The aegra case is
-  skipped before any agent runs.
-- Errors were 0 in every mode.
-
-### What worked / what didn't
-
-- **Worked:** Shoply llm-only authz F1 went from 0.000 to 0.833. lgtm reached
-  F1 1.000 on the authz, SQLi, dev and eval slices.
-- **Did not work:** the three real-world LGTM misses are unchanged from the
-  qwen2.5-coder:7b runs.
-- **Watch:** the Shoply gains are not attributable to the model alone. Code
-  changes (`4bf1cb6`, `886305d`, `efe14ca`) landed between the baselines and
-  this run.
-
-### Learning
-
-> **The Shoply numbers moved; the real-world misses did not.** The three LGTM
-> misses on real-world cases are the same cases as in the earlier run.
