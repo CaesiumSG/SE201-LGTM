@@ -293,105 +293,21 @@ model server) to see whether tool use improves.
 5. **Grow the benchmark**: more OWASP-derived and real-world cases, so one
    flipped verdict no longer moves F1 by about 0.05.
 
-## 8. Challenges and what we learned
+## 8. Challenges, lessons, and what we do going forward
 
-Each item is a problem we actually hit, what we did about it, and the
-lesson. Evidence for every one is in the evaluation log, the real-world
-write-up, the prompt-injection write-up, or the commit history.
-
-1. **Our first headline result was wrong, and the bug was in the evaluator,
-   not the system.** The first full run showed LGTM slightly *worse* than
-   the LLM-only baseline. Two problems caused it: the scorer credited any
-   `vulnerable` finding to the case regardless of category, and the
-   "LLM-only" baseline had quietly been given the same RAG and tools as
-   LGTM, so the comparison could not show what those add. Fixing the
-   evaluation, not the product, flipped the conclusion to F1 0.94 vs 0.75.
-   *Lesson:* audit the metrics code as carefully as the product code, and
-   check every baseline against its written definition line by line.
-
-2. **A silent "wrong version" bug in SAST.** Semgrep was scanning the
-   working tree, not the files at the PR ref, so whichever branch happened
-   to be checked out was what got scanned. Nothing crashed; results were
-   just wrong. We now materialise the PR's files into a temp directory
-   before scanning, with a regression test. *Lesson:* for anything that
-   reads a repository, "which version?" must be explicit.
-
-3. **Aggregate F1 hid our most important failure.** Case-level scoring
-   said everything was fine while the authorization agent was raising
-   ownership alarms on 22 of 24 SQL-injection cases, on endpoints that
-   already had the right check. A developer would experience that as noise
-   on most PRs. Only a per-finding audit exposed it, so we added an
-   off-category alarm metric and a grounded-only F1. *Lesson:* one summary
-   number is not an evaluation; read the individual findings.
-
-4. **Tuning on the test set is easy to do by accident.** Most of the
-   remaining failures were on the eval split, and the natural reflex was
-   to fix the prompt until they passed. We adopted a strict protocol: tune
-   only on dev, fix only genuine bugs motivated by eval cases, and report
-   eval once. Two of three prompt experiments then turned out to be
-   harmful on dev, which we would never have known otherwise. *Lesson:* a
-   held-out split only means something if the process protects it.
-
-5. **A 7B model does not use its tools, and forcing it does not help.**
-   Left alone, `qwen2.5-coder:7b` made zero tool calls across every run,
-   on Shoply and on real projects. When we forced at least one call, it
-   used every tool every time at 6.6× the latency for no accuracy gain.
-   For a small model, pre-retrieving context into the prompt (RAG) works
-   better than letting the model fetch it. *Lesson:* "agentic" is a
-   property of the model as much as the harness; measure tool use, don't
-   assume it.
-
-6. **Determinism is not robustness.** At temperature 0, identical prompts
-   gave identical verdicts, but an absolute file path inside a Semgrep rule
-   ID flipped one verdict and leaked a home directory into the prompt. We
-   made rule IDs path-free and now treat any single-case change as noise.
-   *Lesson:* with 18 eval cases one flip is ±0.05 F1, so report variance
-   and grow the set rather than chase individual cases.
-
-7. **The real-world drop (F1 0.94 → 0.44) was a design limit, not a model
-   limit.** On published CVEs, 7 of 12 LGTM cases ran no agent at all:
-   our pattern-based detectors only fire on route decorators inside the
-   changed hunk, and real fixes put the check far from the decorator or in
-   another file. The bare LLM baseline did better (0.80) partly because the
-   synthetic revert visibly *deletes* the guard. *Lesson:* a benchmark we
-   wrote ourselves encodes our own assumptions (decorator and check in one
-   place); testing on code we did not write is what exposed them.
-
-8. **A benign-looking comment can defeat the reviewer.** Red-teaming showed
-   comments and docstrings in a PR talked the triage agent out of all three
-   SQL-injection detections (100% attack success), while SAST and the
-   tool-free baseline were unaffected. Labelling the diff "untrusted" in
-   the prompt was not enough; stripping comments before the LLM sees the
-   code and flagging reviewer-directed text brought it to 0%. *Lesson:*
-   the more context the model gets, the larger the injection surface, so
-   mitigations must be structural, not just instructions.
-
-9. **Compute was a constant constraint.** The 7B model runs at about 21 s
-   per case on an M-series laptop but about 5 tokens/s on a 4 GB-GPU
-   Windows laptop (68 s per LLM-only case; indexing one large real project
-   took over four minutes). A configured 180 s timeout turned out never to
-   reach the Ollama client, so one runaway generation with no stop token
-   blocked a benchmark run for 76 minutes. We wired the timeout and an
-   output-token cap, built a GPU-cluster model server (`model/`), and
-   always run benchmarks from a frozen copy of the tree so edits made
-   during a multi-hour run cannot contaminate it. *Lesson:* bound every
-   model call, and treat evaluation runs as experiments with provenance.
-
-10. **Real repositories break assumptions a toy app never tests.** Moving
-    off Shoply surfaced non-UTF-8 files and git-quoted paths that crashed
-    the diff reader, a ChromaDB batch limit on large repos, Windows CRLF
-    differences in the case builder, and a Semgrep lookup that failed when
-    the virtualenv was not activated. Each got a regression test. *Lesson:*
-    a field trial on other people's code is the cheapest way to find the
-    engineering bugs an evaluation harness hides.
-
-11. **AI-assisted development is fast, but it needs review discipline.**
-    The AI-generated pipeline worked end to end on day one; the subtle
-    mistakes (items 1 and 2) were in code the unit tests could not catch
-    because the tests encoded the same assumptions. We moved to one PR per
-    piece of work, every number in a report copied from a committed
-    `summary.json`, and a disclosure log by area of work. *Lesson:* use the
-    speed, but keep humans on the claims, the baselines and the metrics.
+| # | Challenge we hit | What we did | Lesson / going forward |
+|---|---|---|---|
+| 1 | First headline result was wrong: the scorer credited the wrong agent and the "LLM-only" baseline secretly had RAG + tools | Fixed the evaluator, rebuilt the baseline, re-ran everything (0.94 vs 0.75) | Review metrics code like product code. Every baseline is checked against its written definition |
+| 2 | SAST silently scanned the working tree, not the PR's files | Materialise the PR ref into a temp dir; regression test | Any repo read must say *which version*. Tests now pin it |
+| 3 | Aggregate F1 hid ownership alarms on 22 of 24 SQLi cases | Per-finding audit; added off-category and grounded-only metrics | One number is not an evaluation. Reduce these alarms next (input scoping or a verifier) |
+| 4 | Easy to tune on the test set by accident | Strict protocol: tune on dev only, report eval once | Two of three prompt tweaks were harmful on dev. Keep the protocol for every future change |
+| 5 | 7B model never calls tools; forcing it = 6.6× latency, no gain | Pre-retrieve context (RAG) instead of relying on tool use | "Agentic" depends on the model. Measure tool use; test ≤14B models that do call tools |
+| 6 | A file path in a rule ID flipped a verdict | Path-free rule IDs; treat single-case changes as noise | Determinism ≠ robustness. Grow the eval set; report variance |
+| 7 | Real-world F1 fell 0.94 → 0.44; 7 of 12 cases ran no agent | Traced each miss to a cause (detector gating, cross-file checks) | Our own benchmark encoded our assumptions. Next: run the agent when no endpoint is detected; give it callees |
+| 8 | PR comments talked the agent out of 3/3 SQLi detections (100% attack success) | Strip comments before the LLM; detect reviewer-directed text (now 0%) | More context = bigger injection surface. Mitigations must be structural; cover non-comment attacks next |
+| 9 | Compute: 5 tok/s laptops, 4-min indexes, a 76-min hang from an unwired timeout | Wired timeout + output cap; GPU-cluster model server; frozen-tree runs | Bound every model call. Treat benchmark runs as experiments with provenance |
+| 10 | Real repos broke the toy-app assumptions (non-UTF-8 files, quoted paths, Chroma batch limit, CRLF, Semgrep lookup) | Fixed each with a regression test | Field trials on other people's code find bugs a harness hides. Trial on ~10 ordinary PRs next |
+| 11 | AI-written code was fast but its mistakes (1, 2) passed unit tests that shared the same assumptions | One PR per piece of work; every number copied from committed run files; AI-use log by area | Use the speed, keep humans on claims, baselines and metrics |
 
 ## Appendix A. AI use disclosure log
 
