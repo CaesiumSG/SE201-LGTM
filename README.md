@@ -50,10 +50,12 @@ Requirements: Python 3.10+, git, and for the full pipeline
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" semgrep
 
-# 2. Install Ollama and pull the model
-ollama pull qwen3.8:27b         # default; any tool-calling model works
-ollama serve                    # if not already running
+# 2. Open the GPU cluster tunnel (default endpoint http://127.0.0.1:11435)
+model/deploy/up.sh              # see model/README.md
 ```
+
+A local Ollama works with `--ollama-url http://localhost:11434` after
+`ollama pull qwen3.8:27b`; any tool-calling model works with `--model`.
 
 ## Usage
 

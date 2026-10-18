@@ -54,7 +54,7 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--base", required=True, help="Base branch (trusted).")
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
 @click.option("--model", default=None, help="Ollama model name (default: qwen3.8:27b).")
-@click.option("--ollama-url", default=None, help="Ollama base URL.")
+@click.option("--ollama-url", default=None, help="Ollama base URL (default: http://127.0.0.1:11435, the GPU cluster tunnel).")
 @click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen3.8:27b. Does not start the server or tunnel.")
 @click.option("--gpu-model", type=click.Choice(sorted(GPU_MODELS)), default=None, help="Use the GPU cluster tunnel at http://127.0.0.1:11435 with a registered model (thinking off). Cannot be combined with --gpu-cluster or --model; --ollama-url overrides the URL.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")

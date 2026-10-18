@@ -7,7 +7,7 @@ from lgtm.cli import main
 
 
 @pytest.mark.parametrize("options,model,url", [
-    ([], "qwen3.8:27b", "http://localhost:11434"),
+    ([], "qwen3.8:27b", "http://127.0.0.1:11435"),
     (["--gpu-cluster"], "qwen3.8:27b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--model", "custom:7b"], "custom:7b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--ollama-url", "http://127.0.0.1:12000"],

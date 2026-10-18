@@ -16,7 +16,7 @@ class LGTMConfig:
 
     # LLM
     ollama_model: str = "qwen3.8:27b"
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://127.0.0.1:11435"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
     reasoning: bool | None = False  # None leaves the model's default thinking behaviour
