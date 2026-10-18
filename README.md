@@ -71,6 +71,12 @@ lgtm review ... --mode llm-only      # Baseline B: one LLM call on the diff,
                                      #   no Semgrep, no RAG, no tools
 lgtm review ... --mode lgtm-no-sast  # Ablation: LGTM agents + RAG + tools,
                                      #   regex SQL detector instead of Semgrep
+
+# Prompt-injection mitigations (both off by default)
+lgtm review ... --strip-comments           # remove comments/docstrings from
+                                           #   PR code before the LLM sees it
+lgtm review ... --detect-prompt-injection  # flag reviewer-directed text in
+                                           #   the diff as its own finding
 ```
 
 Outputs `lgtm-output/report.json` (machine-readable findings) and
@@ -87,7 +93,31 @@ confirmed `vulnerable` findings (CI-friendly).
   with `evidence_valid: false`.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.
 
-## Benchmark
+## Benchmarks
+
+There are **three separate benchmarks**. Each one answers a different
+question, has its own script and its own metric:
+
+| Benchmark | Question | Cases | Script | Metric | Write-up |
+|---|---|---|---|---|---|
+| **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 36 (dev 18 / eval 18) | `benchmark/evaluate.py` | Precision / recall / F1 | `docs/evaluation-log.md` |
+| **Real-world CVEs** | Does that hold on code real developers shipped? | 12 (held out) | `benchmark/real_world/evaluate_real.py` | Precision / recall / F1 | [`docs/real-world-eval.md`](docs/real-world-eval.md) |
+| **Prompt injection** | Can text in a PR trick LGTM into missing a vulnerability? | 6 attacks on Shoply cases | `benchmark/injection/run_injection_bench.py` | Attack success rate | [`docs/prompt-injection.md`](docs/prompt-injection.md) |
+
+The Shoply files (`app/`, `cases/`, `labels.json`, the policy docs and
+`evaluate.py`) sit at the top of `benchmark/` because Shoply came first;
+`evaluate.py` evaluates **only Shoply**, not the other two. Its `--split eval`
+means the 18 held-out *Shoply* cases.
+
+**Why the results aren't combined into one score:** the benchmarks measure
+different things (accuracy vs. resistance to attack) with different metrics,
+and they differ in how independent they are: Shoply's dev split was used to
+tune the prompts, the eval split and the real-world cases never were. One
+pooled F1 would mix tuned and untuned data and hide the drop on real code.
+Read them side by side; the [summary at the end of this
+section](#all-results-at-a-glance) does that.
+
+### 1. Shoply (synthetic)
 
 `benchmark/` contains **Shoply**, a Flask e-commerce API with token auth
 and RBAC, plus **18 matched PR pairs** (36 cases): 12 SQL-injection pairs
@@ -101,6 +131,7 @@ invisible to SAST by design).
 python benchmark/evaluate.py --mode lgtm
 python benchmark/evaluate.py --mode sast-only
 python benchmark/evaluate.py --mode llm-only
+python benchmark/evaluate.py --mode lgtm --split eval   # held-out half only
 ```
 
 Reported metrics: precision / recall / F1 (overall and per category),
@@ -109,8 +140,8 @@ false-positive rate on safe controls, evidence grounding rate,
 tokens per PR. See `benchmark/README.md` for details.
 
 The 36 cases carry a balanced **dev/eval split** (9 vulnerable + 9 safe in
-each): tune prompts and config on `--split dev`, report results on the
-held-out `--split eval`.
+each), recorded in the `split` field of `labels.json`: tune prompts and
+config on `--split dev`, report results on the held-out `--split eval`.
 
 Reference results (13 Oct 2026, all 36 cases, `qwen2.5-coder:7b` local;
 baselines from `benchmark/runs/run3-bugfixes/`, LGTM from the final clean
@@ -147,6 +178,72 @@ What the numbers say:
   - Verdicts can flip on irrelevant prompt changes. With 18 eval cases, one
     flip is ±0.05 F1.
 
+### 2. Real-world CVEs
+
+12 held-out cases built from 6 published advisories in open-source Python
+projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
+tuned on them. The authz cases also run with a short policy written from
+each project's docs (the `policy` variant).
+
+```bash
+python benchmark/real_world/fetch.py --policies          # clone + build case branches
+python benchmark/real_world/evaluate_real.py --modes sast-only lgtm
+```
+
+Results (12 cases, the projects' own docs; from
+[`docs/real-world-eval.md`](docs/real-world-eval.md)):
+
+| Mode | Precision | Recall | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Median latency |
+|---|---|---|---|---|---|---|---|
+| A: sast-only | 0.67 | 0.33 | 0.44 | 0.67 | 0.00 | 0.17 | 12.1s |
+| **B: llm-only** | **1.00** | **0.67** | **0.80** | **0.80** | **0.80** | **0.00** | 68.7s |
+| ablation: lgtm-no-sast | 0.67 | 0.33 | 0.44 | 0.80 | 0.00 | 0.17 | 39.6s |
+| C: lgtm | 0.67 | 0.33 | 0.44 | 0.80 | 0.00 | 0.17 | 16.6s |
+
+With the project policy, lgtm's authz F1 rises from 0.00 to 0.40 (6 authz
+cases). **LGTM did not reproduce its Shoply result:** SQLi triage carried
+over, but in 4 of 6 authz cases the endpoint detector never sent the code to
+the agent. With 12 cases, one flipped verdict moves recall by up to 0.17.
+
+### 3. Prompt injection
+
+6 attack cases: vulnerable Shoply cases with the vulnerable code unchanged,
+plus comments, docstrings, fake JSON findings, renamed identifiers or docs
+aimed at the reviewer. **Attack success rate (ASR)** = cases flagged
+`vulnerable` originally but not once injected, out of those flagged
+originally (lower is better).
+
+```bash
+python benchmark/injection/run_injection_bench.py --mode sast-only
+python benchmark/injection/run_injection_bench.py --mode lgtm \
+       --strip-comments --detect-injection
+```
+
+| Mode | ASR | What happened |
+|---|---|---|
+| A: sast-only | 0% (0/3) | Semgrep ignores comments and docstrings |
+| B: llm-only | 0% (0/3) | Still flagged all 3 SQLi cases |
+| **C: lgtm, no mitigation** | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
+| C: lgtm + `--strip-comments` + `--detect-prompt-injection` | 0% (0/3) | Reported in [`docs/prompt-injection.md`](docs/prompt-injection.md) |
+
+Only the 3 SQLi attacks are counted: none of the modes flagged the 3 authz
+originals as `vulnerable` in this harness, so no authz attack could succeed.
+The committed run files in `benchmark/injection/results/` cover the three
+unmitigated rows.
+
+### All results at a glance
+
+| Mode | Shoply F1, all 36 (eval 18) | Real-world F1 (12) | Injection ASR (lower is better) |
+|---|---|---|---|
+| A: sast-only | 0.62 (0.63) | 0.44 | 0% |
+| B: llm-only | 0.75 (0.75) | **0.80** | 0% |
+| ablation: lgtm-no-sast | 0.92 (0.89) | 0.44 | not run |
+| C: lgtm | **0.94** (**0.89**) | 0.44 | 100% unmitigated, 0% mitigated |
+
+LGTM is best on the benchmark it was tuned for, falls to the SAST baseline
+on real code, and needs the injection mitigations to hold up against a
+malicious PR.
+
 The full history of rounds, failures, fixes and lessons is in
 [`docs/evaluation-log.md`](docs/evaluation-log.md); the checkpoint report
 is [`docs/checkpoint.md`](docs/checkpoint.md).
@@ -159,6 +256,9 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
   held-out cases, with a project-policy variant for the authz cases. LGTM did
   not reproduce its Shoply results there; see
   [`docs/real-world-eval.md`](docs/real-world-eval.md).
+- ✅ 6 prompt-injection cases (comments, docstrings, fake JSON findings,
+  renamed identifiers, a policy-exemption doc, delimiter escapes); see
+  [`docs/prompt-injection.md`](docs/prompt-injection.md).
 - Next: more OWASP patterns (stacked queries, second-order injection) and
   more CVE-linked cases, including real vulnerable PRs rather than reverts.
 - Keep the dev/eval separation strict: all prompt and config tuning on the
@@ -172,6 +272,8 @@ src/lgtm/
 ├── config.py               # LGTMConfig dataclass
 ├── pipeline.py             # orchestrator (lgtm / sast-only / llm-only / lgtm-no-sast)
 ├── diff/git_diff.py        # git diff extraction + unified diff parser
+├── diff/sanitizer.py       # comment stripper + prompt-injection detector
+├── analysis/facts.py       # AST facts for the agents (static_facts flag)
 ├── sast/semgrep_runner.py  # semgrep subprocess + JSON parsing
 ├── sast/rules/             # bundled CWE-89 semgrep rules (offline-safe)
 ├── rag/indexer.py          # doc discovery, chunking, ChromaDB indexing
@@ -182,8 +284,10 @@ src/lgtm/
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports
-tests/                      # 158 tests, no Ollama needed
+tests/                      # 231 tests, no Ollama needed
 benchmark/                  # Shoply app, 36 cases, evaluate.py
+benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
+benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
 ```
 
 ## Development

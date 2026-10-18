@@ -7,8 +7,9 @@ Ollama) is part of the product; its risks are covered in the checkpoint
 report's Responsible AI section.
 
 Tools used by the team: **Claude Code** (Anthropic; Opus 5.5 / Sonnet 5.5
-/ Fable 5, Google; Gemini Flash 3.8) for most implementation and documentation, and **GitHub
-Copilot** for the GPU model server. All AI-generated code went through a
+/ Fable 5) for most implementation and documentation, **GitHub Copilot**
+for the GPU model server, and **Google Antigravity** (Gemini Flash 3.8)
+for the prompt-injection red-teaming. All AI-generated code went through a
 pull request reviewed by a team member before reaching `main`.
 
 ## Log
