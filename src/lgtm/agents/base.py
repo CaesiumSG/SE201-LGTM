@@ -234,6 +234,8 @@ def build_llm(config: LGTMConfig):
         model=config.ollama_model,
         base_url=config.ollama_base_url,
         temperature=config.llm_temperature,
+        keep_alive="24h",
+        client_kwargs={"timeout": config.llm_timeout},
     )
 
 

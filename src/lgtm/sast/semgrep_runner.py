@@ -56,7 +56,7 @@ def _semgrep_executable() -> list[str]:
     import shutil
     import sys
 
-    found = shutil.which("semgrep")
+    found = shutil.which("semgrep") or shutil.which("semgrep.exe")
     if found:
         return [found]
     # which() with an explicit dir applies PATHEXT, so a Windows venv's
