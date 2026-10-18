@@ -195,9 +195,20 @@ defaults, including when the tunnel uses a different local port.
 | Storage | home and scratch share one 704 TB filesystem; `myinfo`'s quota line is broken |
 
 Model sizing for a 24 GB GPU: `qwen2.5:7b` (~4.7 GB) fits with ample room
-for context. LGTM needs a model that returns structured tool calls through
-Ollama; `qwen2.5-coder` writes them as plain text and fails the agent loop.
-A `mynotebook` session counts against the 2-running-jobs limit.
+for context. LGTM's agent loop also recovers tool calls written as plain text
+(`parse_text_tool_calls` in `src/lgtm/agents/base.py`). A `mynotebook` session
+counts against the 2-running-jobs limit.
+
+### Context length and model fit
+
+`OLLAMA_CONTEXT_LENGTH` sets the server context. `OLLAMA_FLASH_ATTENTION` and `OLLAMA_KV_CACHE_TYPE` are forwarded to `ollama serve` when set in `.env`.
+
+| Model | GPU | KV cache | /api/ps size (GiB) | size_vram (GiB) | Context |
+|---|---|---|---|---|---|
+| qwen3.8:27b | RTX 3090 | f16 | 16.2 | 16.2 | 32768 |
+| qwen2.5-coder:7b | RTX 3090 | f16 | 6.1 | 6.1 | 32768 |
+
+Measured 2026-10-18 at OLLAMA_CONTEXT_LENGTH=32768 and OLLAMA_NUM_PARALLEL=1 after a ~30k-token prompt; 100% of each model was in GPU memory.
 
 ## Troubleshooting
 
