@@ -19,6 +19,11 @@ class LGTMConfig:
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
+    reasoning: bool | None = None  # None leaves the model's default thinking behaviour
+    llm_retries: int = 3
+    llm_backoff_seconds: tuple[float, ...] = (2.0, 4.0, 8.0)
+    max_invalid_tool_inputs: int = 3
+    max_answer_reasks: int = 3
 
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules
@@ -84,6 +89,26 @@ class LGTMConfig:
         if unknown:
             logger.warning("Ignoring unknown config keys: %s", sorted(unknown))
         return cls(**kwargs)
+
+
+@dataclass(frozen=True)
+class GpuModel:
+    tag: str
+    base_url: str
+    reasoning: bool | None
+
+
+GPU_MODELS: dict[str, GpuModel] = {
+    "qwen3.8-27b": GpuModel("qwen3.8:27b", "http://127.0.0.1:11435", False),
+}
+
+
+def apply_gpu_model(config: LGTMConfig, key: str, base_url: str | None = None) -> None:
+    """Set ollama_model, ollama_base_url and reasoning from GPU_MODELS[key]; unknown key raises KeyError."""
+    entry = GPU_MODELS[key]
+    config.ollama_model = entry.tag
+    config.ollama_base_url = base_url or entry.base_url
+    config.reasoning = entry.reasoning
 
 
 def setup_logging(verbose: bool = False) -> None:
