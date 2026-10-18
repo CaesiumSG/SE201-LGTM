@@ -159,13 +159,7 @@ def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
 
 
 def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
-    """Index documentation (and, if enabled, source code) into ChromaDB.
-
-    Docs go into ``chroma_collection`` (used by ``search_policy``); source
-    files go into ``chroma_code_collection`` (used by ``search_code``).
-    Returns the total number of chunks indexed. Re-indexing replaces the
-    collections so the index never goes stale.
-    """
+    """Index documentation into the policy collection in ChromaDB."""
     import chromadb
 
     config = config or LGTMConfig()
@@ -180,20 +174,10 @@ def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
     client = chromadb.PersistentClient(path=str(persist_dir))
     _replace_collection(client, config.chroma_collection, doc_chunks)
 
-    code_chunks: list[DocChunk] = []
-    code_files: list[Path] = []
-    if config.index_source_code:
-        code_files = find_doc_files(repo, config.code_extensions)
-        logger.info("Found %d source files to index", len(code_files))
-        code_chunks = _chunk_files(repo, code_files, config)
-        _replace_collection(client, config.chroma_code_collection, code_chunks)
-
-    total = len(doc_chunks) + len(code_chunks)
     logger.info(
-        "Indexed %d doc chunks + %d code chunks from %d files into %s",
+        "Indexed %d doc chunks from %d files into %s",
         len(doc_chunks),
-        len(code_chunks),
-        len(doc_files) + len(code_files),
+        len(doc_files),
         persist_dir,
     )
-    return total
+    return len(doc_chunks)
