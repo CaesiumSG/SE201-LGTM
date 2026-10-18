@@ -135,7 +135,7 @@ LLM retries, tool-input validation and re-asks of non-JSON answers
 (`efe14ca`). The agent text sent to the model is unchanged. Model and code
 changes are therefore not separated in this comparison. The committed
 qwen2.5-coder:7b baseline summaries record no GPU type, and the real-world
-baseline summaries record Ollama 0.40.4 (this run: 0.34.2), so latency is not
+baseline summaries record Ollama 0.40.4 (this run: 0.34.2) and ran with the default 4096-token context (this run: 32768), so latency is not
 compared (section E).
 
 | Comparison | Baseline source | TP/FP/FN/TN (baseline → qwen3.8:27b) | F1 (baseline → qwen3.8:27b) | Grounded F1 (baseline → qwen3.8:27b) | Other | Changed cases |

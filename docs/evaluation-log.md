@@ -363,7 +363,7 @@ them as known failures rather than tuning on them.
 
 ### Learning
 
-> **The Shoply numbers moved; the real-world misses did not.**
+> **The Shoply numbers moved; the three remaining real-world misses did not move.**
 
 ---
 
