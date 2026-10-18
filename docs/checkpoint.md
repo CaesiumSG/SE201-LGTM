@@ -2,6 +2,8 @@
 
 Team **"wo men ai AI"** · SE201 AI-Driven Software Engineering, AY2026-27 T1
 
+**Repository:** <https://github.com/CaesiumSG/SE201-LGTM>
+
 This report covers the four checkpoint requirements in the project
 specification:
 
@@ -87,8 +89,14 @@ red-teaming is in [`prompt-injection.md`](prompt-injection.md).
 
 ## 1. Architecture: in place and connected
 
-All five stages from the proposal (Figure 1) are implemented and run end to
-end from one command (`lgtm review`):
+All five stages from the proposal are implemented and run end to end from
+one command (`lgtm review`). Figure 1 shows the components as built:
+
+![Figure 1: LGTM architecture as implemented](architecture.svg)
+
+**Figure 1:** LGTM architecture as implemented. Solid arrows are the data
+flow of one review; dashed arrows are on-demand lookups the agents may
+make through the read-only tools.
 
 | Stage | Component | Status |
 |---|---|---|
