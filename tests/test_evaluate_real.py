@@ -74,6 +74,57 @@ class TestPlanning:
         assert resumed == [cases[1]["id"]]
         assert len(list(er.pending_units(units, tmp_path, False))) == 2
 
+    def test_resume_reruns_error_results(self, tmp_path):
+        cases = er.fetch.load_cases()[:2]
+        units = list(er.work_units(cases, ["sast-only"], ["own"]))
+        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        out.mkdir(parents=True)
+        done = TestResultsAndSummary._result(cases[0]["id"], "vulnerable", "TP")
+        failed = {**TestResultsAndSummary._result(cases[1]["id"], "safe", "TN"),
+                  "predicted": "error"}
+        (out / f"{cases[0]['id']}.json").write_text(json.dumps(done), encoding="utf-8")
+        (out / f"{cases[1]['id']}.json").write_text(json.dumps(failed), encoding="utf-8")
+        resumed = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        assert resumed == [cases[1]["id"]]
+
+    def test_resume_reruns_unreadable_json(self, tmp_path):
+        cases = er.fetch.load_cases()[:2]
+        units = list(er.work_units(cases, ["sast-only"], ["own"]))
+        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        out.mkdir(parents=True)
+        done = TestResultsAndSummary._result(cases[1]["id"], "safe", "TN")
+        (out / f"{cases[0]['id']}.json").write_text("{not json", encoding="utf-8")
+        (out / f"{cases[1]['id']}.json").write_text(json.dumps(done), encoding="utf-8")
+        resumed = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        assert resumed == [cases[0]["id"]]
+
+    @pytest.mark.parametrize("stored", [
+        {"model": "other:1b", "reasoning": None},
+        {"model": "x:1", "reasoning": True},
+    ])
+    def test_resume_refuses_different_model(self, tmp_path, monkeypatch, capsys, stored):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+        out.mkdir()
+        manifest = out / "run.json"
+        manifest.write_text(json.dumps({
+            "ollama_base_url": "http://127.0.0.1:11435", "mode": None,
+            "modes": ["lgtm"], **stored}), encoding="utf-8")
+        ran = []
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda *a, **k: ran.append(a))
+
+        with pytest.raises(SystemExit) as exc:
+            er.main(["--resume", "--cache", str(cache), "--output", str(out),
+                     "--modes", "lgtm", "--variants", "own",
+                     "--cases", "aegra_authz_safe", "--model", "x:1"])
+
+        assert exc.value.code == 2
+        assert "different model or reasoning setting" in capsys.readouterr().err
+        assert ran == []
+        assert [p.name for p in out.rglob("*.json")] == ["run.json"]
+
     def test_expected_ids_per_directory(self):
         cases = er.fetch.load_cases()
         assert len(er.expected_ids(cases, "lgtm", "own")) == 12
@@ -175,7 +226,7 @@ class TestIndexOnlyNeverWritesResults:
         er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
                  "--variants", "own", "--cases", "aegra_authz_safe"])
         saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text(encoding="utf-8"))
-        assert saved["predicted"] == "error" and saved["outcome"] == "TN"
+        assert saved["predicted"] == "error" and saved["outcome"] == "ERROR"
 
 
 class TestSummarizeOnlyKeepsTheEnvironment:
@@ -229,6 +280,105 @@ class TestResultsAndSummary:
         vuln = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
                 "repo_url": "https://github.com/o/p"}
         safe = {**vuln, "expected_verdict": "safe"}
-        assert er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["outcome"] == "FN"
-        assert er.error_result(safe, "lgtm", "own", RuntimeError("boom"))["outcome"] == "TN"
+        assert er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
+        assert er.error_result(safe, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
         assert "RuntimeError: boom" in er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["error"]
+
+    def test_infra_failure_result_is_scored_as_error(self, tmp_path, monkeypatch):
+        class Finding:
+            def model_dump(self, exclude=None):
+                return {"finding_id": "authz:1", "category": "authz",
+                        "verdict": "insufficient_evidence", "evidence_valid": False,
+                        "explanation": "LLM call failed: x"}
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": [Finding()], "meta": meta})()
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        case = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
+                "repo_url": "https://github.com/o/p"}
+        result = er.run_unit(case, "own", "llm-only", tmp_path, tmp_path, er.LGTMConfig())
+        assert result["outcome"] == "ERROR"
+        assert result["infra_failures"] == 1
+        assert result["infra_failure_ids"] == ["authz:1"]
+
+    def test_summary_reports_errors_separately(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        failed = {**self._result("b", "safe", "TN"), "predicted": "error",
+                  "error": "RuntimeError: boom"}
+        (out / "a.json").write_text(json.dumps(self._result("a", "vulnerable", "TP")))
+        (out / "b.json").write_text(json.dumps(failed))
+        summary = er.write_dir_summary(out, "lgtm", "own", {"a", "b"}, "m")
+        assert summary["summary"]["overall"]["scored"] == 1
+        assert summary["summary"]["overall"]["errors"] == 1
+        assert summary["summary"]["overall"]["error_rate"] == 0.5
+        assert summary["summary"]["overall"]["tn"] == 0
+        assert summary["summary"]["error_cases"] == [
+            {"id": "b", "error": "RuntimeError: boom"}]
+        assert summary["complete"] is True
+
+    def test_run_manifest_is_not_a_unit(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        (out / "a.json").write_text(json.dumps(self._result("a", "vulnerable", "TP")))
+        (out / "run.json").write_text(json.dumps({"model": "m", "reasoning": None}))
+        summary = er.write_dir_summary(out, "lgtm", "own", {"a"}, "m")
+        assert summary["cases_present"] == 1
+        assert summary["summary"]["overall"]["cases"] == 1
+        assert summary["complete"] is True
+        assert summary["missing"] == []
+
+
+class TestGpuModel:
+    @staticmethod
+    def _out_with_result(tmp_path):
+        out = tmp_path / "out"
+        (out / "lgtm").mkdir(parents=True)
+        result = TestResultsAndSummary._result("pyload_sqli_vulnerable", "vulnerable", "TP", "sqli")
+        (out / "lgtm" / "pyload_sqli_vulnerable.json").write_text(json.dumps(result))
+        return out
+
+    def test_preflight_receives_registry_model(self, tmp_path, monkeypatch):
+        seen = []
+
+        def fake_preflight(modes, config):
+            seen.append(config)
+            return {}
+
+        monkeypatch.setattr(er, "preflight", fake_preflight)
+        er.main(["--summarize-only", "--output", str(tmp_path), "--modes", "lgtm",
+                 "--gpu-model", "qwen3.8-27b"])
+
+        assert len(seen) == 1
+        assert seen[0].ollama_model == "qwen3.8:27b"
+        assert seen[0].ollama_base_url == "http://127.0.0.1:11435"
+        assert seen[0].reasoning is False
+
+    def test_model_conflict_is_a_parser_error(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            er.main(["--summarize-only", "--output", str(tmp_path), "--modes", "lgtm",
+                     "--gpu-model", "qwen3.8-27b", "--model", "x:1"])
+
+        assert exc.value.code == 2
+
+    def test_summary_records_reasoning(self, tmp_path, monkeypatch):
+        out = self._out_with_result(tmp_path)
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        base = ["--summarize-only", "--output", str(out), "--modes", "lgtm",
+                "--variants", "own"]
+        summary_path = out / "lgtm" / "summary.json"
+
+        er.main([*base, "--gpu-model", "qwen3.8-27b"])
+        with_flag = json.loads(summary_path.read_text(encoding="utf-8"))
+        er.main(base)
+        without_flag = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        assert with_flag["reasoning"] is False
+        assert without_flag["reasoning"] is None

@@ -37,9 +37,71 @@ REPO_ROOT = BENCH.parent
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
+
+ERROR = "ERROR"
+INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
+
+
+def infra_failure_ids(findings: list[dict]) -> list[str]:
+    return [
+        f.get("finding_id") or "unknown"
+        for f in findings
+        if str(f.get("explanation", "")).startswith(INFRA_PREFIXES)
+        or f.get("finding_id") == "plain:unparsable"
+    ]
+
+
+def result_is_error(result: dict) -> bool:
+    return (
+        result.get("predicted") == "error"
+        or result.get("outcome") == ERROR
+        or bool(result.get("error"))
+        or (result.get("infra_failures") or 0) > 0
+        or bool(infra_failure_ids(result.get("findings") or []))
+    )
+
+
+def mark_error(result: dict, message: str) -> dict:
+    result.update(
+        predicted="error",
+        predicted_grounded="error",
+        outcome=ERROR,
+        outcome_grounded=ERROR,
+        correct=None,
+        error=message,
+    )
+    return result
+
+
+def load_result(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def is_done(path: Path) -> bool:
+    data = load_result(path)
+    return data is not None and not result_is_error(data)
+
+
+def write_run_manifest(out_dir: Path, manifest: dict, resume: bool, parser) -> None:
+    path = out_dir / "run.json"
+    previous = load_result(path)
+    if resume and previous is not None:
+        if (previous.get("model"), previous.get("reasoning")) != (
+            manifest.get("model"), manifest.get("reasoning")
+        ):
+            parser.error(
+                f"--resume: {out_dir} was produced with a different model or reasoning setting"
+            )
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
 
 
 def run(cmd: list[str], cwd: Path) -> str:
@@ -119,7 +181,13 @@ def outcome_for(predicted: str, expected: str) -> str:
 
 def score_case(result: dict) -> dict:
     """(Re)compute predictions and outcomes from a result's findings."""
-    findings = result["findings"]
+    findings = result.get("findings", [])
+    ids = infra_failure_ids(findings)
+    result["infra_failures"], result["infra_failure_ids"] = len(ids), ids
+    if result_is_error(result):
+        message = result.get("error") or (
+            "infra failure: " + ", ".join(ids) if ids else "unknown error")
+        return mark_error(result, message)
     result["predicted"] = predict_case_verdict(findings, result["category"])
     result["outcome"] = outcome_for(result["predicted"], result["expected"])
     result["correct"] = result["outcome"] in ("TP", "TN")
@@ -165,10 +233,12 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
 
 def summarize(results: list[dict]) -> dict:
     def metrics(rows: list[dict], key: str = "outcome") -> dict:
-        tp = sum(1 for r in rows if r[key] == "TP")
-        fp = sum(1 for r in rows if r[key] == "FP")
-        fn = sum(1 for r in rows if r[key] == "FN")
-        tn = sum(1 for r in rows if r[key] == "TN")
+        scored_rows = [r for r in rows if not result_is_error(r)]
+        errors = len(rows) - len(scored_rows)
+        tp = sum(1 for r in scored_rows if r[key] == "TP")
+        fp = sum(1 for r in scored_rows if r[key] == "FP")
+        fn = sum(1 for r in scored_rows if r[key] == "FN")
+        tn = sum(1 for r in scored_rows if r[key] == "TN")
         precision = tp / (tp + fp) if tp + fp else None
         recall = tp / (tp + fn) if tp + fn else None
         if precision and recall:
@@ -177,7 +247,7 @@ def summarize(results: list[dict]) -> dict:
             f1 = 0.0  # positives exist but none were detected
         else:
             f1 = None
-        safe_rows = [r for r in rows if r["expected"] == "safe"]
+        safe_rows = [r for r in scored_rows if r["expected"] == "safe"]
         fpr = (
             sum(1 for r in safe_rows if r[key] == "FP") / len(safe_rows)
             if safe_rows
@@ -185,12 +255,17 @@ def summarize(results: list[dict]) -> dict:
         )
         return {
             "cases": len(rows),
+            "scored": len(scored_rows),
+            "errors": errors,
+            "error_rate": round(errors / len(rows), 3) if rows else None,
             "tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "precision": round(precision, 3) if precision is not None else None,
             "recall": round(recall, 3) if recall is not None else None,
             "f1": round(f1, 3) if f1 is not None else None,
             "false_positive_rate_on_safe": round(fpr, 3) if fpr is not None else None,
-            "accuracy": round((tp + tn) / len(rows), 3) if rows else None,
+            "accuracy": (
+                round((tp + tn) / len(scored_rows), 3) if scored_rows else None
+            ),
         }
 
     def off_category(r: dict) -> bool:
@@ -203,12 +278,16 @@ def summarize(results: list[dict]) -> dict:
             for f in r["findings"]
         )
 
-    all_findings = [f for r in results for f in r["findings"]]
+    scored: list[dict] = []
+    errs: list[dict] = []
+    for r in results:
+        (errs if result_is_error(r) else scored).append(r)
+    all_findings = [f for r in scored for f in r["findings"]]
     grounded = sum(1 for f in all_findings if f.get("evidence_valid"))
-    possible = sum(1 for r in results if r["predicted"] == "possible")
-    insufficient = sum(1 for r in results if r["predicted"] == "insufficient_evidence")
-    latencies = [r["latency_seconds"] for r in results]
-    tokens = [r["est_tokens"] for r in results]
+    possible = sum(1 for r in scored if r["predicted"] == "possible")
+    insufficient = sum(1 for r in scored if r["predicted"] == "insufficient_evidence")
+    latencies = [r["latency_seconds"] for r in scored]
+    tokens = [r["est_tokens"] for r in scored]
 
     def by(field: str, key: str = "outcome") -> dict:
         return {
@@ -227,17 +306,24 @@ def summarize(results: list[dict]) -> dict:
             "per_category": by("category", "outcome_grounded"),
             "per_split": by("split", "outcome_grounded"),
         },
+        "scored": len(scored),
+        "errors": len(errs),
+        "error_rate": round(len(errs) / len(results), 3) if results else None,
+        "error_cases": [
+            {"id": r["id"], "error": str(r.get("error") or "")[:300]}
+            for r in sorted(errs, key=lambda r: r["id"])
+        ],
         "off_category_alarm_rate": (
-            round(sum(1 for r in results if off_category(r)) / len(results), 3)
-            if results else None
+            round(sum(1 for r in scored if off_category(r)) / len(scored), 3)
+            if scored else None
         ),
-        "off_category_alarms": sorted(r["id"] for r in results if off_category(r)),
+        "off_category_alarms": sorted(r["id"] for r in scored if off_category(r)),
         "evidence_grounding_rate": (
             round(grounded / len(all_findings), 3) if all_findings else None
         ),
-        "possible_rate": round(possible / len(results), 3) if results else None,
+        "possible_rate": round(possible / len(scored), 3) if scored else None,
         "insufficient_evidence_rate": (
-            round(insufficient / len(results), 3) if results else None
+            round(insufficient / len(scored), 3) if scored else None
         ),
         "median_latency_seconds": (
             round(statistics.median(latencies), 2) if latencies else None
@@ -263,6 +349,11 @@ def main() -> None:
         "--gpu-cluster", action="store_true",
         help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 "
         "with qwen2.5:7b. Does not start the server or tunnel.",
+    )
+    parser.add_argument(
+        "--gpu-model", choices=sorted(GPU_MODELS), default=None,
+        help="Use the GPU cluster tunnel with a registered model (thinking off). "
+        "Cannot be combined with --gpu-cluster or --model.",
     )
     parser.add_argument(
         "--cases", nargs="*", default=None, help="Subset of case ids to run"
@@ -308,13 +399,23 @@ def main() -> None:
         help="Do not run the pipeline; re-score the per-case JSON files "
         "already in the results dir with the current scoring rules.",
     )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="skip cases with a completed (non-error) result JSON; re-run error results",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
+    if args.gpu_model and (args.gpu_cluster or args.model):
+        parser.error("--gpu-model cannot be combined with --gpu-cluster or --model")
+    if args.resume and args.rescore:
+        parser.error("--resume cannot be combined with --rescore")
 
     setup_logging(args.verbose)
 
     config = LGTMConfig()
     config.mode = args.mode
+    if args.gpu_model:
+        apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.gpu_cluster:
         config.ollama_model = "qwen2.5:7b"
         config.ollama_base_url = "http://127.0.0.1:11435"
@@ -350,44 +451,49 @@ def main() -> None:
         rescore(out_dir, cases, args.mode)
         return
 
-    results: list[dict] = []
+    write_run_manifest(
+        out_dir,
+        {"model": config.ollama_model, "ollama_base_url": config.ollama_base_url,
+         "reasoning": config.reasoning, "mode": config.mode},
+        args.resume, parser,
+    )
+
     for i, case in enumerate(cases, 1):
+        path = out_dir / f"{case['id']}.json"
+        if args.resume and is_done(path):
+            print(f"[{i}/{len(cases)}] {case['id']} skipped (already scored)")
+            continue
         print(f"[{i}/{len(cases)}] {case['id']} ...", end=" ", flush=True)
         try:
             result = evaluate_case(case, config)
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
-            print(f"ERROR: {exc}")
-            result = {
+            result = mark_error({
                 "id": case["id"],
                 "category": case["category"],
                 "split": case.get("split", "eval"),
                 "expected": case["expected_verdict"],
-                "predicted": "error",
-                "outcome": "FN" if case["expected_verdict"] == "vulnerable" else "TN",
-                "correct": case["expected_verdict"] != "vulnerable",
-                "predicted_grounded": "error",
-                "outcome_grounded": (
-                    "FN" if case["expected_verdict"] == "vulnerable" else "TN"
-                ),
-                "error": str(exc),
                 "n_findings": 0, "verdicts": [], "grounded": 0,
                 "grounding_rate": None, "latency_seconds": 0.0,
                 "est_tokens": 0, "findings": [],
-            }
+            }, str(exc))
+        if result_is_error(result):
+            print(f"ERROR: {result['error']}")
         else:
             print(
                 f"{result['outcome']} (expected {result['expected']}, "
                 f"predicted {result['predicted']}, {result['latency_seconds']}s)"
             )
-        results.append(result)
-        (out_dir / f"{case['id']}.json").write_text(
-            json.dumps(result, indent=2, default=str), encoding="utf-8"
-        )
+        path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
 
+    results = [
+        r for c in cases
+        if (r := load_result(out_dir / f"{c['id']}.json")) is not None
+    ]
     model = config.ollama_model if args.mode != "sast-only" else "none"
     write_summary(
         out_dir, results, args.mode, model,
-        {"split": args.split, "experiments": {
+        {"split": args.split, "reasoning": config.reasoning,
+         "cases_expected": len(cases), "experiments": {
             "require_tool_use": config.require_tool_use,
             "static_facts": config.static_facts,
             "authz_role_guidance": config.authz_role_guidance,
@@ -419,7 +525,9 @@ def _write_payload(out_dir: Path, results: list[dict], payload: dict) -> None:
     summary = summarize(results)
     payload = {
         **payload,
-        "outcomes": {r["id"]: r["outcome"] for r in results},
+        "outcomes": {
+            r["id"]: ERROR if result_is_error(r) else r["outcome"] for r in results
+        },
         "summary": summary,
     }
     summary_path = out_dir / "summary.json"
@@ -458,16 +566,12 @@ def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
             continue
         result = json.loads(path.read_text(encoding="utf-8"))
         result["split"] = case.get("split", "eval")
-        if result.get("predicted") == "error":
-            # Error results saved before grounded scoring existed
-            result.setdefault("predicted_grounded", "error")
-            result.setdefault("outcome_grounded", result["outcome"])
-        else:
-            result = score_case(result)
+        result = score_case(result)
         path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         results.append(result)
 
     payload = {k: v for k, v in old.items() if k not in ("outcomes", "summary")}
+    payload.setdefault("cases_expected", len(cases))
     payload.setdefault("mode", mode)
     payload.setdefault("model", "none" if mode == "sast-only" else "unknown")
     payload.pop("rescored_from_run_at", None)  # superseded key from earlier versions

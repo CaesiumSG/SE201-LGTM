@@ -1,0 +1,144 @@
+{
+  "id": "sqli_06_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "possible"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 78.12,
+  "est_tokens": 2209,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:72",
+      "verdict": "vulnerable",
+      "confidence": 0.97,
+      "cwe_id": "CWE-89",
+      "explanation": "The bulk_create_orders endpoint reads user-controlled JSON from request.get_json() and interpolates the 'status' field (a string with no validation or allowlist) into a SQL INSERT statement via .format() and string concatenation. The resulting query is executed with session.execute(text(...)) without any bound parameters. An attacker with manager role can inject arbitrary SQL through the 'status' field (e.g., \"pending'); DROP TABLE orders; --\"). This directly violates security-policy.md \u00a75 which forbids string interpolation or .format() of request-derived values into SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            63,
+            72
+          ],
+          "source": null,
+          "content": "items = request.get_json(silent=True) or []\n    session = get_session()\n    values = \", \".join(\n        \"({0}, '{1}', {2})\".format(\n            item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0)\n        )\n        for item in items\n    )\n    if values:\n        session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES \" + values))"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy text() with :name parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, % formatting, .format(), or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters with SQLAlchemy text(): build a single INSERT with named placeholders (e.g., text(\"INSERT INTO orders (user_id, status, total) VALUES (:user_id, :status, :total)\")) and pass a list of parameter dicts via session.execute(stmt, params_list). Alternatively, use the ORM: create Order objects and session.add_all(orders). Validate 'status' against a hardcoded allowlist (e.g., {'pending', 'shipped', 'delivered', 'cancelled'}) before use.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 72,
+      "tool_calls_used": 5,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:72",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new bulk_create_orders endpoint (PR diff, app/routes/orders.py) builds a VALUES clause by string-interpolating request-derived values directly into the SQL statement: `\"({0}, '{1}', {2})\".format(item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0))` and then concatenates it into `text(\"INSERT INTO orders ... VALUES \" + values)`. The `status` value is a free-form string taken from the JSON body (`request.get_json()`), so an attacker can inject arbitrary SQL (e.g. status = `x'); DROP TABLE orders; --`). No bound parameters are used, and no whitelist validation is applied to any of the interpolated fields. This directly violates security-policy.md \u00a75, which forbids string interpolation/.format() of request-derived values into SQL and requires bound parameters. Although the endpoint is gated by @require_role(\"manager\"), the policy explicitly forbids this pattern regardless of authorization, and a compromised/privileged account (or any manager) can still inject SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            63,
+            72
+          ],
+          "source": null,
+          "content": "values = \", \".join(\n    \"({0}, '{1}', {2})\".format(\n        item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0)\n    )\n    for item in items\n)\nif values:\n    session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES \" + values))"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters instead of string interpolation. Build a single parameterized INSERT with named placeholders, e.g. `session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES (:user_id, :status, :total)\"), {\"user_id\": item[\"user_id\"], \"status\": item[\"status\"], \"total\": item[\"total\"]})` per item (or use an executemany-style batch with a list of param dicts). Additionally validate/coerce user_id and total to numeric types and restrict status to a hard-coded allowlist.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 72,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/bulk[POST]",
+      "verdict": "possible",
+      "confidence": 0.6,
+      "cwe_id": "CWE-863",
+      "explanation": "The new POST /bulk endpoint accepts a JSON array of orders and inserts them with a caller-supplied user_id (item.get(\"user_id\", 0)), allowing a manager to create orders attributed to any user. The api-spec.md Orders table only documents POST /orders as 'any authenticated user (creates own order)' and does not list a /bulk endpoint; security-policy.md \u00a73 restricts order operations to the owner/admin model ('A user may view ONLY their own orders', 'Only admins may delete or refund orders') and never grants managers the ability to create orders on behalf of other users. The @require_role(\"manager\") decorator is the wrong role for this operation \u2014 if the endpoint is intended to be a bulk import, it should be admin-only (or restricted to the caller's own user_id). The policy does not explicitly forbid manager bulk-import, so the verdict is 'possible' rather than 'vulnerable'. (Note: the endpoint also violates \u00a75 with string-interpolated SQL, but that is a CWE-89 issue outside this authorization review.)",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            74
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/bulk\", methods=[\"POST\"])\n@require_role(\"manager\")\ndef bulk_create_orders():\n    items = request.get_json(silent=True) or []\n    session = get_session()\n    values = \", \".join(\n        \"({0}, '{1}', {2})\".format(\n            item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0)\n        )\n        for item in items\n    )\n    if values:\n        session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES \" + values))\n        session.commit()\n    return jsonify({\"imported\": len(items)}), 201"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders` | POST | any authenticated user (creates own order) |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders."
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        }
+      ],
+      "suggested_fix": "Either (a) restrict the endpoint to admin-only with @require_role(\"admin\") and validate that each item's user_id refers to a real user, or (b) force user_id to g.current_user.id so the caller can only bulk-create their own orders. Additionally, replace the string-interpolated SQL with bound parameters (e.g., session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES (:uid, :st, :tot)\"), {...}) in a loop, or use the ORM) to satisfy security-policy.md \u00a75.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 7,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

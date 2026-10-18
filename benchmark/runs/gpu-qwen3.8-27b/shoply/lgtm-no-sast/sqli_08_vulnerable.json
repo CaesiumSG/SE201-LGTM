@@ -1,0 +1,109 @@
+{
+  "id": "sqli_08_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 47.67,
+  "est_tokens": 1190,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/users.py:64",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new `recent_search()` endpoint reads a fully user-controlled cookie value (`request.cookies.get(\"last_search\", \"\")`) and directly interpolates it into a SQL query via an f-string: `text(f\"SELECT id, username FROM users WHERE username LIKE '%{last_search}%'\"`)`. There is no parameterization, no sanitization, and no allowlist validation. The `@require_auth` decorator only ensures authentication, not input safety. This is a classic SQL injection: an attacker can set the `last_search` cookie to arbitrary SQL (e.g., `' OR '1'='1` or stacked queries) and execute it. The project's own security policy (security-policy.md \u00a75) explicitly forbids f-string interpolation of request-derived values into SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            60,
+            67
+          ],
+          "source": null,
+          "content": "last_search = request.cookies.get(\"last_search\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username FROM users WHERE username LIKE '%{last_search}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use a bound parameter instead of f-string interpolation. Replace the query with:\n\n    rows = session.execute(\n        text(\"SELECT id, username FROM users WHERE username LIKE :pattern\"),\n        {\"pattern\": f\"%{last_search}%\"}\n    )\n\nThis passes the user-controlled value as a separate parameter, letting the database driver handle escaping safely.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 64,
+      "tool_calls_used": 3,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/recent-search[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /recent-search endpoint returns a list of user records (id, username) from the users table. The api-spec.md documents user-search functionality as requiring the manager role or above: '/users/search | GET | manager, admin'. The security-policy.md \u00a72 states 'Listing all users (GET /users) requires the manager role or above.' The new endpoint only applies @require_auth (any authenticated user), with no @require_role('manager') check and no ownership scoping. This allows any authenticated user to enumerate/search all user accounts, violating the documented access rule that user listing/search requires manager or admin. (The endpoint also contains a SQL injection via f-string interpolation of the cookie value, but that is a separate CWE-89 issue outside this authorization review.)",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            67
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/recent-search\", methods=[\"GET\"])\n@require_auth\ndef recent_search():\n    \"\"\"Re-run the user's last search stored in a cookie.\"\"\"\n    last_search = request.cookies.get(\"last_search\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username FROM users WHERE username LIKE '%{last_search}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/search` | GET | manager, admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing all users (`GET /users`) requires the **manager** role or above."
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            19,
+            25
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef list_users():\n    \"\"\"List all users. Managers and admins only.\"\"\""
+        }
+      ],
+      "suggested_fix": "Add @require_role(\"manager\") to the /recent-search endpoint so that only managers and admins can search/list user accounts, consistent with the documented access rule for user search. Additionally, parameterize the SQL query (use text(\"SELECT id, username FROM users WHERE username LIKE :q\") with params={\"q\": f\"%{last_search}%\"}) to eliminate the SQL injection.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

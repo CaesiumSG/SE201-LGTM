@@ -1,0 +1,119 @@
+{
+  "id": "sqli_06_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 57.8,
+  "est_tokens": 1758,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/orders.py:72",
+      "verdict": "vulnerable",
+      "confidence": 0.97,
+      "cwe_id": "CWE-89",
+      "explanation": "The new bulk_create_orders endpoint reads a JSON array directly from the request body (request.get_json) and builds the VALUES clause by string-concatenating each item's user_id, status, and total into the SQL via .format() and ', '.join(...). The status field is a free-form string interpolated inside single quotes with no escaping, validation, or allowlist, so a manager can inject arbitrary SQL (e.g. status = \"x'); DROP TABLE orders; --\"). The @require_role('manager') decorator only restricts who can call the endpoint; it does not sanitize input. This directly violates security-policy.md \u00a75, which forbids string concatenation/formatting of request-derived values into SQL and requires bound parameters.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            74
+          ],
+          "source": null,
+          "content": "def bulk_create_orders():\n    items = request.get_json(silent=True) or []\n    session = get_session()\n    values = \", \".join(\n        \"({0}, '{1}', {2})\".format(\n            item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0)\n        )\n        for item in items\n    )\n    if values:\n        session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES \" + values))"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy text() with :name parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, % formatting, .format(), or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters: build a single INSERT with one set of :user_id/:status/:total placeholders per row (or use SQLAlchemy's executemany / insert().values([...]) with a list of dicts), passing all values as a params dict/list. Validate status against a hard-coded allowlist (e.g. {'pending','shipped','delivered','cancelled'}) and coerce user_id/total to int/float before binding. Never concatenate request-derived strings into the SQL text.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 72,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/bulk[POST]",
+      "verdict": "vulnerable",
+      "confidence": 0.85,
+      "cwe_id": "CWE-863",
+      "explanation": "The new POST /bulk endpoint accepts a JSON array where each item carries a user-controlled 'user_id' and inserts orders for that arbitrary user. The only authorization check is @require_role(\"manager\"). Per the documented access model, order creation is scoped to the authenticated user's own account: api-spec.md states '/orders | POST | any authenticated user (creates own order)', and the existing create_order() endpoint (app/routes/orders.py:19-33) enforces this by hard-coding user_id=g.current_user.id. security-policy.md \u00a73 restricts cross-user order operations to administrators ('Listing another user's orders is restricted to that user themselves and administrators'; 'Only admins may delete or refund orders'). A manager is NOT an admin, so allowing a manager to create orders for arbitrary user_ids is an incorrect authorization check (CWE-863): the role check exists but grants a privilege (creating orders on behalf of any user) that the policy reserves for admins. The endpoint is also not documented in api-spec.md, and the policy requires endpoints to use the provided decorators with correct role scoping. (Note: the endpoint also violates \u00a75 by string-interpolating request data into SQL, but that is a separate CWE-89 issue outside this authorization review.)",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            74
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/bulk\", methods=[\"POST\"])\n@require_role(\"manager\")\ndef bulk_create_orders():\n    items = request.get_json(silent=True) or []\n    session = get_session()\n    values = \", \".join(\n        \"({0}, '{1}', {2})\".format(\n            item.get(\"user_id\", 0), item.get(\"status\", \"pending\"), item.get(\"total\", 0.0)\n        )\n        for item in items\n    )\n    if values:\n        session.execute(text(\"INSERT INTO orders (user_id, status, total) VALUES \" + values))\n        session.commit()\n    return jsonify({\"imported\": len(items)}), 201"
+        },
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            19,
+            33
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"\", methods=[\"POST\"])\n@require_auth\ndef create_order():\n    payload = request.get_json(silent=True) or {}\n    session = get_session()\n    order = Order(\n        user_id=g.current_user.id,\n        status=\"pending\",\n        total=float(payload.get(\"total\", 0.0)),\n        shipping_address=payload.get(\"shipping_address\", \"\"),\n    )\n    session.add(order)\n    session.commit()\n    return jsonify(order.to_dict()), 201"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders` | POST | any authenticated user (creates own order) |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders."
+        }
+      ],
+      "suggested_fix": "Restrict cross-user order creation to administrators: change the decorator to @require_role(\"admin\") (or, if the intent is for each caller to import only their own orders, drop the user-controlled user_id and force user_id=g.current_user.id as in create_order()). Additionally, replace the string-interpolated INSERT with bound parameters (SQLAlchemy text() with :name placeholders or ORM inserts) to satisfy security-policy.md \u00a75.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

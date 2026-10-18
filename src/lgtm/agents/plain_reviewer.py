@@ -12,7 +12,15 @@ from __future__ import annotations
 import json
 import logging
 
-from lgtm.agents.base import AgentFinding, build_llm, extract_json_object, parse_agent_output
+from lgtm.agents.base import (
+    AgentFinding,
+    build_llm,
+    extract_json_object,
+    invoke_with_retry,
+    message_text,
+    parse_agent_output,
+    request_valid_answer,
+)
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
 
@@ -108,8 +116,11 @@ class PlainLLMReviewer:
 
         logger.info("Plain LLM review of %d file(s)", len(diffs))
         try:
-            response = self.llm.invoke(messages)
-            raw = response.content if isinstance(response.content, str) else str(response.content)
+            response = invoke_with_retry(self.llm, messages, self.config)
+            messages.append(response)
+            raw = request_valid_answer(
+                self.llm, messages, message_text(response), self.config, self._is_parsable
+            )
         except Exception as exc:  # noqa: BLE001 - LLM failures must not kill the run
             logger.error("Plain LLM review failed: %s", exc)
             return [
@@ -126,7 +137,7 @@ class PlainLLMReviewer:
         return self._parse(raw)
 
     @staticmethod
-    def _parse(raw: str) -> list[AgentFinding]:
+    def _assessment_items(raw: str) -> list:
         data = extract_json_object(raw)
         if data is None:
             items: list = []
@@ -134,6 +145,15 @@ class PlainLLMReviewer:
             items = data["assessments"]
         else:
             items = [data]  # model answered with a single bare assessment
+        return items
+
+    @staticmethod
+    def _is_parsable(raw: str) -> bool:
+        return any(isinstance(i, dict) for i in PlainLLMReviewer._assessment_items(raw))
+
+    @staticmethod
+    def _parse(raw: str) -> list[AgentFinding]:
+        items = PlainLLMReviewer._assessment_items(raw)
 
         findings: list[AgentFinding] = []
         for i, item in enumerate(items):

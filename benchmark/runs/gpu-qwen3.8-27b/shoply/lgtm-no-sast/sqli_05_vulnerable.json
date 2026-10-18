@@ -1,0 +1,111 @@
+{
+  "id": "sqli_05_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 0.5,
+  "latency_seconds": 40.18,
+  "est_tokens": 1316,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/orders.py:66",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new search_orders() endpoint (app/routes/orders.py, PR diff lines 56-70) reads user-controlled input via q = request.args.get(\"q\", \"\") and interpolates it directly into an f-string SQL query: f\"... AND shipping_address LIKE '%{q}%'\". The query is then executed with session.execute(text(sql)) with NO bound parameters. This is a classic SQL injection: an attacker can supply q values like \"' OR '1'='1\" or use stacked/boolean payloads to extract or modify data. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL. The g.current_user.id interpolation is also unsafe (though less directly attacker-controlled).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            60,
+            70
+          ],
+          "source": null,
+          "content": "def search_orders():\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 5. Database access (SQL)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters with SQLAlchemy text(): sql = text(\"SELECT id, user_id, status, total FROM orders WHERE user_id = :uid AND shipping_address LIKE :q\"); rows = session.execute(sql, {\"uid\": g.current_user.id, \"q\": f\"%{q}%\"}). Never interpolate request-derived values into the SQL string.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 2,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/search[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-863",
+      "explanation": "The new GET /orders/search endpoint is documented in api-spec.md as: 'authenticated; results scoped to own orders unless admin'. The implementation only applies @require_auth and then filters with `WHERE user_id = {g.current_user.id}`. This is an incorrect authorization check: it does not honor the 'unless admin' clause, so an admin (who per policy \u00a73 may view any order and per api-spec may list all orders) is wrongly restricted to their own orders, and the check is not the policy-mandated `is_owner_or_admin(current_user, order.user_id)` ownership verification. The endpoint also violates security-policy.md \u00a75 by building SQL via f-string interpolation of the user-controlled `q` value (CWE-89), but the authorization defect is the primary finding. The required ownership/role logic is present in app/auth.py (is_owner_or_admin, require_role) but is not applied here.",
+      "evidence": [
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data."
+        },
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/search\", methods=[\"GET\"])\n@require_auth\ndef search_orders():\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            107,
+            109
+          ],
+          "source": null,
+          "content": "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n    return user.id == owner_id or user.role == \"admin\""
+        }
+      ],
+      "suggested_fix": "Apply the documented access rule: authenticate, then scope results to the caller's own orders unless the caller is an admin (who may search all orders). Use the provided helpers, e.g. `if g.current_user.role != 'admin': filter by user_id == g.current_user.id` (or use is_owner_or_admin per row), and parameterize the query with bound parameters (e.g. `text(\"... WHERE user_id = :uid AND shipping_address LIKE :q\", {\"uid\": g.current_user.id, \"q\": f\"%{q}%\"})`) to eliminate the SQL injection.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited code snippet not found in app/auth.py: 'def is_owner_or_admin(user: User, owner_id: int) -> bool:\\n    return user.id == '"
+      ]
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

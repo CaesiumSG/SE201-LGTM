@@ -1,0 +1,81 @@
+{
+  "id": "authz_03_safe",
+  "category": "authz",
+  "split": "dev",
+  "expected": "safe",
+  "n_findings": 1,
+  "verdicts": [
+    "safe"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 29.07,
+  "est_tokens": 886,
+  "findings": [
+    {
+      "finding_id": "authz:app/routes/users.py:/<int:user_id>/role[PUT]",
+      "verdict": "safe",
+      "confidence": 0.9,
+      "cwe_id": "CWE-863",
+      "explanation": "The new PUT /users/<id>/role endpoint satisfies the documented access rules. security-policy.md \u00a72 states 'Changing a user's role requires the admin role. A user must NEVER be able to change their own role or grant themselves additional privileges.' The diff applies @require_role(\"admin\") (the mandated decorator from app/auth.py, per \u00a71 'Endpoints MUST use the decorators provided in app/auth.py'), which enforces ROLE_RANK[user.role] >= ROLE_RANK[admin] (app/auth.py:69-85), so only admins pass. The handler then explicitly blocks self-modification with `if g.current_user.id == user_id: return 403`, satisfying the 'self-promotion forbidden' rule (also in api-spec.md: '/users/<id>/role | PUT | admin only; self-promotion forbidden'). The role value is validated against a hard-coded allowlist ('user','manager','admin'), and the target user is fetched by id and 404'd if absent. No IDOR (admin is the only allowed actor), no missing auth, and the role check is correct. The only residual nuance is that an admin can demote another admin, which the policy does not forbid.",
+      "evidence": [
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Changing a user's role requires the **admin** role. A user must NEVER be able to change their own role or grant themselves additional privileges."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Endpoints MUST use the decorators provided in `app/auth.py` (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled header checks, query-string flags, or debug bypasses are forbidden."
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            72
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>/role\", methods=[\"PUT\"])\n@require_role(\"admin\")\ndef set_user_role(user_id: int):\n    if g.current_user.id == user_id:\n        return jsonify({\"error\": \"cannot change your own role\"}), 403\n    payload = request.get_json(silent=True) or {}\n    new_role = payload.get(\"role\", \"user\")\n    if new_role not in (\"user\", \"manager\", \"admin\"):\n        return jsonify({\"error\": \"invalid role\"}), 400\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    user.role = new_role\n    session.commit()\n    return jsonify(user.to_dict())"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 56,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}

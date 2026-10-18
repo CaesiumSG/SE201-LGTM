@@ -1,0 +1,112 @@
+{
+  "id": "sqli_10_safe",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 38.42,
+  "est_tokens": 1057,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:69",
+      "verdict": "safe",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query in paged_orders() (app/routes/orders.py, PR diff lines 69-72) uses SQLAlchemy's text() with named bind parameters :limit and :offset, passed as a separate dict {\"limit\": limit, \"offset\": offset} to session.execute(). The values are additionally cast to int() before use (limit = int(request.args.get(\"limit\", \"20\")), offset = int(request.args.get(\"offset\", \"0\"))), so even a failed cast would raise ValueError and return a 400. Both the parameterization and the int() cast independently prevent SQL injection. This is a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            69,
+            72
+          ],
+          "source": null,
+          "content": "rows = session.execute(\n    text(\"SELECT id, user_id, status, total FROM orders LIMIT :limit OFFSET :offset\"),\n    {\"limit\": limit, \"offset\": offset},\n)"
+        },
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            63,
+            67
+          ],
+          "source": null,
+          "content": "try:\n    limit = int(request.args.get(\"limit\", \"20\"))\n    offset = int(request.args.get(\"offset\", \"0\"))\nexcept ValueError:\n    return jsonify({\"error\": \"limit and offset must be integers\"}), 400"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 69,
+      "tool_calls_used": 2,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/paged[GET]",
+      "verdict": "safe",
+      "confidence": 0.85,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /orders/paged endpoint lists ALL orders (no user_id filter), which is the same operation as the existing GET /orders/all. Per security-policy.md \u00a73, 'Managers and admins may list all orders (GET /orders/all)', and api-spec.md documents /orders/all as 'manager, admin'. The new endpoint is protected with @require_role(\"manager\"), which (per app/auth.py lines 69-85) enforces ROLE_RANK user<manager<admin, so only manager and admin can access it. This matches the documented access rule for listing all orders. The endpoint uses the sanctioned decorator from app/auth.py (satisfying \u00a71's requirement to use provided decorators), and the SQL uses bound parameters (satisfying \u00a75). No ownership check is required because the operation is a manager/admin-only full listing, not a per-user fetch. The endpoint is not explicitly named in the policy, but its access level (manager+) is consistent with the documented rule for listing all orders, so no authorization violation is present.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            50,
+            56
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/all\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef all_orders():\n    \"\"\"List every order. Managers and admins only.\"\"\"\n    session = get_session()\n    orders = session.query(Order).order_by(Order.created_at.desc()).all()\n    return jsonify([o.to_dict() for o in orders])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Managers and admins may list all orders (`GET /orders/all`)."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/all` | GET | manager, admin |"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}

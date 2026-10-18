@@ -1,0 +1,109 @@
+{
+  "id": "sqli_08_safe",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 54.04,
+  "est_tokens": 1136,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/users.py:64",
+      "verdict": "safe",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged sink uses SQLAlchemy `text()` with a named bound parameter `:pattern`, and the user-controlled value (the `last_search` cookie) is passed as a separate params dict `{'pattern': f'%{last_search}%'}` rather than interpolated into the SQL string. The f-string only builds the LIKE value, not the query text, so the query structure is fixed and the input is bound by the driver. This matches the project's own security policy (security-policy.md \u00a75) which explicitly permits 'SQLAlchemy text() with :name parameters' and forbids only string interpolation of request-derived values into the SQL text itself. No user input reaches the query string, so this is a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            62,
+            66
+          ],
+          "source": null,
+          "content": "rows = session.execute(\n    text(\"SELECT id, username FROM users WHERE username LIKE :pattern\"),\n    {\"pattern\": f\"%{last_search}%\"},\n)"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 64,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/recent-search[GET]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /recent-search endpoint returns a list of user records (id, username) from the users table, but it is protected only by @require_auth (any authenticated user). Per the documented access-control model, listing/searching users is a privileged operation: api-spec.md lists '/users/search | GET | manager, admin' and security-policy.md \u00a72 states 'Listing all users (GET /users) requires the manager role or above.' The analogous user-search endpoint here is therefore restricted to manager/admin, yet the changed code grants it to any authenticated user. This is a missing authorization (role) check \u2014 a regular 'user' role can enumerate other users' ids and usernames. (Note: the endpoint also uses a cookie-derived value in a LIKE pattern, but it is passed as a bound parameter, so it is not a SQL-injection issue; the authorization gap is the clear policy violation.)",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            68
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/recent-search\", methods=[\"GET\"])\n@require_auth\ndef recent_search():\n    \"\"\"Re-run the user's last search stored in a cookie.\"\"\"\n    last_search = request.cookies.get(\"last_search\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username FROM users WHERE username LIKE :pattern\"),\n        {\"pattern\": f\"%{last_search}%\"},\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/search` | GET | manager, admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing all users (`GET /users`) requires the **manager** role or above."
+        }
+      ],
+      "suggested_fix": "Restrict the endpoint to the manager role or above by replacing @require_auth with @require_role(\"manager\") (matching the documented access for user search/listing), or scope the query to the caller's own record if it is intended to be a personal feature. Do not expose a cross-user user listing to the base 'user' role.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}

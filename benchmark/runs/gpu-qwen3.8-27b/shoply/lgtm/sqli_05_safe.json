@@ -1,0 +1,102 @@
+{
+  "id": "sqli_05_safe",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 35.64,
+  "est_tokens": 959,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:65",
+      "verdict": "safe",
+      "confidence": 0.95,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query uses SQLAlchemy's text() with named bind parameters (:uid, :pattern) and passes user input as a separate dict to session.execute(). The user-controlled value q is bound as a parameter value (f\"%{q}%\"), not interpolated into the SQL string. This is proper parameterized query usage and is safe from SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            65,
+            71
+          ],
+          "source": null,
+          "content": "rows = session.execute(\n    text(\n        \"SELECT id, user_id, status, total FROM orders \"\n        \"WHERE user_id = :uid AND shipping_address LIKE :pattern\"\n    ),\n    {\"uid\": g.current_user.id, \"pattern\": f\"%{q}%\"},\n)"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 65,
+      "tool_calls_used": 2,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/search[GET]",
+      "verdict": "safe",
+      "confidence": 0.85,
+      "cwe_id": "CWE-639",
+      "explanation": "The new GET /orders/search endpoint is protected by @require_auth (app/auth.py:55-66), satisfying the policy requirement that every endpoint except /health and /login be authenticated (security-policy.md \u00a71). The API spec (api-spec.md:39) documents /orders/search as 'authenticated; results scoped to own orders unless admin'. The implementation scopes results to the authenticated user via the bound parameter 'uid': g.current_user.id in the WHERE clause (user_id = :uid), so a non-admin user can only retrieve their own orders. This matches the documented access rule and the ownership model in security-policy.md \u00a73 ('A user may view ONLY their own orders'). The query uses SQLAlchemy text() with bound parameters (:uid, :pattern), satisfying \u00a75 (no string interpolation of request values into the SQL string; the LIKE pattern is passed as a bound parameter). The SAST note about raw SQL is a false positive for authorization purposes since parameters are bound. No IDOR, missing-auth, or incorrect-auth flaw is present in the authorization logic.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            72
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/search\", methods=[\"GET\"])\n@require_auth\ndef search_orders():\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(\n            \"SELECT id, user_id, status, total FROM orders \"\n            \"WHERE user_id = :uid AND shipping_address LIKE :pattern\"\n        ),\n        {\"uid\": g.current_user.id, \"pattern\": f\"%{q}%\"},\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data."
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}

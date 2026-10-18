@@ -1,0 +1,108 @@
+{
+  "id": "langflow_authz_vulnerable",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 0.5,
+  "latency_seconds": 9.37,
+  "case_seconds": 9.39,
+  "est_tokens": 658,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "verdict": "safe",
+      "confidence": 1.0,
+      "cwe_id": "CWE-89",
+      "explanation": "The code uses SQLAlchemy ORM methods (`session.get`, `session.delete`) which handle parameterization internally. There is no raw SQL string construction or concatenation of user input into a query.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            44
+          ],
+          "source": null,
+          "content": "api_key = await session.get(ApiKey, api_key_id)"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+      "line": 44,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "verdict": "vulnerable",
+      "confidence": 0.95,
+      "cwe_id": "CWE-639",
+      "explanation": "The `delete_api_key` function previously verified that the `api_key.user_id` matched the provided `user_id` (ownership check). This check has been removed. The API endpoint `delete_api_key_route` now calls `delete_api_key` without passing the user ID, and the function no longer validates that the authenticated user owns the API key being deleted. This allows any authenticated user to delete any API key by ID (IDOR).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            50
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            50
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n):\n    try:\n        await delete_api_key(db, api_key_id)"
+        }
+      ],
+      "suggested_fix": "Restore the ownership check in `delete_api_key` by requiring the `user_id` parameter and verifying `api_key.user_id == user_id` before deletion. Update the API endpoint to pass `current_user.id` to the function.",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+      "line": 44,
+      "tool_calls_used": 0,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited code snippet not found in src/backend/base/langflow/api/v1/api_key.py: '@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_act'"
+      ]
+    }
+  ],
+  "project": "langflow",
+  "mode": "llm-only",
+  "variant": "own",
+  "diff_files": 3,
+  "diff_added": 5,
+  "diff_deleted": 9,
+  "diff_py_chars": 2299,
+  "diff_max_file_chars": 1023,
+  "endpoints_detected": [
+    "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]"
+  ],
+  "index_seconds": null,
+  "index_chunks": null,
+  "index_reused": null,
+  "index_skipped": true,
+  "index_skip_reason": "mode does not use the index",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "FN"
+}

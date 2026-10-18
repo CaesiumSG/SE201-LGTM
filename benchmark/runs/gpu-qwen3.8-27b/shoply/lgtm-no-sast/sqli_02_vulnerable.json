@@ -1,0 +1,109 @@
+{
+  "id": "sqli_02_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 42.6,
+  "est_tokens": 1286,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/orders.py:65",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new orders_by_status() endpoint reads `status` directly from the query string (`request.args.get(\"status\", \"pending\")`) and concatenates it into a raw SQL string, which is then executed via `session.execute(text(query))`. There is no parameterization, no allowlist validation, and no escaping. The `@require_role(\"manager\")` decorator only restricts who can call the endpoint; it does not sanitize the input. This is a textbook SQL injection (CWE-89) and directly violates security-policy.md \u00a75, which forbids string concatenation of request-derived values into SQL and requires bound parameters.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            67
+          ],
+          "source": null,
+          "content": "def orders_by_status():\n    status = request.args.get(\"status\", \"pending\")\n    session = get_session()\n    query = \"SELECT id, user_id, status, total FROM orders WHERE status = '\" + status + \"'\"\n    rows = session.execute(text(query))"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use a bound parameter: `query = text(\"SELECT id, user_id, status, total FROM orders WHERE status = :status\")` and execute with `session.execute(query, {\"status\": status})`. Alternatively, validate `status` against a hard-coded allowlist (e.g. {\"pending\", \"shipped\", \"delivered\", \"cancelled\"}) before use.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 65,
+      "tool_calls_used": 3,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/by-status[GET]",
+      "verdict": "safe",
+      "confidence": 0.7,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /by-status endpoint is a list endpoint that returns all orders matching a status. Per security-policy.md \u00a73, 'Managers and admins may list all orders (GET /orders/all)' and 'Listing another user's orders is restricted to that user themselves and administrators.' The endpoint is protected with @require_role('manager'), which (per app/auth.py:69-85) enforces the manager-or-above role and authenticates the user. This matches the documented access model for listing all orders (manager/admin), so the authorization requirement is satisfied. Note: the endpoint is not explicitly enumerated in api-spec.md, and it also contains a SQL-injection flaw (string concatenation of request.args.get('status') into a text() query, violating \u00a75), but that is a CWE-89 issue outside the authorization scope of this review. On the authorization dimension, the required role check is present and correct.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            58,
+            67
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/by-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef orders_by_status():\n    \"\"\"List orders filtered by status.\"\"\"\n    status = request.args.get(\"status\", \"pending\")\n    session = get_session()\n    query = \"SELECT id, user_id, status, total FROM orders WHERE status = '\" + status + \"'\"\n    rows = session.execute(text(query))\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/all` | GET | manager, admin |"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

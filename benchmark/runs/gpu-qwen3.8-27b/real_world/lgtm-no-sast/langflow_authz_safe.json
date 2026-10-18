@@ -1,0 +1,143 @@
+{
+  "id": "langflow_authz_safe",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "possible"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 43.34,
+  "case_seconds": 43.38,
+  "est_tokens": 1384,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:src/backend/tests/unit/api/v1/test_api_key.py:95",
+      "verdict": "safe",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line `stmt = select(User).where(User.username == user2.username)` is a SQLModel/SQLAlchemy ORM query. SQLModel's `select()` with `.where()` compiles to a parameterized SQL statement with bound values \u2014 no string concatenation or interpolation is involved. Additionally, the value `user2.username` is a hardcoded test string 'testuser2' defined in the test itself (line 88 of the diff), not user-controlled input. The same pattern is used in production code (crud.py line 14: `select(User).where(User.username == username)`), confirming this is the standard safe ORM idiom in this codebase.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/tests/unit/api/v1/test_api_key.py",
+          "lines": [
+            95,
+            95
+          ],
+          "source": null,
+          "content": "stmt = select(User).where(User.username == user2.username)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/user/crud.py",
+          "lines": [
+            13,
+            15
+          ],
+          "source": null,
+          "content": "async def get_user_by_username(db: AsyncSession, username: str) -> User | None:\n    stmt = select(User).where(User.username == username)\n    return (await db.exec(stmt)).first()"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/user/model.py",
+          "lines": [
+            25,
+            27
+          ],
+          "source": null,
+          "content": "class User(SQLModel, table=True):\n    id: UUIDstr = Field(default_factory=uuid4, primary_key=True, unique=True)\n    username: str = Field(index=True, unique=True)"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "src/backend/tests/unit/api/v1/test_api_key.py",
+      "line": 95,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]",
+      "verdict": "possible",
+      "confidence": 0.6,
+      "cwe_id": "CWE-639",
+      "explanation": "The PR changes the DELETE /api_key/{api_key_id} endpoint to pass current_user.id into delete_api_key(db, api_key_id, current_user.id), clearly intending to enforce ownership. However, the only delete_api_key implementation I could observe (crud.py:44-49) has the signature delete_api_key(session, api_key_id) and performs NO ownership check \u2014 it fetches the ApiKey by id and deletes it unconditionally. The PR diff does not include a corresponding change to crud.py, and grep confirmed only one definition of delete_api_key exists in the repo (crud.py:44). If the service-layer function is not updated to accept and enforce the user_id parameter, the endpoint will either fail at runtime (TypeError) or, if a 3-arg version is added without an ownership filter, remain vulnerable to IDOR: any authenticated user could delete another user's API key by supplying its UUID. The sibling GET endpoint (api_key.py:17-28) scopes by user_id via get_api_keys(db, user_id), confirming the intended per-user ownership model, but the delete path lacks that scoping in the observed code. Because I could not confirm whether a 3-arg delete_api_key with an ownership check exists elsewhere (budget exhausted), the flaw is plausible but not definitively confirmed.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            53
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n):\n    try:\n        await delete_api_key(db, api_key_id)\n    except Exception as e:\n        raise HTTPException(status_code=400, detail=str(e)) from e\n    return {\"detail\": \"API Key deleted\"}"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            49
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            17,
+            28
+          ],
+          "source": null,
+          "content": "@router.get(\"/\")\nasync def get_api_keys_route(\n    db: DbSession,\n    current_user: CurrentActiveUser,\n) -> ApiKeysResponse:\n    try:\n        user_id = current_user.id\n        keys = await get_api_keys(db, user_id)\n        return ApiKeysResponse(total_count=len(keys), user_id=user_id, api_keys=keys)"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "SECURITY.md:110-142",
+          "content": "For more information, see [API keys and authentication](https://docs.langflow.org/api-keys-and-authentication)."
+        }
+      ],
+      "suggested_fix": "Update delete_api_key in crud.py to accept a user_id parameter and scope the query to the owner, e.g. `async def delete_api_key(session, api_key_id, user_id): api_key = await session.get(ApiKey, api_key_id); if api_key is None or api_key.user_id != user_id: raise ValueError('API Key not found'); await session.delete(api_key)`. Return 404 (not 403) when the key does not belong to the requester to avoid leaking the existence of other users' keys. Ensure the endpoint passes current_user.id and that no other code path calls the unscoped variant.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "line": 41,
+      "tool_calls_used": 10,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "project": "langflow",
+  "mode": "lgtm-no-sast",
+  "variant": "own",
+  "diff_files": 4,
+  "diff_added": 72,
+  "diff_deleted": 5,
+  "diff_py_chars": 5391,
+  "diff_max_file_chars": 3092,
+  "endpoints_detected": [
+    "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]"
+  ],
+  "index_seconds": 126.64,
+  "index_chunks": 6081,
+  "index_reused": true,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "possible",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "TN"
+}

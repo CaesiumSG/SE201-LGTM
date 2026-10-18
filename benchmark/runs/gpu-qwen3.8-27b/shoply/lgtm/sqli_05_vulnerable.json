@@ -1,0 +1,109 @@
+{
+  "id": "sqli_05_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 49.64,
+  "est_tokens": 1218,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:69",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The PR adds a /orders/search endpoint where the user-controlled query parameter `q` (from `request.args.get(\"q\", \"\")`) is interpolated directly into a SQL string via f-string: `f\"... WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"`. The resulting string is then executed with `session.execute(text(sql))` without any bound parameters. An attacker can inject arbitrary SQL through the `q` parameter (e.g., `q = \"' OR 1=1 --\"`). This directly violates security-policy.md \u00a75 which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            62,
+            70
+          ],
+          "source": null,
+          "content": "q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters with SQLAlchemy's text(): `sql = text(\"SELECT id, user_id, status, total FROM orders WHERE user_id = :user_id AND shipping_address LIKE :q\")` and pass `session.execute(sql, {\"user_id\": g.current_user.id, \"q\": f\"%{q}%\"})`. This ensures the user input is treated as a data value, not executable SQL.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 69,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/search[GET]",
+      "verdict": "safe",
+      "confidence": 0.85,
+      "cwe_id": "CWE-639",
+      "explanation": "The new GET /orders/search endpoint is protected by @require_auth (app/auth.py:55-66), satisfying the policy requirement that every endpoint except /health and /login be authenticated (security-policy.md \u00a71). The API spec (api-spec.md:39) documents /orders/search as 'authenticated; results scoped to own orders unless admin'. The changed code scopes results to the authenticated user via `WHERE user_id = {g.current_user.id}` (app/routes/orders.py:67), which enforces the 'own orders' scoping for regular users. Because g.current_user is set by the require_auth decorator from the validated bearer token (app/auth.py:60-63), the user_id is server-derived, not attacker-controlled, so there is no IDOR: a non-admin cannot enumerate or read another user's orders through this endpoint. Note: the endpoint does not add an explicit admin branch to return all orders (a minor deviation from the 'unless admin' spec wording), and it uses f-string SQL interpolation (a separate CWE-89 concern flagged by SAST), but neither of these constitutes an authorization bypass. The required ownership scoping is present and correct per policy.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/search\", methods=[\"GET\"])\n@require_auth\ndef search_orders():\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data."
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}
