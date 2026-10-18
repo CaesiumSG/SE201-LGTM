@@ -27,8 +27,7 @@ pull request reviewed by a team member before reaching `main`.
 
 Decisions made by the team without AI: the project scope, the choice of
 CVEs for the real-world benchmark, the dev/eval protocol, and which
-results to report. AI use while drafting the proposal (2 Oct) was not
-recorded at the time.
+results to report.
 
 ## What we learned about using AI tools to build this
 

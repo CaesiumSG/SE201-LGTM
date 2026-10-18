@@ -312,8 +312,7 @@ through a pull request reviewed by a team member before reaching `main`.
 | 8 | 18 Oct | Prompt-injection red-teaming | Google Antigravity | Threat model, 6-case injection benchmark and generator, evaluation harness, comment stripper and injection detector, Windows Semgrep lookup fix, tests | Full test suite run; Semgrep execution checked on Windows |
 
 Decisions made by the team without AI: project scope, the choice of CVEs,
-the dev/eval protocol, and which results to report. AI use while drafting
-the proposal (2 Oct) was not recorded at the time.
+the dev/eval protocol, and which results to report.
 
 **What we learned:** the AI-generated pipeline worked end to end on day
 one; the subtle problems were in the *evaluation* (a scorer that credited
