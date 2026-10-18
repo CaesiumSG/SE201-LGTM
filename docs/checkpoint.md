@@ -2,6 +2,8 @@
 
 Team **"wo men ai AI"** · SE201 AI-Driven Software Engineering, AY2026-27 T1
 
+**Repository:** <https://github.com/CaesiumSG/SE201-LGTM>
+
 This report covers the four checkpoint requirements in the project
 specification:
 
@@ -14,15 +16,29 @@ specification:
 The detailed experiment history, with every failure we hit and how we fixed
 it, is in [`evaluation-log.md`](evaluation-log.md). The evaluation on
 published CVEs in real open-source projects is in
-[`real-world-eval.md`](real-world-eval.md). The run with `qwen3.8:27b` on
-the GPU cluster is in [`gpu-model-eval.md`](gpu-model-eval.md).
+[`real-world-eval.md`](real-world-eval.md), the prompt-injection
+red-teaming is in [`prompt-injection.md`](prompt-injection.md), and the run
+with `qwen3.8:27b` on the GPU cluster is in
+[`gpu-model-eval.md`](gpu-model-eval.md).
 
 ## Summary
 
 - **Status:** all architecture components are built, connected and
-  evaluated, on our synthetic benchmark and on real-world CVEs, with two
-  models. LGTM now uses `qwen3.8:27b` on the SCIS GPU cluster by default;
-  the earlier results used `qwen2.5-coder:7b` on a laptop.
+  evaluated on three separate benchmarks: synthetic (Shoply), real-world
+  CVEs, and prompt-injection attacks. LGTM now uses `qwen3.8:27b` on the
+  SCIS GPU cluster by default; the earlier results used `qwen2.5-coder:7b`
+  on a laptop.
+- **Three benchmarks, reported separately.** Each answers a different
+  question with its own script and metric, so we don't pool them into one
+  score: Shoply's dev split was used for tuning while the other sets were
+  never tuned on, and injection is measured by attack success rate, not F1.
+
+  | Benchmark | Question | Cases | Script | Metric |
+  |---|---|---|---|---|
+  | Shoply | Does LGTM catch flaws without false alarms? | 36 (dev 18 / eval 18) | `benchmark/evaluate.py` | F1 |
+  | Real-world CVEs | Does it hold on shipped code? | 12, held out | `benchmark/real_world/evaluate_real.py` | F1 |
+  | Prompt injection | Can PR text trick it? | 6 attacks | `benchmark/injection/run_injection_bench.py` | Attack success rate |
+
 - **Results on the synthetic benchmark** (Shoply, 36 cases; held-out eval
   split in brackets):
 
@@ -48,6 +64,20 @@ the GPU cluster is in [`gpu-model-eval.md`](gpu-model-eval.md).
   code to the agent. The 27B model got both langflow cases right (authz F1
   0.50) but still misses three vulnerable cases that the 7B model also
   missed; one of them never reaches an agent. See §3a and §3b.
+- **Results on prompt injection** (6 attack cases, `qwen2.5-coder:7b`;
+  attack success rate, lower is better; only the 3 SQLi attacks count,
+  because no mode flagged the authz originals):
+
+  | Mode | Attack success rate |
+  |---|---|
+  | SAST-only baseline | 0% (0/3) |
+  | LLM-only baseline | 0% (0/3) |
+  | LGTM, no mitigation | **100% (3/3)** |
+  | LGTM + `--strip-comments` + `--detect-prompt-injection` | 0% (0/3) |
+
+  Comments and docstrings in a PR talked LGTM's triage agent out of all
+  three SQLi detections; with the mitigations, none succeeded. See §6 and
+  [`prompt-injection.md`](prompt-injection.md).
 - **What the AI adds (synthetic benchmark):**
   - Without the security policy, the bare 7B LLM catches 0 of 6
     authorization flaws; LGTM catches all 6. The bare 27B LLM catches 5 of
@@ -73,8 +103,14 @@ the GPU cluster is in [`gpu-model-eval.md`](gpu-model-eval.md).
 
 ## 1. Architecture: in place and connected
 
-All five stages from the proposal (Figure 1) are implemented and run end to
-end from one command (`lgtm review`):
+All five stages from the proposal are implemented and run end to end from
+one command (`lgtm review`). Figure 1 shows the components as built:
+
+![Figure 1: LGTM architecture as implemented](architecture.svg)
+
+**Figure 1:** LGTM architecture as implemented. Solid arrows are the data
+flow of one review; dashed arrows are on-demand lookups the agents may
+make through the read-only tools.
 
 | Stage | Component | Status |
 |---|---|---|
@@ -271,7 +307,7 @@ this model by default (§5).
 | Benchmark: base repo + ≥4 seeded cases | ✅ Exceeded | 36 cases (18 pairs), balanced dev/eval split |
 | Initial evaluation round | ✅ Exceeded | Five rounds + a final clean run on Shoply (`evaluation-log.md`), a held-out real-world run (§3a), and a `qwen3.8:27b` run on both suites (§3b) |
 | README + setup instructions | ✅ Met | `README.md` |
-| Contribution history from all five members | ✅ Met | Jia Jun (pipeline, benchmark, evaluation), Kai Zhe (real-world benchmark and evaluation), Jin Rae (GPU model server, `qwen3.8:27b` evaluation), Hsu (diff reader hardening), Brian (prompt-injection testing and mitigations) |
+| Contribution history from all five members | ✅ Met | Jia Jun (pipeline, benchmark, evaluation), Kai Zhe (real-world benchmark and evaluation), Jin Rae (GPU model server, `qwen3.8:27b` evaluation), Hsu (diff reader hardening), Brian (prompt-injection red-teaming and mitigations) |
 | Progress / scope-change notes | ✅ Met | This document |
 | AI-use disclosure log | ✅ Met | [`ai-use-log.md`](ai-use-log.md), collated by area of work; reproduced in Appendix A |
 
@@ -293,6 +329,7 @@ this model by default (§5).
 | Added a **GPU-cluster model server** (`model/`); its tunnel `http://127.0.0.1:11435` is now LGTM's default endpoint | Laptop runs of the 7B model were slow (about 5 tokens/s in the real-world run), and the cluster lets us try larger models (28.5 tokens/s for `qwen3.8:27b` on an RTX 3090) |
 | Added **agent resilience and error accounting**: LLM retries, tool-input validation, re-asks for non-JSON answers, errors reported apart from verdicts, `--resume` | Long GPU runs must survive transient failures without scoring them as verdicts |
 | Hardened the git diff reader | Real repositories contain non-UTF-8 files and paths that git quotes, which crashed reviews |
+| Added **prompt-injection mitigations** behind flags (`--strip-comments`, `--detect-prompt-injection`, both off by default) | Red-teaming showed comments and docstrings in a PR could talk the LGTM agents out of a correct `vulnerable` verdict (§6) |
 
 ## 6. Responsible AI: risks and mitigations so far
 
@@ -307,8 +344,10 @@ this model by default (§5).
 
 ## 7. Next steps towards the final submission
 
-1. **Prompt injection** (Brian): mitigations are in place (§6); adversarial
-   variable renaming remains open.
+1. **Prompt-injection residual risks** (Brian): attacks that don't rely on
+   comments, such as identifiers named to look like authorization checks,
+   which stripping and the detector don't stop
+   ([`prompt-injection.md`](prompt-injection.md) §6).
 2. **Field trial on ordinary merged PRs** (Hsu): crash rate, latency and
    false-alarm rate on real open-source PRs.
 3. **Reduce off-category authz false alarms** (open problem in the
@@ -331,7 +370,7 @@ AI used to build the project, collated by area of work. The LLM that LGTM
 runs at review time is part of the product and is covered in §6. Tools:
 **Claude Code** (Anthropic) for most implementation and documentation,
 **GitHub Copilot** for the GPU model server, and **Google Antigravity**
-for prompt-injection red teaming. All AI-generated code went
+for the prompt-injection red-teaming. All AI-generated code went
 through a pull request reviewed by a team member before reaching `main`.
 
 | # | Dates | Area | Tool | What AI produced | How we verified it |
@@ -343,12 +382,11 @@ through a pull request reviewed by a team member before reaching `main`.
 | 5 | 15 Oct | Real-world CVE benchmark | Claude Code | `cases.json`, `fetch.py`, project policies, `evaluate_real.py`, tests, first draft of the write-up | Advisory ids and SHAs read from the GitHub API, re-verified on every run; all numbers generated by script; each miss read from the case JSON before explaining it |
 | 6 | 17 Oct | Diff reader hardening | Claude Code | UTF-8 decoding with replacement; unquoting of git-quoted paths | New tests in `tests/test_diff.py`; full suite green |
 | 7 | 13–18 Oct | Documentation | Claude Code | Drafts of README, this report, evaluation log, AI use log | Team review; all figures traced to committed run files |
-| 8 | 18 Oct | Prompt-injection red teaming | Google Antigravity | Threat model, 6-case injection benchmark and harness, comment/docstring stripper and injection detector, Windows Semgrep path fix, tests | Full test suite; Semgrep execution audited on Windows |
+| 8 | 18 Oct | Prompt-injection red-teaming | Google Antigravity | Threat model, 6-case injection benchmark and generator, evaluation harness, comment stripper and injection detector, Windows Semgrep lookup fix, tests | Full test suite run; Semgrep execution checked on Windows |
 | 9 | 17–18 Oct | Larger model on the GPU cluster | Claude Code | `--gpu-model` registry, error accounting and `--resume`, LLM retries, tool-input validation and re-asks, 32k-context deployment settings, `qwen3.8:27b` as the default, first draft of `gpu-model-eval.md` | Unit tests (315 passing); model placement checked with Ollama's `/api/ps`; every number in the write-up generated from committed `summary.json` and `run-stats.json` files |
 
 Decisions made by the team without AI: project scope, the choice of CVEs,
-the dev/eval protocol, and which results to report. AI use while drafting
-the proposal (2 Oct) was not recorded at the time.
+the dev/eval protocol, and which results to report.
 
 **What we learned:** the AI-generated pipeline worked end to end on day
 one; the subtle problems were in the *evaluation* (a scorer that credited
