@@ -73,32 +73,72 @@ class TestChunkDocument:
 def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
     tmp_path, monkeypatch
 ):
-    (tmp_path / "policy.md").write_text("Admin access requires approval.", encoding="utf-8")
+    class Collection:
+        def __init__(self, metadata=None, records=None):
+            self.metadata = metadata
+            self.records = records or {}
+
+        def add(self, ids, documents, metadatas):
+            self.records.update(dict(zip(ids, zip(documents, metadatas))))
+
+    class Client:
+        def __init__(self):
+            self.collections = {
+                "lgtm_docs": Collection({"old": True}, {"old-id": ("old policy", {})}),
+                "lgtm_code": Collection(
+                    {"owner": "external"},
+                    {"external-id": ("keep me", {"owner": "external"})},
+                ),
+            }
+
+        def delete_collection(self, name):
+            if name != "lgtm_docs":
+                raise AssertionError(f"unexpected collection deletion: {name}")
+            del self.collections[name]
+
+        def create_collection(self, name, metadata=None):
+            if name != "lgtm_docs" or name in self.collections:
+                raise AssertionError(f"unexpected collection creation: {name}")
+            self.collections[name] = Collection(metadata)
+            return self.collections[name]
+
+        def get_max_batch_size(self):
+            return 5461
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unsupported Chroma operation: {name}")
+
+    client = Client()
+    stale = client.collections["lgtm_code"]
+    stale_metadata = dict(stale.metadata)
+    stale_records = dict(stale.records)
+    monkeypatch.setitem(
+        sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client)
+    )
+
     (tmp_path / "app.py").write_text("def authorize(): pass", encoding="utf-8")
-    stale = MagicMock()
-    stale.metadata = {"owner": "external"}
-    stale.records = {"external-id": ("keep me", {"owner": "external"})}
-    policy = MagicMock()
-    client = MagicMock()
-    client.collections = {"lgtm_code": stale}
-    client.delete_collection.side_effect = lambda name: client.collections.pop(name)
-    client.create_collection.side_effect = lambda name, metadata=None: client.collections.setdefault(name, policy)
-    monkeypatch.setitem(sys.modules, "chromadb", SimpleNamespace(
-        PersistentClient=MagicMock(return_value=client)
-    ))
-
-    count = index_repo_docs(tmp_path, LGTMConfig())
-
-    assert count == 1
-    assert client.delete_collection.call_args_list[0].args == ("lgtm_docs",)
-    assert [call.args[0] for call in client.create_collection.call_args_list] == ["lgtm_docs"]
-    assert policy.add.call_args.kwargs["documents"] == ["Admin access requires approval."]
-    assert policy.add.call_args.kwargs["metadatas"] == [
-        {"source": "policy.md", "start_line": 1, "end_line": 1}
+    (tmp_path / "policy.md").write_text(
+        "Admin access\nrequires approval.", encoding="utf-8"
+    )
+    config = LGTMConfig(rag_chunk_size=2, rag_chunk_overlap=0)
+    assert index_repo_docs(tmp_path, config) == 2
+    assert [record[0] for record in client.collections["lgtm_docs"].records.values()] == [
+        "Admin access",
+        "requires approval.",
+    ]
+    assert [record[1] for record in client.collections["lgtm_docs"].records.values()] == [
+        {"source": "policy.md", "start_line": 1, "end_line": 1},
+        {"source": "policy.md", "start_line": 2, "end_line": 2},
     ]
     assert client.collections["lgtm_code"] is stale
-    assert stale.metadata == {"owner": "external"}
-    assert stale.records == {"external-id": ("keep me", {"owner": "external"})}
+    assert stale.metadata == stale_metadata
+    assert stale.records == stale_records
+
+    (tmp_path / "policy.md").write_text(" \n\t", encoding="utf-8")
+    assert index_repo_docs(tmp_path, config) == 0
+    assert client.collections["lgtm_code"] is stale
+    assert stale.metadata == stale_metadata
+    assert stale.records == stale_records
 
 
 class TestReplaceCollectionBatching:

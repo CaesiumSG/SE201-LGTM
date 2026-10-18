@@ -159,7 +159,6 @@ def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
 
 
 def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
-    """Index documentation into the policy collection in ChromaDB."""
     import chromadb
 
     config = config or LGTMConfig()
