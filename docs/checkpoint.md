@@ -295,19 +295,19 @@ model server) to see whether tool use improves.
 
 ## 8. Challenges, lessons, and what we do going forward
 
-| # | Challenge we hit | What we did | Lesson / going forward |
+| # | What we faced | What we tried and decided | What we'll do going forward |
 |---|---|---|---|
-| 1 | First headline result was wrong: the scorer credited the wrong agent and the "LLM-only" baseline secretly had RAG + tools | Fixed the evaluator, rebuilt the baseline, re-ran everything (0.94 vs 0.75) | Review metrics code like product code. Every baseline is checked against its written definition |
-| 2 | SAST silently scanned the working tree, not the PR's files | Materialise the PR ref into a temp dir; regression test | Any repo read must say *which version*. Tests now pin it |
-| 3 | Aggregate F1 hid ownership alarms on 22 of 24 SQLi cases | Per-finding audit; added off-category and grounded-only metrics | One number is not an evaluation. Reduce these alarms next (input scoping or a verifier) |
-| 4 | Easy to tune on the test set by accident | Strict protocol: tune on dev only, report eval once | Two of three prompt tweaks were harmful on dev. Keep the protocol for every future change |
-| 5 | 7B model never calls tools; forcing it = 6.6× latency, no gain | Pre-retrieve context (RAG) instead of relying on tool use | "Agentic" depends on the model. Measure tool use; test ≤14B models that do call tools |
-| 6 | A file path in a rule ID flipped a verdict | Path-free rule IDs; treat single-case changes as noise | Determinism ≠ robustness. Grow the eval set; report variance |
-| 7 | Real-world F1 fell 0.94 → 0.44; 7 of 12 cases ran no agent | Traced each miss to a cause (detector gating, cross-file checks) | Our own benchmark encoded our assumptions. Next: run the agent when no endpoint is detected; give it callees |
-| 8 | PR comments talked the agent out of 3/3 SQLi detections (100% attack success) | Strip comments before the LLM; detect reviewer-directed text (now 0%) | More context = bigger injection surface. Mitigations must be structural; cover non-comment attacks next |
-| 9 | Compute: 5 tok/s laptops, 4-min indexes, a 76-min hang from an unwired timeout | Wired timeout + output cap; GPU-cluster model server; frozen-tree runs | Bound every model call. Treat benchmark runs as experiments with provenance |
-| 10 | Real repos broke the toy-app assumptions (non-UTF-8 files, quoted paths, Chroma batch limit, CRLF, Semgrep lookup) | Fixed each with a regression test | Field trials on other people's code find bugs a harness hides. Trial on ~10 ordinary PRs next |
-| 11 | AI-written code was fast but its mistakes (1, 2) passed unit tests that shared the same assumptions | One PR per piece of work; every number copied from committed run files; AI-use log by area | Use the speed, keep humans on claims, baselines and metrics |
+| 1 | Our first headline result said LGTM was *worse* than the bare LLM. It took us a day to realise the scorer was crediting the wrong agent and our "LLM-only" baseline secretly had RAG and tools | We rebuilt the baseline to match the proposal, fixed the scorer, and re-ran everything. The conclusion flipped to 0.94 vs 0.75 | We now review metrics code as carefully as product code, and check every baseline against its written definition before trusting a number |
+| 2 | We found Semgrep had been scanning whatever branch was checked out, not the PR's files. Nothing crashed, so we only caught it by reading results by hand | We decided to always materialise the PR's files into a temp directory before scanning, and pinned it with a test | Whenever we read from a repo we now ask "which version?" explicitly |
+| 3 | We were proud of F1 1.00 on dev until we read the individual findings: the authz agent was flagging 22 of 24 SQLi endpoints that were already protected | We added an off-category alarm metric and a grounded-only F1 so this can't hide again | We'll attack the alarms next, trying input scoping or a second-pass verifier, tuned on dev only |
+| 4 | We caught ourselves about to "fix" prompts until the eval cases passed | We agreed on a strict rule: tune on dev only, fix only genuine bugs, report eval once. Two of our three prompt tweaks then turned out to be harmful on dev | We keep the protocol for every change, including the model comparison running now |
+| 5 | We expected the agent to use its tools. Our 7B model never did. When we forced it, it called every tool every time for 6.6× the latency and no gain | We decided to rely on pre-retrieved context (RAG in the prompt) rather than tool use for a small model | We're testing ≤14B models that do call tools, and we measure tool use instead of assuming it |
+| 6 | One verdict flipped because a file path inside a Semgrep rule ID changed. Temperature 0 had given us false confidence | We made rule IDs path-free and stopped reading anything into single-case changes | We'll grow the eval set and report variance, since one flip is ±0.05 F1 today |
+| 7 | When we finally tested on real CVEs, F1 fell from 0.94 to 0.44, and 7 of 12 cases never even reached an agent | We traced every miss to a cause: our detector only fires on decorators inside the diff, and the agent only sees one file | We'll let the agent run when no endpoint is detected and give it the relevant callees. We learned our own benchmark encoded our own assumptions |
+| 8 | Brian's red-teaming showed a code comment could talk the agent out of 3/3 SQLi detections. Labelling the diff "untrusted" did nothing | We tried stripping comments before the LLM sees the code and detecting reviewer-directed text; attack success went from 100% to 0% | We'll cover attacks that don't rely on comments next, and keep mitigations structural rather than instructional |
+| 9 | Compute kept getting in the way: 5 tokens/s on a laptop GPU, 4-minute indexes, and one benchmark run that hung for 76 minutes because our configured timeout never reached the Ollama client | We wired the timeout and an output cap, Jin Rae built a GPU-cluster model server, and we run benchmarks from a frozen copy of the tree | We bound every model call and treat each benchmark run as an experiment with provenance |
+| 10 | The moment we left our own toy app, real repos broke things: non-UTF-8 files, git-quoted paths, a ChromaDB batch limit, CRLF and a Semgrep lookup bug on Windows | We fixed each one with a regression test | Hsu will run a field trial on ~10 ordinary open-source PRs, because that's where the engineering bugs are |
+| 11 | AI wrote most of our pipeline in a day, and its two worst mistakes (rows 1 and 2) sailed through unit tests that shared the same assumptions | We moved to one PR per piece of work, every reported number copied from a committed run file, and an AI-use log by area | We use the speed, but keep humans on the claims, the baselines and the metrics |
 
 ## Appendix A. AI use disclosure log
 
@@ -331,4 +331,4 @@ through a pull request reviewed by a team member before reaching `main`.
 
 Decisions made by the team without AI: project scope, the choice of CVEs,
 the dev/eval protocol, and which results to report. What we learned from
-working this way is item 11 of §8.
+working this way is row 11 of §8.
