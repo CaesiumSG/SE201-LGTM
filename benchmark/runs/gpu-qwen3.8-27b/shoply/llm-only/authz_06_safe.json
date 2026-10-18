@@ -1,0 +1,78 @@
+{
+  "id": "authz_06_safe",
+  "category": "authz",
+  "split": "eval",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 10.5,
+  "est_tokens": 602,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "verdict": "safe",
+      "confidence": 1.0,
+      "cwe_id": "CWE-89",
+      "explanation": "The code uses an ORM (SQLAlchemy) with `session.query(Order).all()`. There is no string concatenation or formatting of user input into a SQL query string. No SQL injection risk is present in this diff.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            61,
+            61
+          ],
+          "source": null,
+          "content": "orders = session.query(Order).all()"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "app/routes/orders.py",
+      "line": 61,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "verdict": "vulnerable",
+      "confidence": 0.95,
+      "cwe_id": "CWE-862",
+      "explanation": "The new endpoint `/report` returns all orders and aggregated revenue data. It is protected only by `@require_api_key_scope(\"reports:read\")`. Unlike the existing `all_orders` endpoint (which likely uses `require_auth` or similar user-based auth), this endpoint exposes sensitive business data (revenue, all orders) to any holder of an API key with the `reports:read` scope. If this scope is intended for machine integrations, it may be too broad or lack proper ownership/tenant isolation checks (e.g., filtering by tenant_id or user_id). This constitutes a missing or incorrect authorization check for a sensitive operation (CWE-862/CWE-863).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            66
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/report\", methods=[\"GET\"])\n@require_api_key_scope(\"reports:read\")\ndef orders_report():\n    \"\"\"Aggregated order report for machine integrations.\"\"\"\n    session = get_session()\n    orders = session.query(Order).all()\n    return jsonify(\n        {\n            \"order_count\": len(orders),\n            \"revenue\": sum(o.total for o in orders),\n            \"orders\": [o.to_dict() for o in orders],\n        }\n    )"
+        }
+      ],
+      "suggested_fix": "Add tenant/user isolation to the query (e.g., `session.query(Order).filter(Order.tenant_id == g.tenant_id).all()`) and ensure the `reports:read` scope is strictly limited to authorized service accounts. Consider rate-limiting and audit logging for this sensitive endpoint.",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "app/routes/orders.py",
+      "line": 57,
+      "tool_calls_used": 0,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "FP"
+}

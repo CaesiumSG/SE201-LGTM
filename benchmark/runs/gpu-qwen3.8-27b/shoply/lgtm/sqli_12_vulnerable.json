@@ -1,0 +1,164 @@
+{
+  "id": "sqli_12_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 86.56,
+  "est_tokens": 2725,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/users.py:67",
+      "verdict": "vulnerable",
+      "confidence": 0.95,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /users/filter endpoint (app/routes/users.py, PR diff lines 55-70) builds a WHERE clause by directly interpolating request-derived values into a raw SQL string: `clauses.append(f\"{field} = '{value}'\")` then `where = \" AND \".join(clauses)`, which is concatenated into `text(\"SELECT id, username, role FROM users WHERE \" + where)` and executed via `session.execute(...)`. Both `field` and `value` come straight from `request.args.items()` (Flask query-string parameters) with no parameterization, no escaping, and no allowlist validation of the column names. This is a textbook SQL injection: an attacker with the manager role (the endpoint is gated only by `@require_role(\"manager\")`, which is a legitimate, reachable role per security-policy.md \u00a72) can supply e.g. `?role=' OR '1'='1` or `?id=1; DROP TABLE users` to break out of the string literal and inject arbitrary SQL. The `@require_role(\"manager\")` decorator (app/auth.py:64-109) only restricts access to privileged users; it does not sanitize input, so user-controlled data still reaches the query. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids string interpolation/f-strings of request-derived values into SQL, and requires dynamic identifiers to be validated against a hard-coded allowlist \u2014 neither of which is present here. No allowlist/whitelist of permitted fields exists in the code (the only field references are the model columns in app/models.py:23-31).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            55,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            64,
+            82
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            23,
+            31
+          ],
+          "source": null,
+          "content": "class User(Base):\n    __tablename__ = \"users\"\n    id = Column(Integer, primary_key=True)\n    username = Column(String(80), unique=True, nullable=False)\n    email = Column(String(255), unique=True, nullable=False)\n    password_hash = Column(String(255), nullable=False)\n    role = Column(String(20), nullable=False, default=\"user\")"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 5. Database access (SQL)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query."
+        }
+      ],
+      "suggested_fix": "Do not interpolate request values into the SQL string. (1) Validate each `field` against a hard-coded allowlist of permitted columns (e.g. {\"id\", \"username\", \"role\"}) and reject anything else. (2) Use bound parameters for the values: build `text(\"SELECT id, username, role FROM users WHERE \" + where)` where `where` is composed of `:p0 AND :p1 ...` placeholders, and pass a params dict to `session.execute(stmt, params)`. Example:\n\nALLOWED_FIELDS = {\"id\", \"username\", \"role\"}\nclauses, params = [], {}\nfor i, (field, value) in enumerate(request.args.items()):\n    if field not in ALLOWED_FIELDS:\n        return jsonify({\"error\": \"invalid field\"}), 400\n    key = f\"p{i}\"\n    clauses.append(f\"{field} = :{key}\")\n    params[key] = value\nwhere = \" AND \".join(clauses) or \"1=1\"\nstmt = text(f\"SELECT id, username, role FROM users WHERE {where}\")\nrows = session.execute(stmt, params)\n\nThis keeps column names whitelisted (safe to interpolate) and binds all user-supplied values as parameters, satisfying security-policy.md \u00a75.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 67,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:68",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /users/filter endpoint builds a WHERE clause by directly interpolating both the field name and value from request.args into an f-string (f\"{field} = '{value}'\"), then concatenates it into a SQLAlchemy text() query with no bound parameters and no allowlist validation. Both the column name and the value are fully attacker-controlled (e.g. ?username=x' OR '1'='1 or ?role=1; DROP TABLE users--). The @require_role(\"manager\") decorator only restricts access to manager/admin users; it does not sanitize input, so any manager can inject arbitrary SQL. This directly violates security-policy.md \u00a75, which forbids string interpolation/concatenation of request-derived values into SQL and requires bound parameters or a hard-coded allowlist for dynamic identifiers.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy text() with :name parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, % formatting, .format(), or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query."
+        }
+      ],
+      "suggested_fix": "Use bound parameters for values and validate column names against a hard-coded allowlist, e.g.: ALLOWED = {\"id\": \"id\", \"username\": \"username\", \"role\": \"role\"}; clauses = []; params = {}; for field, value in request.args.items(): if field not in ALLOWED: continue; key = f\"p_{field}\"; clauses.append(f\"{ALLOWED[field]} = :{key}\"); params[key] = value; where = \" AND \".join(clauses) or \"1=1\"; rows = session.execute(text(f\"SELECT id, username, role FROM users WHERE {where}\"), params). Never interpolate raw request values into the SQL string.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 68,
+      "tool_calls_used": 3,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/filter[GET]",
+      "verdict": "safe",
+      "confidence": 0.85,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /users/filter endpoint is a user-listing operation. Per security-policy.md \u00a72, 'Listing all users (GET /users) requires the manager role or above,' and api-spec.md lists user-listing endpoints (/users, /users/search) as 'manager, admin'. The changed code applies @require_role(\"manager\") (app/routes/users.py, new lines 58-59), which is the mandated decorator from app/auth.py. require_role (app/auth.py:69-85) authenticates via get_current_user() and enforces ROLE_RANK (user<manager<admin), so only manager/admin can reach the handler. This satisfies the documented access rule for listing user data; no IDOR applies because the endpoint returns a filtered list rather than a single user-controlled object, and the role gate matches the policy. (Note: the endpoint also contains a SQL-injection flaw via f-string interpolation of request.args into the WHERE clause, violating policy \u00a75, but that is a CWE-89 issue outside this authorization review.)",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    \"\"\"Filter users by arbitrary field=value query parameters.\"\"\"\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing all users (`GET /users`) requires the **manager** role or above."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users` | GET | manager, admin | ... | `/users/search` | GET | manager, admin |"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

@@ -1,0 +1,144 @@
+{
+  "id": "sqli_03_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 62.14,
+  "est_tokens": 1822,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:65",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /sorted endpoint reads sort_by directly from the query string (request.args.get(\"sort_by\", \"created_at\")) and interpolates it into a raw SQL statement via an f-string: text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\"). There is no allowlist/whitelist validation of sort_by anywhere in the file (grep for ALLOWED/allowlist/whitelist in app/routes/orders.py returns no matches), and no bound parameter is used. This is a textbook SQL injection: an attacker with the manager role can supply sort_by values like 'created_at; DROP TABLE orders--' or use stacked/boolean-based payloads to extract data. This directly violates security-policy.md \u00a75, which forbids f-string interpolation of request-derived values into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            60,
+            67
+          ],
+          "source": null,
+          "content": "def sorted_orders():\n    \"\"\"List orders sorted by an arbitrary column.\"\"\"\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "String interpolation, f-strings, % formatting, .format(), or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query."
+        }
+      ],
+      "suggested_fix": "Validate sort_by against a hard-coded allowlist of permitted column names before building the query, e.g. ALLOWED_SORT_COLUMNS = {\"created_at\", \"total\", \"status\", \"id\"}; if sort_by not in ALLOWED_SORT_COLUMNS: abort(400). Then interpolate only the validated identifier (or better, use SQLAlchemy's order_by with a mapped column attribute). Never pass raw request-derived strings into SQL.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 65,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:66",
+      "verdict": "vulnerable",
+      "confidence": 0.97,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /sorted endpoint reads sort_by directly from the query string (request.args.get('sort_by', 'created_at')) and interpolates it into a SQLAlchemy text() query via an f-string: text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\"). There is no allowlist validation of sort_by anywhere in the codebase (grep for sort_by/whitelist/allowed_columns returned no matches). The security policy (security-policy.md \u00a75) explicitly forbids f-string interpolation of request-derived values into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist. An attacker with the manager role can inject arbitrary SQL via the sort_by parameter (e.g. sort_by=1; DROP TABLE orders-- or a UNION-based exfiltration).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            60,
+            68
+          ],
+          "source": null,
+          "content": "def sorted_orders():\n    \"\"\"List orders sorted by an arbitrary column.\"\"\"\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "String interpolation, f-strings, % formatting, .format(), or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query."
+        }
+      ],
+      "suggested_fix": "Validate sort_by against a hard-coded allowlist of permitted column names before using it, e.g.: ALLOWED_SORT_COLUMNS = {'id', 'user_id', 'status', 'total', 'created_at'}; if sort_by not in ALLOWED_SORT_COLUMNS: abort(400). Then interpolate only the validated identifier. Alternatively, use SQLAlchemy's order_by with a mapped column attribute (Order.<col>) selected from a dict of allowed columns.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/sorted[GET]",
+      "verdict": "safe",
+      "confidence": 0.8,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /orders/sorted endpoint is a list-all-orders operation (it returns every order row, not scoped to the requester). Per security-policy.md \u00a73, 'Managers and admins may list all orders (GET /orders/all)', and api-spec.md documents the analogous list-all endpoint '/orders/all | GET | manager, admin'. The changed code enforces this with @require_role(\"manager\") (app/routes/orders.py, added lines), and app/auth.py:69-85 shows require_role authenticates the bearer token and enforces ROLE_RANK (user<manager<admin), so only manager/admin pass. This matches the documented access rule for listing all orders, so the authorization requirement is satisfied. Note: the endpoint also contains a separate SQL-injection flaw (f-string interpolation of request.args 'sort_by' into text(), violating security-policy.md \u00a75), but that is a CWE-89 issue outside this authorization review.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            68
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/sorted\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef sorted_orders():\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\"))\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Managers and admins may list all orders (`GET /orders/all`)."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/all` | GET | manager, admin |"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

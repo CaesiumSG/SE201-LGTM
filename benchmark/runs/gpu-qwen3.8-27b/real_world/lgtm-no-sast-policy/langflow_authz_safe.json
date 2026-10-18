@@ -1,0 +1,143 @@
+{
+  "id": "langflow_authz_safe",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "possible"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 63.09,
+  "case_seconds": 63.14,
+  "est_tokens": 1242,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:src/backend/tests/unit/api/v1/test_api_key.py:95",
+      "verdict": "safe",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line `stmt = select(User).where(User.username == user2.username)` is a SQLModel/SQLAlchemy ORM query. SQLModel's `select()` with `.where()` compiles to a parameterized SQL statement with bound parameters \u2014 the value is never string-concatenated into the SQL text. Additionally, the value `user2.username` is a hardcoded test string 'testuser2' defined in the test itself (line 88 of the diff), not user-controlled input. This is a test file, not production code. The same pattern is used in the production CRUD layer (crud.py line 14: `select(User).where(User.username == username)`), confirming this is the standard safe ORM idiom in this codebase.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/tests/unit/api/v1/test_api_key.py",
+          "lines": [
+            95,
+            95
+          ],
+          "source": null,
+          "content": "stmt = select(User).where(User.username == user2.username)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/user/crud.py",
+          "lines": [
+            13,
+            15
+          ],
+          "source": null,
+          "content": "async def get_user_by_username(db: AsyncSession, username: str) -> User | None:\n    stmt = select(User).where(User.username == username)\n    return (await db.exec(stmt)).first()"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/user/model.py",
+          "lines": [
+            25,
+            27
+          ],
+          "source": null,
+          "content": "class User(SQLModel, table=True):\n    id: UUIDstr = Field(default_factory=uuid4, primary_key=True, unique=True)\n    username: str = Field(index=True, unique=True)"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "src/backend/tests/unit/api/v1/test_api_key.py",
+      "line": 95,
+      "tool_calls_used": 4,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]",
+      "verdict": "possible",
+      "confidence": 0.6,
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the route-level `dependencies=[Depends(auth_utils.get_current_active_user)]` and instead injects `current_user: CurrentActiveUser` as a function parameter, then passes `current_user.id` to `delete_api_key(db, api_key_id, current_user.id)`. This is the correct pattern for enforcing ownership (matching the sibling GET/POST routes which use `current_user.id`). However, the base-branch `delete_api_key` in crud.py (lines 44-49) only accepts `(session, api_key_id)` and performs NO ownership check \u2014 it deletes any key by id. The PR's call passes a third positional argument (`current_user.id`) that the base signature does not accept, so the ownership enforcement depends on a corresponding crud.py change that is NOT part of this diff. If that crud change is absent, the call would fail (TypeError) rather than enforce ownership; if present, ownership is enforced. Because the ownership check is not verifiable within the provided diff and the base crud has no ownership check, the IDOR protection is only circumstantially established.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            53
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n):\n    try:\n        await delete_api_key(db, api_key_id)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            49
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            17,
+            28
+          ],
+          "source": null,
+          "content": "@router.get(\"/\")\nasync def get_api_keys_route(\n    db: DbSession,\n    current_user: CurrentActiveUser,\n) -> ApiKeysResponse:\n    try:\n        user_id = current_user.id\n        keys = await get_api_keys(db, user_id)"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "In multi-user mode, non-superusers cannot use their keys to reach other users' resources."
+        }
+      ],
+      "suggested_fix": "Ensure the `delete_api_key` crud function accepts and enforces the owner: `async def delete_api_key(session, api_key_id, user_id)` that filters `ApiKey.id == api_key_id AND ApiKey.user_id == user_id` (or raises 403/404 on mismatch) before deleting, so a user cannot delete another user's API key. Verify the crud.py change is included in the same PR as the route change.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "line": 41,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "project": "langflow",
+  "mode": "lgtm-no-sast",
+  "variant": "policy",
+  "diff_files": 4,
+  "diff_added": 72,
+  "diff_deleted": 5,
+  "diff_py_chars": 5391,
+  "diff_max_file_chars": 3092,
+  "endpoints_detected": [
+    "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]"
+  ],
+  "index_seconds": 108.27,
+  "index_chunks": 6083,
+  "index_reused": true,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "possible",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "TN"
+}

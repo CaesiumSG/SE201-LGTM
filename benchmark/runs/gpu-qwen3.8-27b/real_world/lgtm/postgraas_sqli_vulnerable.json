@@ -1,0 +1,149 @@
+{
+  "id": "postgraas_sqli_vulnerable",
+  "category": "sqli",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 0,
+  "grounding_rate": 0.0,
+  "latency_seconds": 61.98,
+  "case_seconds": 66.51,
+  "est_tokens": 1794,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-format:postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py:22",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The PR diff replaces a parameterized query (cur.execute(\"SELECT 1 FROM pg_database WHERE datname=%s;\", (db_name,))) with a string-formatted one (cur.execute(\"SELECT 1 FROM pg_database WHERE datname='{}';\".format(db_name))). The db_name value is user-controlled: in postgraas_server/management_resources.py (lines 130-144) the 'db_name' argument is parsed directly from the HTTP request body (parser.add_argument('db_name', required=True, type=str)) with no validation or whitelist, then placed into db_credentials and passed to current_app.postgraas_backend.create(db_entry, db_credentials). That flows to PGClusterBackend.create (backends/postgres_cluster/__init__.py:9-14) -> pgcd.create_postgres_db -> check_db_or_user_exists(connection_dict['db_name'], ...), where the value is interpolated into the SQL string via .format(). An attacker can supply a db_name like \"x'; DROP DATABASE y; --\" to break out of the quoted literal and inject arbitrary SQL. The base branch (line 23) was safe (parameterized), so this is a genuine regression introduced by the PR.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py",
+          "lines": [
+            20,
+            28
+          ],
+          "source": null,
+          "content": "def check_db_or_user_exists(db_name, db_user, config):\n    with _create_pg_connection(config) as con:\n        with con.cursor() as cur:\n            cur.execute(\"SELECT 1 FROM pg_database WHERE datname=%s;\", (db_name, ))\n            db_exists = cur.fetchone() is not None\n            cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname=%s;\", (db_user, ))"
+        },
+        {
+          "type": "code",
+          "file": "postgraas_server/management_resources.py",
+          "lines": [
+            130,
+            148
+          ],
+          "source": null,
+          "content": "parser.add_argument('db_name', required=True, type=str, help='name of the db')\nparser.add_argument('db_username', required=True, type=str, help='username of the db')\n...\ndb_credentials = {\n    \"db_name\": args['db_name'],\n    \"db_username\": args['db_username'],\n    ...\n}"
+        },
+        {
+          "type": "code",
+          "file": "postgraas_server/backends/postgres_cluster/__init__.py",
+          "lines": [
+            9,
+            27
+          ],
+          "source": null,
+          "content": "def create(self, entity, connection_info):\n    try:\n        pgcd.create_postgres_db(connection_info, self.config)\n...\ndef exists(self, entity):\n    return pgcd.check_db_or_user_exists(entity.db_name, entity.username, self.config)"
+        }
+      ],
+      "suggested_fix": "Revert to parameterized queries: cur.execute(\"SELECT 1 FROM pg_database WHERE datname=%s;\", (db_name,)) and cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname=%s;\", (db_user,)). Do not build SQL with str.format() for user-supplied values; use bound parameters or psycopg2.sql.Identifier for identifiers.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py",
+      "line": 22,
+      "tool_calls_used": 9,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited code snippet not found in postgraas_server/management_resources.py: \"parser.add_argument('db_name', required=True, type=str, help='name of the db')\\np\"",
+        "cited code snippet not found in postgraas_server/backends/postgres_cluster/__init__.py: 'def create(self, entity, connection_info):\\n    try:\\n        pgcd.create_postgres'"
+      ]
+    },
+    {
+      "finding_id": "lgtm-python-sqli-format:postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py:24",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The PR diff replaces a parameterized query (cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname=%s;\", (db_user,))) with string interpolation: cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname='{}';\".format(db_user)). The db_user value is user-controlled: in management_resources.py (lines 122-164) the POST handler parses 'db_username' from the request body (parser.add_argument('db_username', required=True, type=str)), stores it in db_credentials['db_username'], and passes it to current_app.postgraas_backend.create(db_entry, db_credentials). The backend (backends/postgres_cluster/__init__.py line 11) calls pgcd.create_postgres_db(connection_info, self.config), which at line 32 calls check_db_or_user_exists(connection_dict['db_name'], connection_dict['db_username'], config). Thus the attacker-supplied db_username flows directly into the .format() string with no parameterization or whitelist validation, enabling SQL injection (e.g., db_username = \"x'; DROP TABLE ...; --\"). The base branch was safe (used %s placeholders); the PR introduces the vulnerability.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py",
+          "lines": [
+            20,
+            28
+          ],
+          "source": null,
+          "content": "def check_db_or_user_exists(db_name, db_user, config):\n    with _create_pg_connection(config) as con:\n        with con.cursor() as cur:\n            cur.execute(\"SELECT 1 FROM pg_database WHERE datname=%s;\", (db_name, ))\n            db_exists = cur.fetchone() is not None\n            cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname=%s;\", (db_user, ))"
+        },
+        {
+          "type": "code",
+          "file": "postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py",
+          "lines": [
+            31,
+            33
+          ],
+          "source": null,
+          "content": "def create_postgres_db(connection_dict, config):\n    if check_db_or_user_exists(connection_dict[\"db_name\"], connection_dict[\"db_username\"], config):\n        raise ValueError(\"db or user already exists\")"
+        },
+        {
+          "type": "code",
+          "file": "postgraas_server/backends/postgres_cluster/__init__.py",
+          "lines": [
+            9,
+            14
+          ],
+          "source": null,
+          "content": "def create(self, entity, connection_info):\n    try:\n        pgcd.create_postgres_db(connection_info, self.config)\n    except ValueError as e:\n        raise PostgraasApiException(str(e))\n    return None"
+        },
+        {
+          "type": "code",
+          "file": "postgraas_server/management_resources.py",
+          "lines": [
+            130,
+            164
+          ],
+          "source": null,
+          "content": "parser.add_argument('db_username', required=True, type=str, help='username of the db')\nargs = parser.parse_args()\n...\ndb_credentials = {\n    \"db_name\": args['db_name'],\n    \"db_username\": args['db_username'],\n    ...\n}\n...\ndb_entry.container_id = current_app.postgraas_backend.create(db_entry, db_credentials)"
+        }
+      ],
+      "suggested_fix": "Revert to parameterized queries: cur.execute(\"SELECT 1 FROM pg_roles WHERE rolname=%s;\", (db_user,)) and cur.execute(\"SELECT 1 FROM pg_database WHERE datname=%s;\", (db_name,)). Do not use str.format() to embed user-controlled values into SQL. For the CREATE USER/DATABASE statements, continue using psycopg2.sql.SQL with Identifier() for identifiers and %s placeholders for the password, as the base branch already did.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "postgraas_server/backends/postgres_cluster/postgres_cluster_driver.py",
+      "line": 24,
+      "tool_calls_used": 9,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited code snippet not found in postgraas_server/management_resources.py: \"parser.add_argument('db_username', required=True, type=str, help='username of th\""
+      ]
+    }
+  ],
+  "project": "postgraas_server",
+  "mode": "lgtm",
+  "variant": "own",
+  "diff_files": 1,
+  "diff_added": 13,
+  "diff_deleted": 20,
+  "diff_py_chars": 3191,
+  "diff_max_file_chars": 3191,
+  "endpoints_detected": [],
+  "index_seconds": 2.17,
+  "index_chunks": 82,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 2,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "FN"
+}

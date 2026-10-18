@@ -1,0 +1,116 @@
+{
+  "id": "sqli_12_safe",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 58.11,
+  "est_tokens": 1318,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/users.py:74",
+      "verdict": "safe",
+      "confidence": 0.9,
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged sink is `session.execute(text(\"SELECT id, username, role FROM users WHERE \" + where), params)`. The only dynamic part of the SQL string is `where`, which is built from `clauses` where each clause is `f\"{field} = :{field}\"`. The `field` value is strictly validated against the hard-coded allowlist `ALLOWED_FILTER_FIELDS = {\"username\", \"role\", \"email\"}` and any field not in the set returns a 400 before reaching the query. The user-controlled `value` is never interpolated into the SQL string; it is passed as a bound parameter via `params[field] = value` and referenced by the named placeholder `:{field}`. This matches the project's security policy (security-policy.md \u00a75) which requires bound parameters and allowlist validation of dynamic identifiers. The `text()` + named-parameter pattern with a separate params dict is the exact parameterization the policy mandates, so no user-controlled input can alter the query structure or inject SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            78
+          ],
+          "source": null,
+          "content": "ALLOWED_FILTER_FIELDS = {\"username\", \"role\", \"email\"}\n\n@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    clauses = []\n    params = {}\n    for field, value in request.args.items():\n        if field not in ALLOWED_FILTER_FIELDS:\n            return jsonify({\"error\": \"cannot filter on that field\"}), 400\n        clauses.append(f\"{field} = :{field}\")\n        params[field] = value\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where),\n        params,\n    )"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query."
+        }
+      ],
+      "suggested_fix": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 74,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/filter[GET]",
+      "verdict": "safe",
+      "confidence": 0.8,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /users/filter endpoint is a user-listing operation. The security policy (security-policy.md \u00a72) states 'Listing all users (GET /users) requires the manager role or above,' and api-spec.md lists user-listing/search endpoints (/users, /users/search) as 'manager, admin'. The changed code enforces this with @require_role(\"manager\") (app/routes/users.py, new filter_users), which is the exact decorator mandated by policy \u00a71 ('Endpoints MUST use the decorators provided in app/auth.py'). The require_role decorator (app/auth.py:69-85) correctly authenticates via bearer token and enforces ROLE_RANK (user<manager<admin), so managers and admins pass while plain users get 403. This matches the documented access rule for user-listing endpoints, so the authorization is correct. (Note: the SQL construction is parameterized and field-allowlisted, so it is not an authorization flaw; the SAST SQLi heuristic is a false positive for this authz review.)",
+      "evidence": [
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing all users (`GET /users`) requires the **manager** role or above."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users` | GET | manager, admin | ... | `/users/search` | GET | manager, admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Endpoints MUST use the decorators provided in `app/auth.py` (`@require_auth`, `@require_role`, `@require_api_key_scope`)."
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            60
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 61,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "predicted_grounded": "safe",
+  "outcome_grounded": "TN"
+}

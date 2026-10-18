@@ -1,0 +1,74 @@
+{
+  "id": "authz_03_vulnerable",
+  "category": "authz",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 20.91,
+  "est_tokens": 758,
+  "findings": [
+    {
+      "finding_id": "authz:app/routes/users.py:/<int:user_id>/role[PUT]",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-862",
+      "explanation": "The new PUT /users/<int:user_id>/role endpoint is protected only by @require_auth (app/auth.py:55-66), which accepts ANY authenticated user. The security policy (security-policy.md \u00a72) states 'Changing a user's role requires the admin role. A user must NEVER be able to change their own role or grant themselves additional privileges,' and api-spec.md lists '/users/<id> | PUT | admin only; self-promotion forbidden'. The handler (app/routes/users.py, added lines) performs no role check and no self-promotion guard: it reads new_role from the request body and directly assigns user.role = new_role. Consequently a plain 'user' can promote themselves to 'admin' (self-privilege-escalation) and any authenticated user can change any other user's role. The required @require_role('admin') decorator (app/auth.py:69-85) is missing, and there is no check that g.current_user.id != user_id. This is a clear missing-authorization / privilege-escalation flaw.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            68
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>/role\", methods=[\"PUT\"])\n@require_auth\ndef set_user_role(user_id: int):\n    \"\"\"Update a user's role.\"\"\"\n    payload = request.get_json(silent=True) or {}\n    new_role = payload.get(\"role\", \"user\")\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    user.role = new_role\n    session.commit()\n    return jsonify(user.to_dict())"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Changing a user's role requires the **admin** role. A user must NEVER be able to change their own role or grant themselves additional privileges."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |"
+        }
+      ],
+      "suggested_fix": "Replace @require_auth with @require_role(\"admin\") on set_user_role, and add a self-promotion guard: if g.current_user.id == user_id: return jsonify({\"error\": \"forbidden\"}), 403. Also validate new_role against the allowed set {\"user\",\"manager\",\"admin\"} before assignment.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 56,
+      "tool_calls_used": 3,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

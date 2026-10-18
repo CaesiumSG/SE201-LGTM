@@ -1,0 +1,111 @@
+{
+  "id": "sqli_10_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 1,
+  "grounding_rate": 0.5,
+  "latency_seconds": 43.6,
+  "est_tokens": 1248,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/orders.py:66",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new paged_orders() endpoint reads `limit` and `offset` directly from user-controlled query parameters (request.args.get('limit'/'offset')) and interpolates them into a raw SQL string via an f-string passed to SQLAlchemy text(): text(f\"SELECT id, user_id, status, total FROM orders LIMIT {limit} OFFSET {offset}\"). No bound parameters (:name placeholders) are used and no whitelist/integer validation is applied, so an attacker can inject arbitrary SQL (e.g. limit=0; DROP TABLE orders--). This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL. The @require_role('manager') decorator does not mitigate the injection since any manager-role token can still supply malicious values.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            69
+          ],
+          "source": null,
+          "content": "limit = request.args.get(\"limit\", \"20\")\noffset = request.args.get(\"offset\", \"0\")\nsession = get_session()\nrows = session.execute(\n    text(f\"SELECT id, user_id, status, total FROM orders LIMIT {limit} OFFSET {offset}\")\n)"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use bound parameters: text(\"SELECT id, user_id, status, total FROM orders LIMIT :limit OFFSET :offset\").execute({\"limit\": int(limit), \"offset\": int(offset)}), and validate/coerce limit and offset to non-negative integers (e.g. int() with try/except or a range check) before binding.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 2,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/orders.py:/paged[GET]",
+      "verdict": "safe",
+      "confidence": 0.8,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /orders/paged endpoint is a list-all-orders operation (returns id, user_id, status, total for all orders, not scoped to the requester). Per security-policy.md \u00a73, 'Managers and admins may list all orders (GET /orders/all)', and api-spec.md documents the all-orders listing as 'manager, admin'. The endpoint is protected with @require_role(\"manager\"), which (app/auth.py:69-85) enforces ROLE_RANK user<manager<admin, so only manager and admin can access it. This matches the documented access rule for listing all orders, so the authorization is correct. Note: the endpoint also contains a separate SQL-injection flaw (f-string interpolation of limit/offset into text(), violating \u00a75), but that is a CWE-89 issue outside the authorization scope of this review.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            58,
+            69
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/paged\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef paged_orders():\n    \"\"\"List orders with limit/offset pagination.\"\"\"\n    limit = request.args.get(\"limit\", \"20\")\n    offset = request.args.get(\"offset\", \"0\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders LIMIT {limit} OFFSET {offset}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- Managers and admins may list all orders (`GET /orders/all`)."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/all` | GET | manager, admin |"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 59,
+      "tool_calls_used": 9,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited policy text not found in security-policy.md: '## 3. Order data access rules\\n- Managers and admins may list all orders (`GET /o'"
+      ]
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

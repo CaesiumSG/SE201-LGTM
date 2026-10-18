@@ -1,0 +1,109 @@
+{
+  "id": "sqli_01_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 38.43,
+  "est_tokens": 1192,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/users.py:64",
+      "verdict": "vulnerable",
+      "confidence": 0.98,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /users/search endpoint (app/routes/users.py, added lines 56-67) reads `name = request.args.get(\"name\", \"\")` and interpolates it directly into a SQL string via an f-string: `text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\").` The value is user-controlled (query string), reaches the SQL sink with no parameterization, no escaping, and no whitelist validation. This is a classic SQL injection (CWE-89). It also directly violates security-policy.md \u00a75, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL. The @require_role(\"manager\") decorator limits who can trigger it but does not mitigate the injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            67
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/search\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef search_users():\n    name = request.args.get(\"name\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        }
+      ],
+      "suggested_fix": "Use a bound parameter instead of f-string interpolation: `text(\"SELECT id, username, role FROM users WHERE username LIKE :name\")` executed with `session.execute(stmt, {\"name\": f\"%{name}%\"})`. This keeps the user value out of the SQL string and lets the driver handle escaping.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 64,
+      "tool_calls_used": 2,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/users.py:/search[GET]",
+      "verdict": "safe",
+      "confidence": 0.9,
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /users/search endpoint is protected with @require_role(\"manager\"), which enforces authentication (401 if no valid bearer token) and a minimum role of manager (403 otherwise). This exactly matches the documented access rule for /users/search (manager, admin) in api-spec.md and the policy rule that listing user data requires the manager role or above. The require_role decorator in app/auth.py correctly resolves the user via get_current_user() and compares ROLE_RANK, so the check is present and correct. Note: the endpoint also contains a SQL injection vulnerability (f-string interpolation of `name` into a text() query, violating security-policy.md \u00a75), but that is a separate CWE-89 issue outside the scope of this authorization review.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            67
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/search\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef search_users():\n    \"\"\"Search users by username fragment.\"\"\"\n    name = request.args.get(\"name\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/search` | GET | manager, admin |"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing all users (`GET /users`) requires the **manager** role or above."
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

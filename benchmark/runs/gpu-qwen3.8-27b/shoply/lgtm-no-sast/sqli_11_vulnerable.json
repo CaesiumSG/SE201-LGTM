@@ -1,0 +1,119 @@
+{
+  "id": "sqli_11_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 55.97,
+  "est_tokens": 1698,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:app/routes/admin.py:54",
+      "verdict": "vulnerable",
+      "confidence": 0.95,
+      "cwe_id": "CWE-89",
+      "explanation": "The new /admin/purge-user endpoint (app/routes/admin.py, added lines 46-60) reads `username` directly from the JSON request body (`payload.get(\"username\", \"\")`) and interpolates it into a raw SQL DELETE statement via `%` string formatting: `\"...WHERE username = '%s')\" % username`, then executes it with `conn.exec_driver_sql(...)`. This is a classic SQL injection: user-controlled input reaches the SQL sink with no parameterization, no escaping, and no whitelist validation. The `@require_role(\"admin\")` decorator (app/auth.py:69-85) only restricts who can call the endpoint; it does not sanitize the input, so any authenticated admin (or an attacker who compromises an admin token) can inject arbitrary SQL. This directly violates security-policy.md \u00a75, which mandates bound parameters and explicitly forbids `%` formatting of request-derived values into SQL (CWE-89).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            60
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef purge_user_data():\n    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )\n        conn.commit()\n    return jsonify({\"status\": \"purged\"})"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89)."
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator"
+        }
+      ],
+      "suggested_fix": "Use a parameterized query instead of string interpolation. For example:\n\nfrom sqlalchemy import text\n\nwith engine.connect() as conn:\n    conn.execute(\n        text(\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\"),\n        {\"username\": username},\n    )\n    conn.commit()\n\nThis binds `username` as a parameter so it cannot alter the SQL structure. Optionally also validate that `username` is non-empty and matches an expected identifier pattern before executing.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/admin.py",
+      "line": 54,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    },
+    {
+      "finding_id": "authz:app/routes/admin.py:/purge-user[POST]",
+      "verdict": "safe",
+      "confidence": 0.85,
+      "cwe_id": "CWE-862",
+      "explanation": "The authorization requirement for this endpoint is satisfied. security-policy.md \u00a74 states 'Every endpoint under /admin requires the admin role, enforced with @require_role(\"admin\")' and \u00a71 mandates that endpoints MUST use the decorators in app/auth.py. The new /purge-user route is registered under the admin Blueprint (admin_bp) and is decorated with @require_role(\"admin\"). I verified app/auth.py:69-85: require_role resolves the bearer token via get_current_user(), returns 401 if absent, and 403 if ROLE_RANK[user.role] < ROLE_RANK['admin'] (admin=3 is the maximum), so only an authenticated admin can reach the handler. There is no hand-rolled header check, debug bypass, or alternative access path, satisfying \u00a74's 'NO alternative access paths' rule. Note: the endpoint also contains a SQL injection flaw (string-interpolated username into DELETE, violating \u00a75), but that is a separate CWE-89 issue outside the authorization scope of this review; it does not affect the authorization verdict.",
+      "evidence": [
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 4. Admin panel\n- Every endpoint under `/admin` requires the **admin** role, enforced with `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug headers, no secret query parameters, no IP allowlists."
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 1. Authentication\n- Endpoints MUST use the decorators provided in `app/auth.py` (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled header checks, query-string flags, or debug bypasses are forbidden."
+        },
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            60
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef purge_user_data():\n    \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )\n        conn.commit()\n    return jsonify({\"status\": \"purged\"})"
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator"
+        }
+      ],
+      "suggested_fix": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/admin.py",
+      "line": 46,
+      "tool_calls_used": 9,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}
