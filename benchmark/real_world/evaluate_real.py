@@ -227,7 +227,8 @@ def diff_stats(diffs) -> dict:
     }
 
 
-def error_result(case: dict, mode: str, variant: str, exc: Exception) -> dict:
+def error_result(case: dict, mode: str, variant: str, exc: Exception,
+                 review=None) -> dict:
     """A crash is recorded as an error result and is not scored."""
     base = {
         "id": case["id"], "category": case["category"], "split": "real_world",
@@ -236,6 +237,7 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception) -> dict:
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
+        **evaluate.graph_fields(review),
     }
     return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
 
@@ -288,21 +290,24 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     result = pipeline.run(base_b, pr_b, output_dir=None)
     latency = time.monotonic() - started
 
-    findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-    if extra["index_skipped"] and mode in DOC_MODES and findings:
-        raise RuntimeError("index was skipped but an agent produced findings")
-    grounded = [f for f in findings if f.get("evidence_valid")]
-    extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
-    return evaluate.score_case({
-        "id": cid, "category": case["category"], "split": "real_world",
-        "expected": case["expected_verdict"], "n_findings": len(findings),
-        "verdicts": [f["verdict"] for f in findings], "grounded": len(grounded),
-        "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
-        "latency_seconds": round(latency, 2),
-        "case_seconds": round(time.monotonic() - case_started, 2),
-        "est_tokens": evaluate.estimate_tokens(findings, {}),
-        "findings": findings, **extra,
-    })
+    try:
+        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+        if extra["index_skipped"] and mode in DOC_MODES and findings:
+            raise RuntimeError("index was skipped but an agent produced findings")
+        grounded = [f for f in findings if f.get("evidence_valid")]
+        extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
+        return evaluate.score_case({
+            "id": cid, "category": case["category"], "split": "real_world",
+            "expected": case["expected_verdict"], "n_findings": len(findings),
+            "verdicts": [f["verdict"] for f in findings], "grounded": len(grounded),
+            "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
+            "latency_seconds": round(latency, 2),
+            "case_seconds": round(time.monotonic() - case_started, 2),
+            "est_tokens": evaluate.estimate_tokens(findings, {}),
+            "findings": findings, **extra, **evaluate.graph_fields(result),
+        })
+    except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
+        return error_result(case, mode, variant, exc, review=result)
 
 
 # ----------------------------------------------------------------------
@@ -451,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = run_unit(case, variant, mode, args.cache, args.output,
                               config, index_only=args.index_only)
+        except KeyboardInterrupt:
+            print("\ninterrupted", file=sys.stderr)
+            return 3
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
             result = error_result(case, mode, variant, exc)
         if result is not None and evaluate.result_is_error(result):

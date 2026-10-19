@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
@@ -74,6 +75,30 @@ def mark_error(result: dict, message: str) -> dict:
         error=message,
     )
     return result
+
+
+def graph_fields(review=None) -> dict:
+    # Metadata from reviews made before these fields existed lacks the attributes.
+    meta = getattr(review, "meta", None)
+    return {
+        "graph_state": getattr(meta, "graph_state", None),
+        "graph_index_seconds": getattr(meta, "graph_index_seconds", None),
+        "base_sha": getattr(meta, "base_sha", ""),
+        "pr_sha": getattr(meta, "pr_sha", ""),
+    }
+
+
+def error_record(case: dict, review=None) -> dict:
+    return {
+        "id": case["id"],
+        "category": case["category"],
+        "split": case.get("split", "eval"),
+        "expected": case["expected_verdict"],
+        "n_findings": 0, "verdicts": [], "grounded": 0,
+        "grounding_rate": None, "latency_seconds": 0.0,
+        "est_tokens": 0, "findings": [],
+        **graph_fields(review),
+    }
 
 
 def load_result(path: Path) -> dict | None:
@@ -214,21 +239,25 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
         result = pipeline.run("main", "pr", output_dir=None)
     latency = time.monotonic() - started
 
-    findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-    grounded = [f for f in findings if f.get("evidence_valid")]
-    return score_case({
-        "id": case["id"],
-        "category": case["category"],
-        "split": case.get("split", "eval"),
-        "expected": case["expected_verdict"],
-        "n_findings": len(findings),
-        "verdicts": [f["verdict"] for f in findings],
-        "grounded": len(grounded),
-        "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
-        "latency_seconds": round(latency, 2),
-        "est_tokens": estimate_tokens(findings, {}),
-        "findings": findings,
-    })
+    try:
+        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+        grounded = [f for f in findings if f.get("evidence_valid")]
+        return score_case({
+            "id": case["id"],
+            "category": case["category"],
+            "split": case.get("split", "eval"),
+            "expected": case["expected_verdict"],
+            "n_findings": len(findings),
+            "verdicts": [f["verdict"] for f in findings],
+            "grounded": len(grounded),
+            "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
+            "latency_seconds": round(latency, 2),
+            "est_tokens": estimate_tokens(findings, {}),
+            "findings": findings,
+            **graph_fields(result),
+        })
+    except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
+        return mark_error(error_record(case, result), str(exc))
 
 
 def summarize(results: list[dict]) -> dict:
@@ -299,6 +328,8 @@ def summarize(results: list[dict]) -> dict:
         "overall": metrics(results),
         "per_category": by("category"),
         "per_split": by("split"),
+        "graph_states": dict(Counter(
+            r.get("graph_state") or "unknown" for r in results)),
         # Same scoring, but a "vulnerable" verdict only counts as a detection
         # when the evidence validator accepted its citations.
         "grounded_only": {
@@ -458,32 +489,28 @@ def main() -> None:
         args.resume, parser,
     )
 
-    for i, case in enumerate(cases, 1):
-        path = out_dir / f"{case['id']}.json"
-        if args.resume and is_done(path):
-            print(f"[{i}/{len(cases)}] {case['id']} skipped (already scored)")
-            continue
-        print(f"[{i}/{len(cases)}] {case['id']} ...", end=" ", flush=True)
-        try:
-            result = evaluate_case(case, config)
-        except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
-            result = mark_error({
-                "id": case["id"],
-                "category": case["category"],
-                "split": case.get("split", "eval"),
-                "expected": case["expected_verdict"],
-                "n_findings": 0, "verdicts": [], "grounded": 0,
-                "grounding_rate": None, "latency_seconds": 0.0,
-                "est_tokens": 0, "findings": [],
-            }, str(exc))
-        if result_is_error(result):
-            print(f"ERROR: {result['error']}")
-        else:
-            print(
-                f"{result['outcome']} (expected {result['expected']}, "
-                f"predicted {result['predicted']}, {result['latency_seconds']}s)"
-            )
-        path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    try:
+        for i, case in enumerate(cases, 1):
+            path = out_dir / f"{case['id']}.json"
+            if args.resume and is_done(path):
+                print(f"[{i}/{len(cases)}] {case['id']} skipped (already scored)")
+                continue
+            print(f"[{i}/{len(cases)}] {case['id']} ...", end=" ", flush=True)
+            try:
+                result = evaluate_case(case, config)
+            except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
+                result = mark_error(error_record(case), str(exc))
+            if result_is_error(result):
+                print(f"ERROR: {result['error']}")
+            else:
+                print(
+                    f"{result['outcome']} (expected {result['expected']}, "
+                    f"predicted {result['predicted']}, {result['latency_seconds']}s)"
+                )
+            path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        raise SystemExit(3)
 
     results = [
         r for c in cases

@@ -382,3 +382,147 @@ class TestGpuModel:
 
         assert with_flag["reasoning"] is False
         assert without_flag["reasoning"] is False
+
+
+class TestGraphMetadataOnRecords:
+    """Real-world producer: graph metadata on new records, counted in summaries."""
+
+    BASE40, PR40 = "a" * 40, "b" * 40
+    CASE = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
+            "repo_url": "https://github.com/o/p"}
+
+    @staticmethod
+    def _pipeline(steps, cleaned):
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                try:
+                    step = steps.pop(0)
+                    if isinstance(step, BaseException):
+                        raise step
+                    return step
+                finally:
+                    cleaned.append(1)
+
+        return Pipeline
+
+    @staticmethod
+    def _review(meta, explanation="ok", verdict="vulnerable"):
+        class Finding:
+            def model_dump(self, exclude=None):
+                return {"finding_id": "authz:1", "category": "authz",
+                        "verdict": verdict, "evidence_valid": True,
+                        "explanation": explanation}
+
+        return type("Result", (), {"findings": [Finding()], "meta": meta})()
+
+    def _full_meta(self):
+        return type("Meta", (), {
+            "semgrep_findings_in_diff": 0, "graph_state": "ok",
+            "graph_index_seconds": 2.5, "base_sha": self.BASE40,
+            "pr_sha": self.PR40})()
+
+    def _run(self, monkeypatch, tmp_path, step):
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline", self._pipeline([step], []))
+        return er.run_unit(self.CASE, "own", "llm-only", tmp_path, tmp_path,
+                           er.LGTMConfig())
+
+    def test_new_record_copies_review_metadata(self, tmp_path, monkeypatch):
+        rec = self._run(monkeypatch, tmp_path, self._review(self._full_meta()))
+        assert rec["graph_state"] == "ok" and rec["graph_index_seconds"] == 2.5
+        assert rec["base_sha"] == self.BASE40 and rec["pr_sha"] == self.PR40
+
+    def test_meta_lacking_graph_fields_defaults_without_crashing(
+            self, tmp_path, monkeypatch):
+        meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+        rec = self._run(monkeypatch, tmp_path, self._review(meta))
+        assert rec["outcome"] != "ERROR"
+        assert (rec["graph_state"], rec["graph_index_seconds"],
+                rec["base_sha"], rec["pr_sha"]) == (None, None, "", "")
+
+    def test_infra_failure_record_keeps_available_metadata(
+            self, tmp_path, monkeypatch):
+        result = self._review(self._full_meta(), "LLM call failed: x",
+                              "insufficient_evidence")
+        rec = self._run(monkeypatch, tmp_path, result)
+        assert rec["outcome"] == "ERROR"
+        assert rec["graph_state"] == "ok" and rec["pr_sha"] == self.PR40
+
+    def test_error_result_has_null_fields(self):
+        rec = er.error_result(self.CASE, "lgtm", "own", RuntimeError("boom"))
+        assert (rec["graph_state"], rec["graph_index_seconds"],
+                rec["base_sha"], rec["pr_sha"]) == (None, None, "", "")
+
+    def test_crash_in_main_saves_null_fields(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", boom)
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text("utf-8"))
+        assert (saved["graph_state"], saved["graph_index_seconds"],
+                saved["base_sha"], saved["pr_sha"]) == (None, None, "", "")
+
+    def test_dir_summary_counts_states_and_historical_as_unknown(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        rows = {
+            "a": {"graph_state": "ok"},
+            "b": {"graph_state": "degraded:pr:timeout"},
+            "c": {"graph_state": None},
+            "d": {},
+        }
+        for cid, extra in rows.items():
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP"), **extra}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        summary = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")
+        assert summary["summary"]["graph_states"] == {
+            "ok": 1, "degraded:pr:timeout": 1, "unknown": 2}
+        assert summary["summary"]["overall"]["tp"] == 4
+        assert summary["complete"] is True
+
+    def test_historical_results_stay_resumable_and_unknown(self, tmp_path):
+        cases = er.fetch.load_cases()[:1]
+        units = list(er.work_units(cases, ["sast-only"], ["own"]))
+        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        out.mkdir(parents=True)
+        rec = TestResultsAndSummary._result(cases[0]["id"], "vulnerable", "TP")
+        path = out / f"{cases[0]['id']}.json"
+        path.write_text(json.dumps(rec), encoding="utf-8")
+        assert list(er.pending_units(units, tmp_path, True)) == []
+        summary = er.write_dir_summary(out, "sast-only", "own", {cases[0]["id"]}, "m")
+        assert summary["summary"]["graph_states"] == {"unknown": 1}
+        assert json.loads(path.read_text("utf-8")) == rec
+
+    def test_interrupt_cleans_up_and_exits_three(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        cleaned: list[int] = []
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline",
+                            self._pipeline([KeyboardInterrupt()], cleaned))
+        try:
+            code = er.main(["--cache", str(cache), "--output", str(tmp_path / "out"),
+                            "--modes", "llm-only", "--variants", "own",
+                            "--cases", "aegra_authz_safe"])
+        except SystemExit as exc:
+            code = exc.code
+        except KeyboardInterrupt:
+            code = "KeyboardInterrupt propagated"
+        assert cleaned == [1]
+        assert code == 3
+
+    def test_help_has_no_graph_option(self, capsys):
+        with pytest.raises(SystemExit):
+            er.main(["--help"])
+        assert "graph" not in capsys.readouterr().out.lower()
