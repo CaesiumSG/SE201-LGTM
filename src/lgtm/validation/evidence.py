@@ -17,12 +17,11 @@ from __future__ import annotations
 import difflib
 import logging
 import re
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
-from lgtm.agents.tools import _git_env, _relative_path
+from lgtm.agents.tools import read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
 
@@ -63,22 +62,15 @@ def _locator_candidates(path: str) -> list[str]:
 
 def _committed_blob_lines(repo: Path, sha: str, path: str, timeout: float) -> list[str] | None:
     """Lines of ``path`` at commit ``sha``; None when absent or unreadable."""
-    rel = _relative_path(path)
+    if "\\" in path:
+        return None
+    rel = relative_path(path)
     if rel is None:
         return None
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{rel}"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            env=_git_env(),
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
+    done = read_committed_blob(repo, sha, rel, timeout)
+    if done is None or done.returncode != 0:
         return None
-    return done.stdout.splitlines() if done.returncode == 0 else None
+    return done.stdout.splitlines()
 
 
 def _is_ordered_positive_range(lines: list[int]) -> bool:
@@ -187,7 +179,7 @@ class EvidenceValidator:
         lines = self._snapshot_lines(label, item.file)
         if lines is None:
             return [f"cited file does not exist at {label} snapshot"]
-        if item.lines:
+        if item.lines is not None:
             if not _is_ordered_positive_range(item.lines):
                 return [f"invalid cited line range for {item.file} at {label} snapshot"]
             start, end = item.lines

@@ -208,6 +208,8 @@ class TestToolFailureEvidenceDropped:
             "stuff status=unavailable reason=timeout more",
             "ERROR: tool call budget exhausted",
             "the tool call budget exhausted earlier",
+            "  \n[READ snapshot=pr path=app.py]",
+            "\n ERROR: boom",
         ],
     )
     def test_envelope_or_failure_content_is_dropped(self, content):
@@ -215,6 +217,25 @@ class TestToolFailureEvidenceDropped:
             {"type": "code", "file": "app.py", "lines": [1, 1], "content": content}
         )
         assert evidence == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[reader for r in rs]",
+            "Error: x",
+            "error: x",
+            "[readme]",
+            "[Grep x",
+            "[codegraph_nodes]",
+            "x = 'Tool Call Budget Exhausted'",
+            "status=Unavailable",
+        ],
+    )
+    def test_drop_rule_is_case_exact_so_lookalike_code_is_kept(self, content):
+        evidence = _parse_evidence(
+            {"type": "code", "file": "app.py", "lines": [1, 1], "content": content}
+        )
+        assert [e.content for e in evidence] == [content]
 
     def test_other_evidence_survives_a_dropped_item(self):
         evidence = _parse_evidence(
@@ -419,6 +440,77 @@ class TestStrictLabelledValidation:
             "invalid cited line range for unchanged.py at base snapshot"
         ]
         assert finding.evidence_valid is False
+
+    @pytest.mark.parametrize("lines", [[5], [1, 2, 3], []])
+    def test_range_with_wrong_arity_is_invalid_and_never_raises(self, snap, lines):
+        bad = _item("unchanged.py", lines, "STABLE_LIMIT = 100", "base")
+        good = _item("unchanged.py", [6, 6], "STABLE_LIMIT = 100", "base")
+        finding = _check(_validator(snap), bad)
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues == [
+            "invalid cited line range for unchanged.py at base snapshot"
+        ]
+        assert _check(_validator(snap), bad, good).evidence_valid is False
+
+    def test_snippet_outside_cited_range_is_accepted_when_in_file(self, snap):
+        finding = _check(
+            _validator(snap), _item("unchanged.py", [1, 2], "STABLE_LIMIT = 100", "base")
+        )
+        assert finding.evidence_issues == []
+        assert finding.evidence_valid is True
+
+    @pytest.mark.parametrize(
+        "path",
+        ["../unchanged.py", "../../etc/passwd", "/unchanged.py", "/etc/passwd",
+         "C:/Windows/win.ini", "C:\\Windows\\win.ini", "sub\\..\\unchanged.py",
+         "unchanged.py:1-2", "unchanged.py\\"],
+    )
+    @pytest.mark.parametrize("label", ["base", "pr"])
+    def test_unsafe_labelled_paths_are_rejected_as_missing(self, snap, path, label):
+        finding = _check(_validator(snap), _item(path, [1, 1], "import os", label))
+        assert finding.evidence_issues == [f"cited file does not exist at {label} snapshot"]
+        assert finding.evidence_valid is False
+
+    @pytest.mark.parametrize("failure", ["timeout", "oserror", "nonzero"])
+    def test_git_failure_reading_blob_gives_issue_without_leaking_stderr(
+        self, snap, monkeypatch, failure
+    ):
+        secret = "fatal: SECRET-STDERR-TEXT /private/path"
+
+        def fake_run(cmd, *args, **kwargs):
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 1, stderr=secret)
+            if failure == "oserror":
+                raise OSError(secret)
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr=secret)
+
+        monkeypatch.setattr("lgtm.agents.tools.subprocess.run", fake_run)
+        finding = _check(
+            _validator(snap), _item("unchanged.py", [1, 2], "import os", "base")
+        )
+        assert finding.evidence_valid is False
+        assert len(finding.evidence_issues) == 1
+        assert "SECRET-STDERR-TEXT" not in finding.evidence_issues[0]
+        assert "/private/path" not in finding.evidence_issues[0]
+
+    def test_crlf_committed_file_still_matches_normalized_snippet(self, tmp_path):
+        _run_git(tmp_path, "init", "-q", "-b", "main")
+        _run_git(tmp_path, "config", "user.email", "t@t.local")
+        _run_git(tmp_path, "config", "user.name", "T")
+        _run_git(tmp_path, "config", "commit.gpgsign", "false")
+        _run_git(tmp_path, "config", "core.autocrlf", "false")
+        (tmp_path / "win.py").write_bytes(
+            b"def f(x):\r\n    y = x.strip()\r\n    return y\r\n"
+        )
+        _run_git(tmp_path, "add", "-A")
+        _run_git(tmp_path, "commit", "-q", "-m", "crlf")
+        sha = _run_git(tmp_path, "rev-parse", "HEAD").strip()
+        validator = EvidenceValidator(tmp_path, "main", [], shas={"base": sha, "pr": sha})
+        finding = _check(
+            validator, _item("win.py", [1, 3], "y = x.strip()\nreturn y", "base")
+        )
+        assert finding.evidence_issues == []
+        assert finding.evidence_valid is True
 
     def test_whole_file_range_is_in_bounds(self, snap):
         finding = _check(

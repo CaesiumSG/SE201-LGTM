@@ -203,13 +203,13 @@ def extract_json_object(text: str) -> dict | None:
     return None
 
 
-_TOOL_OUTPUT_PREFIXES = ("[codegraph", "[read", "[grep", "error:")
+_TOOL_OUTPUT_PREFIXES = ("[CODEGRAPH ", "[READ ", "[GREP ", "ERROR:")
 _TOOL_OUTPUT_MARKERS = ("status=unavailable", "tool call budget exhausted")
 
 
 def _is_tool_output(content: str) -> bool:
     """Tool envelopes and failure text are not code evidence."""
-    text = content.lstrip().lower()
+    text = content.lstrip()
     return text.startswith(_TOOL_OUTPUT_PREFIXES) or any(
         marker in text for marker in _TOOL_OUTPUT_MARKERS
     )

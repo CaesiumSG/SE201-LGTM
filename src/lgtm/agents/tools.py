@@ -60,7 +60,7 @@ _LATCH_WARNING = (
 )
 
 
-def _relative_path(value: str) -> str | None:
+def relative_path(value: str) -> str | None:
     """Normalize a repository-relative path or glob; None when it is absolute or leaves the tree."""
     if not value or "\x00" in value or ":" in value or value[0] in "\\/" or _DRIVE.match(value):
         return None
@@ -70,7 +70,7 @@ def _relative_path(value: str) -> str | None:
     return "/".join(parts)
 
 
-def _git_env() -> dict[str, str]:
+def git_env() -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -83,6 +83,31 @@ def _git_env() -> dict[str, str]:
         GIT_TERMINAL_PROMPT="0",
     )
     return env
+
+
+def run_git(
+    repo: str | Path, args: list[str], timeout: float
+) -> subprocess.CompletedProcess | None:
+    """Run git in ``repo``; None when git could not run to completion."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env=git_env(),
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def read_committed_blob(
+    repo: str | Path, sha: str, rel: str, timeout: float
+) -> subprocess.CompletedProcess | None:
+    """One ``git cat-file blob`` of repository-relative ``rel`` at commit ``sha``."""
+    return run_git(repo, ["cat-file", "blob", f"{sha}:{rel}"], timeout)
 
 
 def _incomplete_categories(export: ExportResult | None) -> str | None:
@@ -195,18 +220,7 @@ class AgentToolbox:
 
     def _git(self, args: list[str]) -> subprocess.CompletedProcess | None:
         """Run git in the repository; None when git could not run to completion."""
-        try:
-            return subprocess.run(
-                ["git", "-C", str(self.repo), *args],
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                env=_git_env(),
-                timeout=self.config.git_timeout,
-                check=False,
-            )
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
+        return run_git(self.repo, args, self.config.git_timeout)
 
     # ------------------------------------------------------------------
     # Tool implementations (plain methods, easy to unit test)
@@ -221,14 +235,14 @@ class AgentToolbox:
         error = self._label_error(snapshot)
         if error is not None:
             return error
-        rel = _relative_path(path)
+        rel = relative_path(path)
         if rel is None:
             return _ESCAPE
         label = snapshot
         sha = self._snapshot_sha(label)
         if sha is None:
             return _CANNOT_READ.format(label=label)
-        done = self._git(["cat-file", "blob", f"{sha}:{rel}"])
+        done = read_committed_blob(self.repo, sha, rel, self.config.git_timeout)
         if done is None:
             return _CANNOT_READ.format(label=label)
         if done.returncode != 0:
@@ -259,7 +273,7 @@ class AgentToolbox:
             return error
         glob = None
         if file_glob:
-            glob = _relative_path(file_glob)
+            glob = relative_path(file_glob)
             if glob is None:
                 return _ESCAPE
         if "\x00" in pattern or "\n" in pattern:
