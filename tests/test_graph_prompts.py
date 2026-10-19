@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lgtm.agents import prompt_parts
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent, ChangedEndpoint
 from lgtm.agents.base import run_tool_loop
 from lgtm.agents.sast_triage import SASTTriageAgent
@@ -61,11 +62,7 @@ def _build_toolbox(scenario, repo, config):
     shas = resolve_refs(repo, "main", "pr")
     runner = FakeRunner(available=scenario == "graph")
     session = GraphSession(repo, shas, config, runner=runner)
-    try:
-        toolbox = AgentToolbox(repo, "main", None, config, shas=shas, session=session)
-    except TypeError:
-        # Wiring keywords are asserted in tests/test_graph_tools.py; keep the matrix running.
-        toolbox = AgentToolbox(repo, "main", None, config)
+    toolbox = AgentToolbox(repo, "main", None, config, shas=shas, session=session)
     return toolbox, session, runner
 
 
@@ -108,23 +105,36 @@ AGENTS = ["sast_triage", "authz_reviewer"]
 
 
 @pytest.fixture
-def prompt_parts():
-    return pytest.importorskip(
-        "lgtm.agents.prompt_parts",
-        reason="module is created by this slice and does not exist yet",
+def graph_scenario(git_repo):
+    config = LGTMConfig(max_tool_calls=BUDGET, require_tool_use=False)
+    toolbox, session, runner = _build_toolbox("graph", git_repo, config)
+    yield SimpleNamespace(
+        name="graph", toolbox=toolbox, config=config, runner=runner, session=session,
+        expect=SCENARIOS["graph"],
     )
+    session.close()
 
 
-def _guidance(module, toolbox):
-    assert hasattr(module, "tool_guidance"), "prompt_parts must expose tool_guidance(toolbox)"
-    data = module.tool_guidance(toolbox)
-    get = (lambda k: data[k]) if isinstance(data, dict) else (lambda k: getattr(data, k))
-    return get
+def _guidance(toolbox):
+    data = prompt_parts.tool_guidance(toolbox)
+    return lambda k: getattr(data, k)
+
+
+def _guidance_section(toolbox):
+    return prompt_parts.render_tool_section(prompt_parts.tool_guidance(toolbox))
+
+
+def _flat(text):
+    return " ".join(text.split())
+
+
+def _guidance_sentences(section):
+    return [s for s in _sentences(section) if not s.lstrip().startswith("-")]
 
 
 class TestSharedGuidanceData:
-    def test_fields_describe_exactly_what_is_registered(self, prompt_parts, scenario):
-        get = _guidance(prompt_parts, scenario.toolbox)
+    def test_fields_describe_exactly_what_is_registered(self, scenario):
+        get = _guidance(scenario.toolbox)
         assert list(get("tool_names")) == scenario.expect["names"]
         assert list(get("tool_names")) == [t.name for t in scenario.toolbox.build_tools()]
         assert get("graph_tools") is scenario.expect["graph"]
@@ -132,8 +142,8 @@ class TestSharedGuidanceData:
         assert get("max_tool_calls") == BUDGET
         assert type(get("max_tool_calls")) is int and get("max_tool_calls") > 0
 
-    def test_reading_guidance_uses_no_budget_and_starts_no_graph_work(self, prompt_parts, scenario):
-        _guidance(prompt_parts, scenario.toolbox)("tool_names")
+    def test_reading_guidance_uses_no_budget_and_starts_no_graph_work(self, scenario):
+        _guidance(scenario.toolbox)("tool_names")
         assert scenario.toolbox.calls_used == 0
         if scenario.runner is not None:
             assert scenario.runner.calls == []
@@ -141,7 +151,7 @@ class TestSharedGuidanceData:
                 "ok", "unavailable:missing"
             )
 
-    def test_prompt_parts_import_leaves_the_graph_package_unloaded(self, prompt_parts):
+    def test_prompt_parts_import_leaves_the_graph_package_unloaded(self):
         code = (
             "import sys, lgtm.agents.prompt_parts\n"
             "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
@@ -149,6 +159,52 @@ class TestSharedGuidanceData:
         done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip() == "[]"
+
+
+class TestGraphGuidanceSection:
+    def test_section_prefers_graph_tools_for_symbols_and_call_relations(self, graph_scenario):
+        sentences = _guidance_sentences(_guidance_section(graph_scenario.toolbox))
+        preferring = [
+            s for s in sentences
+            if re.search(r"\b(prefer|start with|first)\b", s, re.I)
+            and "investigate_base_code" in s and "investigate_pr_code" in s
+        ]
+        assert preferring
+
+    def test_section_falls_back_to_same_label_reads_on_each_trigger_in_one_sentence(self, graph_scenario):
+        sentences = _guidance_sentences(_guidance_section(graph_scenario.toolbox))
+        fallback = [
+            s for s in sentences
+            if re.search(r"same[- ](snapshot|label)", s, re.I)
+            and "read_file" in s and "grep_repo" in s
+            and all(trigger in s.lower() for trigger in ("unavailable", "truncated", "unindexed"))
+        ]
+        assert fallback
+
+    def test_section_says_no_match_or_missing_edge_is_not_proof_of_safety(self, graph_scenario):
+        sentences = _guidance_sentences(_guidance_section(graph_scenario.toolbox))
+        caveats = [
+            s for s in sentences
+            if re.search(r"no[ _-]match|missing edge", s, re.I)
+            and re.search(r"safe|safety|prove|proof|establish", s, re.I)
+            and re.search(r"\bnot\b|\bnever\b|n't|\bcannot\b", s, re.I)
+        ]
+        assert caveats
+
+    def test_section_mentions_the_pr_snapshot_argument(self, graph_scenario):
+        assert re.search(r"""["']pr["']""", _guidance_section(graph_scenario.toolbox))
+
+    @pytest.mark.parametrize("name", ["legacy", "missing_binary"])
+    def test_non_graph_sections_carry_no_graph_guidance(self, git_repo, name):
+        config = LGTMConfig(max_tool_calls=BUDGET)
+        toolbox, session, _ = _build_toolbox(name, git_repo, config)
+        try:
+            section = _guidance_section(toolbox)
+        finally:
+            if session is not None:
+                session.close()
+        assert "investigate_" not in section
+        assert bool(re.search(r"""["']pr["']""", section)) is (name == "missing_binary")
 
 
 @pytest.mark.parametrize("kind", AGENTS)
@@ -168,34 +224,36 @@ class TestAgentPromptMatrix:
         text = _prompt(_run_agent(kind, scenario, [SAFE]))
         assert re.search(rf"\b{BUDGET}\b", text)
 
-    def test_graph_prompt_prefers_graph_tools_and_falls_back_to_same_label_reads(self, kind, scenario):
-        if not scenario.expect["graph"]:
-            pytest.skip("graph guidance only applies when graph tools are registered")
-        text = _prompt(_run_agent(kind, scenario, [SAFE]))
-        flat = " ".join(text.split())
-        assert re.search(r"(prefer|first|start with)\W.{0,200}investigate_|investigate_.{0,200}(prefer|first)", flat, re.I)
-        lowered = flat.lower()
-        assert re.search(r"same[- ](snapshot|label)", lowered)
-        for state in ("unavailable", "truncated", "unindexed"):
-            assert state in lowered, f"fallback trigger '{state}' missing"
-        assert re.search(r"\bsnapshot\b.{0,120}\bpr\b|\bpr\b.{0,120}\bsnapshot\b", lowered)
+    def test_graph_prompt_includes_the_tool_guidance_section(self, kind, graph_scenario):
+        text = _flat(_prompt(_run_agent(kind, graph_scenario, [SAFE])))
+        assert _flat(_guidance_section(graph_scenario.toolbox)) in text
 
-    def test_graph_prompt_never_claims_no_match_or_missing_edge_proves_safety(self, kind, scenario):
-        if not scenario.expect["graph"]:
-            pytest.skip("graph guidance only applies when graph tools are registered")
-        text = _prompt(_run_agent(kind, scenario, [SAFE]))
-        caveats = [
-            s for s in _sentences(text)
-            if re.search(r"no[ _-]match|missing edge", s, re.I)
-            and re.search(r"safe|safety|prove|proof|establish|saving", s, re.I)
-            and re.search(r"\bnot\b|\bnever\b|n't|\bcannot\b", s, re.I)
-        ]
-        assert caveats, "prompt must say a no-match or missing edge is not proof of safety"
+    def test_graph_prompt_never_claims_no_match_or_missing_edge_proves_safety(self, kind, graph_scenario):
+        text = _prompt(_run_agent(kind, graph_scenario, [SAFE]))
         assert not [
             s for s in _sentences(text)
             if re.search(r"no[ _-]match|missing edge", s, re.I)
             and re.search(r"\b(means|implies|proves) (it is )?safe", s, re.I)
         ]
+
+    def test_prompt_offers_the_pr_snapshot_only_when_it_is_registered(self, kind, scenario):
+        config = LGTMConfig(max_tool_calls=BUDGET, require_tool_use=True)
+        llm = _run_agent(kind, scenario, [SAFE, SAFE], config)
+        offers_pr = lambda text: bool(re.search(r"""["']pr["']""", text))
+        assert offers_pr(_prompt(llm)) is ("pr" in scenario.expect["labels"])
+        if "pr" not in scenario.expect["labels"]:
+            assert not offers_pr(llm.seen[1][-1].content)
+
+    def test_prompt_says_tool_output_is_data_not_instructions(self, kind, scenario):
+        text = _prompt(_run_agent(kind, scenario, [SAFE]))
+        statements = [
+            s for s in _sentences(text)
+            if re.search(r"tool (output|result)s?", s, re.I)
+            and re.search(r"\bdata\b", s, re.I)
+            and re.search(r"instruction", s, re.I)
+            and re.search(r"\bnot\b|\bnever\b|n't|\bignore\b", s, re.I)
+        ]
+        assert statements, f"{kind}/{scenario.name}: prompt does not mark tool output as data"
 
     def test_pushback_names_exactly_the_registered_tools(self, kind, scenario):
         config = LGTMConfig(max_tool_calls=BUDGET, require_tool_use=True)

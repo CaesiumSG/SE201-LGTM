@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from langchain_core.tools import tool
 
-from lgtm.config import LGTMConfig
+from lgtm.config import GRAPH_OUTPUT_CHARS_CEILING, LGTMConfig
 from lgtm.rag.retriever import PolicyRetriever
 
 if TYPE_CHECKING:
@@ -39,7 +39,7 @@ SNAPSHOT_LABELS = ("base", "pr")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DRIVE = re.compile(r"[A-Za-z]:")
 _SEPARATORS = re.compile(r"[\\/]")
-_ABSENT_FILE = re.compile(r"does not exist in|exists on disk, but not in")
+_GIT_ENV_NAMES = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG")
 
 _ESCAPE = "ERROR: path must be repository-relative and remain inside the repository."
 _UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base, pr."
@@ -47,6 +47,8 @@ _LEGACY_UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base
 _LEGACY_PR = "ERROR: snapshot 'pr' is not available in this run. Allowed values: base."
 _NOT_PRESENT = "ERROR: file '{path}' not present in {label} snapshot @{sha}."
 _CANNOT_READ = "ERROR: cannot read {label} snapshot."
+_REJECTED_PATTERN = "ERROR: invalid regex: pattern is not a valid extended regular expression."
+_MULTILINE_PATTERN = "ERROR: invalid regex: pattern must be a single line without NUL bytes."
 _EMPTY_QUERY = "ERROR: query must not be empty."
 _MISSING_BINARY_WARNING = (
     "CodeGraph binary not found; investigate_* tools are disabled and agents "
@@ -66,6 +68,21 @@ def _relative_path(value: str) -> str | None:
     if not parts or ".." in parts:
         return None
     return "/".join(parts)
+
+
+def _git_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in _GIT_ENV_NAMES or key.upper().startswith("LC_")
+    }
+    env.update(
+        LC_ALL="C",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_TERMINAL_PROMPT="0",
+    )
+    return env
 
 
 def _incomplete_categories(export: ExportResult | None) -> str | None:
@@ -104,13 +121,16 @@ class AgentToolbox:
         self.retriever = retriever
         self.config = config or LGTMConfig()
         self.shas = dict(shas) if shas is not None else None
+        for sha in (self.shas or {}).values():
+            if not _SHA.fullmatch(sha):
+                raise ValueError("snapshot SHAs must be full 40-character lowercase hex commits")
         self.session = session
         self.calls_used = 0
         self.call_log: list[dict] = []
         self._legacy_base_sha: str | None = None
         self._missing_binary_warned = False
         self._latch_warned: set[str] = set()
-        self._toolbox_latches: dict[str, str] = {}
+        self._toolbox_latched: set[str] = set()
         self._health: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -140,20 +160,21 @@ class AgentToolbox:
     # ------------------------------------------------------------------
     # Snapshots and Git
     # ------------------------------------------------------------------
-    def _snapshot(self, label: str) -> tuple[str, str] | str:
-        """Return ``(label, sha)`` for an allowed label, else the error envelope."""
+    def _label_error(self, label: str) -> str | None:
         if self.shas is None:
             if label == "pr":
                 return _LEGACY_PR
             if label != "base":
                 return _LEGACY_UNKNOWN_LABEL.format(value=label)
-            sha = self._resolve_base_ref()
-            if sha is None:
-                return _CANNOT_READ.format(label=label)
-            return label, sha
+            return None
         if label not in SNAPSHOT_LABELS:
             return _UNKNOWN_LABEL.format(value=label)
-        return label, self.shas[label]
+        return None
+
+    def _snapshot_sha(self, label: str) -> str | None:
+        if self.shas is None:
+            return self._resolve_base_ref()
+        return self.shas[label]
 
     def _resolve_base_ref(self) -> str | None:
         ref = self.base_ref
@@ -176,8 +197,7 @@ class AgentToolbox:
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                # Absent-path detection matches git's English stderr.
-                env={**os.environ, "LC_ALL": "C"},
+                env=_git_env(),
                 timeout=self.config.git_timeout,
                 check=False,
             )
@@ -194,20 +214,21 @@ class AgentToolbox:
         end_line: int | None = None,
         snapshot: str = "base",
     ) -> str:
-        resolved = self._snapshot(snapshot)
-        if isinstance(resolved, str):
-            return resolved
-        label, sha = resolved
+        error = self._label_error(snapshot)
+        if error is not None:
+            return error
         rel = _relative_path(path)
         if rel is None:
             return _ESCAPE
-        done = self._git(["show", f"{sha}:{rel}"])
-        if done is None or done.returncode != 0:
-            if (
-                done is not None
-                and _ABSENT_FILE.search(done.stderr)
-                and self._commit_exists(sha)
-            ):
+        label = snapshot
+        sha = self._snapshot_sha(label)
+        if sha is None:
+            return _CANNOT_READ.format(label=label)
+        done = self._git(["cat-file", "blob", f"{sha}:{rel}"])
+        if done is None:
+            return _CANNOT_READ.format(label=label)
+        if done.returncode != 0:
+            if self._commit_exists(sha):
                 return _NOT_PRESENT.format(path=rel, label=label, sha=sha)
             return _CANNOT_READ.format(label=label)
 
@@ -215,10 +236,12 @@ class AgentToolbox:
 
         lines = done.stdout.splitlines()
         total = len(lines)
-        start = max(1, start_line or 1)
-        end = min(total, end_line or total)
+        start = start_line if start_line and start_line > 0 else 1
         if start > total:
             return f"ERROR: start_line {start} is beyond end of file ({total} lines)."
+        end = min(total, end_line) if end_line and end_line > 0 else total
+        if end < start:
+            end = total
         if end - start + 1 > MAX_READ_LINES:
             end = start + MAX_READ_LINES - 1
         body = "\n".join(lines[start - 1 : end])
@@ -227,22 +250,33 @@ class AgentToolbox:
     def grep_repo_impl(
         self, pattern: str, file_glob: str | None = None, snapshot: str = "base"
     ) -> str:
-        resolved = self._snapshot(snapshot)
-        if isinstance(resolved, str):
-            return resolved
-        label, sha = resolved
+        error = self._label_error(snapshot)
+        if error is not None:
+            return error
+        glob = None
+        if file_glob:
+            glob = None if file_glob.startswith(":") else _relative_path(file_glob)
+            if glob is None:
+                return _ESCAPE
+        if "\x00" in pattern or "\n" in pattern:
+            return _MULTILINE_PATTERN
         try:
             re.compile(pattern)
         except re.error as exc:
             return f"ERROR: invalid regex: {exc}"
+        label = snapshot
+        sha = self._snapshot_sha(label)
+        if sha is None:
+            return _CANNOT_READ.format(label=label)
         args = ["grep", "-n", "-E", "--max-count", "10", "-e", pattern, sha]
-        if file_glob:
-            glob = _relative_path(file_glob)
-            if glob is None:
-                return _ESCAPE
+        if glob is not None:
             args += ["--", glob]
         done = self._git(args)
-        if done is None or done.returncode not in (0, 1):
+        if done is None:
+            return _CANNOT_READ.format(label=label)
+        if done.returncode not in (0, 1):
+            if self._commit_exists(sha):
+                return _REJECTED_PATTERN
             return _CANNOT_READ.format(label=label)
 
         from lgtm.graph.format import render_grep
@@ -281,21 +315,31 @@ class AgentToolbox:
         except ValueError:
             return _EMPTY_QUERY
         sha = self.shas[label]
-        if label in self._toolbox_latches:
-            reason = self._toolbox_latches[label]
-            return render_graph(label, sha, "unavailable", "", query=cleaned, reason=reason)
+        cap = min(self.config.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)
+
+        def unavailable(reason: str) -> str:
+            return render_graph(
+                label, sha, "unavailable", "", query=cleaned, reason=reason, max_chars=cap
+            )
+
+        if label in self._toolbox_latched:
+            return unavailable(self._health[label])
         try:
             outcome = self.session.explore(label, cleaned)
         except Exception:
             self._sync_health()
-            self._toolbox_latches[label] = "nonzero"
-            self._health.setdefault(label, "nonzero")
+            self._latch_toolbox(label, "nonzero")
             self._warn_latched(label)
-            return render_graph(label, sha, "unavailable", "", query=cleaned, reason="nonzero")
+            return unavailable(self._health[label])
         self._sync_health()
         if not outcome.ok:
+            reason = outcome.reason
+            if reason == "missing":
+                for target in SNAPSHOT_LABELS:
+                    self._latch_toolbox(target, "launch_failed")
+                reason = self._health[label]
             self._warn_latched(label)
-            return render_graph(label, sha, "unavailable", "", query=cleaned, reason=outcome.reason)
+            return unavailable(reason)
         status = "no_match" if outcome.reason == "no_match" else "ok"
         return render_graph(
             label,
@@ -303,6 +347,7 @@ class AgentToolbox:
             status,
             outcome.text,
             query=cleaned,
+            max_chars=cap,
             incomplete=_incomplete_categories(self.session.snapshot(label)),
             truncated=outcome.truncated,
             omitted_chars=outcome.omitted_chars,
@@ -314,14 +359,24 @@ class AgentToolbox:
                 _, label, reason = entry.split(":", 2)
                 self._health.setdefault(label, reason)
 
+    def _latch_toolbox(self, label: str, reason: str) -> None:
+        self._toolbox_latched.add(label)
+        self._health.setdefault(label, reason)
+
     def graph_state(self) -> str:
-        """Effective run health: ok, unavailable:missing, and degraded:<label>:<reason> in first-failure order."""
+        """Run health: ok, unavailable:missing, then degraded:<label>:<reason> in first-failure order."""
         if self.session is None:
             return "ok"
         self._sync_health()
         entries = [] if self.session.available else ["unavailable:missing"]
         entries += [f"degraded:{label}:{reason}" for label, reason in self._health.items()]
         return ";".join(entries) or "ok"
+
+    def snapshot_ok(self, label: str) -> bool:
+        if self.session is None or not self.session.available:
+            return False
+        self._sync_health()
+        return label not in self._health
 
     def _warn_latched(self, label: str) -> None:
         if label in self._latch_warned:
@@ -379,16 +434,12 @@ class AgentToolbox:
 
         @tool
         def investigate_base_code(query: str) -> str:
-            """Query the CodeGraph index of the "base" snapshot for symbols, definitions
-            and call relations matching a query. Results come from the committed base
-            commit; a missing edge does not establish safety."""
+            """Query the CodeGraph index of the base snapshot for symbols and call relations."""
             return toolbox._investigate("base", query)
 
         @tool
         def investigate_pr_code(query: str) -> str:
-            """Query the CodeGraph index of the "pr" snapshot for symbols, definitions
-            and call relations matching a query. Results come from the committed PR
-            commit; a missing edge does not establish safety."""
+            """Query the CodeGraph index of the PR snapshot for symbols and call relations."""
             return toolbox._investigate("pr", query)
 
         tools = [read_file, grep_repo, search_policy]

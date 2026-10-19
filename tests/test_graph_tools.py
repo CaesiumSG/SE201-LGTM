@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -110,6 +111,21 @@ def git_commands(monkeypatch):
     def spy(cmd, *args, **kwargs):
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
             recorded.append([str(c) for c in cmd])
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    return recorded
+
+
+@pytest.fixture
+def git_envs(monkeypatch):
+    """The env argument of each git subprocess issued while a test runs (None when inherited)."""
+    recorded: list[dict | None] = []
+    real_run = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+            recorded.append(kwargs.get("env"))
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", spy)
@@ -493,8 +509,7 @@ class TestRejectedAttemptAfterBudgetIsSpent:
 
 
 # ---------------------------------------------------------------------------
-# Package 2: snapshot-aware tools. Fixture, helpers and the toolbox wiring
-# (shas=/session= keywords on AgentToolbox) used by the classes below.
+# Snapshot-aware tools
 # ---------------------------------------------------------------------------
 
 UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base, pr."
@@ -586,14 +601,9 @@ class Rig:
         self.session = GraphSession(
             snap.repo, snap.shas, self.config, runner=self.runner, export=spy
         )
-        try:
-            self.toolbox = AgentToolbox(
-                snap.repo, "main", retriever, self.config, shas=snap.shas, session=self.session
-            )
-        except TypeError:
-            # Wiring keywords not implemented yet; test_toolbox_accepts_frozen_shas_and_session
-            # reports that, and the rest still exercise the legacy toolbox behaviorally.
-            self.toolbox = AgentToolbox(snap.repo, "main", retriever, self.config)
+        self.toolbox = AgentToolbox(
+            snap.repo, "main", retriever, self.config, shas=snap.shas, session=self.session
+        )
         self.tools = {t.name: t for t in self.toolbox.build_tools()}
 
     def call(self, name, **args):
@@ -782,6 +792,36 @@ class TestGitOnlyReads:
             "ERROR: start_line 50 is beyond end of file (2 lines)."
         )
 
+    @pytest.mark.parametrize("label", ["base", "pr"])
+    def test_directory_path_is_reported_as_not_present(self, rig, snap, label):
+        out = rig().call("read_file", path="sub", snapshot=label)
+        assert out == f"ERROR: file 'sub' not present in {label} snapshot @{snap.shas[label]}."
+
+    @pytest.mark.parametrize("start,end", [(-3, 0), (-1, -1), (0, -5)])
+    def test_negative_bounds_are_treated_as_unset(self, rig, start, end):
+        r = rig()
+        whole = r.call("read_file", path="shift.py")
+        assert _lines(whole)[0].endswith("path=shift.py lines=1-3]")
+        assert r.call("read_file", path="shift.py", start_line=start, end_line=end) == whole
+
+    def test_negative_start_keeps_a_given_end(self, rig):
+        out = rig().call("read_file", path="shift.py", start_line=-2, end_line=2)
+        assert _lines(out)[0].endswith("path=shift.py lines=1-2]")
+        assert "3: gamma" not in out
+
+    def test_end_before_start_is_treated_as_end_unset(self, rig):
+        r = rig()
+        reversed_range = r.call("read_file", path="shift.py", start_line=2, end_line=1)
+        assert reversed_range == r.call("read_file", path="shift.py", start_line=2)
+        assert _lines(reversed_range)[0].endswith("lines=2-3]")
+        capped = r.call("read_file", path="big.txt", start_line=5, end_line=2)
+        assert _lines(capped)[0].endswith("path=big.txt lines=5-204]")
+
+    def test_leading_dash_path_is_a_plain_absent_file(self, rig, snap):
+        assert rig().call("read_file", path="-x") == (
+            f"ERROR: file '-x' not present in base snapshot @{snap.base}."
+        )
+
     def test_unknown_object_reports_a_generic_failure_without_stderr(self, snap):
         out = _broken_base_tools(snap)["read_file"].invoke({"path": "app.py"})
         assert out == "ERROR: cannot read base snapshot."
@@ -796,6 +836,15 @@ class TestPathAndGlobValidation:
     ESCAPES = [
         "/etc/passwd", "C:/x.py", "C:\\x.py", "c:x.py", "\\\\server\\share\\x.py",
         "//server/share/x.py", "a\x00b.py", "../x.py", "a/../../x.py", "..\\x.py", "..",
+        "sub/../app.py", "\\x.py", "C:", "sub/./../x.py",
+    ]
+    GLOB_ESCAPES = [
+        "../*.py", "/abs/*", "C:/*", "\\\\srv\\s\\*", "a\x00*", "sub/../../*", "*/../x",
+        "\\x*", "sub/../*.py",
+    ]
+    PATHSPEC_MAGIC = [
+        ":(top)*", ":/x", ":!x", ":^x", ":(exclude)sub", ":(icase)APP.PY", ":(attr:foo)*",
+        ":(glob)**/*.py",
     ]
 
     @pytest.mark.parametrize("path", ESCAPES)
@@ -807,13 +856,30 @@ class TestPathAndGlobValidation:
         assert git_commands == []
         assert r.toolbox.calls_used == 2
 
-    @pytest.mark.parametrize("glob", ["../*.py", "/abs/*", "C:/*", "\\\\srv\\s\\*", "a\x00*", "sub/../../*"])
-    def test_grep_repo_rejects_glob_escapes_before_git(self, rig, git_commands, glob):
+    @pytest.mark.parametrize("glob", GLOB_ESCAPES + PATHSPEC_MAGIC)
+    def test_grep_repo_rejects_glob_escapes_and_pathspec_magic_before_git(self, rig, git_commands, glob):
         r = rig()
         git_commands.clear()
-        assert r.call("grep_repo", pattern="get_user", file_glob=glob) == ESCAPE
+        for label in ("base", "pr"):
+            assert r.call("grep_repo", pattern="get_user", file_glob=glob, snapshot=label) == ESCAPE
         assert git_commands == []
-        assert r.toolbox.calls_used == 1
+        assert r.toolbox.calls_used == 2
+
+    @pytest.mark.parametrize("path", ESCAPES)
+    def test_legacy_read_file_rejects_escapes_before_any_git_call(self, snap, git_commands, path):
+        toolbox, tools = _legacy_tools(snap)
+        git_commands.clear()
+        assert tools["read_file"].invoke({"path": path}) == ESCAPE
+        assert git_commands == []
+        assert toolbox.calls_used == 1
+
+    @pytest.mark.parametrize("glob", GLOB_ESCAPES + PATHSPEC_MAGIC)
+    def test_legacy_grep_repo_rejects_globs_before_any_git_call(self, snap, git_commands, glob):
+        toolbox, tools = _legacy_tools(snap)
+        git_commands.clear()
+        assert tools["grep_repo"].invoke({"pattern": "get_user", "file_glob": glob}) == ESCAPE
+        assert git_commands == []
+        assert toolbox.calls_used == 1
 
     def test_safe_relative_globs_are_allowed(self, rig):
         r = rig()
@@ -847,12 +913,32 @@ class TestGrep:
             )
             assert not any(".py:" in line for line in _lines(hits)[1:])
 
-    def test_pattern_and_glob_that_look_like_options_are_data(self, rig):
+    OPTION_GLOBS = ["-l", "--count", "-Ocat", "--output=x", "--open-files-in-pager=cat", "--help", "-"]
+
+    def test_pattern_that_looks_like_an_option_is_data(self, rig):
         r = rig()
         assert "keep.py:3:# --flag value" in r.call("grep_repo", pattern="--flag")
-        help_out = r.call("grep_repo", pattern="get_user", file_glob="--help")
-        assert "usage:" not in help_out.lower()
         assert not r.call("grep_repo", pattern="-v").startswith("ERROR")
+
+    @pytest.mark.parametrize("glob", OPTION_GLOBS)
+    def test_option_like_glob_never_reaches_git_as_an_option(self, rig, git_commands, glob):
+        r = rig()
+        git_commands.clear()
+        out = r.call("grep_repo", pattern="get_user", file_glob=glob)
+        greps = [c for c in git_commands if "grep" in c]
+        if not greps:
+            assert out == ESCAPE
+            return
+        assert len(greps) == 1
+        argv = greps[0]
+        positions = [i for i, part in enumerate(argv) if part == glob]
+        assert positions, f"glob {glob!r} missing from git argv {argv}"
+        assert all(argv[i - 1] == "--" for i in positions), argv
+
+    @pytest.mark.parametrize("glob", ["-l", "--count", "--files-with-matches", "-c"])
+    def test_option_like_glob_is_a_pathspec_not_an_output_mode(self, rig, glob):
+        out = rig().call("grep_repo", pattern="get_user", file_glob=glob)
+        assert out == ESCAPE or "No matches found." in _lines(out)
 
     def test_result_count_is_capped_at_30(self, rig):
         out = rig().call("grep_repo", pattern="MANYHITS")
@@ -862,6 +948,14 @@ class TestGrep:
 
     def test_invalid_regex_keeps_its_envelope(self, rig):
         assert rig().call("grep_repo", pattern="([").startswith("ERROR: invalid regex:")
+
+    @pytest.mark.parametrize("pattern", ["(?:a)", "a\x00b", "get_user\nzzz_never"])
+    @pytest.mark.parametrize("label", ["base", "pr"])
+    def test_pattern_git_cannot_run_as_ere_gets_the_invalid_regex_envelope(self, rig, pattern, label):
+        out = rig().call("grep_repo", pattern=pattern, snapshot=label)
+        assert out.startswith("ERROR: invalid regex"), out
+        assert "cannot read" not in out
+        assert "fatal" not in out.lower()
 
     def test_other_git_failure_has_no_raw_stderr(self, snap):
         out = _broken_base_tools(snap)["grep_repo"].invoke({"pattern": "x"})
@@ -1029,6 +1123,22 @@ class TestLazyGraph:
         assert r.runner.calls == [] and r.exports == []
         assert r.session.init_seconds == 0.0 and r.session.state == "ok"
 
+    def test_legacy_reads_load_no_graph_runtime(self, snap):
+        code = (
+            "import sys\n"
+            "from lgtm.agents.tools import AgentToolbox\n"
+            "toolbox = AgentToolbox(sys.argv[1], 'main')\n"
+            "assert toolbox.read_file_impl('app.py').startswith('[READ ')\n"
+            "assert toolbox.grep_repo_impl('get_user').startswith('[GREP ')\n"
+            "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", code, str(snap.repo)], capture_output=True, text=True
+        )
+        assert done.returncode == 0, done.stderr
+        loaded = set(json.loads(done.stdout.strip().replace("'", '"')))
+        assert loaded <= {"lgtm.graph", "lgtm.graph.format"}, loaded
+
     def test_importing_the_agent_modules_does_not_import_the_graph_package(self):
         code = (
             "import sys\n"
@@ -1091,3 +1201,271 @@ class TestUnexpectedExplorerExceptionLatches:
         r.call("investigate_pr_code", query=self.QUERY)
         r.call("investigate_base_code", query=self.QUERY)
         assert r.toolbox.graph_state() == "degraded:pr:nonzero;degraded:base:timeout"
+
+
+class VanishingRunner(FakeRunner):
+    """A runner whose binary can disappear (or return) after the toolbox is built."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.present = True
+
+    def available(self):
+        return self.present
+
+
+def _latch_warnings(caplog, label):
+    return [m for m in caplog.messages if m.startswith(f"CodeGraph unavailable for {label} snapshot")]
+
+
+class TestLatchesSurviveFindingsAndToolboxes:
+    QUERY = "who calls find_user"
+
+    @pytest.mark.parametrize(
+        "script",
+        [failure("timeout"), failure("launch_failed"), _raiser],
+        ids=["query_failure", "launch_failure", "unexpected_exception"],
+    )
+    def test_reset_budget_and_rebuilt_tools_keep_the_latch(self, rig, caplog, script):
+        r = rig(runner=FakeRunner(explore={"base": script}))
+        with caplog.at_level(logging.WARNING):
+            first = r.call("investigate_base_code", query=self.QUERY)
+            work = (r.runner.count("init"), r.runner.count("explore"), len(r.exports))
+            r.toolbox.reset_budget()
+            assert r.toolbox.calls_used == 0
+            fresh = {t.name: t for t in r.toolbox.build_tools()}
+            again = fresh["investigate_base_code"].invoke({"query": self.QUERY})
+        assert "status=unavailable" in _lines(first)[0]
+        assert again == first
+        assert (r.runner.count("init"), r.runner.count("explore"), len(r.exports)) == work
+        assert r.toolbox.calls_used == 1
+        assert len(_latch_warnings(caplog, "base")) == 1
+
+    def test_second_toolbox_over_the_same_session_inherits_the_session_latch(self, rig, snap):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
+        first = r.call("investigate_base_code", query=self.QUERY)
+        other = AgentToolbox(
+            snap.repo, "main", None, r.config, shas=snap.shas, session=r.session
+        )
+        tools = {t.name: t for t in other.build_tools()}
+        assert tools["investigate_base_code"].invoke({"query": self.QUERY}) == first
+        assert r.runner.count("explore") == 1
+        assert other.graph_state() == "degraded:base:timeout"
+
+
+class TestGraphOutputLimit:
+    QUERY = "who calls find_user"
+
+    @staticmethod
+    def _body(chars):
+        text = "".join(f"symbol_{i} calls target_{i}\n" for i in range(chars))
+        return text[:chars]
+
+    @pytest.mark.parametrize("name,label", [("investigate_base_code", "base"), ("investigate_pr_code", "pr")])
+    @pytest.mark.parametrize("body_chars", [1024, 5000])
+    def test_total_output_including_provenance_respects_the_configured_limit(
+        self, rig, name, label, body_chars
+    ):
+        body = self._body(body_chars)
+        r = rig(runner=FakeRunner(explore={label: success(body)}), graph_max_output_chars=1024)
+        out = r.call(name, query=self.QUERY)
+        assert len(out) <= 1024, len(out)
+        assert out.startswith(f"[CODEGRAPH snapshot={label} ") and out.endswith("[END CODEGRAPH]")
+        assert "status=ok" in _lines(out)[0]
+        assert "truncated=true" in _lines(out)[0]
+
+    def test_truncated_outcome_respects_the_configured_limit(self, rig):
+        r = rig(
+            runner=FakeRunner(explore={"base": outcome(True, None, self._body(1024), truncated=True, omitted_chars=900)}),
+            graph_max_output_chars=1024,
+        )
+        assert len(r.call("investigate_base_code", query=self.QUERY)) <= 1024
+
+    def test_default_limit_caps_the_total_at_6000(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": success(self._body(20000))}))
+        out = r.call("investigate_base_code", query=self.QUERY)
+        assert 1024 < len(out) <= 6000
+        assert out.endswith("[END CODEGRAPH]")
+
+
+class TestBinaryDisappearsAfterStartup:
+    QUERY = "who calls find_user"
+
+    def test_vanished_binary_reports_launch_failed_and_latches(self, rig, snap, caplog):
+        runner = VanishingRunner()
+        r = rig(runner=runner)
+        assert "investigate_base_code" in r.tools
+        runner.present = False
+        with caplog.at_level(logging.WARNING):
+            first = r.call("investigate_base_code", query=self.QUERY)
+            runner.present = True
+            again = r.call("investigate_base_code", query=self.QUERY)
+        expected = render_graph("base", snap.base, "unavailable", "", query=self.QUERY, reason="launch_failed")
+        assert first == expected
+        assert again == expected
+        assert runner.count("init") == 0 and runner.count("explore") == 0
+        assert len(_latch_warnings(caplog, "base")) == 1
+        pr = r.call("investigate_pr_code", query=self.QUERY)
+        assert "status=unavailable reason=launch_failed" in _lines(pr)[0]
+
+
+class TestGraphState:
+    def test_missing_binary_reports_unavailable_missing(self, rig):
+        assert rig(runner=FakeRunner(available=False)).toolbox.graph_state() == "unavailable:missing"
+
+    def test_toolbox_without_a_session_reports_ok(self, snap):
+        toolbox, _ = _legacy_tools(snap)
+        assert toolbox.graph_state() == "ok"
+
+    def test_missing_binary_is_listed_before_degraded_labels(self, rig):
+        runner = VanishingRunner(explore={"base": failure("timeout")})
+        r = rig(runner=runner)
+        r.call("investigate_base_code", query="q")
+        runner.present = False
+        assert r.toolbox.graph_state() == "unavailable:missing;degraded:base:timeout"
+
+
+class TestToolboxConstruction:
+    BAD_SHAS = [
+        "", "main", "HEAD", "refs/heads/main", "origin/pr", "a" * 39, "a" * 41, "A" * 40,
+        "0123456789ABCDEF0123456789abcdef01234567", "g" * 40, "a" * 40 + "\n", " " + "a" * 39,
+    ]
+
+    @pytest.mark.parametrize("label", ["base", "pr"])
+    @pytest.mark.parametrize("bad", BAD_SHAS)
+    def test_non_full_lowercase_hex_sha_is_rejected(self, snap, label, bad):
+        shas = {**snap.shas, label: bad}
+        with pytest.raises(ValueError):
+            AgentToolbox(snap.repo, "main", None, LGTMConfig(), shas=shas, session=None)
+
+    def test_full_lowercase_hex_shas_are_accepted(self, snap):
+        AgentToolbox(snap.repo, "main", None, LGTMConfig(), shas=snap.shas, session=None)
+
+
+class TestGitEnvironment:
+    ALLOWED = {
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG",
+        "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
+        "GIT_NO_REPLACE_OBJECTS", "GIT_PAGER",
+    }
+    PRIVATE_CONFIG = {"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}
+
+    def test_git_child_gets_an_allowlisted_environment(self, rig, git_envs, monkeypatch, tmp_path):
+        seeded = {
+            "GIT_DIR": str(tmp_path / "elsewhere.git"),
+            "GIT_WORK_TREE": str(tmp_path),
+            "GIT_ASKPASS": "ask-secret",
+            "GIT_EXTERNAL_DIFF": "diff-secret",
+            "GITHUB_TOKEN": "ghp_secret_token",
+            "OPENAI_API_KEY": "sk-secret",
+            "OLLAMA_HOST": "ollama-secret",
+            "HTTPS_PROXY": "http://user:proxy-secret@proxy.invalid",
+        }
+        for key, value in seeded.items():
+            monkeypatch.setenv(key, value)
+        r = rig()
+        git_envs.clear()
+        assert "get_user" in r.call("read_file", path="app.py")
+        assert "get_user" in r.call("grep_repo", pattern="get_user", snapshot="pr")
+        assert r.call("read_file", path="missing.py").startswith("ERROR: file 'missing.py' not present")
+        assert len(git_envs) >= 3
+        for env in git_envs:
+            assert env is not None, "git inherited the full process environment"
+            names = {k.upper(): k for k in env}
+            for key in seeded:
+                assert key not in names, f"{key} leaked into the git environment"
+            assert not set(seeded.values()) & set(env.values())
+            unexpected = {
+                k for k in names
+                if k not in self.ALLOWED and not k.startswith("LC_")
+                and not (k in self.PRIVATE_CONFIG and env[names[k]] != os.environ.get(k))
+            }
+            assert not unexpected, f"variables outside the allowlist: {sorted(unexpected)}"
+            assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+
+
+class TestGraphToolsThroughTheAgentLoop:
+    QUERY = "who calls find_user"
+
+    @staticmethod
+    def _review(kind, r, llm):
+        if kind == "sast_triage":
+            finding = SemgrepFinding(
+                rule_id="r", path="app.py", start_line=2, end_line=2, message="m", severity="ERROR",
+            )
+            return SASTTriageAgent(r.toolbox, r.config, llm=llm).triage(finding, None)
+        endpoint = ChangedEndpoint(file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1)
+        return AuthzReviewerAgent(r.toolbox, r.config, llm=llm).review(endpoint, None)
+
+    @pytest.fixture(params=["sast_triage", "authz_reviewer"])
+    def kind(self, request):
+        return request.param
+
+    def test_native_call_is_charged_once_and_returns_the_pr_envelope(self, rig, snap, kind):
+        r = rig(runner=FakeRunner(explore={"pr": success("PR-TOKEN")}))
+        llm = ScriptedLLM([_native("investigate_pr_code", {"query": self.QUERY}), _msg(SAFE)])
+        result = self._review(kind, r, llm)
+        assert result.tool_calls_used == 1
+        assert _tool_messages(llm, 1)[-1].content == render_graph(
+            "pr", snap.pr, "ok", "PR-TOKEN", query=self.QUERY
+        )
+        assert r.runner.count("explore", "pr") == 1
+
+    def test_text_request_is_parsed_charged_once_and_answered(self, rig, snap, kind):
+        r = rig(runner=FakeRunner(explore={"pr": success("PR-TOKEN")}))
+        args = {"query": self.QUERY}
+        llm = ScriptedLLM([_text("investigate_pr_code", args), _msg(SAFE)])
+        result = self._review(kind, r, llm)
+        assert result.tool_calls_used == 1
+        assert llm.seen[1][-1].content == _text_result(
+            "investigate_pr_code", args,
+            render_graph("pr", snap.pr, "ok", "PR-TOKEN", query=self.QUERY),
+        )
+
+    def test_batched_graph_and_read_calls_are_each_charged(self, rig, snap, kind):
+        r = rig()
+        batch = _batch(
+            ("investigate_base_code", {"query": self.QUERY}),
+            ("investigate_pr_code", {"query": self.QUERY}),
+            ("read_file", {"path": "new.py", "snapshot": "pr"}),
+        )
+        llm = ScriptedLLM([batch, _msg(SAFE)])
+        result = self._review(kind, r, llm)
+        assert result.tool_calls_used == 3
+        results = _tool_messages(llm, 1)
+        assert [m.tool_call_id for m in results] == ["c1", "c2", "c3"]
+        assert _lines(results[0].content)[0].startswith("[CODEGRAPH snapshot=base ")
+        assert _lines(results[1].content)[0].startswith("[CODEGRAPH snapshot=pr ")
+        assert _lines(results[2].content)[0].startswith("[READ snapshot=pr ")
+
+    def test_unavailable_result_is_not_retried_within_a_finding(self, rig, snap, kind):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
+        call = {"query": self.QUERY}
+        llm = ScriptedLLM([
+            _native("investigate_base_code", call, "c1"),
+            _native("investigate_base_code", call, "c2"),
+            _msg(SAFE),
+        ])
+        result = self._review(kind, r, llm)
+        assert result.tool_calls_used == 2
+        first, second = _tool_messages(llm, 2)[-2:]
+        assert first.content == second.content == render_graph(
+            "base", snap.base, "unavailable", "", query=self.QUERY, reason="timeout"
+        )
+        assert r.runner.count("explore") == 1
+
+    def test_latch_carries_over_to_the_next_finding(self, rig, snap, kind, caplog):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
+        call = {"query": self.QUERY}
+        llm = ScriptedLLM([
+            _native("investigate_base_code", call, "c1"), _msg(SAFE),
+            _native("investigate_base_code", call, "c2"), _msg(SAFE),
+        ])
+        with caplog.at_level(logging.WARNING):
+            first = self._review(kind, r, llm)
+            second = self._review(kind, r, llm)
+        assert first.tool_calls_used == 1 and second.tool_calls_used == 1
+        assert _tool_messages(llm, 1)[-1].content == _tool_messages(llm, 3)[-1].content
+        assert "reason=timeout" in _tool_messages(llm, 3)[-1].content
+        assert r.runner.count("explore") == 1
+        assert len(_latch_warnings(caplog, "base")) == 1
