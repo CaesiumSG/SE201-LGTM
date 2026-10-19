@@ -700,3 +700,14 @@ class TestPlainReviewerResilience:
         assert llm.calls == 4
         assert [f.finding_id for f in findings] == ["plain:unparsable"]
         assert findings[0].verdict == "insufficient_evidence"
+
+
+def test_llm_only_baseline_leaves_graph_fields_empty(git_repo):
+    llm = _NoToolsLLM(ASSESSMENTS)
+    result = ReviewPipeline(git_repo, LGTMConfig(mode="llm-only"), llm=llm).run("main", "pr")
+    assert result.findings
+    assert all(f.pr_graph_ok is None for f in result.findings)
+    assert result.meta.graph_state is None
+    assert result.meta.graph_index_seconds is None
+    assert result.meta.base_sha == ""
+    assert result.meta.pr_sha == ""

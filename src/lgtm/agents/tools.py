@@ -59,21 +59,19 @@ class AgentToolbox:
         self.calls_used = 0
         self.call_log = []
 
-    def _spend(self, tool_name: str, args: dict) -> bool:
-        """Consume one tool call. Returns False when over budget."""
-        self.calls_used += 1
+    def charge(self, tool_name: str, args: dict) -> bool:
+        """Spend one slot for an attempted call. Returns False once the budget is spent.
+
+        Rejected attempts do not advance ``calls_used``, so it saturates at the cap.
+        """
         self.call_log.append({"tool": tool_name, "args": args})
-        if self.calls_used > self.config.max_tool_calls:
-            logger.warning(
-                "Tool call budget exceeded (%d > %d) for %s",
-                self.calls_used,
-                self.config.max_tool_calls,
-                tool_name,
-            )
+        if self.calls_used >= self.config.max_tool_calls:
+            logger.warning("Tool call budget exhausted for %s", tool_name)
             return False
+        self.calls_used += 1
         return True
 
-    _BUDGET_MSG = (
+    BUDGET_MESSAGE = (
         "ERROR: tool call budget exhausted. You must now produce your final "
         "JSON answer using the evidence gathered so far."
     )
@@ -173,7 +171,7 @@ class AgentToolbox:
     # ------------------------------------------------------------------
     # LangChain tool objects
     # ------------------------------------------------------------------
-    def build_tools(self) -> list:
+    def build_tools(self) -> ToolList:
         toolbox = self
 
         @tool
@@ -182,8 +180,8 @@ class AgentToolbox:
             branch. Use start_line/end_line (1-based, inclusive) to read a
             specific range; pass 0 for both to read from the beginning.
             Returns numbered lines."""
-            if not toolbox._spend("read_file", {"path": path, "start_line": start_line, "end_line": end_line}):
-                return toolbox._BUDGET_MSG
+            if not toolbox.charge("read_file", {"path": path, "start_line": start_line, "end_line": end_line}):
+                return toolbox.BUDGET_MESSAGE
             return toolbox.read_file_impl(
                 path, start_line or None, end_line or None
             )
@@ -193,8 +191,8 @@ class AgentToolbox:
             """Search the repository's BASE branch for a regular expression.
             Optionally restrict to files matching file_glob (e.g. '*.py').
             Returns matches as 'file:line:content' (limited count)."""
-            if not toolbox._spend("grep_repo", {"pattern": pattern, "file_glob": file_glob}):
-                return toolbox._BUDGET_MSG
+            if not toolbox.charge("grep_repo", {"pattern": pattern, "file_glob": file_glob}):
+                return toolbox.BUDGET_MESSAGE
             return toolbox.grep_repo_impl(pattern, file_glob or None)
 
         @tool
@@ -202,8 +200,16 @@ class AgentToolbox:
             """Search the project's documentation (security policy, API spec,
             README) for rules relevant to a natural-language query. Returns
             the most relevant excerpts with their source file and lines."""
-            if not toolbox._spend("search_policy", {"query": query}):
-                return toolbox._BUDGET_MSG
+            if not toolbox.charge("search_policy", {"query": query}):
+                return toolbox.BUDGET_MESSAGE
             return toolbox.search_policy_impl(query)
 
-        return [read_file, grep_repo, search_policy]
+        return ToolList([read_file, grep_repo, search_policy], toolbox)
+
+
+class ToolList(list):
+    """Registered tools that keep their toolbox so the loop can charge rejected calls."""
+
+    def __init__(self, tools: list, toolbox: AgentToolbox):
+        super().__init__(tools)
+        self.toolbox = toolbox

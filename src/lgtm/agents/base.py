@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from lgtm.config import LGTMConfig
 
@@ -19,6 +19,8 @@ Verdict = Literal["vulnerable", "safe", "possible", "insufficient_evidence"]
 
 VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
 
+SNAPSHOT_LABELS = ("base", "pr")
+
 
 class EvidenceItem(BaseModel):
     type: Literal["code", "policy"] = "code"
@@ -26,6 +28,22 @@ class EvidenceItem(BaseModel):
     lines: list[int] | None = None  # [start, end]
     source: str | None = None  # for policy evidence (doc path)
     content: str = ""
+    snapshot: Literal["base", "pr"] | None = None
+    snapshot_conflict: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_snapshot(cls, data: Any) -> Any:
+        # Unknown values are never kept as labels; the conflict flag records them.
+        if not isinstance(data, dict) or data.get("snapshot") is None:
+            return data
+        raw = data["snapshot"]
+        label = raw.strip().lower() if isinstance(raw, str) else raw
+        if label == "":
+            return {**data, "snapshot": None}
+        if label in SNAPSHOT_LABELS:
+            return {**data, "snapshot": label}
+        return {**data, "snapshot": None, "snapshot_conflict": True}
 
 
 class AgentFinding(BaseModel):
@@ -44,6 +62,8 @@ class AgentFinding(BaseModel):
     tool_calls_used: int = 0
     evidence_valid: bool | None = None
     evidence_issues: list[str] = Field(default_factory=list)
+    # Set by the pipeline from graph session health; never read from model JSON.
+    pr_graph_ok: bool | None = None
     raw_response: str = ""
 
     def normalized(self) -> "AgentFinding":
@@ -204,6 +224,7 @@ def parse_agent_output(
                     lines=lines,
                     source=item.get("source"),
                     content=str(item.get("content", ""))[:2000],
+                    snapshot=item.get("snapshot"),
                 )
             )
         except ValidationError:
@@ -256,6 +277,21 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
     """
     if not content or not tool_names:
         return []
+    return [
+        call
+        for call in _text_tool_requests(content, tool_names)
+        if call["name"] in tool_names and isinstance(call["args"], dict)
+    ]
+
+
+def _text_tool_requests(content: str, tool_names: set[str]) -> list[dict]:
+    """Every tool request written as text, including unregistered names with arguments.
+
+    Arguments that are not a JSON object are returned as-is so the caller can
+    reject them as invalid input.
+    """
+    if not content:
+        return []
     blocks = TOOL_CALL_TAG_RE.findall(content)
     candidates = [extract_json_object(b) for b in blocks] if blocks else [
         extract_json_object(content)
@@ -265,14 +301,17 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
         if not isinstance(data, dict) or "verdict" in data:
             continue  # a final answer, not a tool call
         name = data.get("name")
+        if not isinstance(name, str):
+            continue
+        if name not in tool_names and "arguments" not in data and "parameters" not in data:
+            continue
         args = data.get("arguments", data.get("parameters", {}))
         if isinstance(args, str):  # OpenAI style: arguments as a JSON string
             try:
                 args = json.loads(args) if args.strip() else {}
             except json.JSONDecodeError:
-                continue
-        if name in tool_names and isinstance(args, dict):
-            calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
+                pass
+        calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
     return calls
 
 
@@ -382,6 +421,7 @@ def run_tool_loop(
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
     tool_map = {t.name: t for t in tools}
+    toolbox = getattr(tools, "toolbox", None)
     llm_with_tools = llm.bind_tools(tools)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     tools_used = 0
@@ -396,7 +436,7 @@ def run_tool_loop(
         content = message_text(response)
         text_calls = False
         if not tool_calls:
-            tool_calls = parse_text_tool_calls(content, set(tool_map))
+            tool_calls = _text_tool_requests(content, set(tool_map))
             text_calls = bool(tool_calls)
             if not tool_calls:
                 if config.require_tool_use and tools and not tools_used and not pushed_back:
@@ -421,7 +461,10 @@ def run_tool_loop(
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
             error = validate_tool_call(name, tool_map, args)
-            if error:
+            # Valid calls are charged by the tool body on invoke; rejected calls are charged here.
+            if error and toolbox is not None and not toolbox.charge(name, args):
+                result = toolbox.BUDGET_MESSAGE
+            elif error:
                 invalid_inputs += 1
                 logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
                 result = error
