@@ -231,13 +231,16 @@ def _terminate(proc: subprocess.Popen) -> None:
         if proc.poll() is None:
             system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
             taskkill = os.path.join(system_root, "System32", "taskkill.exe")
-            subprocess.run(
-                [taskkill, "/PID", str(proc.pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    [taskkill, "/PID", str(proc.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except OSError as exc:
+                logger.debug("taskkill could not be launched for pid %s: %s", proc.pid, exc)
     else:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -320,12 +323,19 @@ def _close_handle(handle: int) -> None:
 
 
 def remove_tree(path: Path) -> None:
+    root = os.path.normcase(os.path.realpath(path))
+
+    def clear_and_retry(func, failed, _exc) -> None:
+        _grant_owner_write(failed, root)
+        with contextlib.suppress(FileNotFoundError):
+            func(failed)
+
     for attempt in range(_REMOVE_ATTEMPTS):
         try:
             if sys.version_info >= (3, 12):
-                shutil.rmtree(path, onexc=_clear_read_only_and_retry)
+                shutil.rmtree(path, onexc=clear_and_retry)
             else:
-                shutil.rmtree(path, onerror=_clear_read_only_and_retry)
+                shutil.rmtree(path, onerror=clear_and_retry)
             return
         except OSError:
             if attempt + 1 < _REMOVE_ATTEMPTS:
@@ -333,8 +343,19 @@ def remove_tree(path: Path) -> None:
     logger.warning("could not remove graph scratch directory: %s", path)
 
 
-def _clear_read_only_and_retry(func, path, _exc) -> None:
-    with contextlib.suppress(OSError):
-        os.chmod(path, stat.S_IWRITE)
-    with contextlib.suppress(FileNotFoundError):
-        func(path)
+def _grant_owner_write(failed, root: str) -> None:
+    for entry in (failed, os.path.dirname(failed)):
+        if not _is_within_tree(entry, root):
+            continue
+        with contextlib.suppress(OSError):
+            mode = stat.S_IMODE(os.lstat(entry).st_mode)
+            extra = stat.S_IRWXU if os.path.isdir(entry) else stat.S_IWUSR
+            os.chmod(entry, mode | extra)
+
+
+def _is_within_tree(path, root: str) -> bool:
+    isjunction = getattr(os.path, "isjunction", None)
+    if os.path.islink(path) or (isjunction is not None and isjunction(path)):
+        return False
+    real = os.path.normcase(os.path.realpath(path))
+    return real == root or real.startswith(root + os.sep)

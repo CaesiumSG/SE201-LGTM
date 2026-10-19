@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -908,3 +909,96 @@ class TestScratchRemoval:
 
         assert not tree.exists()
         assert keep.read_text(encoding="utf-8") == "precious"
+
+    @pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+    def test_removal_does_not_follow_a_junction_to_a_directory_outside_the_tree(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        keep = outside / "keep.txt"
+        keep.write_text("precious", encoding="utf-8")
+        keep.chmod(stat.S_IREAD)
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "file.txt").write_text("x", encoding="utf-8")
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(tree / "junction"), str(outside)],
+            capture_output=True,
+            check=False,
+        )
+        if made.returncode != 0 or not (tree / "junction").exists():
+            pytest.skip("junction creation failed")
+        try:
+            remove_tree(tree)
+
+            assert not tree.exists()
+            assert outside.is_dir()
+            assert keep.read_text(encoding="utf-8") == "precious"
+            assert not os.access(keep, os.W_OK)
+        finally:
+            keep.chmod(stat.S_IWRITE)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permission bits")
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores permission bits")
+    def test_read_only_directory_containing_files_is_removed(self, tmp_path):
+        tree = tmp_path / "tree"
+        locked = tree / "locked"
+        (locked / "nested").mkdir(parents=True)
+        (locked / "a.txt").write_text("a", encoding="utf-8")
+        (locked / "nested" / "b.txt").write_text("b", encoding="utf-8")
+        (locked / "nested").chmod(0o555)
+        locked.chmod(0o555)
+        try:
+            remove_tree(tree)
+
+            assert not tree.exists()
+        finally:
+            for path in (locked / "nested", locked):
+                if path.exists():
+                    path.chmod(0o755)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink and permission semantics")
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores permission bits")
+    def test_removal_error_handling_leaves_outside_directories_untouched(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        keep = outside / "keep.txt"
+        keep.write_text("precious", encoding="utf-8")
+        outside.chmod(0o555)
+        tree = tmp_path / "tree"
+        locked = tree / "locked"
+        locked.mkdir(parents=True)
+        os.symlink(outside, locked / "link", target_is_directory=True)
+        locked.chmod(0o555)
+        try:
+            remove_tree(tree)
+
+            assert stat.S_IMODE(outside.stat().st_mode) == 0o555
+            assert keep.read_text(encoding="utf-8") == "precious"
+        finally:
+            locked.chmod(0o755)
+            outside.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="taskkill is the Windows termination path")
+class TestTerminationWhenTaskkillIsUnavailable:
+    def test_timeout_still_reaps_the_child_tree_and_returns(self, fake, root, monkeypatch):
+        fake.configure(hang=60, child=True)
+        real_run = subprocess.run
+
+        def run_without_taskkill(argv, *args, **kwargs):
+            if "taskkill" in os.path.basename(str(argv[0])).lower():
+                raise FileNotFoundError("taskkill.exe unavailable")
+            return real_run(argv, *args, **kwargs)
+
+        runner = make_runner(fake, query_timeout_s=1)
+
+        started = time.monotonic()
+        with monkeypatch.context() as patched:
+            patched.setattr(subprocess, "run", run_without_taskkill)
+            result = runner.explore(root, "q")
+        elapsed = time.monotonic() - started
+
+        assert (result.ok, result.reason) == (False, "timeout")
+        assert elapsed < 20
+        assert fake.child_pids()
+        assert wait_all_dead(fake.all_pids()) == []
