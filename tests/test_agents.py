@@ -50,19 +50,6 @@ class TestToolbox:
         toolbox = AgentToolbox(git_repo, "main", retriever=None)
         assert "ERROR" in toolbox.search_policy_impl("sql rules")
 
-    def test_search_code_without_retriever(self, git_repo):
-        toolbox = AgentToolbox(git_repo, "main", retriever=None)
-        assert "ERROR" in toolbox.search_code_impl("auth decorator")
-
-    def test_search_code_tool_registered_with_budget(self, git_repo):
-        from lgtm.config import LGTMConfig
-
-        toolbox = AgentToolbox(git_repo, "main", config=LGTMConfig(max_tool_calls=1))
-        tools = {t.name: t for t in toolbox.build_tools()}
-        assert "search_code" in tools
-        tools["search_code"].invoke({"query": "x"})
-        assert "budget exhausted" in tools["search_code"].invoke({"query": "y"})
-
     def test_tool_call_budget_enforced(self, git_repo):
         config = LGTMConfig(max_tool_calls=2)
         toolbox = AgentToolbox(git_repo, "main", config=config)

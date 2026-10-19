@@ -98,25 +98,3 @@ class PolicyRetriever:
         if not chunks:
             return "No relevant documentation found for this query."
         return "\n\n---\n\n".join(c.format() for c in chunks)
-
-    def retrieve_code(
-        self, query: str, top_k: int | None = None
-    ) -> list[RetrievedChunk]:
-        """Return the top-k most relevant source-code chunks for a query."""
-        try:
-            return self.retrieve(
-                query, top_k, collection_name=self.config.chroma_code_collection
-            )
-        except Exception as exc:  # noqa: BLE001 - older indexes lack this collection
-            logger.warning("Code collection unavailable: %s", exc)
-            return []
-
-    def format_code_results(self, query: str, top_k: int | None = None) -> str:
-        """Retrieve and render code results as a string for agent prompts."""
-        chunks = self.retrieve_code(query, top_k)
-        if not chunks:
-            return (
-                "No relevant source code found for this query. "
-                "(The code index may be missing — try grep_repo instead.)"
-            )
-        return "\n\n---\n\n".join(c.format() for c in chunks)

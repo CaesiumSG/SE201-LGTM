@@ -170,23 +170,6 @@ class AgentToolbox:
         except FileNotFoundError as exc:
             return f"ERROR: {exc}"
 
-    def search_code_impl(self, query: str) -> str:
-        """Semantic search over the indexed source code (base snapshot).
-
-        Complements grep_repo: useful when the agent does not know which
-        file or symbol to look for. The index is built by `lgtm index`,
-        which should run with the base branch checked out.
-        """
-        if self.retriever is None:
-            return (
-                "ERROR: code index is not available. "
-                "Use grep_repo or read_file instead."
-            )
-        try:
-            return self.retriever.format_code_results(query)[:MAX_OUTPUT_CHARS]
-        except FileNotFoundError as exc:
-            return f"ERROR: {exc}"
-
     # ------------------------------------------------------------------
     # LangChain tool objects
     # ------------------------------------------------------------------
@@ -223,15 +206,4 @@ class AgentToolbox:
                 return toolbox._BUDGET_MSG
             return toolbox.search_policy_impl(query)
 
-        @tool
-        def search_code(query: str) -> str:
-            """Semantically search the repository's source code for a
-            natural-language query (e.g. 'authorization decorator that
-            checks roles'). Use this when you don't know which file or
-            symbol to look for; use grep_repo for exact patterns. Returns
-            the most relevant code excerpts with file and line ranges."""
-            if not toolbox._spend("search_code", {"query": query}):
-                return toolbox._BUDGET_MSG
-            return toolbox.search_code_impl(query)
-
-        return [read_file, grep_repo, search_policy, search_code]
+        return [read_file, grep_repo, search_policy]

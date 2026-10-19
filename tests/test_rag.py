@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from lgtm.config import LGTMConfig
-from lgtm.rag.indexer import chunk_document, find_doc_files
+from lgtm.rag.indexer import chunk_document, find_doc_files, index_repo_docs
 from lgtm.rag.retriever import PolicyRetriever, RetrievedChunk
 
 
@@ -53,11 +55,90 @@ class TestChunkDocument:
     def test_empty_doc(self):
         assert chunk_document("", "doc.md") == []
 
+    def test_nonempty_chunks_preserve_content_and_line_ranges(self):
+        chunks = chunk_document("Access must be authorized.\nAdmins only.", "policy.md")
+        assert len(chunks) == 1
+        assert chunks[0].content == "Access must be authorized.\nAdmins only."
+        assert (chunks[0].source, chunks[0].start_line, chunks[0].end_line) == (
+            "policy.md", 1, 2
+        )
+
     def test_chunk_ids_unique(self):
         text = "\n".join("word " * 50 for _ in range(100))
         chunks = chunk_document(text, "doc.md", chunk_size_tokens=50)
         ids = [c.chunk_id for c in chunks]
         assert len(ids) == len(set(ids))
+
+
+def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
+    tmp_path, monkeypatch
+):
+    class Collection:
+        def __init__(self, metadata=None, records=None):
+            self.metadata = metadata
+            self.records = records or {}
+
+        def add(self, ids, documents, metadatas):
+            self.records.update(dict(zip(ids, zip(documents, metadatas))))
+
+    class Client:
+        def __init__(self):
+            self.collections = {
+                "lgtm_docs": Collection({"old": True}, {"old-id": ("old policy", {})}),
+                "lgtm_code": Collection(
+                    {"owner": "external"},
+                    {"external-id": ("keep me", {"owner": "external"})},
+                ),
+            }
+
+        def delete_collection(self, name):
+            if name != "lgtm_docs":
+                raise AssertionError(f"unexpected collection deletion: {name}")
+            del self.collections[name]
+
+        def create_collection(self, name, metadata=None):
+            if name != "lgtm_docs" or name in self.collections:
+                raise AssertionError(f"unexpected collection creation: {name}")
+            self.collections[name] = Collection(metadata)
+            return self.collections[name]
+
+        def get_max_batch_size(self):
+            return 5461
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unsupported Chroma operation: {name}")
+
+    client = Client()
+    stale = client.collections["lgtm_code"]
+    stale_metadata = dict(stale.metadata)
+    stale_records = dict(stale.records)
+    monkeypatch.setitem(
+        sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client)
+    )
+
+    (tmp_path / "app.py").write_text("def authorize(): pass", encoding="utf-8")
+    (tmp_path / "policy.md").write_text(
+        "Admin access\nrequires approval.", encoding="utf-8"
+    )
+    config = LGTMConfig(rag_chunk_size=2, rag_chunk_overlap=0)
+    assert index_repo_docs(tmp_path, config) == 2
+    assert [record[0] for record in client.collections["lgtm_docs"].records.values()] == [
+        "Admin access",
+        "requires approval.",
+    ]
+    assert [record[1] for record in client.collections["lgtm_docs"].records.values()] == [
+        {"source": "policy.md", "start_line": 1, "end_line": 1},
+        {"source": "policy.md", "start_line": 2, "end_line": 2},
+    ]
+    assert client.collections["lgtm_code"] is stale
+    assert stale.metadata == stale_metadata
+    assert stale.records == stale_records
+
+    (tmp_path / "policy.md").write_text(" \n\t", encoding="utf-8")
+    assert index_repo_docs(tmp_path, config) == 0
+    assert client.collections["lgtm_code"] is stale
+    assert stale.metadata == stale_metadata
+    assert stale.records == stale_records
 
 
 class TestReplaceCollectionBatching:
@@ -150,26 +231,19 @@ class TestPolicyRetriever:
         )
         assert "No relevant documentation" in retriever.format_results("anything")
 
+    def test_format_results_includes_policy_location_and_content(self, tmp_path):
+        retriever = self._retriever_with_stub(
+            tmp_path,
+            {
+                "documents": [["Admins must approve access."]],
+                "metadatas": [[{"source": "policy.md", "start_line": 3, "end_line": 4}]],
+                "distances": [[0.2]],
+            },
+        )
+        result = retriever.format_results("who approves access?")
+        assert "[policy.md:3-4]" in result
+        assert "Admins must approve access." in result
+
     def test_missing_index_raises_filenotfound(self, tmp_path):
         retriever = PolicyRetriever(tmp_path, LGTMConfig())
         assert not retriever.is_available()
-
-    def test_retrieve_code_uses_code_collection(self, tmp_path):
-        config = LGTMConfig()
-        retriever = PolicyRetriever(tmp_path, config)
-        collection = MagicMock()
-        collection.count.return_value = 1
-        collection.query.return_value = {
-            "documents": [["def require_role(r): ..."]],
-            "metadatas": [[{"source": "app/auth.py", "start_line": 10, "end_line": 20}]],
-            "distances": [[0.1]],
-        }
-        retriever._collections[config.chroma_code_collection] = collection
-        chunks = retriever.retrieve_code("role check decorator")
-        assert chunks[0].source == "app/auth.py"
-        assert "app/auth.py" in retriever.format_code_results("role check")
-
-    def test_retrieve_code_missing_collection_returns_empty(self, tmp_path):
-        retriever = PolicyRetriever(tmp_path, LGTMConfig())
-        assert retriever.retrieve_code("anything") == []
-        assert "No relevant source code" in retriever.format_code_results("x")
