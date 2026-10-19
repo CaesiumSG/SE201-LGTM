@@ -6,6 +6,8 @@ import _thread
 import logging
 import os
 import shutil
+import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -13,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from lgtm.config import LGTMConfig
-from lgtm.graph.runner import GraphOutcome, GraphRunner, sanitize_query
+from lgtm.graph.runner import GraphOutcome, GraphRunner, remove_tree, sanitize_query
 from lgtm.graph.session import GraphSession
 from lgtm.graph.snapshot import resolve_refs
 from lgtm.graph.exporter import export_snapshot
@@ -53,7 +55,8 @@ def root(tmp_path) -> Path:
 
 
 def make_runner(exe, **kwargs) -> GraphRunner:
-    return GraphRunner(str(exe.path), **kwargs)
+    limits = {"init_timeout_s": 120, "query_timeout_s": 20, "max_output_chars": 6000, **kwargs}
+    return GraphRunner(str(exe.path), **limits)
 
 
 def env_of(call: dict) -> dict:
@@ -81,8 +84,30 @@ class TestRunnerInvocation:
         with pytest.raises(ValueError):
             sanitize_query(query)
 
-    def test_query_is_limited_to_300_characters(self):
-        assert len(sanitize_query("a" * 1000)) <= 300
+    @pytest.mark.parametrize("length", [299, 300])
+    def test_query_up_to_300_characters_is_kept_whole(self, length):
+        assert sanitize_query("a" * length) == "a" * length
+
+    @pytest.mark.parametrize("length", [301, 1000])
+    def test_longer_query_is_cut_to_exactly_300_characters(self, length):
+        assert sanitize_query("a" * length) == "a" * 300
+
+    def test_cut_query_has_no_trailing_space(self):
+        cleaned = sanitize_query("word " * 100)
+
+        assert len(cleaned) <= 300
+        assert cleaned == cleaned.rstrip()
+        assert cleaned.startswith("word word")
+
+    def test_disallowed_characters_are_removed_before_spaces_are_collapsed(self):
+        assert sanitize_query("foo ' bar & baz") == "foo bar baz"
+        assert sanitize_query("a" * 150 + " & " + "b" * 200) == "a" * 150 + " " + "b" * 149
+
+    def test_whitespace_runs_including_newlines_collapse_to_single_spaces(self):
+        assert sanitize_query("find\n\n  user\tby   name") == "find user by name"
+
+    def test_non_ascii_characters_are_dropped(self):
+        assert sanitize_query("café user") == "caf user"
 
     def test_query_keeps_allowed_characters(self):
         text = "Foo_bar.baz,qux:a/b@c#d+e=f-g 1"
@@ -90,22 +115,22 @@ class TestRunnerInvocation:
 
     @pytest.mark.parametrize("hostile", ["a & b", "a | b", "a ^ b", "%PATH%", 'a "b"', "a ; b", "a `b`", "$(b)", "a > b", "a < b", "(a)", "!a!"])
     def test_query_never_carries_shell_metacharacters(self, hostile):
-        try:
-            cleaned = sanitize_query(f"find {hostile} user")
-        except ValueError:
-            return
+        cleaned = sanitize_query(f"find {hostile} user")
+
         assert not set(cleaned) & set('&|^%"\';`$<>()!\\*?[]{}~')
+        assert cleaned.split()[0] == "find" and cleaned.split()[-1] == "user"
+        assert "  " not in cleaned
 
     def test_metacharacters_do_not_reach_the_windows_shim_shell(self, fake, root, tmp_path):
         marker = tmp_path / "pwned.txt"
-        try:
-            make_runner(fake).explore(root, f"x & echo hacked > {marker}")
-        except ValueError:
-            pass
+        make_runner(fake).explore(root, f"x & echo hacked > {marker}")
+
         assert not marker.exists()
 
     def test_missing_binary_reports_missing(self, tmp_path, root):
-        runner = GraphRunner(str(tmp_path / "does-not-exist"))
+        runner = GraphRunner(
+            str(tmp_path / "does-not-exist"), init_timeout_s=120, query_timeout_s=20, max_output_chars=6000
+        )
 
         assert runner.available() is False
         result = runner.init(root)
@@ -121,6 +146,58 @@ class TestRunnerInvocation:
         result = make_runner(fake).explore(root, "q")
 
         assert (result.ok, result.reason) == (False, "nonzero")
+
+
+class TestRunnerClassification:
+    @pytest.mark.parametrize("silent", ["", "   \n\t "])
+    def test_explore_with_blank_output_is_a_successful_no_match(self, fake, root, silent):
+        fake.configure(stdout=silent)
+
+        result = make_runner(fake).explore(root, "q")
+
+        assert (result.ok, result.reason, result.text.strip()) == (True, "no_match", "")
+
+    def test_init_with_blank_output_is_plain_success(self, fake, root):
+        fake.configure(stdout="")
+
+        result = make_runner(fake).init(root)
+
+        assert (result.ok, result.reason) == (True, None)
+
+    def test_executable_that_cannot_be_launched_reports_launch_failed_and_cleans_up(
+        self, tmp_path, root, monkeypatch
+    ):
+        scratch_parent = tmp_path / "scratch-parent"
+        scratch_parent.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch_parent))
+        broken = tmp_path / ("broken.exe" if os.name == "nt" else "broken")
+        broken.write_bytes(b"" if os.name == "nt" else b"\x00not an executable image\n")
+        broken.chmod(broken.stat().st_mode | stat.S_IXUSR)
+        runner = GraphRunner(str(broken), init_timeout_s=20, query_timeout_s=20, max_output_chars=6000)
+        assert runner.available() is True
+
+        result = runner.init(root)
+
+        assert (result.ok, result.reason) == (False, "launch_failed")
+        assert list(scratch_parent.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "limits",
+        [
+            {},
+            {"init_timeout_s": 1},
+            {"init_timeout_s": 1, "query_timeout_s": 1},
+            {"init_timeout_s": 1, "max_output_chars": 1024},
+            {"query_timeout_s": 1, "max_output_chars": 1024},
+        ],
+    )
+    def test_timeouts_and_output_cap_must_be_given_explicitly(self, fake, limits):
+        with pytest.raises(TypeError):
+            GraphRunner(str(fake.path), **limits)
+
+    def test_limits_are_keyword_only(self, fake):
+        with pytest.raises(TypeError):
+            GraphRunner(str(fake.path), 120, 20, 6000)
 
 
 class TestRunnerEnvironment:
@@ -144,6 +221,31 @@ class TestRunnerEnvironment:
         assert env["LANG"] == "C" and env.get("LC_ALL") == "C"
         for key in ("CODEGRAPH_NO_UPDATE_CHECK", "DO_NOT_TRACK", "CODEGRAPH_NO_DAEMON", "CODEGRAPH_NO_WATCH"):
             assert env[key] == "1"
+
+    def test_every_allowlisted_variable_reaches_the_child_unchanged(self, fake, root, monkeypatch):
+        expected = {}
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG"):
+            if key not in {name.upper() for name in os.environ}:
+                monkeypatch.setenv(key, f"value-of-{key}")
+            expected[key] = {k.upper(): v for k, v in os.environ.items()}[key]
+        monkeypatch.setenv("LC_MESSAGES", "en_US.UTF-8")
+        expected["LC_MESSAGES"] = "en_US.UTF-8"
+
+        make_runner(fake).init(root)
+
+        env = env_of(fake.calls()[0])
+        assert {key: env.get(key) for key in expected} == expected
+        assert env["PATH"] == os.environ["PATH"]
+
+    def test_hostile_parent_hardening_values_are_overridden(self, fake, root, monkeypatch):
+        hardening = ("CODEGRAPH_NO_UPDATE_CHECK", "DO_NOT_TRACK", "CODEGRAPH_NO_DAEMON", "CODEGRAPH_NO_WATCH")
+        for key in hardening:
+            monkeypatch.setenv(key, "0")
+
+        make_runner(fake).init(root)
+
+        env = env_of(fake.calls()[0])
+        assert {key: env[key] for key in hardening} == dict.fromkeys(hardening, "1")
 
     def test_home_directories_are_private_and_distinct_from_the_parent(self, fake, root, monkeypatch):
         parents = {"HOME": "/parent/home", "USERPROFILE": "C:/parent/profile", "XDG_CONFIG_HOME": "/parent/xdg"}
@@ -213,6 +315,18 @@ class TestRunnerProcessLifecycle:
         assert fake.child_pids()
         assert wait_all_dead(fake.child_pids()) == []
 
+    def test_successful_command_with_a_descendant_holding_the_pipes_returns_promptly(self, fake, root):
+        fake.configure(child=True, child_holds_pipes=True, stdout="done")
+
+        started = time.monotonic()
+        result = make_runner(fake).explore(root, "q")
+        elapsed = time.monotonic() - started
+
+        assert result.ok is True and "done" in result.text
+        assert elapsed < 5
+        assert fake.child_pids()
+        assert wait_all_dead(fake.child_pids()) == []
+
     def test_interrupt_propagates_and_reaps_the_process_tree(self, fake, root):
         fake.configure(hang=60, child=True)
         runner = make_runner(fake, query_timeout_s=60)
@@ -248,6 +362,42 @@ class TestRunnerOutputBounds:
         assert 0 < len(result.text) <= limit
         assert result.truncated is True
         assert result.omitted_chars >= total - limit
+        assert result.text.count("[TRUNCATED]") == 1
+
+    def test_output_of_exactly_the_limit_is_kept_whole(self, fake, root):
+        fake.configure(stdout="a" * 6000)
+
+        result = make_runner(fake).explore(root, "q")
+
+        assert (result.text, result.truncated, result.omitted_chars) == ("a" * 6000, False, 0)
+
+    def test_output_one_character_over_the_limit_is_truncated_with_one_marker(self, fake, root):
+        fake.configure(stdout="a" * 6001)
+
+        result = make_runner(fake).explore(root, "q")
+
+        assert result.truncated is True
+        assert len(result.text) <= 6000
+        assert result.text.count("[TRUNCATED]") == 1
+        assert 1 <= result.omitted_chars <= 100
+
+    def test_limit_counts_characters_not_bytes(self, fake, root):
+        fake.configure(stdout="é" * 6000)
+
+        result = make_runner(fake).explore(root, "q")
+
+        assert (result.text, result.truncated, result.omitted_chars) == ("é" * 6000, False, 0)
+
+    def test_truncated_multibyte_output_is_cut_on_characters(self, fake, root):
+        fake.configure(stdout="é" * 7000)
+
+        result = make_runner(fake).explore(root, "q")
+
+        assert result.truncated is True
+        assert "�" not in result.text
+        assert 5900 <= len(result.text) <= 6000
+        assert result.text.count("[TRUNCATED]") == 1
+        assert 1000 <= result.omitted_chars <= 1100
 
     def test_small_output_is_not_marked_truncated(self, fake, root):
         result = make_runner(fake).explore(root, "q")
@@ -474,17 +624,59 @@ class TestSessionOutcomesAndLatches:
             session.explore("pr", "q")
             assert session.state == "ok"
 
-    def test_partial_export_stays_usable_and_is_marked(self, git_repo):
+    def test_partial_export_stays_usable_and_exposes_its_incomplete_export(self, git_repo):
         runner = FakeRunner()
 
         with graph_session(git_repo, runner, graph_max_export_files=1) as session:
             result = session.explore("base", "q")
             state = session.state
+            exported = session.snapshot("base")
 
-        assert result.ok is True
+        assert result.ok is True and "RESULT-TOKEN" in result.text
+        assert "[INCOMPLETE]" not in result.text
         assert state == "ok"
         assert runner.count("explore", "base") == 1
-        assert "INCOMPLETE" in result.text.upper() or "TRUNCATED" in result.text.upper()
+        assert exported is not None
+        assert exported.truncated or exported.incomplete
+        assert exported.root == runner.calls[0]["root"]
+
+    def test_complete_export_exposes_no_incomplete_state(self, git_repo):
+        with graph_session(git_repo, FakeRunner()) as session:
+            result = session.explore("base", "q")
+            exported = session.snapshot("base")
+
+        assert "[INCOMPLETE]" not in result.text
+        assert exported is not None
+        assert not exported.truncated and not exported.incomplete
+        assert exported.skipped == ()
+
+
+class TestSessionSnapshotExport:
+    def test_snapshot_is_none_before_any_export(self, git_repo):
+        with graph_session(git_repo, FakeRunner()) as session:
+            assert session.snapshot("base") is None
+            assert session.snapshot("pr") is None
+
+    def test_snapshot_exposes_the_export_result_for_the_explored_label_only(self, git_repo):
+        runner = FakeRunner()
+
+        with graph_session(git_repo, runner) as session:
+            session.explore("pr", "q")
+            exported = session.snapshot("pr")
+            other = session.snapshot("base")
+
+        assert exported is not None
+        assert exported.root == runner.calls[0]["root"]
+        assert exported.file_count >= 1
+        assert other is None
+
+    def test_snapshot_is_none_after_export_failure(self, git_repo):
+        def failing_export(*args, **kwargs):
+            raise ValueError("export_failed")
+
+        with graph_session(git_repo, FakeRunner(), export=failing_export) as session:
+            session.explore("base", "q")
+            assert session.snapshot("base") is None
 
 
 class TestSessionTimings:
@@ -545,6 +737,29 @@ class TestSessionCleanup:
         assert runner.roots()
         assert not any(r.exists() for r in runner.roots())
 
+    @pytest.mark.skipif(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX non-root"
+    )
+    def test_read_only_directories_in_a_snapshot_do_not_block_cleanup(self, git_repo):
+        locked = []
+
+        def make_read_only(label, root):
+            os.chmod(root / "app.py", 0o444)
+            os.chmod(root, 0o555)
+            locked.append(root)
+            return success()
+
+        runner = FakeRunner(init={"base": make_read_only})
+        try:
+            with graph_session(git_repo, runner) as session:
+                session.explore("base", "q")
+        finally:
+            for path in locked:
+                if path.exists():
+                    os.chmod(path, 0o755)
+
+        assert not any(r.exists() for r in runner.roots())
+
     def test_read_only_files_in_a_snapshot_do_not_block_cleanup(self, git_repo):
         def make_read_only(label, root):
             target = root / "app.py"
@@ -578,6 +793,39 @@ class TestSessionWithRealRunnerAndFakeExecutable:
         finally:
             kill_pids(exe.all_pids())
 
+    def test_default_runner_takes_its_output_cap_from_the_config(self, git_repo, tmp_path):
+        exe = make_fake_executable(tmp_path / "bin", stdout="y" * 3000)
+        try:
+            shas = resolve_refs(git_repo, "main", "pr")
+            config = LGTMConfig(graph_binary=str(exe.path), graph_max_output_chars=1024)
+            with GraphSession(git_repo, shas, config) as session:
+                result = session.explore("pr", "find user")
+
+            assert result.ok is True and result.truncated is True
+            assert 0 < len(result.text) <= 1024
+        finally:
+            kill_pids(exe.all_pids())
+
+    @pytest.mark.parametrize("slow", ["init", "explore"])
+    def test_default_runner_uses_the_configured_timeout_for_each_command(self, git_repo, tmp_path, slow):
+        exe = make_fake_executable(tmp_path / "bin", hang=60, hang_only=slow)
+        init_limit, query_limit = (1, 60) if slow == "init" else (60, 1)
+        try:
+            shas = resolve_refs(git_repo, "main", "pr")
+            config = LGTMConfig(
+                graph_binary=str(exe.path), graph_init_timeout_s=init_limit, graph_query_timeout_s=query_limit
+            )
+            started = time.monotonic()
+            with GraphSession(git_repo, shas, config) as session:
+                result = session.explore("pr", "find user")
+                state = session.state
+
+            assert (result.ok, result.reason) == (False, "timeout")
+            assert state == "degraded:pr:timeout"
+            assert time.monotonic() - started < 20
+        finally:
+            kill_pids(exe.all_pids())
+
     def test_timeout_in_real_runner_degrades_only_that_snapshot(self, git_repo, tmp_path):
         exe = make_fake_executable(tmp_path / "bin", hang=60, child=True)
         try:
@@ -602,3 +850,61 @@ def test_real_codegraph_indexes_and_explores_a_snapshot(git_repo):
         result = session.explore("pr", "find_user")
         assert isinstance(result, GraphOutcome)
         assert result.ok is True
+
+
+class TestScratchRemoval:
+    def test_removal_is_retried_until_it_succeeds(self, tmp_path, monkeypatch):
+        target = tmp_path / "scratch"
+        target.mkdir()
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def flaky(path, *args, **kwargs):
+            attempts.append(path)
+            if len(attempts) < 3:
+                raise PermissionError("busy")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", flaky)
+
+        remove_tree(target)
+
+        assert len(attempts) == 3
+        assert not target.exists()
+
+    def test_persistent_removal_failure_is_logged_after_three_attempts_without_raising(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        target = tmp_path / "scratch"
+        target.mkdir()
+        attempts = []
+
+        def always_fails(path, *args, **kwargs):
+            attempts.append(path)
+            raise PermissionError("busy")
+
+        monkeypatch.setattr(shutil, "rmtree", always_fails)
+
+        with caplog.at_level(logging.WARNING):
+            remove_tree(target)
+
+        assert len(attempts) == 3
+        assert any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_removal_does_not_follow_a_link_to_a_directory_outside_the_tree(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        keep = outside / "keep.txt"
+        keep.write_text("precious", encoding="utf-8")
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "file.txt").write_text("x", encoding="utf-8")
+        try:
+            os.symlink(outside, tree / "link", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("host denies symlink creation")
+
+        remove_tree(tree)
+
+        assert not tree.exists()
+        assert keep.read_text(encoding="utf-8") == "precious"

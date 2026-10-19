@@ -43,9 +43,10 @@ with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as fh:
     fh.write(json.dumps(record) + "\n")
 
 if spec.get("child"):
+    sink = None if spec.get("child_holds_pipes") else subprocess.DEVNULL
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(120)"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
     )
     with open(os.path.join(here, "pids.txt"), "a", encoding="utf-8") as fh:
         fh.write(str(child.pid) + "\n")
@@ -64,12 +65,12 @@ while out_total > 0 or err_total > 0:
         err_total -= n
 
 if spec.get("stdout"):
-    sys.stdout.write(spec["stdout"])
+    sys.stdout.buffer.write(spec["stdout"].encode("utf-8"))
     sys.stdout.flush()
 if spec.get("stderr"):
-    sys.stderr.write(spec["stderr"])
+    sys.stderr.buffer.write(spec["stderr"].encode("utf-8"))
     sys.stderr.flush()
-if spec.get("hang"):
+if spec.get("hang") and spec.get("hang_only", argv[0] if argv else None) == (argv[0] if argv else None):
     time.sleep(float(spec["hang"]))
 sys.exit(int(spec.get("exit", 0)))
 '''

@@ -5,22 +5,16 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Mapping
 
 from lgtm.config import LGTMConfig
-from lgtm.graph.exporter import ExportResult, export_snapshot
-from lgtm.graph.runner import GraphOutcome, GraphRunner, remove_tree, sanitize_query
+from lgtm.graph.exporter import ExportResult, _remove_owned_root, export_snapshot
+from lgtm.graph.runner import GraphOutcome, GraphRunner, failed_outcome, sanitize_query
 
 logger = logging.getLogger(__name__)
 
 LABELS = ("base", "pr")
-INCOMPLETE_MARKER = "[INCOMPLETE]"
-
-
-def _failure(reason: str) -> GraphOutcome:
-    return GraphOutcome(ok=False, reason=reason, text="", truncated=False, omitted_chars=0)
 
 
 class GraphSession:
@@ -47,7 +41,7 @@ class GraphSession:
         self._export = export if export is not None else export_snapshot
         self._work: Path | None = None
         self._roots: dict[str, Path] = {}
-        self._partial: set[str] = set()
+        self._exports: dict[str, ExportResult] = {}
         self._latched: dict[str, str] = {}
         self._export_seconds = dict.fromkeys(LABELS, 0.0)
         self._init_seconds = dict.fromkeys(LABELS, 0.0)
@@ -84,6 +78,11 @@ class GraphSession:
             for label in LABELS
         }
 
+    def snapshot(self, label: str) -> ExportResult | None:
+        if label not in LABELS:
+            raise ValueError(f"unknown snapshot label: {label!r}")
+        return self._exports.get(label)
+
     def explore(self, label: str, query: str) -> GraphOutcome:
         if label not in LABELS:
             raise ValueError(f"unknown snapshot label: {label!r}")
@@ -91,23 +90,23 @@ class GraphSession:
             raise RuntimeError("graph session is closed")
         cleaned = sanitize_query(query)
         if not self.available:
-            return _failure("missing")
+            return failed_outcome("missing")
         root = self._prepare(label)
         if root is None:
-            return _failure(self._latched[label])
+            return failed_outcome(self._latched[label])
         outcome = self._runner.explore(root, cleaned)
         if not outcome.ok:
             self._latch(label, outcome.reason)
-            return outcome
-        if label in self._partial:
-            outcome = replace(outcome, text=f"{INCOMPLETE_MARKER}\n{outcome.text}")
         return outcome
 
     def close(self) -> None:
         self._closed = True
         self._roots.clear()
         if self._work is not None:
-            remove_tree(self._work)
+            try:
+                _remove_owned_root(self._work)
+            except ValueError:
+                logger.warning("could not remove graph export directory: %s", self._work)
             self._work = None
 
     def _prepare(self, label: str) -> Path | None:
@@ -138,8 +137,7 @@ class GraphSession:
             return None
         finally:
             self._export_seconds[label] += time.monotonic() - started
-        if result.truncated or result.incomplete:
-            self._partial.add(label)
+        self._exports[label] = result
         return result.root
 
     def _init_snapshot(self, label: str, root: Path) -> bool:

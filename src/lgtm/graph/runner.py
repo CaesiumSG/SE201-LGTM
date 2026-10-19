@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import logging
 import os
@@ -10,6 +11,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -48,7 +50,8 @@ class GraphOutcome:
 
 
 def sanitize_query(query: str) -> str:
-    cleaned = _QUERY_DISALLOWED.sub("", _WHITESPACE.sub(" ", query)).strip()[:MAX_QUERY_CHARS].strip()
+    spaced = _WHITESPACE.sub(" ", query)
+    cleaned = _WHITESPACE.sub(" ", _QUERY_DISALLOWED.sub("", spaced)).strip()[:MAX_QUERY_CHARS].strip()
     if not cleaned:
         raise ValueError("query must not be empty")
     return cleaned
@@ -59,9 +62,9 @@ class GraphRunner:
         self,
         binary: str,
         *,
-        init_timeout_s: float = 120,
-        query_timeout_s: float = 20,
-        max_output_chars: int = 6000,
+        init_timeout_s: float,
+        query_timeout_s: float,
+        max_output_chars: int,
     ) -> None:
         self._binary = binary
         self._init_timeout_s = init_timeout_s
@@ -81,7 +84,7 @@ class GraphRunner:
     def _invoke(self, argv: list[str], timeout_s: float, *, explore: bool) -> GraphOutcome:
         binary = shutil.which(self._binary)
         if binary is None:
-            return _failed("missing")
+            return failed_outcome("missing")
         work = Path(tempfile.mkdtemp(prefix="lgtm-graph-"))
         try:
             return self._spawn(binary, argv, timeout_s, work, explore=explore)
@@ -110,35 +113,40 @@ class GraphRunner:
             )
         except OSError:
             logger.warning("codegraph could not be launched: %s", binary)
-            return _failed("launch_failed")
+            return failed_outcome("launch_failed")
 
-        tree = _ProcessTree(proc)
-        stdout = _Capture(proc.stdout, self._max_output_chars)
-        stderr = _Capture(proc.stderr, STDERR_LOG_CHARS)
+        tree: _ProcessTree | None = None
+        stdout: _Capture | None = None
+        stderr: _Capture | None = None
         try:
+            tree = _ProcessTree(proc)
+            stdout = _Capture(proc.stdout, self._max_output_chars)
+            stderr = _Capture(proc.stderr, STDERR_LOG_CHARS)
             timed_out = _wait(proc, timeout_s)
         finally:
-            tree.kill(proc)
-            stdout.join()
-            stderr.join()
-            tree.close()
+            _terminate(proc)
+            if tree is not None:
+                tree.close()
+            for capture in (stdout, stderr):
+                if capture is not None:
+                    capture.join()
             for stream in (proc.stdout, proc.stderr):
                 with contextlib.suppress(OSError):
                     stream.close()
 
         if stderr.head:
-            logger.debug("codegraph %s stderr: %s", argv[0], stderr.head.decode("utf-8", "replace"))
+            logger.debug("codegraph %s stderr: %s", argv[0], stderr.head)
         if timed_out:
-            return _failed("timeout")
+            return failed_outcome("timeout")
         if proc.returncode != 0:
-            return _failed("nonzero")
+            return failed_outcome("nonzero")
         text, truncated, omitted = stdout.result()
         if explore and not text.strip():
             return GraphOutcome(ok=True, reason="no_match", text="", truncated=False, omitted_chars=0)
         return GraphOutcome(ok=True, reason=None, text=text, truncated=truncated, omitted_chars=omitted)
 
 
-def _failed(reason: str) -> GraphOutcome:
+def failed_outcome(reason: str) -> GraphOutcome:
     return GraphOutcome(ok=False, reason=reason, text="", truncated=False, omitted_chars=0)
 
 
@@ -166,69 +174,77 @@ def _wait(proc: subprocess.Popen, timeout_s: float) -> bool:
 
 
 class _Capture:
-    """Drains a pipe to EOF, retaining only the first `limit` bytes."""
+    """Drains a pipe to EOF, retaining only the first `limit` characters of its UTF-8 decoding."""
 
     def __init__(self, stream, limit: int) -> None:
         self._fd = stream.fileno()
         self._limit = limit
-        self.head = bytearray()
+        self.head = ""
         self._total = 0
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
 
     def _drain(self) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         while True:
             try:
                 chunk = os.read(self._fd, 65536)
             except OSError:
-                return
+                break
             if not chunk:
-                return
-            self._total += len(chunk)
-            room = self._limit - len(self.head)
-            if room > 0:
-                self.head += chunk[:room]
+                break
+            self._absorb(decoder.decode(chunk))
+        self._absorb(decoder.decode(b"", final=True))
+
+    def _absorb(self, text: str) -> None:
+        self._total += len(text)
+        room = self._limit - len(self.head)
+        if room > 0:
+            self.head += text[:room]
 
     def join(self) -> None:
         self._thread.join(_JOIN_TIMEOUT_S)
 
     def result(self) -> tuple[str, bool, int]:
         if self._total <= self._limit:
-            return bytes(self.head).decode("utf-8", "replace"), False, 0
-        keep = bytes(self.head[: max(0, self._limit - len(TRUNCATION_MARKER))])
-        return keep.decode("utf-8", "replace") + TRUNCATION_MARKER, True, self._total - len(keep)
+            return self.head, False, 0
+        keep = self.head[: max(0, self._limit - len(TRUNCATION_MARKER))]
+        return keep + TRUNCATION_MARKER, True, self._total - len(keep)
 
 
 class _ProcessTree:
-    """Owns the child's process group (POSIX) or Job Object (Windows) for reaping descendants."""
+    """Owns the child's Job Object (Windows) so descendants of an exited parent are reaped on close."""
 
     def __init__(self, proc: subprocess.Popen) -> None:
         self._job = _assign_job(proc.pid) if os.name == "nt" else None
-
-    def kill(self, proc: subprocess.Popen) -> None:
-        if os.name == "nt":
-            if proc.poll() is None:
-                system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
-                taskkill = os.path.join(system_root, "System32", "taskkill.exe")
-                subprocess.run(
-                    [taskkill, "/PID", str(proc.pid), "/T", "/F"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-        else:
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        if proc.poll() is None:
-            proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=_JOIN_TIMEOUT_S)
+        if os.name == "nt" and self._job is None:
+            logger.debug("Job Object assignment failed for pid %s; descendants may outlive the call", proc.pid)
 
     def close(self) -> None:
         if self._job is not None:
             _close_handle(self._job)
             self._job = None
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        if proc.poll() is None:
+            system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
+            taskkill = os.path.join(system_root, "System32", "taskkill.exe")
+            subprocess.run(
+                [taskkill, "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+    else:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    if proc.poll() is None:
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_JOIN_TIMEOUT_S)
 
 
 def _assign_job(pid: int) -> int | None:
@@ -306,7 +322,10 @@ def _close_handle(handle: int) -> None:
 def remove_tree(path: Path) -> None:
     for attempt in range(_REMOVE_ATTEMPTS):
         try:
-            shutil.rmtree(path, onerror=_clear_read_only_and_retry)
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(path, onexc=_clear_read_only_and_retry)
+            else:
+                shutil.rmtree(path, onerror=_clear_read_only_and_retry)
             return
         except OSError:
             if attempt + 1 < _REMOVE_ATTEMPTS:
@@ -314,7 +333,7 @@ def remove_tree(path: Path) -> None:
     logger.warning("could not remove graph scratch directory: %s", path)
 
 
-def _clear_read_only_and_retry(func, path, _exc_info) -> None:
+def _clear_read_only_and_retry(func, path, _exc) -> None:
     with contextlib.suppress(OSError):
         os.chmod(path, stat.S_IWRITE)
     with contextlib.suppress(FileNotFoundError):
