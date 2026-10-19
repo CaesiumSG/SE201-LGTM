@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -9,7 +8,7 @@ import threading
 import time
 import queue
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -155,12 +154,13 @@ def export_snapshot(repo, sha, destination, *, max_files=20000, max_bytes=209715
                 if pipe is not None: pipe.close()
         proc = subprocess.Popen(["git", "-C", str(repo), "archive", "--format=tar", sha], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         chunks = queue.Queue(maxsize=2)
+        pump_cancelled = threading.Event()
         def pump():
             try:
-                while True:
+                while not pump_cancelled.is_set():
                     chunk = proc.stdout.read(65536)
                     if not chunk: break
-                    while not stop_reader.is_set():
+                    while not stop_reader.is_set() and not pump_cancelled.is_set():
                         try:
                             chunks.put(chunk, timeout=0.05)
                             break
@@ -179,10 +179,22 @@ def export_snapshot(repo, sha, destination, *, max_files=20000, max_bytes=209715
                         continue
         reader = threading.Thread(target=pump, name="lgtm-git-archive-reader")
         reader.start()
+        member_limit = 20000 + max_files
+        raw_limit = max_bytes + 1024 * member_limit + 8 * 1024 * 1024
+        class RawArchiveLimit(Exception): pass
         class TimedStream:
             pending = bytearray()
+            delivered = 0
             def read(self, amount=-1):
-                while amount < 0 or len(self.pending) < amount:
+                if amount < 0:
+                    amount = raw_limit - self.delivered + 1
+                if self.delivered + amount > raw_limit:
+                    allowed = raw_limit - self.delivered
+                    amount = allowed
+                    capped = True
+                else:
+                    capped = False
+                while len(self.pending) < amount:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0: raise TimeoutError
                     try: chunk = chunks.get(timeout=remaining)
@@ -190,64 +202,112 @@ def export_snapshot(repo, sha, destination, *, max_files=20000, max_bytes=209715
                     if chunk is None: break
                     if isinstance(chunk, BaseException): raise chunk
                     self.pending.extend(chunk)
-                result = bytes(self.pending[:amount] if amount >= 0 else self.pending)
+                result = bytes(self.pending[:amount])
                 del self.pending[:len(result)]
+                self.delivered += len(result)
+                if capped: raise RawArchiveLimit
                 return result
         stream = TimedStream()
         count = size = members = 0
         skipped = []
-        seen = set()
+        nodes = {}
+        seen_inventory = set()
         stripped = truncated = False
-        attribute_data = bytearray()
-        with tarfile.open(fileobj=stream, mode="r|*") as archive:
-            for item in archive:
-                members += 1
-                name = item.name.rstrip("/")
-                parts = name.split("/")
-                if any(p == ".codegraph" for p in parts) or parts[-1] in (".gitignore", "codegraph.json"):
-                    stripped = True
-                    continue
-                if time.monotonic() > deadline:
-                    proc.kill(); _fail()
-                if not _safe(item.name):
-                    incomplete = True
-                    if len(skipped) < 50: skipped.append({"category": "unsafe_path", "path": "<rejected>"})
-                    continue
-                if item.isdir():
-                    continue
-                if not item.isfile():
-                    incomplete = True
-                    if len(skipped) < 50: skipped.append({"category": "nonregular", "path": "<rejected>"})
-                    continue
-                key = name.casefold()
-                if key in seen:
-                    incomplete = True
-                    if len(skipped) < 50: skipped.append({"category": "collision", "path": "<rejected>"})
-                    continue
-                seen.add(key)
-                if count >= max_files or size + item.size > max_bytes:
-                    truncated = incomplete = True
-                    stop_reader.set()
-                    proc.terminate()
-                    break
-                target = dest.joinpath(*parts)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                resolved = target.resolve()
-                if dest.resolve() not in resolved.parents:
-                    _fail()
-                source = archive.extractfile(item)
-                if source is None:
-                    incomplete = True; continue
-                with target.open("xb") as out:
+        try:
+            archive_context = tarfile.open(fileobj=stream, mode="r|*")
+            with archive_context as archive:
+                for item in archive:
+                    if members >= member_limit:
+                        truncated = incomplete = True
+                        break
+                    members += 1
+                    name = item.name.rstrip("/")
+                    parts = name.split("/")
+                    if any(p == ".codegraph" for p in parts) or parts[-1] in (".gitignore", "codegraph.json"):
+                        stripped = True
+                        continue
+                    if time.monotonic() > deadline:
+                        proc.kill(); _fail()
+                    if not _safe(item.name):
+                        incomplete = True
+                        if len(skipped) < 50: skipped.append({"category": "unsafe_path", "path": "<rejected>"})
+                        continue
+                    if not item.isdir() and not item.isfile():
+                        incomplete = True
+                        if len(skipped) < 50: skipped.append({"category": "nonregular", "path": "<rejected>"})
+                        continue
+                    components = []
+                    conflict = False
+                    for index in range(len(parts)):
+                        spelling = "/".join(parts[:index + 1])
+                        key = spelling.casefold()
+                        kind = "dir" if index < len(parts) - 1 or item.isdir() else "file"
+                        prior = nodes.get(key)
+                        if prior and prior != (spelling, kind):
+                            conflict = True
+                            break
+                        components.append((key, spelling, kind))
+                    if conflict:
+                        incomplete = True
+                        if len(skipped) < 50: skipped.append({"category": "collision", "path": "<rejected>"})
+                        continue
+                    for key, spelling, kind in components:
+                        nodes.setdefault(key, (spelling, kind))
+                    if item.isdir():
+                        continue
+                    seen_inventory.add(name)
+                    if count >= max_files or size + item.size > max_bytes:
+                        truncated = incomplete = True
+                        break
+                    target = dest.joinpath(*parts)
+                    source = archive.extractfile(item)
+                    if source is None:
+                        incomplete = True
+                        continue
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        resolved = target.resolve()
+                        if dest.resolve() not in resolved.parents:
+                            _fail()
+                        out = target.open("xb")
+                    except OSError:
+                        incomplete = True
+                        if len(skipped) < 50: skipped.append({"category": "unwritable", "path": "<rejected>"})
+                        continue
+                    failed_write = False
                     remaining = item.size
-                    while remaining:
-                        chunk = source.read(min(65536, remaining))
-                        if not chunk: _fail()
-                        out.write(chunk)
-                        if name == ".gitattributes" and len(attribute_data) < 1048576:
-                            attribute_data.extend(chunk[:1048576 - len(attribute_data)])
-                        remaining -= len(chunk)
-                count += 1; size += item.size
+                    try:
+                        while remaining:
+                            chunk = source.read(min(65536, remaining))
+                            if not chunk: _fail()
+                            remaining -= len(chunk)
+                            try:
+                                out.write(chunk)
+                            except OSError:
+                                failed_write = True
+                                break
+                    finally:
+                        try:
+                            out.close()
+                        except OSError:
+                            failed_write = True
+                    if failed_write:
+                        try:
+                            target.unlink(missing_ok=True)
+                        except OSError:
+                            _fail()
+                        incomplete = True
+                        if len(skipped) < 50: skipped.append({"category": "unwritable", "path": "<rejected>"})
+                        continue
+                    count += 1
+                    size += item.size
+        except RawArchiveLimit:
+            truncated = incomplete = True
+        if truncated:
+            pump_cancelled.set()
+            stop_reader.set()
+            if proc.poll() is None:
+                proc.terminate()
         try:
             proc.wait(timeout=max(0.001, deadline-time.monotonic()))
         except subprocess.TimeoutExpired:
@@ -256,16 +316,15 @@ def export_snapshot(repo, sha, destination, *, max_files=20000, max_bytes=209715
             if not truncated: _fail()
         if not truncated and proc.returncode:
             _fail()
-        if b"export-ignore" in attribute_data or b"export-subst" in attribute_data:
-            incomplete = True
         if inventory_capped:
             truncated = incomplete = True
-        if inventory_gitlinks or inventory_paths.difference(seen):
+        if inventory_gitlinks or inventory_paths.difference(seen_inventory):
             incomplete = True
         for path in sorted(inventory_gitlinks)[:50]:
             if len(skipped) < 50:
                 skipped.append({"category": "gitlink", "path": "<rejected>"})
         if truncated:
+            pump_cancelled.set()
             stop_reader.set()
         for pipe in (proc.stdout, proc.stderr):
             if pipe is not None:

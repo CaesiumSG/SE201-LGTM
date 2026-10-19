@@ -10,7 +10,7 @@ from typing import Mapping
 def resolve_refs(repo: str | Path, base_ref: str, pr_ref: str) -> Mapping[str, str]:
     result = {}
     for label, ref in (("base", base_ref), ("pr", pr_ref)):
-        if not ref or ref.startswith("-"):
+        if not ref or "\x00" in ref or ref.startswith("-"):
             raise ValueError(f"cannot resolve {label} ref {ref!r} to a commit")
         try:
             sha = subprocess.run(
