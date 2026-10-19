@@ -26,6 +26,8 @@ STDERR_LOG_CHARS = 500
 TRUNCATION_MARKER = "\n[TRUNCATED]"
 _NO_MATCH_PREFIX = "No relevant code found"
 _STALE_MARKER = "changed since last index sync"
+_STALE_NOTICE = f"· ⚠ {_STALE_MARKER}"
+_LINE_SCAN_CHARS = 16384
 
 _QUERY_DISALLOWED = re.compile(r"[^A-Za-z0-9_ .,:/@#+=-]")
 _WHITESPACE = re.compile(r"\s+")
@@ -190,7 +192,7 @@ class _Capture:
         self._limit = limit
         self.head = ""
         self.stale = False
-        self._scan = ""
+        self._line: str | None = ""
         self._total = 0
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
@@ -209,11 +211,19 @@ class _Capture:
 
     def _absorb(self, text: str) -> None:
         self._total += len(text)
-        # Scanned over the full stream; head is capped at limit and may end before the notice.
-        scan = self._scan + text
-        if _STALE_MARKER in scan:
-            self.stale = True
-        self._scan = scan[-(len(_STALE_MARKER) - 1):]
+        # Notice detection covers the full stream; the head cap does not bound it.
+        *complete, tail = text.split("\n")
+        if complete:
+            if self._line is not None:
+                complete[0] = self._line + complete[0]
+            else:
+                complete = complete[1:]
+            if any(line.startswith("**") and _STALE_NOTICE in line for line in complete):
+                self.stale = True
+            carried: str | None = tail
+        else:
+            carried = None if self._line is None else self._line + tail
+        self._line = None if carried is None or len(carried) > _LINE_SCAN_CHARS else carried
         room = self._limit - len(self.head)
         if room > 0:
             self.head += text[:room]

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.graph.runner import GraphRunner
 from lgtm.graph.session import GraphSession
@@ -42,15 +41,21 @@ MATCH_OUTPUT = (
     + "**`m.py`** — alpha_func(function), beta_func(function)\n\n"
     + "```python\n1\tdef alpha_func(x):\n2\t    return x+1\n```\n"
 )
+SNIPPET_WITH_NOTICE_TEXT = (
+    "```python\n"
+    f"1\t# {STALE_WARNING}\n"
+    f"2\t# x · ⚠ {STALE_WARNING}\n"
+    "3\tNo relevant code found\n"
+    "```\n"
+)
+HEALTHY_OUTPUT_QUOTING_NOTICES = (
+    _BODY + "**`m.py`** — alpha_func(function), beta_func(function)\n\n" + SNIPPET_WITH_NOTICE_TEXT
+)
 STALE_OUTPUT = (
     _BODY
     + f"**`m.py`** — alpha_func(function), beta_func(function) · ⚠ {STALE_WARNING}\n\n"
     + "```python\n1\tdef alpha_func(x):\n2\t    return x+1\n```\n"
 )
-
-def explore_calls(exe) -> list[dict]:
-    return [c for c in exe.calls() if c["argv"][0] == "explore"]
-
 
 @pytest.fixture
 def codegraph(tmp_path):
@@ -75,78 +80,84 @@ def session_for(git_repo, exe) -> GraphSession:
     return GraphSession(git_repo, shas, LGTMConfig(), runner=runner_for(exe))
 
 
-def tools_for(git_repo, session) -> dict:
-    shas = resolve_refs(git_repo, "main", "pr")
-    toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig(), shas=shas, session=session)
-    return {t.name: t for t in toolbox.build_tools()}
-
-
-def header(text: str) -> str:
-    return text.splitlines()[0]
+def outcome_of(result) -> tuple[bool, str | None]:
+    return (result.ok, result.reason)
 
 
 class TestRunnerMapsLiteralExploreOutput:
     def test_real_no_match_output_is_a_successful_no_match(self, codegraph, tmp_path):
         exe = codegraph(stdout=NO_MATCH_OUTPUT)
 
-        result = runner_for(exe).explore(tmp_path, "zzzqqqnomatch")
-
-        assert (result.ok, result.reason) == (True, "no_match")
-
-    def test_stale_index_warning_is_a_failed_stale_outcome(self, codegraph, tmp_path):
-        exe = codegraph(stdout=STALE_OUTPUT)
-
-        result = runner_for(exe).explore(tmp_path, "alpha_func")
-
-        assert (result.ok, result.reason) == (False, "stale")
+        assert outcome_of(runner_for(exe).explore(tmp_path, "zzzqqqnomatch")) == (True, "no_match")
 
     def test_real_match_output_stays_successful(self, codegraph, tmp_path):
         exe = codegraph(stdout=MATCH_OUTPUT)
 
         result = runner_for(exe).explore(tmp_path, "alpha_func")
 
-        assert (result.ok, result.reason) == (True, None)
+        assert outcome_of(result) == (True, None)
         assert "def alpha_func" in result.text
 
+    def test_stale_index_notice_is_a_failed_stale_outcome(self, codegraph, tmp_path):
+        exe = codegraph(stdout=STALE_OUTPUT)
 
-class TestInvestigateToolMapsLiteralExploreOutput:
-    def test_real_no_match_reports_no_match_and_does_not_latch(self, codegraph, git_repo):
-        exe = codegraph(stdout=NO_MATCH_OUTPUT)
-        with session_for(git_repo, exe) as session:
-            tools = tools_for(git_repo, session)
-            first = tools["investigate_pr_code"].invoke({"query": "zzzqqqnomatch"})
-            second = tools["investigate_pr_code"].invoke({"query": "zzzqqqnomatch"})
-            state = session.state
+        assert outcome_of(runner_for(exe).explore(tmp_path, "alpha_func")) == (False, "stale")
 
-        assert "status=no_match" in header(first)
-        assert "status=no_match" in header(second)
-        assert len(explore_calls(exe)) == 2
-        assert state == "ok"
+    def test_stale_notice_after_the_output_cap_is_still_stale(self, codegraph, tmp_path):
+        exe = codegraph(stdout_flood=70000, stdout="\n" + STALE_OUTPUT)
 
-    def test_stale_index_reports_unavailable_and_latches_the_label(self, codegraph, git_repo):
+        assert outcome_of(runner_for(exe).explore(tmp_path, "alpha_func")) == (False, "stale")
+
+    def test_stale_notice_straddling_a_read_boundary_is_still_stale(self, codegraph, tmp_path):
+        exe = codegraph(stdout_flood=65536 - 10, stdout="\n" + STALE_OUTPUT)
+
+        assert outcome_of(runner_for(exe).explore(tmp_path, "alpha_func")) == (False, "stale")
+
+    def test_source_text_quoting_notice_phrases_does_not_make_a_healthy_explore_stale(self, codegraph, tmp_path):
+        exe = codegraph(stdout=HEALTHY_OUTPUT_QUOTING_NOTICES)
+
+        result = runner_for(exe).explore(tmp_path, "alpha_func")
+
+        assert outcome_of(result) == (True, None)
+        assert "No relevant code found" in result.text
+
+    @pytest.mark.parametrize("stdout", ["", "\n"])
+    def test_empty_successful_stdout_is_a_no_match(self, codegraph, tmp_path, stdout):
+        exe = codegraph(stdout=stdout)
+
+        assert outcome_of(runner_for(exe).explore(tmp_path, "alpha_func")) == (True, "no_match")
+
+
+class TestSessionStateFromLiteralExploreOutput:
+    def test_stale_notice_latches_the_label_with_reason_stale(self, codegraph, git_repo):
         exe = codegraph(stdout=STALE_OUTPUT)
         with session_for(git_repo, exe) as session:
-            tools = tools_for(git_repo, session)
-            first = tools["investigate_pr_code"].invoke({"query": "alpha_func"})
-            second = tools["investigate_pr_code"].invoke({"query": "alpha_func"})
+            result = session.explore("pr", "alpha_func")
             state = session.state
 
-        for out in (first, second):
-            assert "status=unavailable" in header(out) and "reason=stale" in header(out)
-            assert "def alpha_func" not in out
-        assert len(explore_calls(exe)) == 1
+        assert outcome_of(result) == (False, "stale")
         assert state == "degraded:pr:stale"
 
-    def test_real_match_output_reports_ok(self, codegraph, git_repo):
-        exe = codegraph(stdout=MATCH_OUTPUT)
+    def test_source_text_quoting_notice_phrases_leaves_the_state_ok(self, codegraph, git_repo):
+        exe = codegraph(stdout=HEALTHY_OUTPUT_QUOTING_NOTICES)
         with session_for(git_repo, exe) as session:
-            tools = tools_for(git_repo, session)
-            out = tools["investigate_pr_code"].invoke({"query": "alpha_func"})
+            first = session.explore("pr", "alpha_func")
+            second = session.explore("pr", "alpha_func")
             state = session.state
 
-        assert "status=ok" in header(out)
-        assert "def alpha_func" in out
+        assert outcome_of(first) == outcome_of(second) == (True, None)
         assert state == "ok"
+
+    def test_empty_successful_stdout_is_no_match_and_does_not_latch(self, codegraph, git_repo):
+        exe = codegraph(stdout="")
+        with session_for(git_repo, exe) as session:
+            first = session.explore("pr", "alpha_func")
+            second = session.explore("pr", "alpha_func")
+            state = session.state
+
+        assert outcome_of(first) == outcome_of(second) == (True, "no_match")
+        assert state == "ok"
+        assert [c["argv"][0] for c in exe.calls()].count("explore") == 2
 
 
 class TestInitWithoutOwnIndexIsAnInitFailure:
@@ -170,22 +181,3 @@ class TestInitWithoutOwnIndexIsAnInitFailure:
         assert first.ok is False and second.ok is False
         assert state.startswith("degraded:pr:")
         assert [c["argv"][0] for c in exe.calls()] == ["init"]
-
-    def test_failed_init_is_reported_unavailable_by_the_tool_without_exploring(self, codegraph, git_repo):
-        exe = codegraph(stdout=MATCH_OUTPUT, no_index=True)
-        with session_for(git_repo, exe) as session:
-            tools = tools_for(git_repo, session)
-            out = tools["investigate_pr_code"].invoke({"query": "alpha_func"})
-
-        assert "status=unavailable" in header(out)
-        assert explore_calls(exe) == []
-
-    def test_init_that_creates_its_own_index_proceeds_to_explore(self, codegraph, git_repo):
-        exe = codegraph(stdout=MATCH_OUTPUT)
-        with session_for(git_repo, exe) as session:
-            result = session.explore("base", "alpha_func")
-            state = session.state
-
-        assert (result.ok, result.reason) == (True, None)
-        assert state == "ok"
-        assert [c["argv"][0] for c in exe.calls()] == ["init", "explore"]
