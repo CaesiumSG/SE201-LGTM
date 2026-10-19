@@ -42,6 +42,9 @@ record = {
 with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as fh:
     fh.write(json.dumps(record) + "\n")
 
+if argv and argv[0] == "init" and not spec.get("no_index"):
+    os.makedirs(os.path.join(argv[-1], ".codegraph"), exist_ok=True)
+
 if spec.get("child"):
     sink = None if spec.get("child_holds_pipes") else subprocess.DEVNULL
     child = subprocess.Popen(

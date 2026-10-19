@@ -24,6 +24,8 @@ MAX_QUERY_CHARS = 300
 EXPLORE_MAX_FILES = "8"
 STDERR_LOG_CHARS = 500
 TRUNCATION_MARKER = "\n[TRUNCATED]"
+_NO_MATCH_PREFIX = "No relevant code found"
+_STALE_MARKER = "changed since last index sync"
 
 _QUERY_DISALLOWED = re.compile(r"[^A-Za-z0-9_ .,:/@#+=-]")
 _WHITESPACE = re.compile(r"\s+")
@@ -75,7 +77,11 @@ class GraphRunner:
         return shutil.which(self._binary) is not None
 
     def init(self, root: Path | str) -> GraphOutcome:
-        return self._invoke(["init", "-y", str(root)], self._init_timeout_s, explore=False)
+        outcome = self._invoke(["init", "-y", str(root)], self._init_timeout_s, explore=False)
+        # Exit 0 is returned without an index when no files are found.
+        if outcome.ok and not (Path(root) / ".codegraph").is_dir():
+            return failed_outcome("nonzero")
+        return outcome
 
     def explore(self, root: Path | str, query: str) -> GraphOutcome:
         argv = ["explore", "-p", str(root), "--max-files", EXPLORE_MAX_FILES, "--", sanitize_query(query)]
@@ -140,8 +146,11 @@ class GraphRunner:
             return failed_outcome("timeout")
         if proc.returncode != 0:
             return failed_outcome("nonzero")
+        if explore and stdout.stale:
+            return failed_outcome("stale")
         text, truncated, omitted = stdout.result()
-        if explore and not text.strip():
+        # The binary reports no match on stdout with exit 0.
+        if explore and (not text.strip() or text.strip().startswith(_NO_MATCH_PREFIX)):
             return GraphOutcome(ok=True, reason="no_match", text="", truncated=False, omitted_chars=0)
         return GraphOutcome(ok=True, reason=None, text=text, truncated=truncated, omitted_chars=omitted)
 
@@ -180,6 +189,8 @@ class _Capture:
         self._fd = stream.fileno()
         self._limit = limit
         self.head = ""
+        self.stale = False
+        self._scan = ""
         self._total = 0
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
@@ -198,6 +209,11 @@ class _Capture:
 
     def _absorb(self, text: str) -> None:
         self._total += len(text)
+        # Scanned over the full stream; head is capped at limit and may end before the notice.
+        scan = self._scan + text
+        if _STALE_MARKER in scan:
+            self.stale = True
+        self._scan = scan[-(len(_STALE_MARKER) - 1):]
         room = self._limit - len(self.head)
         if room > 0:
             self.head += text[:room]
