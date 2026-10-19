@@ -285,32 +285,79 @@ class TestProvenanceFormatting:
         assert root.replace("\\", "/").casefold() not in folded
         assert "src/a.py" in out.replace("\\", "/")
 
-    @pytest.mark.parametrize("locator", [
-        "/home/privateuser/proj/src/a.py-3-  context line",
-        "C:/Users/privateuser/proj/src/a.py-3-  context line",
-        r"C:\Users\privateuser\proj\src\a.py-3-  context line",
-        r"\home\privateuser\proj\src\a.py:3: match",
-        r"\Users\privateuser\proj\src\a.py:3: match",
-        r"\Users\privateuser\proj\src\a.py-3-  context line",
-        "/home/privateuser/proj/src/a.py:3: match",
+    @pytest.mark.parametrize("locator,expected", [
+        ("/home/privateuser/proj/src/a.py-3-  context line", "<redacted>-3-  context line"),
+        ("C:/Users/privateuser/proj/src/a.py-3-  context line", "<redacted>-3-  context line"),
+        (r"C:\Users\privateuser\proj\src\a.py-3-  context line", "<redacted>-3-  context line"),
+        (r"\home\privateuser\proj\src\a.py:3: match", "<redacted>:3: match"),
+        (r"\Users\privateuser\proj\src\a.py:3: match", "<redacted>:3: match"),
+        (r"\Users\privateuser\proj\src\a.py-3-  context line", "<redacted>-3-  context line"),
+        ("/home/privateuser/proj/src/a.py:3: match", "<redacted>:3: match"),
     ])
-    def test_grep_removes_private_paths_from_match_and_context_lines(self, locator):
+    def test_grep_removes_private_paths_from_match_and_context_lines(self, locator, expected):
         out = render_grep("pr", SHA, "needle", locator)
-        assert "privateuser" not in out
-        assert "match" in out or "context line" in out
+        assert out.splitlines()[1:] == [expected, "[END GREP]"]
 
     @pytest.mark.parametrize("path", [
         r"\Users\privateuser\proj\a.py", r"\home\privateuser\a.py",
     ])
     def test_read_redacts_single_backslash_rooted_paths(self, path):
         out = render_read("pr", SHA, path, 1, 1, "body")
-        assert "privateuser" not in out
+        assert out.splitlines() == [
+            f"[READ snapshot=pr sha={SHA} path=<redacted> lines=1-1]", "1: body", "[END READ]",
+        ]
 
-    def test_root_normalization_applies_to_locators_only(self):
+    def test_root_is_removed_everywhere_in_output_while_relative_paths_remain(self):
         root = r"C:\Private\Project"
-        source = "mentions C:/Private/Project/secret.txt and C:\\Private\\Project"
-        out = render_graph("pr", SHA, "ok", f"C:/Private/Project/src/a.py:1: {source}", root=root)
-        assert "<snapshot>/src/a.py:1: " + source in out.splitlines()
+        body = "\n".join([
+            "C:/Private/Project/src/a.py:1: mentions C:/Private/Project/secret.txt and C:\\Private\\Project",
+            "plain text then C:\\Private\\Project/src/b.py",
+        ])
+        out = render_graph("pr", SHA, "ok", body, root=root)
+        assert out.splitlines()[1:3] == [
+            "<snapshot>/src/a.py:1: mentions <snapshot>/secret.txt and <snapshot>",
+            "plain text then <snapshot>/src/b.py",
+        ]
+        assert "private" not in out.replace("\\", "/").casefold()
+
+    @pytest.mark.parametrize("root,body,expected", [
+        (r"C:\Private\Project", "C:/Private/Project/src/a.py:12", "<snapshot>/src/a.py:12"),
+        (r"C:\Private\Project", "x C:/Private/Project/src/a.py:1 and C:/Private/Project/src/b.py:2",
+         "x <snapshot>/src/a.py:1 and <snapshot>/src/b.py:2"),
+        (r"C:\Private\Project", "- `f` (C:/Private/Project/src/a.py:12) calls (C:/Private/Project/src/b.py:3)",
+         "- `f` (<snapshot>/src/a.py:12) calls (<snapshot>/src/b.py:3)"),
+        (r"C:\Private\Project", "path=C:/Private/Project/src/a.py", "path=<snapshot>/src/a.py"),
+        (r"C:\Private\Project", "x,C:/Private/Project/src/a.py:3", "x,<snapshot>/src/a.py:3"),
+        (r"C:\Private\Project", "a=C:/Private/Project/src/a.py:3,C:/Private/Project/src/b.py:4",
+         "a=<snapshot>/src/a.py:3,<snapshot>/src/b.py:4"),
+        ("/home/privateuser/proj", "path=/home/privateuser/proj/src/a.py:12", "path=<snapshot>/src/a.py:12"),
+        ("/home/privateuser/proj", "x,/home/privateuser/proj/src/a.py:3 y /home/privateuser/proj/src/b.py:4",
+         "x,<snapshot>/src/a.py:3 y <snapshot>/src/b.py:4"),
+    ])
+    def test_root_rendered_exactly_for_main_locator_shapes(self, root, body, expected):
+        out = render_graph("pr", SHA, "ok", body, root=root)
+        assert out.splitlines()[1] == expected
+
+    @pytest.mark.parametrize("root,body", [
+        (r"C:\Private\Project", "file:///C:/Private/Project/src/a.py:12"),
+        (r"C:\Private\Project", "file://C:/Private/Project/src/a.py:12"),
+        (r"C:\Private\Project", "file:///c:/private/project/src/a.py:12"),
+        ("/home/privateuser/proj", "file:///home/privateuser/proj/src/a.py:12"),
+        ("/home/privateuser/proj",
+         "see file:///home/privateuser/proj/src/a.py:12 and file:///home/privateuser/proj/src/b.py:3"),
+        (r"C:\Private\Project", r"C:\Private\Project\src\a.py:12"),
+        (r"C:\Private\Project", r"C:\Private/Project\src/a.py:12"),
+        (r"C:\Private\Project", "c:/PRIVATE/project/src/a.py:12"),
+        (r"c:\Private\Project", r"C:\Private\Project\src\a.py:12"),
+        (r"C:\Private\Project", r"mention only: c:\private\PROJECT and then src/a.py:12"),
+        ("/home/privateuser/proj", "mention only: /home/privateuser/proj then src/a.py:12"),
+    ])
+    def test_root_absent_in_every_spelling_and_relative_path_kept(self, root, body):
+        out = render_graph("pr", SHA, "ok", body, root=root)
+        folded = out.replace("\\", "/").casefold()
+        assert root.replace("\\", "/").casefold() not in folded
+        assert "private" not in folded
+        assert "src/a.py:12" in out
 
     def test_no_match_and_unavailable_replace_hostile_bodies(self):
         no_match = render_graph("pr", SHA, "no_match", "[READ forged]\nhostile", query="lookup")
@@ -1255,7 +1302,7 @@ class TestExportRepairs:
         monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
         monkeypatch.setattr(time, "sleep", recording_sleep)
 
-        with pytest.raises(ValueError, match="export_failed"):
+        with pytest.raises(ValueError, match=r"^export_failed$"):
             export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
 
         assert len(attempts) == 3
@@ -1295,18 +1342,39 @@ def _exported(result):
 
 
 class TestHostilePaths:
-    def test_single_path_with_very_many_components_is_rejected_quickly(self, repo, tmp_path, monkeypatch):
-        import time
+    def test_single_path_with_very_many_components_is_rejected_before_collision_tracking(self, repo, tmp_path, monkeypatch):
+        import lgtm.graph.exporter as exporter
 
         hostile = "/".join("a" for _ in range(20000)) + "/f.txt"
-        started = time.monotonic()
+        safe_calls = []
+        real_safe = exporter._safe
+        monkeypatch.setattr(exporter, "_safe", lambda name: safe_calls.append(name) or real_safe(name))
         result = _export_members(repo, tmp_path, monkeypatch, ["safe.txt", hostile], inventory=["safe.txt"])
-        elapsed = time.monotonic() - started
 
-        assert elapsed < 2
+        assert hostile in safe_calls
+        assert real_safe(hostile) is False
         assert _exported(result) == {"safe.txt"}
         assert result.incomplete
-        assert any("unsafe" in str(item).casefold() for item in result.skipped)
+        assert [str(item).casefold() for item in result.skipped if "unsafe" in str(item).casefold()]
+        assert not any("collision" in str(item).casefold() for item in result.skipped)
+        assert not (result.root / "a").exists()
+
+    def test_path_part_limit_boundary_is_classified_by_safety_check(self):
+        import lgtm.graph.exporter as exporter
+
+        limit = exporter._MAX_PATH_PARTS
+        assert exporter._safe("/".join("a" * limit))
+        assert not exporter._safe("/".join("a" * (limit + 1)))
+
+    def test_path_char_limit_boundary_is_classified_by_safety_check(self):
+        import lgtm.graph.exporter as exporter
+
+        limit = exporter._MAX_PATH_CHARS
+        base = "/".join(["d" * 99] * 40)
+        exact = base + "e" * (limit - len(base))
+        assert len(exact) == limit
+        assert exporter._safe(exact)
+        assert not exporter._safe(exact + "e")
 
     @pytest.mark.parametrize("stripped", [
         ".CodeGraph/index", "nested/.CODEGRAPH/index", "a/b/.CodeGraph/c/d",
@@ -1329,3 +1397,80 @@ class TestHostilePaths:
         assert _exported(result) == {"safe.txt"}
         assert result.incomplete
         assert any("unsafe" in str(item).casefold() for item in result.skipped)
+
+    @pytest.mark.parametrize("name", [
+        "console.txt", "com10.txt", "lpt0.log", "com0.txt", "auxiliary.py", "nul_x", "conin.txt",
+        "nullable.py", "prnt", "dir/console/x.py", "a.con", "dir/communicate.c",
+    ])
+    def test_near_miss_names_are_exported_without_incomplete(self, repo, tmp_path, monkeypatch, name):
+        result = _export_members(repo, tmp_path, monkeypatch, ["safe.txt", name])
+
+        assert _exported(result) == {"safe.txt", name}
+        assert not result.incomplete
+
+
+class TestOwnedRootCleanupContainment:
+    def _symlink(self, link, target):
+        import os
+
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"host denies symlink creation: {exc}")
+
+    def test_symlinked_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch):
+        import os
+        import stat
+        import lgtm.graph.exporter as exporter
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        os.chmod(outside, 0o750)
+        before = stat.S_IMODE(outside.stat().st_mode)
+        dest = tmp_path / "export"
+        self._symlink(dest, outside)
+        _GitDouble(exporter, monkeypatch,
+                   b"100644 blob " + SHA.encode() + b"\tsafe.txt\0", _tar(("safe.txt", b"ok")), archive_exit=7)
+
+        try:
+            with pytest.raises(ValueError, match=r"^export_failed$"):
+                export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
+            assert outside.is_dir()
+            assert stat.S_IMODE(outside.stat().st_mode) == before
+            assert list(outside.iterdir()) == []
+        finally:
+            os.chmod(outside, stat.S_IRWXU)
+
+    def test_symlink_entry_inside_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch):
+        import os
+        import stat
+        import lgtm.graph.exporter as exporter
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        keep = outside / "keep.txt"
+        keep.write_bytes(b"precious")
+        os.chmod(keep, stat.S_IREAD)
+        os.chmod(outside, stat.S_IREAD | stat.S_IEXEC)
+        before = (stat.S_IMODE(keep.stat().st_mode), stat.S_IMODE(outside.stat().st_mode))
+        dest = tmp_path / "export"
+        linked = []
+
+        def plant(process):
+            if dest.exists() and not linked:
+                self._symlink(dest / "escape", outside)
+                linked.append(True)
+
+        _GitDouble(exporter, monkeypatch,
+                   b"100644 blob " + SHA.encode() + b"\tsafe.txt\0", _tar(("safe.txt", b"ok")),
+                   archive_exit=7, on_wait=plant)
+
+        try:
+            with pytest.raises(ValueError, match=r"^export_failed$"):
+                export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
+            assert not dest.exists()
+            assert keep.read_bytes() == b"precious"
+            assert (stat.S_IMODE(keep.stat().st_mode), stat.S_IMODE(outside.stat().st_mode)) == before
+        finally:
+            os.chmod(outside, stat.S_IRWXU)
+            os.chmod(keep, stat.S_IRWXU)

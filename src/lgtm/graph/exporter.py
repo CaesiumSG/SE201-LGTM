@@ -67,29 +67,61 @@ def _safe(name: str) -> bool:
     )
 
 
+def _is_link(path: str | os.PathLike) -> bool:
+    try:
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return True
+    except OSError:
+        return False
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def _within_root(path: str, root: Path) -> bool:
+    if _is_link(path):
+        return False
+    real_root = os.path.realpath(root)
+    try:
+        return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+    except ValueError:
+        return False
+
+
 def _clear_read_only(func: Callable[[str], object], path: str, *_: object, root: Path) -> None:
+    parent = os.path.dirname(path)
+    if not _within_root(path, root) or _is_link(parent):
+        raise
     try:
         os.chmod(path, stat.S_IWRITE)
         func(path)
     except OSError:
-        parent = Path(path).parent
-        if parent == root or root in parent.parents:
+        if _within_root(parent, root):
             os.chmod(parent, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
         os.chmod(path, stat.S_IWRITE)
         func(path)
 
 
+def _unlink_link(path: Path) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        os.rmdir(path)
+
+
 def _remove_owned_root(path: Path) -> None:
-    if not path.exists() and not path.is_symlink():
+    if not path.exists() and not _is_link(path):
         return
     handler = functools.partial(_clear_read_only, root=path)
     error_handler = {"onexc": handler} if sys.version_info >= (3, 12) else {"onerror": handler}
     for attempt in range(3):
         try:
-            shutil.rmtree(path, **error_handler)
+            if _is_link(path):
+                _unlink_link(path)
+            else:
+                shutil.rmtree(path, **error_handler)
         except OSError:
             pass
-        if not path.exists() and not path.is_symlink():
+        if not path.exists() and not _is_link(path):
             return
         if attempt < 2:
             time.sleep(0.2)
