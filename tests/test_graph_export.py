@@ -260,6 +260,52 @@ class TestProvenanceFormatting:
         assert ":3: source text" in out
         assert out.endswith("[END GREP]")
 
+    @pytest.mark.parametrize("root,body", [
+        (r"C:\Users\privateuser\proj", r"C:\Users\privateuser\proj\src\a.py:12-20"),
+        (r"C:\Users\privateuser\proj", "C:/Users/privateuser/proj/src/a.py:12-20: def f():"),
+        (r"C:\Users\privateuser\proj", "    C:/Users/privateuser/proj/src/a.py:12"),
+        (r"C:\Users\privateuser\proj", "(C:/Users/privateuser/proj/src/a.py:12)"),
+        (r"C:\Users\privateuser\proj", "`C:/Users/privateuser/proj/src/a.py:12`"),
+        (r"C:\Users\privateuser\proj", '"C:/Users/privateuser/proj/src/a.py:12"'),
+        (r"C:\Users\privateuser\proj", "'C:/Users/privateuser/proj/src/a.py:12'"),
+        (r"C:\Users\privateuser\proj", "C:/Users/privateuser/proj/src/a.py"),
+        (r"C:\Users\privateuser\proj", r"C:\Users\privateuser\proj\src\a.py"),
+        (r"C:\Users\privateuser\proj", r"C:\Users/privateuser\proj/src\a.py:3"),
+        (r"C:\Users\privateuser\proj", r"c:\users\PRIVATEUSER\proj\src\a.py:3"),
+        (r"c:\Users\privateuser\proj", r"C:/users/privateuser/proj/src/a.py:3"),
+        ("/home/privateuser/proj", "/home/privateuser/proj/src/a.py:12-20"),
+        ("/home/privateuser/proj", "  (/home/privateuser/proj/src/a.py:12)"),
+        ("/home/privateuser/proj", "`/home/privateuser/proj/src/a.py`"),
+        ("/home/privateuser/proj", "/home/privateuser/proj/src/a.py"),
+    ])
+    def test_graph_removes_private_root_from_every_locator_spelling(self, root, body):
+        out = render_graph("pr", SHA, "ok", body, root=root)
+        folded = out.replace("\\", "/").casefold()
+        assert "privateuser" not in folded
+        assert root.replace("\\", "/").casefold() not in folded
+        assert "src/a.py" in out.replace("\\", "/")
+
+    @pytest.mark.parametrize("locator", [
+        "/home/privateuser/proj/src/a.py-3-  context line",
+        "C:/Users/privateuser/proj/src/a.py-3-  context line",
+        r"C:\Users\privateuser\proj\src\a.py-3-  context line",
+        r"\home\privateuser\proj\src\a.py:3: match",
+        r"\Users\privateuser\proj\src\a.py:3: match",
+        r"\Users\privateuser\proj\src\a.py-3-  context line",
+        "/home/privateuser/proj/src/a.py:3: match",
+    ])
+    def test_grep_removes_private_paths_from_match_and_context_lines(self, locator):
+        out = render_grep("pr", SHA, "needle", locator)
+        assert "privateuser" not in out
+        assert "match" in out or "context line" in out
+
+    @pytest.mark.parametrize("path", [
+        r"\Users\privateuser\proj\a.py", r"\home\privateuser\a.py",
+    ])
+    def test_read_redacts_single_backslash_rooted_paths(self, path):
+        out = render_read("pr", SHA, path, 1, 1, "body")
+        assert "privateuser" not in out
+
     def test_root_normalization_applies_to_locators_only(self):
         root = r"C:\Private\Project"
         source = "mentions C:/Private/Project/secret.txt and C:\\Private\\Project"
@@ -1152,30 +1198,36 @@ class TestExportRepairs:
         assert result.stripped
         assert not result.incomplete and not result.truncated
 
-    def test_owned_root_with_read_only_files_is_removed_on_failure(self, repo, tmp_path, monkeypatch):
+    def test_owned_root_with_read_only_files_and_directories_is_removed_on_failure(self, repo, tmp_path, monkeypatch):
         import os
         import stat
         import lgtm.graph.exporter as exporter
 
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses permission bits")
         dest = tmp_path / "export"
 
-        def lock_files(process):
+        def lock(process):
+            if not dest.exists():
+                return
             for path in dest.rglob("*"):
                 if path.is_file():
                     os.chmod(path, stat.S_IREAD)
+            for path in sorted((p for p in dest.rglob("*") if p.is_dir()), reverse=True):
+                os.chmod(path, stat.S_IREAD | stat.S_IEXEC)
+            os.chmod(dest, stat.S_IREAD | stat.S_IEXEC)
 
         _GitDouble(exporter, monkeypatch,
-                   b"100644 blob " + SHA.encode() + b"\tsafe.txt\0", _tar(("safe.txt", b"ok")),
-                   archive_exit=7, on_wait=lock_files)
+                   b"100644 blob " + SHA.encode() + b"\tsub/safe.txt\0", _tar(("sub/safe.txt", b"ok")),
+                   archive_exit=7, on_wait=lock)
         try:
             with pytest.raises(ValueError, match="^export_failed$"):
                 export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
             assert not dest.exists()
         finally:
             if dest.exists():
-                for path in dest.rglob("*"):
-                    if path.is_file():
-                        os.chmod(path, stat.S_IWRITE)
+                for path in [dest, *dest.rglob("*")]:
+                    os.chmod(path, stat.S_IRWXU)
 
     def test_persistent_deletion_failure_is_retried_three_times_200ms_apart(self, repo, tmp_path, monkeypatch):
         import shutil
@@ -1203,11 +1255,11 @@ class TestExportRepairs:
         monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
         monkeypatch.setattr(time, "sleep", recording_sleep)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="export_failed"):
             export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
 
         assert len(attempts) == 3
-        assert len(sleeps) in (2, 3)
+        assert sleeps == [pytest.approx(0.2)] * 2
 
     @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
     def test_interrupts_propagate_after_owned_cleanup(self, repo, tmp_path, monkeypatch, interrupt):
@@ -1227,3 +1279,53 @@ class TestExportRepairs:
 
         assert not dest.exists()
         assert double.archive.returncode is not None
+
+
+def _export_members(repo, tmp_path, monkeypatch, names, inventory=None):
+    import lgtm.graph.exporter as exporter
+
+    listed = names if inventory is None else inventory
+    records = b"".join(b"100644 blob " + SHA.encode() + b"\t" + n.encode() + b"\0" for n in listed)
+    _GitDouble(exporter, monkeypatch, records, _tar(*((n, b"ok") for n in names)))
+    return export_snapshot(repo, git(repo, "rev-parse", "HEAD"), tmp_path / "export")
+
+
+def _exported(result):
+    return {p.relative_to(result.root).as_posix() for p in result.root.rglob("*") if p.is_file()}
+
+
+class TestHostilePaths:
+    def test_single_path_with_very_many_components_is_rejected_quickly(self, repo, tmp_path, monkeypatch):
+        import time
+
+        hostile = "/".join("a" for _ in range(20000)) + "/f.txt"
+        started = time.monotonic()
+        result = _export_members(repo, tmp_path, monkeypatch, ["safe.txt", hostile], inventory=["safe.txt"])
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 2
+        assert _exported(result) == {"safe.txt"}
+        assert result.incomplete
+        assert any("unsafe" in str(item).casefold() for item in result.skipped)
+
+    @pytest.mark.parametrize("stripped", [
+        ".CodeGraph/index", "nested/.CODEGRAPH/index", "a/b/.CodeGraph/c/d",
+        ".GITIGNORE", "nested/.GitIgnore", "CodeGraph.JSON", "deep/er/CODEGRAPH.json",
+    ])
+    def test_codegraph_gitignore_and_json_are_stripped_in_any_case(self, repo, tmp_path, monkeypatch, stripped):
+        result = _export_members(repo, tmp_path, monkeypatch, ["keep.txt", stripped])
+
+        assert _exported(result) == {"keep.txt"}
+        assert result.stripped
+        assert not result.incomplete
+
+    @pytest.mark.parametrize("hostile", [
+        "CONIN$", "CONOUT$", "dir/CONIN$", "dir/conout$/x.txt", "COM¹", "LPT²", "dir/COM³.txt",
+        "con .txt", "nul. ", "dir/aux .log", "prn. .txt",
+    ])
+    def test_reserved_device_names_are_rejected_as_unsafe(self, repo, tmp_path, monkeypatch, hostile):
+        result = _export_members(repo, tmp_path, monkeypatch, ["safe.txt", hostile], inventory=["safe.txt"])
+
+        assert _exported(result) == {"safe.txt"}
+        assert result.incomplete
+        assert any("unsafe" in str(item).casefold() for item in result.skipped)

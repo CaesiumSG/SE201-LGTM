@@ -9,6 +9,8 @@ _MARKERS = re.compile(r"^(\s*)(\[(?:CODEGRAPH|READ|GREP|END|TRUNCATED|INCOMPLETE
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]")
 _CATEGORIES = re.compile(r"[A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*")
 _ABSOLUTE = re.compile(r"^(?:/|//|[a-zA-Z]:/)")
+_TOKEN_START = r"""[\s(\[`'"]"""
+_TOKEN_BODY = r"""[^\s()\[\]`'"]*"""
 
 
 def _field(value: object, limit: int = 160) -> str:
@@ -41,9 +43,22 @@ def _root_body(body, root):
         return body
     normalized = str(root).replace("\\", "/").rstrip("/")
     pattern = re.escape(normalized).replace(r"/", r"[/\\]")
-    flags = re.M | (re.I if re.match(r"^[a-zA-Z]:", normalized) else 0)
-    locator = re.compile(rf"^{pattern}(?=[/\\])(?P<rest>.*?)(?=:\d+(?::|$))", flags)
-    return locator.sub(lambda m: "<snapshot>" + m.group("rest").replace("\\", "/"), body)
+    flags = re.I if re.match(r"^[a-zA-Z]:", normalized) else 0
+    token = re.compile(rf"(?:^|(?<={_TOKEN_START})){pattern}(?P<rest>(?=[/\\]){_TOKEN_BODY})", flags)
+
+    def redact(line):
+        parts, last = [], 0
+        for match in token.finditer(line):
+            rest = match.group("rest")
+            parts.append(line[last:match.start()])
+            parts.append("<snapshot>" + rest.replace("\\", "/"))
+            last = match.end()
+            if re.search(r":\d", rest):
+                break
+        parts.append(line[last:])
+        return "".join(parts)
+
+    return "\n".join(redact(line) for line in body.splitlines())
 
 
 def _categories(incomplete: object) -> str:
@@ -68,10 +83,7 @@ def render_graph(label, sha, status, body, *, query="", max_chars=GRAPH_OUTPUT_C
         omitted_chars = max(0, int(omitted_chars))
     except (TypeError, ValueError):
         omitted_chars = 0
-    category_source = str(incomplete or "")
-    category_match = re.match(r"[A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*", category_source)
-    path_suffix = category_source[category_match.end():category_match.end() + 1] if category_match else ""
-    categories = category_match.group(0) if category_match and len(category_match.group(0)) <= 60 and (not path_suffix or path_suffix not in "/\\:") else "unknown"
+    categories = _categories(incomplete)
     supplied = max(0, int(omitted_chars))
     total = supplied
     has_truncation = bool(truncated or supplied)
@@ -107,7 +119,7 @@ def render_read(label, sha, path, start, end, body, max_chars=8000):
 def render_grep(label, sha, pattern, body, max_chars=8000):
     header = f'[GREP snapshot={_field(label,20)} sha={_field(sha,40)} pattern="{_field(pattern,80)}"]'
     body = _body(body)
-    locator = re.compile(r"^(?:[a-zA-Z]:[/\\]|[/\\]{2}|/).*?(?=:\d+:)")
+    locator = re.compile(r"^(?:[a-zA-Z]:[/\\]|[/\\]).*?(?=[:-]\d+[:-])")
     lines = []
     for line in body.splitlines():
         match = locator.match(line)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import re
@@ -10,6 +11,7 @@ import sys
 import tarfile
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +25,12 @@ _QUEUE_POLL_S = 0.05
 _INVENTORY_MAX_BYTES = 8 * 1024 * 1024
 _INVENTORY_MAX_RECORD = 65536
 _ARCHIVE_MEMBER_OVERHEAD = 1024
-_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+_MAX_PATH_CHARS = 4096
+_MAX_PATH_PARTS = 256
+_RESERVED_NAMES = frozenset({
+    "con", "prn", "aux", "nul", "conin$", "conout$",
+    *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10)),
+})
 
 
 @dataclass(frozen=True)
@@ -43,30 +50,43 @@ def _fail() -> NoReturn:
     raise ValueError("export_failed")
 
 
+def _is_reserved(part: str) -> bool:
+    stem = unicodedata.normalize("NFKC", part.split(".")[0]).rstrip(" ")
+    return stem.casefold() in _RESERVED_NAMES
+
+
 def _safe(name: str) -> bool:
-    if "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+    if len(name) > _MAX_PATH_CHARS or "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         return False
     parts = name.rstrip("/").split("/")
+    if len(parts) > _MAX_PATH_PARTS:
+        return False
     return not any(
-        p in ("", ".", "..") or ":" in p or p.endswith((".", " ")) or p.split(".")[0].upper() in _RESERVED_NAMES
+        p in ("", ".", "..") or ":" in p or p.endswith((".", " ")) or _is_reserved(p)
         for p in parts
     )
 
 
-def _clear_read_only(func: Callable[[str], object], path: str, *_: object) -> None:
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
-
-
-_RMTREE_ERROR_HANDLER = {"onexc": _clear_read_only} if sys.version_info >= (3, 12) else {"onerror": _clear_read_only}
+def _clear_read_only(func: Callable[[str], object], path: str, *_: object, root: Path) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        parent = Path(path).parent
+        if parent == root or root in parent.parents:
+            os.chmod(parent, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
 
 
 def _remove_owned_root(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
+    handler = functools.partial(_clear_read_only, root=path)
+    error_handler = {"onexc": handler} if sys.version_info >= (3, 12) else {"onerror": handler}
     for attempt in range(3):
         try:
-            shutil.rmtree(path, **_RMTREE_ERROR_HANDLER)
+            shutil.rmtree(path, **error_handler)
         except OSError:
             pass
         if not path.exists() and not path.is_symlink():
@@ -349,7 +369,7 @@ def export_snapshot(
                     members += 1
                     name = item.name.rstrip("/")
                     parts = name.split("/")
-                    if any(p == ".codegraph" for p in parts) or parts[-1] in (".gitignore", "codegraph.json"):
+                    if any(p.casefold() == ".codegraph" for p in parts) or parts[-1].casefold() in (".gitignore", "codegraph.json"):
                         stripped = True
                         seen_inventory.add(name)
                         continue
