@@ -359,6 +359,7 @@ class AgentToolbox:
             self._warn_latched(label)
             return unavailable(reason)
         status = "no_match" if outcome.reason == "no_match" else "ok"
+        snap = self.session.snapshot(label)
         return render_graph(
             label,
             sha,
@@ -366,7 +367,8 @@ class AgentToolbox:
             outcome.text,
             query=cleaned,
             max_chars=cap,
-            incomplete=_incomplete_categories(self.session.snapshot(label)),
+            root=snap.root if snap is not None else None,
+            incomplete=_incomplete_categories(snap),
             truncated=outcome.truncated,
             omitted_chars=outcome.omitted_chars,
         )

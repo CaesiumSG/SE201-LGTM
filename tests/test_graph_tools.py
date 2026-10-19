@@ -993,6 +993,38 @@ class TestGraphToolOutcomes:
         assert " truncated=true" in first and " incomplete=true" in first
         assert "status=ok" in first
 
+    @pytest.mark.parametrize("label", ["base", "pr"])
+    def test_private_export_root_is_redacted_from_graph_output(self, rig, snap, label):
+        def reveal(_label, root):
+            posix = Path(root).as_posix()
+            return success(f"find_user defined at {posix}/app.py:3\ncaller in {root}\\sub\\inner.py:1")
+
+        r = rig(runner=FakeRunner(explore={label: reveal}))
+        out = r.call(f"investigate_{label}_code", query=self.QUERY)
+        root = r.session.snapshot(label).root
+        assert str(root) not in out and root.as_posix() not in out
+        assert "<snapshot>/app.py:3" in out
+        assert "<snapshot>/sub/inner.py:1" in out
+        expected = render_graph(
+            label, snap.shas[label], "ok", reveal(label, root).text, query=self.QUERY, root=root
+        )
+        assert out == expected
+
+    def test_private_root_with_space_and_apostrophe_is_redacted(self, rig, snap, tmp_path):
+        def relocated(repo, sha, dest, **kwargs):
+            return export_snapshot(repo, sha, tmp_path / "it's a dir" / Path(dest).name, **kwargs)
+
+        def reveal(_label, root):
+            return success(f"hit {Path(root).as_posix()}/app.py:1 and {root}\\app.py:2")
+
+        r = rig(runner=FakeRunner(explore={"base": reveal}), export=relocated)
+        out = r.call("investigate_base_code", query=self.QUERY)
+        root = r.session.snapshot("base").root
+        assert "it's a dir" in str(root)
+        assert "it's a dir" not in out
+        assert str(root) not in out and root.as_posix() not in out
+        assert "<snapshot>/app.py:1" in out and "<snapshot>/app.py:2" in out
+
     def test_empty_successful_stdout_is_no_match_and_does_not_latch(self, rig, snap):
         r = rig(runner=FakeRunner(explore={"base": no_match()}))
         for _ in range(2):
