@@ -220,3 +220,54 @@ def test_fuzzy_match_is_fast_on_large_files():
     started = time.monotonic()
     validator._snippet_in_text(snippet, haystack)
     assert time.monotonic() - started < 10  # stride-1 everywhere took ~40s
+
+
+class TestFrozenShaValidatorKeepsLegacyForUnlabelled:
+    @staticmethod
+    def _validator(git_repo):
+        from tests.conftest import git
+
+        shas = {
+            "base": git(git_repo, "rev-parse", "main").strip(),
+            "pr": git(git_repo, "rev-parse", "pr").strip(),
+        }
+        diffs = get_pr_diff(git_repo, shas["base"], shas["pr"])
+        return EvidenceValidator(git_repo, "main", diffs, shas=shas)
+
+    def test_unlabelled_working_tree_file_still_validates(self, git_repo):
+        (git_repo / "notes.md").write_text("untracked scratch note\n", encoding="utf-8")
+        finding = make_finding(
+            evidence=[EvidenceItem(type="code", file="notes.md", lines=[1, 1], content="untracked scratch note")]
+        )
+        self._validator(git_repo).validate(finding)
+        assert finding.evidence_valid is True
+
+    def test_labelled_working_tree_file_is_rejected(self, git_repo):
+        (git_repo / "notes.md").write_text("untracked scratch note\n", encoding="utf-8")
+        finding = make_finding(
+            verdict="possible",
+            evidence=[
+                EvidenceItem(
+                    type="code", file="notes.md", lines=[1, 1],
+                    content="untracked scratch note", snapshot="base",
+                )
+            ],
+        )
+        self._validator(git_repo).validate(finding)
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues == ["cited file does not exist at base snapshot"]
+
+    def test_unlabelled_line_slack_still_allowed_but_labelled_is_strict(self, git_repo):
+        validator = self._validator(git_repo)
+        content = 'cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))'
+        unlabelled = make_finding(evidence=[EvidenceItem(type="code", file="policy.md", lines=[1, 30], content="Security Policy")])
+        validator.validate(unlabelled)
+        assert unlabelled.evidence_valid is True
+        labelled = make_finding(
+            verdict="possible",
+            evidence=[EvidenceItem(type="code", file="app.py", lines=[2, 30], content=content, snapshot="base")],
+        )
+        validator.validate(labelled)
+        assert labelled.evidence_issues == [
+            "cited lines 2-30 out of range for app.py at base snapshot (3 lines)"
+        ]

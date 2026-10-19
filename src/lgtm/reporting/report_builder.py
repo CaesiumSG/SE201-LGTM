@@ -35,6 +35,10 @@ class ReviewMetadata:
     semgrep_findings_total: int = 0
     semgrep_findings_in_diff: int = 0
     endpoints_reviewed: int = 0
+    graph_state: str | None = None
+    graph_index_seconds: float | None = None
+    base_sha: str = ""
+    pr_sha: str = ""
     extra: dict = field(default_factory=dict)
 
 
@@ -63,6 +67,10 @@ class ReportBuilder:
                 "mode": self.meta.mode,
                 "model": self.meta.model,
                 "duration_seconds": round(self.meta.duration_seconds, 2),
+                "graph_state": self.meta.graph_state,
+                "graph_index_seconds": self.meta.graph_index_seconds,
+                "base_sha": self.meta.base_sha,
+                "pr_sha": self.meta.pr_sha,
             },
             "stats": {
                 "total_findings": len(self.findings),
@@ -167,9 +175,15 @@ class ReportBuilder:
                         add(f"- 📄 Policy — `{ev.source or 'unknown'}`:")
                         add(f"  > {ev.content.strip()[:500]}")
                     else:
-                        loc = f"`{ev.file}`"
-                        if ev.lines:
-                            loc += f" lines {ev.lines[0]}-{ev.lines[-1]}"
+                        if ev.snapshot:
+                            sha = self.meta.pr_sha if ev.snapshot == "pr" else self.meta.base_sha
+                            loc = f"[{ev.snapshot} {sha[:7] or 'unknown'}] `{ev.file}`"
+                            if ev.lines:
+                                loc += f":{ev.lines[0]}-{ev.lines[-1]}"
+                        else:
+                            loc = f"`{ev.file}`"
+                            if ev.lines:
+                                loc += f" lines {ev.lines[0]}-{ev.lines[-1]}"
                         add(f"- 💻 Code — {loc}:")
                         add("")
                         add("  ```")

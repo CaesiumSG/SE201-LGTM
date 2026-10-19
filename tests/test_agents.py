@@ -24,8 +24,10 @@ class TestToolbox:
 
     def test_read_file_line_range(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
-        out = toolbox.read_file_impl("app.py", 2, 2)
-        assert "2: " in out and "1: " not in out.split("===")[2]
+        lines = toolbox.read_file_impl("app.py", 2, 2).splitlines()
+        assert lines[0].endswith("lines=2-2]")
+        assert lines[1].startswith("2: ")
+        assert not any(line.startswith("1: ") for line in lines)
 
     def test_read_missing_file(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
@@ -383,7 +385,7 @@ class TestToolInputValidation:
             "available tools: none. Fix the arguments and call the tool again."
         )
 
-    def test_missing_argument_does_not_spend_budget(self, git_repo):
+    def test_missing_argument_spends_budget(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
         llm = _RecordingLLM([
             _call("read_file", {}),
@@ -393,7 +395,7 @@ class TestToolInputValidation:
         out = run_tool_loop(
             llm, toolbox.build_tools(), "sys", "user", LGTMConfig(require_tool_use=True)
         )
-        assert toolbox.calls_used == 0
+        assert toolbox.calls_used == 1
         last = llm.seen[1][-1]
         assert _kind(last) == "ToolMessage"
         assert last.content.startswith("ERROR: invalid input for tool 'read_file': path")
@@ -411,7 +413,7 @@ class TestToolInputValidation:
         last = llm.seen[1][-1]
         assert _kind(last) == "HumanMessage"
         assert "ERROR: invalid input for tool 'read_file'" in last.content
-        assert toolbox.calls_used == 0
+        assert toolbox.calls_used == 1
 
     def test_third_invalid_input_forces_final_answer(self, caplog):
         caplog.set_level(logging.WARNING, logger="lgtm.agents.base")
@@ -467,7 +469,7 @@ class TestToolInputValidation:
         ])
         out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", LGTMConfig())
         assert out == OK
-        assert toolbox.calls_used == 1
+        assert toolbox.calls_used == 2
 
 
 class TestFinalAnswerReask:

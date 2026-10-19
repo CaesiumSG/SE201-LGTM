@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from lgtm.config import LGTMConfig
 
@@ -19,6 +19,13 @@ Verdict = Literal["vulnerable", "safe", "possible", "insufficient_evidence"]
 
 VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
 
+SNAPSHOT_LABELS = ("base", "pr")
+
+_LOCATOR_ALIAS = re.compile(
+    r"^(?P<path>.+?)(?::L(?P<start>\d+)(?:-L?(?P<end>\d+))?)?\s+@(?P<label>base|pr)$",
+    re.IGNORECASE,
+)
+
 
 class EvidenceItem(BaseModel):
     type: Literal["code", "policy"] = "code"
@@ -26,6 +33,38 @@ class EvidenceItem(BaseModel):
     lines: list[int] | None = None  # [start, end]
     source: str | None = None  # for policy evidence (doc path)
     content: str = ""
+    snapshot: Literal["base", "pr"] | None = None
+    snapshot_conflict: bool = False
+    raw_snapshot: Any = Field(default=None, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_locator_and_snapshot(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        updates: dict[str, Any] = {}
+
+        alias_label = None
+        file = data.get("file")
+        alias = _LOCATOR_ALIAS.match(file.strip()) if isinstance(file, str) else None
+        if alias is not None:
+            alias_label = alias["label"].lower()
+            updates["file"] = alias["path"]
+            if data.get("lines") is None and alias["start"] is not None:
+                start = int(alias["start"])
+                end = int(alias["end"]) if alias["end"] is not None else start
+                updates["lines"] = [start, end]
+
+        # Unknown values are never kept as labels; the conflict flag and raw value record them.
+        raw = data.get("snapshot")
+        label = raw.strip().lower() if isinstance(raw, str) else raw
+        if label in SNAPSHOT_LABELS and alias_label not in (None, label):
+            updates.update(snapshot=None, snapshot_conflict=True)
+        elif label in SNAPSHOT_LABELS or label in (None, ""):
+            updates["snapshot"] = label if label in SNAPSHOT_LABELS else alias_label
+        else:
+            updates.update(snapshot=None, snapshot_conflict=True, raw_snapshot=raw)
+        return {**data, **updates}
 
 
 class AgentFinding(BaseModel):
@@ -44,6 +83,8 @@ class AgentFinding(BaseModel):
     tool_calls_used: int = 0
     evidence_valid: bool | None = None
     evidence_issues: list[str] = Field(default_factory=list)
+    # Set by the pipeline from graph session health; never read from model JSON.
+    pr_graph_ok: bool | None = None
     raw_response: str = ""
 
     def normalized(self) -> "AgentFinding":
@@ -162,6 +203,18 @@ def extract_json_object(text: str) -> dict | None:
     return None
 
 
+_TOOL_OUTPUT_PREFIXES = ("[CODEGRAPH ", "[READ ", "[GREP ", "ERROR:")
+_TOOL_OUTPUT_MARKERS = ("status=unavailable", "tool call budget exhausted")
+
+
+def _is_tool_output(content: str) -> bool:
+    """Tool envelopes and failure text are not code evidence."""
+    text = content.lstrip()
+    return text.startswith(_TOOL_OUTPUT_PREFIXES) or any(
+        marker in text for marker in _TOOL_OUTPUT_MARKERS
+    )
+
+
 def parse_agent_output(
     text: str, finding_id: str, default_cwe: str = ""
 ) -> AgentFinding:
@@ -186,6 +239,9 @@ def parse_agent_output(
     for item in data.get("evidence", []) or []:
         if not isinstance(item, dict):
             continue
+        content = str(item.get("content", ""))
+        if _is_tool_output(content):
+            continue
         lines = item.get("lines")
         if isinstance(lines, int):
             lines = [lines, lines]
@@ -203,7 +259,8 @@ def parse_agent_output(
                     file=item.get("file"),
                     lines=lines,
                     source=item.get("source"),
-                    content=str(item.get("content", ""))[:2000],
+                    content=content[:2000],
+                    snapshot=item.get("snapshot"),
                 )
             )
         except ValidationError:
@@ -246,13 +303,18 @@ def build_llm(config: LGTMConfig):
 TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
 
-def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
+def parse_text_tool_calls(
+    content: str, tool_names: set[str], *, include_unknown: bool = False
+) -> list[dict]:
     """Recover tool calls that a model wrote as plain text.
 
     Some local models (qwen2.5-coder via Ollama) advertise tool support but
     answer with ``{"name": "read_file", "arguments": {...}}`` in the message
     body instead of a native tool call. Without this fallback the loop takes
     that text as the final answer and the agent never uses its tools.
+
+    With ``include_unknown``, requests naming an unregistered tool are returned
+    too, and arguments that are not a JSON object are returned unchanged.
     """
     if not content or not tool_names:
         return []
@@ -265,14 +327,20 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
         if not isinstance(data, dict) or "verdict" in data:
             continue  # a final answer, not a tool call
         name = data.get("name")
+        if not isinstance(name, str):
+            continue
+        known = name in tool_names
+        if not known and not (include_unknown and ("arguments" in data or "parameters" in data)):
+            continue
         args = data.get("arguments", data.get("parameters", {}))
         if isinstance(args, str):  # OpenAI style: arguments as a JSON string
             try:
                 args = json.loads(args) if args.strip() else {}
             except json.JSONDecodeError:
-                continue
-        if name in tool_names and isinstance(args, dict):
-            calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
+                pass
+        if not include_unknown and not (known and isinstance(args, dict)):
+            continue
+        calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
     return calls
 
 
@@ -365,6 +433,14 @@ def request_valid_answer(
     return content
 
 
+def _toolbox_of(tools) -> Any:
+    for tool in tools:
+        toolbox = (getattr(tool, "metadata", None) or {}).get("toolbox")
+        if toolbox is not None:
+            return toolbox
+    return None
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -382,6 +458,7 @@ def run_tool_loop(
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
     tool_map = {t.name: t for t in tools}
+    toolbox = _toolbox_of(tool_map.values())
     llm_with_tools = llm.bind_tools(tools)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     tools_used = 0
@@ -396,20 +473,21 @@ def run_tool_loop(
         content = message_text(response)
         text_calls = False
         if not tool_calls:
-            tool_calls = parse_text_tool_calls(content, set(tool_map))
+            tool_calls = parse_text_tool_calls(content, set(tool_map), include_unknown=True)
             text_calls = bool(tool_calls)
             if not tool_calls:
                 if config.require_tool_use and tools and not tools_used and not pushed_back:
                     # The model answered from the prompt alone; ask it once
                     # to verify against the repository first.
                     pushed_back = True
+                    tool_names = ", ".join(t.name for t in tools)
                     messages.append(
                         HumanMessage(
                             content=(
                                 "Before giving a verdict, verify your reasoning "
                                 "against the repository: call at least one tool "
-                                "(e.g. read the auth decorators or the function "
-                                "you are judging). Then give your final JSON."
+                                f"({tool_names}), e.g. read the auth decorators or "
+                                "the function you are judging. Then give your final JSON."
                             )
                         )
                     )
@@ -421,10 +499,14 @@ def run_tool_loop(
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
             error = validate_tool_call(name, tool_map, args)
+            # Valid calls are charged by the tool body on invoke; rejected calls are charged here.
             if error:
                 invalid_inputs += 1
-                logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
-                result = error
+                if toolbox is None or toolbox.charge(name, args):
+                    logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
+                    result = error
+                else:
+                    result = toolbox.BUDGET_MESSAGE
             else:
                 tools_used += 1
                 try:
