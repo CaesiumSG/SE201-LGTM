@@ -139,6 +139,13 @@ def run_agent(request, git_repo):
     return run
 
 
+def _text_result(name, args, result):
+    return (
+        f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
+        "Call another tool, or give your final JSON verdict."
+    )
+
+
 def _tool_messages(llm, call_index):
     return [m for m in llm.seen[call_index] if type(m).__name__ == "ToolMessage"]
 
@@ -187,7 +194,9 @@ class TestFailedCallsSpendSlots:
         script += [_text("read_file", {"path": "app.py"}), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert EXHAUSTED in llm.seen[6][-1].content
+        assert llm.seen[6][-1].content == _text_result(
+            "read_file", {"path": "app.py"}, EXHAUSTED
+        )
         assert _touched(git_commands, "app.py") == []
 
     def test_tagged_text_batch_spends_per_call(self, run_agent):
@@ -204,7 +213,7 @@ class TestFailedCallsSpendSlots:
         result, llm = run_agent(script, retriever=retriever)
         assert result.tool_calls_used == 1
         assert len(retriever.tool_queries) == 1
-        assert _tool_messages(llm, 1)[-1].content.startswith("ERROR")
+        assert _tool_messages(llm, 1)[-1].content == "ERROR: tool failed: backend down"
 
     def test_sixth_search_policy_does_not_reach_the_retriever(self, run_agent):
         retriever = CountingRetriever()
@@ -229,6 +238,10 @@ class TestRejectedCallsSpendSlots:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 2
         assert llm.channels == ["bound", "bound", "bound"]
+        corrective = [m.content for m in _tool_messages(llm, 2)]
+        assert corrective[0].startswith("ERROR: invalid input for tool 'rm_rf': unknown tool;")
+        assert corrective[1].startswith("ERROR: invalid input for tool 'read_file': ")
+        assert corrective[1].endswith("Fix the arguments and call the tool again.")
 
     def test_invalid_calls_mixed_in_a_batch_count_with_valid_ones(self, run_agent):
         batch = _batch(
@@ -304,6 +317,30 @@ class TestNonToolOutputsAreNotCalls:
         assert result.verdict == "safe"
 
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"name": "x", "explanation": "no verdict here"},
+            {"name": "rm_rf", "explanation": "unregistered, no arguments"},
+            {"name": "finding-7", "confidence": 0.4},
+        ],
+        ids=["named_object", "unregistered_name", "named_finding"],
+    )
+    def test_name_object_without_arguments_is_final_output_not_a_call(
+        self, run_agent, payload
+    ):
+        result, llm = run_agent([_msg(json.dumps(payload))])
+        assert result.tool_calls_used == 0
+        assert len(llm.seen) == 1
+        assert llm.channels == ["bound"]
+
+    def test_prose_naming_an_unregistered_tool_is_not_a_call(self, run_agent):
+        script = [_msg("Running rm_rf on the repo would be unsafe."), _msg(SAFE)]
+        result, llm = run_agent(script)
+        assert result.tool_calls_used == 0
+        assert "not a valid JSON object" in llm.seen[1][-1].content
+
+
 class TestSuccessfulCallsAndResilience:
     def test_successful_calls_charge_exactly_once(self, run_agent):
         retriever = CountingRetriever()
@@ -336,7 +373,8 @@ class TestSuccessfulCallsAndResilience:
         assert result.verdict == "safe"
         assert "not a valid JSON object" in llm.seen[-1][-1].content
 
-    def test_budget_is_per_finding(self, git_repo):
+    @pytest.mark.parametrize("agent", ["sast_triage", "authz_reviewer"])
+    def test_budget_is_per_finding(self, git_repo, agent):
         config = LGTMConfig()
         toolbox = AgentToolbox(git_repo, "main", None, config)
         for _ in range(2):
@@ -344,9 +382,101 @@ class TestSuccessfulCallsAndResilience:
                 [_native("read_file", {"path": f"m{i}.py"}, f"c{i}") for i in range(1, 6)]
                 + [_msg(SAFE)]
             )
-            finding = SemgrepFinding(
-                rule_id="r", path="app.py", start_line=2, end_line=2,
-                message="m", severity="ERROR",
-            )
-            result = SASTTriageAgent(toolbox, config, llm=llm).triage(finding, None)
+            if agent == "sast_triage":
+                finding = SemgrepFinding(
+                    rule_id="r", path="app.py", start_line=2, end_line=2,
+                    message="m", severity="ERROR",
+                )
+                result = SASTTriageAgent(toolbox, config, llm=llm).triage(finding, None)
+            else:
+                endpoint = ChangedEndpoint(
+                    file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1
+                )
+                result = AuthzReviewerAgent(toolbox, config, llm=llm).review(endpoint, None)
             assert result.tool_calls_used == 5
+
+
+class TestBackendSpyCanFail:
+    def test_git_spy_records_a_successful_read(self, run_agent, git_commands):
+        result, _ = run_agent([_native("read_file", {"path": "app.py"}), _msg(SAFE)])
+        assert result.tool_calls_used == 1
+        assert _touched(git_commands, "app.py") != []
+
+
+class TestRejectedCallsAreChargedForPlainToolLists:
+    @pytest.fixture(params=["list_copy", "slice"])
+    def plain_tools(self, request, monkeypatch):
+        original = AgentToolbox.build_tools
+
+        def build(self):
+            tools = original(self)
+            return list(tools) if request.param == "list_copy" else tools[:]
+
+        monkeypatch.setattr(AgentToolbox, "build_tools", build)
+
+    def test_unknown_and_invalid_calls_spend_and_saturate_at_five(
+        self, run_agent, plain_tools, git_commands
+    ):
+        script = [
+            _native("rm_rf", {}, "c1"),
+            _native("read_file", {}, "c2"),
+            _native("rm_rf", {}, "c3"),
+            _native("read_file", {"start_line": "x"}, "c4"),
+            _native("shell", {"cmd": "ls"}, "c5"),
+            _native("read_file", {"path": "app.py"}, "c6"),
+            _msg(SAFE),
+        ]
+        result, llm = run_agent(script, max_invalid_tool_inputs=0)
+        assert result.tool_calls_used == 5
+        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert _touched(git_commands, "app.py") == []
+
+    def test_unknown_text_request_spends_a_slot(self, run_agent, plain_tools):
+        result, _ = run_agent([_text("rm_rf", {"path": "x"}), _msg(SAFE)])
+        assert result.tool_calls_used == 1
+
+
+class TestRejectedAttemptAfterBudgetIsSpent:
+    @staticmethod
+    def _spend_five():
+        return [_native("read_file", {"path": f"missing{i}.py"}, f"c{i}") for i in range(1, 6)]
+
+    @pytest.mark.parametrize(
+        "name,args",
+        [("rm_rf", {}), ("read_file", {}), ("read_file", {"path": 5})],
+        ids=["unknown_name", "missing_argument", "wrong_type"],
+    )
+    def test_native_sixth_attempt_gets_exhausted_response(
+        self, run_agent, git_commands, name, args
+    ):
+        script = self._spend_five() + [_native(name, args, "c6"), _msg(SAFE)]
+        result, llm = run_agent(script)
+        assert result.tool_calls_used == 5
+        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert len(_touched(git_commands, "missing")) == 5
+
+    @pytest.mark.parametrize(
+        "name,args",
+        [("rm_rf", {"path": "x"}), ("read_file", {})],
+        ids=["unknown_name", "missing_argument"],
+    )
+    def test_text_sixth_attempt_gets_exhausted_response(
+        self, run_agent, git_commands, name, args
+    ):
+        script = self._spend_five() + [_text(name, args), _msg(SAFE)]
+        result, llm = run_agent(script)
+        assert result.tool_calls_used == 5
+        assert llm.seen[6][-1].content == _text_result(name, args, EXHAUSTED)
+        assert len(_touched(git_commands, "missing")) == 5
+
+    def test_rejected_calls_after_saturation_still_trigger_the_invalid_input_stop(
+        self, run_agent
+    ):
+        script = self._spend_five()
+        script += [_native("rm_rf", {}, f"r{i}") for i in range(1, 4)]
+        script.append(_msg(SAFE))
+        result, llm = run_agent(script, max_agent_iterations=20)
+        assert result.tool_calls_used == 5
+        assert result.verdict == "safe"
+        assert llm.channels == ["bound"] * 8 + ["unbound"]
+        assert "Produce your final JSON verdict NOW" in llm.seen[8][-1].content

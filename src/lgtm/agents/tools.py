@@ -62,7 +62,7 @@ class AgentToolbox:
     def charge(self, tool_name: str, args: dict) -> bool:
         """Spend one slot for an attempted call. Returns False once the budget is spent.
 
-        Rejected attempts do not advance ``calls_used``, so it saturates at the cap.
+        calls_used saturates at max_tool_calls.
         """
         self.call_log.append({"tool": tool_name, "args": args})
         if self.calls_used >= self.config.max_tool_calls:
@@ -171,7 +171,7 @@ class AgentToolbox:
     # ------------------------------------------------------------------
     # LangChain tool objects
     # ------------------------------------------------------------------
-    def build_tools(self) -> ToolList:
+    def build_tools(self) -> list:
         toolbox = self
 
         @tool
@@ -204,12 +204,7 @@ class AgentToolbox:
                 return toolbox.BUDGET_MESSAGE
             return toolbox.search_policy_impl(query)
 
-        return ToolList([read_file, grep_repo, search_policy], toolbox)
-
-
-class ToolList(list):
-    """Registered tools that keep their toolbox so the loop can charge rejected calls."""
-
-    def __init__(self, tools: list, toolbox: AgentToolbox):
-        super().__init__(tools)
-        self.toolbox = toolbox
+        tools = [read_file, grep_repo, search_policy]
+        for tool_obj in tools:
+            tool_obj.metadata = {"toolbox": toolbox}
+        return tools
