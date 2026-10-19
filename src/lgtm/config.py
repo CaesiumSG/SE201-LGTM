@@ -56,6 +56,23 @@ class LGTMConfig:
     # Git
     git_timeout: int = 60
 
+    graph_binary: str = "codegraph"
+    graph_init_timeout_s: int = 120
+    graph_query_timeout_s: int = 20
+    graph_max_output_chars: int = 6000
+    graph_max_export_files: int = 20000
+    graph_max_export_bytes: int = 209715200
+
+    def __post_init__(self) -> None:
+        for key in ("graph_init_timeout_s", "graph_query_timeout_s", "graph_max_export_files", "graph_max_export_bytes"):
+            if getattr(self, key) <= 0:
+                raise ValueError(f"{key} must be positive")
+        if self.graph_max_output_chars < 1024:
+            raise ValueError("graph_max_output_chars must be at least 1024")
+        self.graph_max_output_chars = min(self.graph_max_output_chars, 6000)
+        self.graph_max_export_files = min(self.graph_max_export_files, 20000)
+        self.graph_max_export_bytes = min(self.graph_max_export_bytes, 209715200)
+
     # Output
     output_dir: str = "lgtm-output"
 
