@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -66,3 +67,9 @@ def sleeps(monkeypatch) -> list[float]:
     recorded: list[float] = []
     monkeypatch.setattr("lgtm.agents.base._sleep", recorded.append)
     return recorded
+
+
+@pytest.fixture(autouse=True)
+def _isolate_graph_env(monkeypatch):
+    for key in [k for k in os.environ if k.upper().startswith("CODEGRAPH_")]:
+        monkeypatch.delenv(key)
