@@ -29,6 +29,8 @@ A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
 
 ## Running the evaluation
 
+> Results measured at an earlier commit; not re-measured for the current code.
+
 ```bash
 # From the repository root (install LGTM first: pip install -e .)
 python benchmark/evaluate.py --mode lgtm            # full pipeline
@@ -42,6 +44,10 @@ python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 python benchmark/evaluate.py --gpu-model qwen3.8-27b
 ```
+
+The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found
+([Configuration](../README.md#configuration)). `evaluate.py` has no
+`--config-file` option, so graph settings use their defaults.
 
 Use `--gpu-cluster` to connect through the existing tunnel at
 `http://127.0.0.1:11435` with `qwen3.8:27b`. Server and tunnel startup stay
@@ -97,6 +103,9 @@ and `docs/evaluation-log.md`.
   `error_rate`, `error_cases`) and excluded from every other metric;
   `scored` is the number of cases the metrics cover. `--rescore` applies
   the same classification to saved results.
+- Graph health per case JSON: `graph_state` (see
+  [Configuration](../README.md#codegraph)), `graph_index_seconds`, `base_sha`,
+  `pr_sha`.
 
 ## Regenerating cases
 
