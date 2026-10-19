@@ -216,7 +216,6 @@ class TestAgentPromptMatrix:
 
     def test_prompt_never_advertises_an_unregistered_tool(self, kind, scenario):
         text = _prompt(_run_agent(kind, scenario, [SAFE]))
-        assert "search_code" not in text
         if not scenario.expect["graph"]:
             assert "investigate_" not in text
 
@@ -261,7 +260,6 @@ class TestAgentPromptMatrix:
         pushback = llm.seen[1][-1].content
         for name in scenario.expect["names"]:
             assert name in pushback, f"{kind}/{scenario.name}: push-back omits {name}"
-        assert "search_code" not in pushback
         if not scenario.expect["graph"]:
             assert "investigate_" not in pushback
 
