@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
+import re
 import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +17,12 @@ from lgtm.agents.authz_reviewer import AuthzReviewerAgent, ChangedEndpoint
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
+from lgtm.graph.exporter import export_snapshot
+from lgtm.graph.format import FOOTER, render_graph
+from lgtm.graph.session import GraphSession
+from lgtm.graph.snapshot import resolve_refs
 from lgtm.sast.semgrep_runner import SemgrepFinding
+from tests.graph_fakes import FakeRunner, failure, no_match, outcome, success
 
 EXHAUSTED = (
     "ERROR: tool call budget exhausted. You must now produce your final "
@@ -480,3 +490,604 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         assert result.verdict == "safe"
         assert llm.channels == ["bound"] * 8 + ["unbound"]
         assert "Produce your final JSON verdict NOW" in llm.seen[8][-1].content
+
+
+# ---------------------------------------------------------------------------
+# Package 2: snapshot-aware tools. Fixture, helpers and the toolbox wiring
+# (shas=/session= keywords on AgentToolbox) used by the classes below.
+# ---------------------------------------------------------------------------
+
+UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base, pr."
+LEGACY_UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base."
+LEGACY_PR = "ERROR: snapshot 'pr' is not available in this run. Allowed values: base."
+EMPTY_QUERY = "ERROR: query must not be empty."
+ESCAPE = "ERROR: path must be repository-relative and remain inside the repository."
+MISSING_BINARY_WARNING = (
+    "CodeGraph binary not found; investigate_* tools are disabled and agents "
+    "will use read_file, grep_repo and search_policy."
+)
+GRAPH_NAMES = [
+    "investigate_base_code",
+    "investigate_pr_code",
+    "read_file",
+    "grep_repo",
+    "search_policy",
+]
+READ_NAMES = ["read_file", "grep_repo", "search_policy"]
+
+
+def _git(repo, *args):
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+def _commit(repo, message):
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+@pytest.fixture
+def snap(tmp_path):
+    """Two committed snapshots (added, deleted, shifted, unchanged files) and a dirty working tree."""
+    repo = tmp_path / "twosnap"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.local")
+    _git(repo, "config", "user.name", "T")
+    files = {
+        "app.py": "def get_user(cursor, user_id):\n    return cursor.fetchone()\n",
+        "keep.py": "KEEP_ONE = 1\nKEEP_TWO = 2\n# --flag value\n",
+        "gone.py": "GONE = True\n",
+        "shift.py": "alpha = 1\nbeta = 2\ngamma = 3\n",
+        "big.txt": "".join(f"row {i}\n" for i in range(1, 301)),
+        "wide.txt": "".join(f"w{i} " + "y" * 190 + "\n" for i in range(100)),
+        "sub/inner.py": "INNER = 1\n",
+        "notes.md": "NOTE base\n",
+    }
+    for i in range(10):
+        files[f"many/f{i}.txt"] = "".join(f"MANYHITS {i}-{j}\n" for j in range(5))
+    for name, text in files.items():
+        _write(repo / name, text)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _write(repo / "app.py", files["app.py"] + "\ndef find_user(cursor, name):\n    return cursor.fetchall()\n")
+    (repo / "gone.py").unlink()
+    _write(repo / "shift.py", "prelude1\nprelude2\n" + files["shift.py"])
+    _write(repo / "new.py", "ADDED = 1\n")
+    _commit(repo, "pr")
+    _git(repo, "checkout", "-q", "main")
+    _write(repo / "app.py", files["app.py"] + "DIRTY_MARK\n")
+    _write(repo / "keep.py", "DIRTY_KEEP\n")
+    _write(repo / "untracked.py", "UNTRACKED_MARK\n")
+    _write(repo / "new.py", "WORKTREE_NEW\n")
+    shas = resolve_refs(repo, "main", "pr")
+    return SimpleNamespace(repo=repo, shas=shas, base=shas["base"], pr=shas["pr"])
+
+
+class Rig:
+    """A snapshot-aware toolbox over a fake graph runner; owns its session."""
+
+    def __init__(self, snap, runner=None, export=None, retriever=None, **config_kwargs):
+        self.snap = snap
+        self.runner = runner or FakeRunner()
+        self.exports = []
+        real_export = export or export_snapshot
+
+        def spy(*args, **kwargs):
+            self.exports.append(args)
+            return real_export(*args, **kwargs)
+
+        self.config = LGTMConfig(**config_kwargs)
+        self.session = GraphSession(
+            snap.repo, snap.shas, self.config, runner=self.runner, export=spy
+        )
+        try:
+            self.toolbox = AgentToolbox(
+                snap.repo, "main", retriever, self.config, shas=snap.shas, session=self.session
+            )
+        except TypeError:
+            # Wiring keywords not implemented yet; test_toolbox_accepts_frozen_shas_and_session
+            # reports that, and the rest still exercise the legacy toolbox behaviorally.
+            self.toolbox = AgentToolbox(snap.repo, "main", retriever, self.config)
+        self.tools = {t.name: t for t in self.toolbox.build_tools()}
+
+    def call(self, name, **args):
+        assert name in self.tools, f"{name} is not registered (have {list(self.tools)})"
+        return self.tools[name].invoke(args)
+
+
+@pytest.fixture
+def rig(snap):
+    made = []
+
+    def build(**kwargs):
+        r = Rig(snap, **kwargs)
+        made.append(r)
+        return r
+
+    yield build
+    for r in made:
+        r.session.close()
+
+
+def _legacy_tools(snap, **config_kwargs):
+    toolbox = AgentToolbox(snap.repo, "main", config=LGTMConfig(**config_kwargs))
+    return toolbox, {t.name: t for t in toolbox.build_tools()}
+
+
+def _broken_base_tools(snap):
+    broken = {"base": "0" * 39 + "1", "pr": snap.pr}
+    toolbox = AgentToolbox(snap.repo, "main", config=LGTMConfig(), shas=broken, session=None)
+    return {t.name: t for t in toolbox.build_tools()}
+
+
+def _lines(text):
+    return text.splitlines()
+
+
+class TestRegisteredTools:
+    def test_toolbox_accepts_frozen_shas_and_session(self, snap):
+        session = GraphSession(snap.repo, snap.shas, LGTMConfig(), runner=FakeRunner())
+        try:
+            toolbox = AgentToolbox(
+                snap.repo, "main", None, LGTMConfig(), shas=snap.shas, session=session
+            )
+            assert [t.name for t in toolbox.build_tools()] == GRAPH_NAMES
+        finally:
+            session.close()
+
+    def test_graph_run_registers_five_tools_in_contract_order(self, rig):
+        assert list(rig().tools) == GRAPH_NAMES
+
+    def test_missing_binary_drops_only_the_two_investigate_tools(self, rig):
+        r = rig(runner=FakeRunner(available=False))
+        assert list(r.tools) == READ_NAMES
+        assert "ADDED = 1" in r.call("read_file", path="new.py", snapshot="pr")
+
+    def test_standalone_legacy_toolbox_stays_base_only(self, snap):
+        _, tools = _legacy_tools(snap)
+        assert list(tools) == READ_NAMES
+        assert tools["read_file"].invoke({"path": "app.py", "snapshot": "pr"}) == LEGACY_PR
+        assert tools["grep_repo"].invoke({"pattern": "get_user", "snapshot": "pr"}) == LEGACY_PR
+        assert tools["read_file"].invoke({"path": "app.py", "snapshot": "PR"}) == (
+            LEGACY_UNKNOWN_LABEL.format(value="PR")
+        )
+
+    def test_public_argument_schemas_and_defaults(self, rig):
+        tools = rig().tools
+        for name in ("investigate_base_code", "investigate_pr_code"):
+            assert list(tools[name].args) == ["query"]
+            assert tools[name].get_input_schema().model_json_schema()["required"] == ["query"]
+        read = tools["read_file"]
+        assert list(read.args) == ["path", "start_line", "end_line", "snapshot"]
+        assert read.get_input_schema().model_json_schema()["required"] == ["path"]
+        assert [read.args[k]["default"] for k in ("start_line", "end_line", "snapshot")] == [0, 0, "base"]
+        grep = tools["grep_repo"]
+        assert list(grep.args) == ["pattern", "file_glob", "snapshot"]
+        assert grep.get_input_schema().model_json_schema()["required"] == ["pattern"]
+        assert [grep.args[k]["default"] for k in ("file_glob", "snapshot")] == ["", "base"]
+        assert list(tools["search_policy"].args) == ["query"]
+
+    def test_search_policy_output_is_unchanged(self, rig):
+        with_index = rig(retriever=CountingRetriever())
+        assert with_index.call("search_policy", query="sql rules") == "policy excerpt for sql rules"
+        assert rig().call("search_policy", query="sql rules").startswith(
+            "ERROR: documentation index is not available."
+        )
+
+
+class TestSnapshotLabelsAtTheToolBoundary:
+    BAD = ["PR", "Base", " pr", "pr ", "base\n", "main", "HEAD", "", "origin/pr"]
+
+    @pytest.mark.parametrize("bad", BAD)
+    def test_read_file_rejects_uncoerced_labels_without_git(self, rig, git_commands, bad):
+        r = rig()
+        git_commands.clear()
+        assert r.call("read_file", path="app.py", snapshot=bad) == UNKNOWN_LABEL.format(value=bad)
+        assert git_commands == []
+        assert r.toolbox.calls_used == 1
+
+    @pytest.mark.parametrize("bad", BAD)
+    def test_grep_repo_rejects_uncoerced_labels_without_git(self, rig, git_commands, bad):
+        r = rig()
+        git_commands.clear()
+        assert r.call("grep_repo", pattern="get_user", snapshot=bad) == UNKNOWN_LABEL.format(value=bad)
+        assert git_commands == []
+        assert r.toolbox.calls_used == 1
+
+    def test_full_sha_is_not_accepted_as_a_label(self, rig, snap):
+        r = rig()
+        assert r.call("read_file", path="app.py", snapshot=snap.pr) == UNKNOWN_LABEL.format(value=snap.pr)
+        assert r.call("grep_repo", pattern="x", snapshot=snap.base) == UNKNOWN_LABEL.format(value=snap.base)
+
+
+class TestGitOnlyReads:
+    def test_base_read_is_exact_and_ignores_the_dirty_tree(self, rig, snap):
+        r = rig()
+        assert r.call("read_file", path="shift.py") == (
+            f"[READ snapshot=base sha={snap.base} path=shift.py lines=1-3]\n"
+            "1: alpha = 1\n2: beta = 2\n3: gamma = 3\n[END READ]"
+        )
+        base_app = r.call("read_file", path="app.py")
+        assert "DIRTY_MARK" not in base_app and "get_user" in base_app
+
+    def test_pr_read_uses_the_pr_commit_not_the_checkout(self, rig, snap):
+        r = rig()
+        out = r.call("read_file", path="app.py", snapshot="pr")
+        assert _lines(out)[0] == f"[READ snapshot=pr sha={snap.pr} path=app.py lines=1-5]"
+        assert "find_user" in out and "DIRTY_MARK" not in out
+        assert "find_user" not in r.call("read_file", path="app.py")
+
+    def test_shifted_file_has_different_line_numbers_per_snapshot(self, rig):
+        r = rig()
+        assert "1: alpha = 1" in r.call("read_file", path="shift.py")
+        assert "3: alpha = 1" in r.call("read_file", path="shift.py", snapshot="pr")
+
+    def test_unchanged_file_has_identical_body_in_both_snapshots(self, rig):
+        r = rig()
+        base = _lines(r.call("read_file", path="sub/inner.py"))
+        pr = _lines(r.call("read_file", path="sub/inner.py", snapshot="pr"))
+        assert base[1:] == pr[1:] == ["1: INNER = 1", "[END READ]"]
+
+    def test_tracked_changes_and_untracked_files_never_leak_into_reads(self, rig, snap):
+        r = rig()
+        assert "DIRTY_KEEP" not in r.call("read_file", path="keep.py")
+        assert "DIRTY_KEEP" not in r.call("read_file", path="keep.py", snapshot="pr")
+        assert r.call("read_file", path="untracked.py") == (
+            f"ERROR: file 'untracked.py' not present in base snapshot @{snap.base}."
+        )
+
+    def test_added_and_deleted_files_exist_only_in_their_snapshot(self, rig, snap):
+        r = rig()
+        assert r.call("read_file", path="new.py") == (
+            f"ERROR: file 'new.py' not present in base snapshot @{snap.base}."
+        )
+        assert "ADDED = 1" in r.call("read_file", path="new.py", snapshot="pr")
+        assert "GONE = True" in r.call("read_file", path="gone.py")
+        assert r.call("read_file", path="gone.py", snapshot="pr") == (
+            f"ERROR: file 'gone.py' not present in pr snapshot @{snap.pr}."
+        )
+
+    def test_reads_need_neither_export_nor_the_graph_binary(self, rig):
+        def boom(*args, **kwargs):
+            raise AssertionError("export must not run for Git reads")
+
+        r = rig(runner=FakeRunner(available=False), export=boom)
+        assert "ADDED = 1" in r.call("read_file", path="new.py", snapshot="pr")
+        assert "get_user" in r.call("grep_repo", pattern="get_user")
+        assert r.exports == [] and r.runner.calls == []
+
+    def test_read_is_capped_at_200_lines(self, rig):
+        r = rig()
+        out = r.call("read_file", path="big.txt")
+        assert _lines(out)[0].endswith("path=big.txt lines=1-200]")
+        assert "200: row 200" in out and "201: row 201" not in out
+        capped = r.call("read_file", path="big.txt", start_line=100, end_line=300)
+        assert _lines(capped)[0].endswith("lines=100-299]")
+        tail = r.call("read_file", path="big.txt", start_line=250, end_line=300)
+        assert _lines(tail)[0].endswith("lines=250-300]")
+
+    def test_read_output_is_capped_at_8000_characters_with_end_marker(self, rig):
+        out = rig().call("read_file", path="wide.txt")
+        assert len(out) <= 8000
+        assert out.startswith("[READ snapshot=base ") and out.endswith("[END READ]")
+
+    def test_read_beyond_end_keeps_the_existing_envelope(self, rig):
+        assert rig().call("read_file", path="app.py", start_line=50) == (
+            "ERROR: start_line 50 is beyond end of file (2 lines)."
+        )
+
+    def test_unknown_object_reports_a_generic_failure_without_stderr(self, snap):
+        out = _broken_base_tools(snap)["read_file"].invoke({"path": "app.py"})
+        assert out == "ERROR: cannot read base snapshot."
+
+    def test_legacy_toolbox_read_header_names_the_base_commit(self, snap):
+        _, tools = _legacy_tools(snap)
+        header = _lines(tools["read_file"].invoke({"path": "app.py"}))[0]
+        assert header == f"[READ snapshot=base sha={snap.base} path=app.py lines=1-2]"
+
+
+class TestPathAndGlobValidation:
+    ESCAPES = [
+        "/etc/passwd", "C:/x.py", "C:\\x.py", "c:x.py", "\\\\server\\share\\x.py",
+        "//server/share/x.py", "a\x00b.py", "../x.py", "a/../../x.py", "..\\x.py", "..",
+    ]
+
+    @pytest.mark.parametrize("path", ESCAPES)
+    def test_read_file_rejects_escapes_before_git_and_spends(self, rig, git_commands, path):
+        r = rig()
+        git_commands.clear()
+        assert r.call("read_file", path=path) == ESCAPE
+        assert r.call("read_file", path=path, snapshot="pr") == ESCAPE
+        assert git_commands == []
+        assert r.toolbox.calls_used == 2
+
+    @pytest.mark.parametrize("glob", ["../*.py", "/abs/*", "C:/*", "\\\\srv\\s\\*", "a\x00*", "sub/../../*"])
+    def test_grep_repo_rejects_glob_escapes_before_git(self, rig, git_commands, glob):
+        r = rig()
+        git_commands.clear()
+        assert r.call("grep_repo", pattern="get_user", file_glob=glob) == ESCAPE
+        assert git_commands == []
+        assert r.toolbox.calls_used == 1
+
+    def test_safe_relative_globs_are_allowed(self, rig):
+        r = rig()
+        assert "keep.py:1:KEEP_ONE = 1" in r.call("grep_repo", pattern="KEEP_ONE", file_glob="*.py")
+        nested = r.call("grep_repo", pattern="INNER", file_glob="sub/*.py")
+        assert "sub/inner.py:1:INNER = 1" in nested
+        other = r.call("grep_repo", pattern="INNER", file_glob="*.md")
+        assert not any(l.startswith("sub/") for l in _lines(other))
+
+
+class TestGrep:
+    def test_header_relative_matches_and_footer(self, rig, snap):
+        out = _lines(rig().call("grep_repo", pattern="get_user"))
+        assert out[0] == f'[GREP snapshot=base sha={snap.base} pattern="get_user"]'
+        assert "app.py:1:def get_user(cursor, user_id):" in out
+        assert out[-1] == "[END GREP]"
+        assert not any(line.startswith(snap.base) for line in out[1:])
+
+    def test_pr_grep_sees_pr_only_code_and_base_does_not(self, rig):
+        r = rig()
+        pr = _lines(r.call("grep_repo", pattern="find_user", snapshot="pr"))
+        assert any(l.startswith("app.py:") for l in pr)
+        base = _lines(r.call("grep_repo", pattern="find_user"))
+        assert not any(l.startswith("app.py:") for l in base)
+
+    def test_dirty_tree_is_never_searched(self, rig):
+        r = rig()
+        for label in ("base", "pr"):
+            hits = r.call(
+                "grep_repo", pattern="DIRTY_MARK|UNTRACKED_MARK|DIRTY_KEEP|WORKTREE_NEW", snapshot=label
+            )
+            assert not any(".py:" in line for line in _lines(hits)[1:])
+
+    def test_pattern_and_glob_that_look_like_options_are_data(self, rig):
+        r = rig()
+        assert "keep.py:3:# --flag value" in r.call("grep_repo", pattern="--flag")
+        help_out = r.call("grep_repo", pattern="get_user", file_glob="--help")
+        assert "usage:" not in help_out.lower()
+        assert not r.call("grep_repo", pattern="-v").startswith("ERROR")
+
+    def test_result_count_is_capped_at_30(self, rig):
+        out = rig().call("grep_repo", pattern="MANYHITS")
+        matches = [l for l in _lines(out) if re.match(r"many/f\d\.txt:\d+:", l)]
+        assert len(matches) == 30
+        assert len(out) <= 8000
+
+    def test_invalid_regex_keeps_its_envelope(self, rig):
+        assert rig().call("grep_repo", pattern="([").startswith("ERROR: invalid regex:")
+
+    def test_other_git_failure_has_no_raw_stderr(self, snap):
+        out = _broken_base_tools(snap)["grep_repo"].invoke({"pattern": "x"})
+        assert out == "ERROR: cannot read base snapshot."
+
+
+class TestGraphToolOutcomes:
+    QUERY = "who calls find_user"
+
+    def test_success_uses_the_provenance_format_for_each_label(self, rig, snap):
+        r = rig(runner=FakeRunner(explore={"base": success("BASE-TOKEN"), "pr": success("PR-TOKEN")}))
+        base = r.call("investigate_base_code", query=self.QUERY)
+        pr = r.call("investigate_pr_code", query=self.QUERY)
+        assert _lines(base)[0] == (
+            f'[CODEGRAPH snapshot=base sha={snap.base} status=ok query="{self.QUERY}"]'
+        )
+        assert _lines(pr)[0] == (
+            f'[CODEGRAPH snapshot=pr sha={snap.pr} status=ok query="{self.QUERY}"]'
+        )
+        assert base == render_graph("base", snap.base, "ok", "BASE-TOKEN", query=self.QUERY)
+        assert pr == render_graph("pr", snap.pr, "ok", "PR-TOKEN", query=self.QUERY)
+        assert _lines(base)[-2:] == [FOOTER, "[END CODEGRAPH]"]
+        assert [c["label"] for c in r.runner.calls if c["kind"] == "explore"] == ["base", "pr"]
+
+    def test_truncated_and_incomplete_markers_come_from_the_outcome_and_export(self, rig):
+        def partial(*args, **kwargs):
+            return dataclasses.replace(export_snapshot(*args, **kwargs), incomplete=True)
+
+        r = rig(
+            runner=FakeRunner(explore={"base": outcome(True, None, "BODY", truncated=True, omitted_chars=7)}),
+            export=partial,
+        )
+        first = _lines(r.call("investigate_base_code", query=self.QUERY))[0]
+        assert " truncated=true" in first and " incomplete=true" in first
+        assert "status=ok" in first
+
+    def test_empty_successful_stdout_is_no_match_and_does_not_latch(self, rig, snap):
+        r = rig(runner=FakeRunner(explore={"base": no_match()}))
+        for _ in range(2):
+            out = r.call("investigate_base_code", query=self.QUERY)
+            assert out == render_graph("base", snap.base, "no_match", "", query=self.QUERY)
+            assert "No matching symbols found." in out
+        assert r.runner.count("explore", "base") == 2
+        assert r.session.state == "ok"
+
+    @pytest.mark.parametrize("reason", ["timeout", "nonzero", "stale"])
+    def test_query_failure_is_unavailable_and_latches_its_label(self, rig, snap, reason):
+        r = rig(runner=FakeRunner(explore={"base": failure(reason)}))
+        out = r.call("investigate_base_code", query=self.QUERY)
+        assert _lines(out)[0] == (
+            f'[CODEGRAPH snapshot=base sha={snap.base} status=unavailable reason={reason} query="{self.QUERY}"]'
+        )
+        assert out == render_graph("base", snap.base, "unavailable", "", query=self.QUERY, reason=reason)
+        assert "read_file" in out and "grep_repo" in out
+        assert r.session.state == f"degraded:base:{reason}"
+
+    def test_export_failure_is_unavailable_with_export_failed(self, rig, snap):
+        def failing(*args, **kwargs):
+            raise OSError("disk full")
+
+        r = rig(export=failing)
+        out = r.call("investigate_pr_code", query=self.QUERY)
+        assert out == render_graph("pr", snap.pr, "unavailable", "", query=self.QUERY, reason="export_failed")
+        assert "disk full" not in out
+        assert r.session.state == "degraded:pr:export_failed"
+
+    def test_launch_failure_latches_both_labels(self, rig, snap):
+        r = rig(runner=FakeRunner(explore={"base": failure("launch_failed")}))
+        base = r.call("investigate_base_code", query=self.QUERY)
+        pr = r.call("investigate_pr_code", query=self.QUERY)
+        assert "status=unavailable reason=launch_failed" in _lines(base)[0]
+        assert pr == render_graph("pr", snap.pr, "unavailable", "", query=self.QUERY, reason="launch_failed")
+        assert r.session.state == "degraded:base:launch_failed;degraded:pr:launch_failed"
+        assert r.runner.count("explore") == 1
+
+    def test_unexpected_runtime_exception_reports_nonzero(self, rig):
+        def explode(label, root):
+            raise RuntimeError("secret internals")
+
+        r = rig(runner=FakeRunner(explore={"base": explode}))
+        out = r.call("investigate_base_code", query=self.QUERY)
+        assert "status=unavailable reason=nonzero" in _lines(out)[0]
+        assert "secret internals" not in out
+
+    def test_repeated_latched_call_repeats_identity_spends_budget_and_does_no_work(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
+        first = r.call("investigate_base_code", query=self.QUERY)
+        work = (r.runner.count("init"), r.runner.count("explore"), len(r.exports))
+        again = r.call("investigate_base_code", query=self.QUERY)
+        assert again == first
+        assert (r.runner.count("init"), r.runner.count("explore"), len(r.exports)) == work
+        assert r.toolbox.calls_used == 2
+
+    def test_latch_is_per_label(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
+        r.call("investigate_base_code", query=self.QUERY)
+        assert "status=ok" in _lines(r.call("investigate_pr_code", query=self.QUERY))[0]
+        assert r.session.state == "degraded:base:timeout"
+
+    @pytest.mark.parametrize("name", ["investigate_base_code", "investigate_pr_code"])
+    @pytest.mark.parametrize("query", ["", "   ", "\n\t", "\x00\x01"])
+    def test_empty_query_is_rejected_spends_and_starts_no_subprocess(self, rig, name, query):
+        r = rig()
+        assert r.call(name, query=query) == EMPTY_QUERY
+        assert r.toolbox.calls_used == 1
+        assert r.runner.calls == [] and r.exports == []
+
+    def test_graph_call_spends_exactly_one_and_over_budget_never_reaches_the_runner(self, rig):
+        r = rig(max_tool_calls=2)
+        r.call("investigate_base_code", query="a")
+        r.call("investigate_pr_code", query="b")
+        assert r.call("investigate_base_code", query="c") == EXHAUSTED
+        assert r.toolbox.calls_used == 2
+        assert r.runner.count("explore") == 2
+
+    def test_read_after_budget_is_exhausted_does_not_reach_git(self, rig, git_commands):
+        r = rig(max_tool_calls=1)
+        r.call("read_file", path="app.py")
+        git_commands.clear()
+        assert r.call("read_file", path="app.py", snapshot="pr") == EXHAUSTED
+        assert git_commands == []
+
+
+class TestGraphWarnings:
+    LATCH = "CodeGraph unavailable for {label} snapshot ({reason}); further graph calls for it are skipped"
+
+    @staticmethod
+    def _count(caplog, text):
+        return sum(1 for r in caplog.records if r.getMessage() == text)
+
+    def test_missing_binary_warns_once_per_run_across_findings(self, rig, caplog):
+        with caplog.at_level(logging.WARNING):
+            r = rig(runner=FakeRunner(available=False))
+            r.toolbox.build_tools()
+            r.toolbox.build_tools()
+        assert self._count(caplog, MISSING_BINARY_WARNING) == 1
+
+    def test_available_binary_does_not_warn(self, rig, caplog):
+        with caplog.at_level(logging.WARNING):
+            rig().toolbox.build_tools()
+        assert self._count(caplog, MISSING_BINARY_WARNING) == 0
+
+    def test_first_latch_warns_once_per_label(self, rig, caplog):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout"), "pr": failure("stale")}))
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                r.call("investigate_base_code", query="q")
+            for _ in range(2):
+                r.call("investigate_pr_code", query="q")
+        assert self._count(caplog, self.LATCH.format(label="base", reason="timeout")) == 1
+        assert self._count(caplog, self.LATCH.format(label="pr", reason="stale")) == 1
+
+    def test_no_match_never_warns(self, rig, caplog):
+        r = rig(runner=FakeRunner(explore={"base": no_match()}))
+        with caplog.at_level(logging.WARNING):
+            r.call("investigate_base_code", query="q")
+        assert not [m for m in caplog.messages if m.startswith("CodeGraph unavailable")]
+
+
+class TestLazyGraph:
+    def test_git_tools_do_zero_graph_work(self, rig):
+        r = rig()
+        r.call("read_file", path="app.py")
+        r.call("grep_repo", pattern="get_user", snapshot="pr")
+        assert r.runner.calls == [] and r.exports == []
+        assert r.session.init_seconds == 0.0 and r.session.state == "ok"
+
+    def test_importing_the_agent_modules_does_not_import_the_graph_package(self):
+        code = (
+            "import sys\n"
+            "import lgtm.agents.tools, lgtm.agents.sast_triage, lgtm.agents.authz_reviewer, lgtm.pipeline\n"
+            "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
+        )
+        done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == "[]"
+
+
+def _raiser(label, root):
+    raise RuntimeError("secret internals")
+
+
+class TestUnexpectedExplorerExceptionLatches:
+    QUERY = "who calls find_user"
+
+    def test_first_raise_is_unavailable_nonzero_without_exception_text(self, rig, snap):
+        r = rig(runner=FakeRunner(explore={"base": _raiser}))
+        out = r.call("investigate_base_code", query=self.QUERY)
+        assert out == render_graph("base", snap.base, "unavailable", "", query=self.QUERY, reason="nonzero")
+        assert "secret internals" not in out
+
+    def test_repeat_on_same_label_spends_budget_and_does_no_work(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": _raiser}))
+        first = r.call("investigate_base_code", query=self.QUERY)
+        calls = r.runner.count("explore")
+        assert r.call("investigate_base_code", query=self.QUERY) == first
+        assert r.runner.count("explore") == calls
+        assert r.toolbox.calls_used == 2
+
+    def test_other_label_is_unaffected(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": _raiser}))
+        r.call("investigate_base_code", query=self.QUERY)
+        assert "status=ok" in _lines(r.call("investigate_pr_code", query=self.QUERY))[0]
+
+    def test_first_latch_warning_appears_once_for_the_label(self, rig, caplog):
+        r = rig(runner=FakeRunner(explore={"base": _raiser}))
+        text = "CodeGraph unavailable for base snapshot (nonzero); further graph calls for it are skipped"
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                r.call("investigate_base_code", query=self.QUERY)
+        assert sum(1 for rec in caplog.records if rec.getMessage() == text) == 1
+
+    def test_graph_state_reports_the_exception_latch(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": _raiser}))
+        assert r.toolbox.graph_state() == "ok"
+        r.call("investigate_base_code", query=self.QUERY)
+        assert r.toolbox.graph_state() == "degraded:base:nonzero"
+
+    def test_graph_state_orders_session_latch_then_exception_latch(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout"), "pr": _raiser}))
+        r.call("investigate_base_code", query=self.QUERY)
+        r.call("investigate_pr_code", query=self.QUERY)
+        assert r.toolbox.graph_state() == "degraded:base:timeout;degraded:pr:nonzero"
+
+    def test_graph_state_orders_exception_latch_then_session_latch(self, rig):
+        r = rig(runner=FakeRunner(explore={"base": failure("timeout"), "pr": _raiser}))
+        r.call("investigate_pr_code", query=self.QUERY)
+        r.call("investigate_base_code", query=self.QUERY)
+        assert r.toolbox.graph_state() == "degraded:pr:nonzero;degraded:base:timeout"

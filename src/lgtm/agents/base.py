@@ -444,13 +444,14 @@ def run_tool_loop(
                     # The model answered from the prompt alone; ask it once
                     # to verify against the repository first.
                     pushed_back = True
+                    tool_names = ", ".join(t.name for t in tools)
                     messages.append(
                         HumanMessage(
                             content=(
                                 "Before giving a verdict, verify your reasoning "
                                 "against the repository: call at least one tool "
-                                "(e.g. read the auth decorators or the function "
-                                "you are judging). Then give your final JSON."
+                                f"({tool_names}), e.g. read the auth decorators or "
+                                "the function you are judging. Then give your final JSON."
                             )
                         )
                     )

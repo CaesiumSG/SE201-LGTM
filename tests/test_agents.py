@@ -24,8 +24,10 @@ class TestToolbox:
 
     def test_read_file_line_range(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
-        out = toolbox.read_file_impl("app.py", 2, 2)
-        assert "2: " in out and "1: " not in out.split("===")[2]
+        lines = toolbox.read_file_impl("app.py", 2, 2).splitlines()
+        assert lines[0].endswith("lines=2-2]")
+        assert lines[1].startswith("2: ")
+        assert not any(line.startswith("1: ") for line in lines)
 
     def test_read_missing_file(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from lgtm.agents import prompt_parts
 from lgtm.agents.base import AgentFinding, build_llm, parse_agent_output, run_tool_loop
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
@@ -27,12 +28,7 @@ positive. A finding is a false positive when the query uses bound parameters \
 dynamic parts are strictly validated against a whitelist, or when no \
 user-controlled input can reach the query.
 
-You have read-only tools that operate on the BASE branch of the repository:
-- read_file(path, start_line, end_line): read code with line numbers
-- grep_repo(pattern, file_glob): regex search across the repo
-- search_policy(query): search project documentation / security policy
-- search_code(query): semantic search over the source code — use it when \
-you don't know which file or symbol to look for
+{tool_section}
 
 RULES:
 - You have a strict budget of {max_tool_calls} tool calls. Spend them wisely: \
@@ -113,6 +109,7 @@ class SASTTriageAgent:
         """Triage one Semgrep finding; returns a structured AgentFinding."""
         self.toolbox.reset_budget()
         tools = self.toolbox.build_tools()
+        guidance = prompt_parts.tool_guidance(self.toolbox)
 
         diff_text = file_diff.hunk_text() if file_diff else "(diff unavailable)"
         extra_context = ""
@@ -134,7 +131,10 @@ class SASTTriageAgent:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Policy pre-retrieval failed: %s", exc)
-        system = SYSTEM_PROMPT.format(max_tool_calls=self.config.max_tool_calls)
+        system = SYSTEM_PROMPT.format(
+            tool_section=prompt_parts.render_tool_section(guidance),
+            max_tool_calls=guidance.max_tool_calls,
+        )
         user = USER_PROMPT.format(
             finding_id=finding.finding_id,
             rule_id=finding.rule_id,
@@ -146,7 +146,7 @@ class SASTTriageAgent:
             matched_code=finding.matched_code[:1500],
             diff_text=diff_text[:6000],
             extra_context=extra_context,
-            max_tool_calls=self.config.max_tool_calls,
+            max_tool_calls=guidance.max_tool_calls,
         )
 
         logger.info("SAST triage: %s", finding.finding_id)

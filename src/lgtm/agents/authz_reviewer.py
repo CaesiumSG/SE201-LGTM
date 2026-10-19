@@ -13,6 +13,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from lgtm.agents import prompt_parts
 from lgtm.agents.base import AgentFinding, build_llm, parse_agent_output, run_tool_loop
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
@@ -98,13 +99,7 @@ authentication/role check at all.
 - CWE-863 (Incorrect Authorization): a check exists but is wrong (wrong \
 role, wrong comparison, bypassable condition).
 
-You have read-only tools operating on the BASE branch:
-- read_file(path, start_line, end_line): read code with line numbers
-- grep_repo(pattern, file_glob): regex search across the repo
-- search_policy(query): search the security policy / API spec / README
-- search_code(query): semantic search over the source code — use it to \
-find auth middleware/decorators or related endpoints without knowing \
-their file names
+{tool_section}
 
 RULES:
 - You have a strict budget of {max_tool_calls} tool calls. Typical plan: \
@@ -200,6 +195,7 @@ class AuthzReviewerAgent:
         """Review one changed endpoint for authorization flaws."""
         self.toolbox.reset_budget()
         tools = self.toolbox.build_tools()
+        tool_info = prompt_parts.tool_guidance(self.toolbox)
 
         # Pre-seed policy context (does not consume the agent's budget)
         policy_context = "(documentation index unavailable)"
@@ -223,7 +219,10 @@ class AuthzReviewerAgent:
                 f"{facts}\n\n"
             )
         guidance = ROLE_GUIDANCE if self.config.authz_role_guidance else ""
-        system = SYSTEM_PROMPT.format(max_tool_calls=self.config.max_tool_calls)
+        system = SYSTEM_PROMPT.format(
+            tool_section=prompt_parts.render_tool_section(tool_info),
+            max_tool_calls=tool_info.max_tool_calls,
+        )
         user = USER_PROMPT.format(
             finding_id=endpoint.endpoint_id,
             route_path=endpoint.route_path,
@@ -234,7 +233,7 @@ class AuthzReviewerAgent:
             semgrep_context=semgrep_context,
             facts_context=facts_context,
             guidance=guidance,
-            max_tool_calls=self.config.max_tool_calls,
+            max_tool_calls=tool_info.max_tool_calls,
         )
 
         logger.info("Authz review: %s", endpoint.endpoint_id)
