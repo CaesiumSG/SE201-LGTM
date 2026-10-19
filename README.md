@@ -45,10 +45,8 @@ a suggested fix.
 Requirements: Python 3.10+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
 
-Optional: Node.js and the `codegraph` CLI on `PATH`. When the binary is
-found, agents also get the `investigate_base_code` and `investigate_pr_code`
-tools; without it, reviews run with `read_file`, `grep_repo` and
-`search_policy` only.
+Optional: Node.js and the `codegraph` CLI on `PATH` enable the
+`investigate_base_code` and `investigate_pr_code` tools.
 
 ```bash
 # 1. Install LGTM (editable) + dev and SAST extras
@@ -99,9 +97,7 @@ thinking disabled. It cannot be combined with `--gpu-cluster` or
 
 ## Configuration
 
-Settings are read from a JSON file passed with `--config-file`; each key is
-a field name of `LGTMConfig` in `src/lgtm/config.py`. Unknown keys are
-logged as a warning and ignored.
+Settings are read from a JSON file passed with `--config-file`.
 
 ### CodeGraph
 
@@ -118,19 +114,12 @@ or CLI flag that turns the graph off.
 | `graph_max_export_files` | `20000` | Must be positive; values above `20000` are reduced to `20000` |
 | `graph_max_export_bytes` | `209715200` | Must be positive; values above `209715200` are reduced to `209715200` |
 
-```json
-{
-  "graph_init_timeout_s": 120,
-  "graph_query_timeout_s": 20
-}
-```
-
 Each snapshot (`base`, `pr`) is exported to a temporary directory and indexed
 on first use. Graph queries read the committed commit only, not the working
 tree. If the graph fails for a snapshot (timeout, non-zero exit, export
 error), that snapshot's graph tools are skipped for the rest of the run and
-agents use `read_file` or `grep_repo` with the same snapshot label. Failures
-are not retried.
+agents use `read_file` or `grep_repo` with the same snapshot label. A launch
+failure affects both snapshots.
 
 The run's graph state is written to `graph_state` in `report.json` and to
 the benchmark records:
@@ -144,20 +133,19 @@ the benchmark records:
 
 The policy index is stored in `.lgtm/chroma` inside the reviewed repository.
 Deleting that directory also deletes the index, so run
-`lgtm index --repo /path/to/repo` again before the next review. Stale
-collections are not cleaned up automatically.
+`lgtm index --repo /path/to/repo` again before the next review. Indexing
+replaces only the policy collection (`lgtm_docs`); LGTM does not clean up
+other collections automatically. Config keys that no longer exist
+are ignored with an `Ignoring unknown config keys` warning.
 
 ## Guardrails
 
 - Agent tools are **read-only**; file access is sandboxed to the repo.
 - Agents read committed snapshots of the **base** and **PR** branches. Each
-  branch is resolved once to a full commit SHA before the run starts, so all
-  reads and graph queries in the run use the same commits. PR content is
-  treated as untrusted data (analyzed, never executed or obeyed).
+  branch is resolved once to a full commit SHA before the run starts. PR
+  content is treated as untrusted data (analyzed, never executed or obeyed).
 - Each finding has a budget of **5 tool calls** (`max_tool_calls`) shared by
-  all of its tools. Every attempted call counts, including calls with invalid
-  arguments or unknown tool names. Once the budget is spent, tools return a
-  budget error.
+  all of its tools. Once the budget is spent, tools return a budget error.
 - LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
   before an agent run is reported as failed.
 - Tool arguments are **validated** against each tool's schema before the
@@ -167,9 +155,7 @@ collections are not cleaned up automatically.
 - Every citation is **validated** post-hoc; ungrounded findings are flagged
   with `evidence_valid: false`. A citation labelled `base` or `pr` must name a
   file in that committed snapshot, and any line range must be ordered,
-  positive and inside the file. The snippet must appear in that file. There
-  is no working-tree, diff or line-slack fallback for labelled citations.
-  Unlabelled code citations and policy citations are validated as before.
+  positive and inside the file. The snippet must appear in that file.
 - A `vulnerable` verdict is **downgraded to `possible`** when the PR graph was
   unavailable for the finding and no valid code citation validated against the
   PR snapshot or the PR diff. Any one such citation is enough to keep the
@@ -210,8 +196,7 @@ parameterized-but-SAST-triggering controls) and 6 authorization pairs
 (IDOR, missing/incorrect role checks, API-key scope violations —
 invisible to SAST by design).
 
-> The results below were measured at an earlier commit and have not been
-> re-measured for the current code.
+> Results measured at an earlier commit; not re-measured for the current code.
 
 ```bash
 python benchmark/evaluate.py --mode lgtm
@@ -277,8 +262,7 @@ projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
 tuned on them. The authz cases also run with a short policy written from
 each project's docs (the `policy` variant).
 
-> The results below were measured at an earlier commit and have not been
-> re-measured for the current code.
+> Results measured at an earlier commit; not re-measured for the current code.
 
 ```bash
 python benchmark/real_world/fetch.py --policies          # clone + build case branches
@@ -308,8 +292,7 @@ aimed at the reviewer. **Attack success rate (ASR)** = cases flagged
 `vulnerable` originally but not once injected, out of those flagged
 originally (lower is better).
 
-> The results below were measured at an earlier commit and have not been
-> re-measured for the current code.
+> Results measured at an earlier commit; not re-measured for the current code.
 
 ```bash
 python benchmark/injection/run_injection_bench.py --mode sast-only
@@ -379,8 +362,8 @@ src/lgtm/
 ├── graph/runner.py         # codegraph subprocess: init and explore, timeouts
 ├── graph/session.py        # per-snapshot graph session and failure state
 ├── graph/exporter.py       # committed-snapshot export to temporary directories
-├── graph/snapshot.py       # ref to full commit SHA resolution
-├── graph/format.py         # tool output envelopes for READ, GREP and CODEGRAPH
+├── graph/snapshot.py       # commit SHA resolution
+├── graph/format.py         # tool output formatting
 ├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
 ├── agents/sast_triage.py   # CWE-89 triage agent
 ├── agents/authz_reviewer.py# CWE-639/862/863 reviewer + endpoint extraction
