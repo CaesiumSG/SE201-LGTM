@@ -175,9 +175,15 @@ class ReportBuilder:
                         add(f"- 📄 Policy — `{ev.source or 'unknown'}`:")
                         add(f"  > {ev.content.strip()[:500]}")
                     else:
-                        loc = f"`{ev.file}`"
-                        if ev.lines:
-                            loc += f" lines {ev.lines[0]}-{ev.lines[-1]}"
+                        if ev.snapshot:
+                            sha = self.meta.pr_sha if ev.snapshot == "pr" else self.meta.base_sha
+                            loc = f"[{ev.snapshot} {sha[:7] or 'unknown'}] `{ev.file}`"
+                            if ev.lines:
+                                loc += f":{ev.lines[0]}-{ev.lines[-1]}"
+                        else:
+                            loc = f"`{ev.file}`"
+                            if ev.lines:
+                                loc += f" lines {ev.lines[0]}-{ev.lines[-1]}"
                         add(f"- 💻 Code — {loc}:")
                         add("")
                         add("  ```")

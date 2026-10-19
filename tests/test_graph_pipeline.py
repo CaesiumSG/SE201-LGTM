@@ -759,3 +759,111 @@ class TestBaselines:
         assert (meta.graph_state, meta.graph_index_seconds) == (None, None)
         assert (meta.base_sha, meta.pr_sha) == ("", "")
         assert (meta.base, meta.pr) == ("main", "pr")
+
+
+CAP_MARKER = (
+    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
+    "for this finding and no cited evidence validated against the PR snapshot or the diff."
+    "]"
+)
+PR_SQL_LINE = "cursor.execute(f\"SELECT * FROM t_a WHERE n = '{name}'\")"
+
+
+def _vulnerable(*evidence) -> str:
+    return _final(verdict="vulnerable", explanation="Injectable.", evidence=list(evidence))
+
+
+def _pr_evidence(snapshot="pr", content=PR_SQL_LINE):
+    return {"type": "code", "file": "a.py", "lines": [4, 4], "content": content, "snapshot": snapshot}
+
+
+class TestCapIntegration:
+    def test_vulnerable_triage_findings_downgrade_when_pr_graph_is_down_and_nothing_grounds_them(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph(FakeRunner(init={"pr": failure("timeout")}))
+        llm = ScriptedLLM([
+            _call("investigate_pr_code", {"query": "find_a"}),
+            _msg(_vulnerable(_pr_evidence(content="os.system('invented')"))),
+            _msg(_vulnerable()),
+            _msg(_vulnerable(_pr_evidence(snapshot="base"))),
+        ])
+
+        result = _review(repo, llm)
+
+        by_file = {f.file: f for f in result.findings}
+        assert set(by_file) == set(FILES)
+        for finding in by_file.values():
+            assert finding.pr_graph_ok is False
+            assert finding.verdict == "possible"
+            assert finding.explanation.endswith("\n\n" + CAP_MARKER)
+            assert finding.explanation.count(CAP_MARKER) == 1
+            assert finding.confidence == 0.9
+
+    def test_vulnerable_authz_findings_downgrade_too(self, repo_with_endpoints, install_graph, semgrep):
+        install_graph(FakeRunner(init={"pr": failure("timeout")}))
+        llm = ScriptedLLM([
+            _call("investigate_pr_code", {"query": "find_a"}),
+            *[_msg(_final()) for _ in FILES],
+            _msg(_vulnerable()),
+            _msg(_vulnerable()),
+        ])
+
+        result = _review(repo_with_endpoints, llm)
+
+        authz = [f for f in result.findings if f.category == "authz"]
+        assert len(authz) == 2
+        assert all(f.verdict == "possible" and f.pr_graph_ok is False for f in authz)
+        assert all(f.explanation.endswith(CAP_MARKER) for f in authz)
+
+    def test_pr_labelled_evidence_validates_against_frozen_pr_commit_and_exempts_cap(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph(FakeRunner(init={"pr": failure("timeout")}))
+        base_sentinel = {
+            "type": "code", "file": "a.py", "lines": [1, 1], "snapshot": "base",
+            "content": _sentinel("a"),
+        }
+        llm = ScriptedLLM([
+            _call("investigate_pr_code", {"query": "find_a"}),
+            _msg(_vulnerable(_pr_evidence(), base_sentinel)),
+        ])
+
+        result = _review(repo, llm)
+
+        first = next(f for f in result.findings if f.file == "a.py")
+        assert first.pr_graph_ok is False
+        assert first.evidence_issues == []
+        assert first.evidence_valid is True
+        assert first.verdict == "vulnerable"
+        assert CAP_MARKER not in first.explanation
+
+    def test_healthy_graph_never_caps(self, repo, install_graph, semgrep):
+        install_graph()
+        llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
+
+        result = _review(repo, llm)
+
+        first = next(f for f in result.findings if f.file == "a.py")
+        assert first.pr_graph_ok is True
+        assert first.evidence_valid is False
+        assert first.verdict == "vulnerable"
+        assert CAP_MARKER not in first.explanation
+
+    def test_labelled_evidence_ignores_dirty_working_tree(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph()
+        (repo / "a.py").write_text(
+            "WORKTREE_ONLY = 1\n" + (repo / "a.py").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        llm = ScriptedLLM([_msg(_vulnerable({
+            "type": "code", "file": "a.py", "lines": [1, 1], "snapshot": "base",
+            "content": "WORKTREE_ONLY = 1",
+        }))])
+
+        result = _review(repo, llm)
+
+        first = next(f for f in result.findings if f.file == "a.py")
+        assert first.evidence_valid is False
+        assert any("at base snapshot" in issue for issue in first.evidence_issues)

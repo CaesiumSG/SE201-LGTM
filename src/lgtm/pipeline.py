@@ -211,7 +211,13 @@ class ReviewPipeline:
             findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------
-        validator = EvidenceValidator(self.repo, base_rev, diffs, self.config)
+        validator = EvidenceValidator(
+            self.repo,
+            base_rev,
+            diffs,
+            self.config,
+            shas={"base": base_rev, "pr": pr_rev} if shas is not None else None,
+        )
         findings = validator.validate_all(findings)
 
         # ---- Stage 5: report ------------------------------------------

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from lgtm.agents.base import AgentFinding, EvidenceItem, parse_agent_output
+from lgtm.diff.git_diff import get_pr_diff
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
+from lgtm.validation.evidence import EvidenceValidator
 
 
 class TestEvidenceItemSnapshot:
@@ -132,3 +137,480 @@ class TestReviewMetadataGraphFields:
         assert review["graph_index_seconds"] == 0.0
         assert review["base_sha"] == "a" * 40
         assert review["pr_sha"] == "b" * 40
+
+
+def _parse_evidence(*entries) -> list[EvidenceItem]:
+    raw = json.dumps({"verdict": "safe", "confidence": 0.5, "evidence": list(entries)})
+    return parse_agent_output(raw, "f").evidence
+
+
+class TestEvidenceAliasParsing:
+    def test_range_alias_sets_file_lines_and_label(self):
+        (item,) = _parse_evidence({"type": "code", "file": "src/app.py:L3-L5 @pr", "content": "x"})
+        assert (item.file, item.lines, item.snapshot) == ("src/app.py", [3, 5], "pr")
+        assert item.snapshot_conflict is False
+
+    def test_base_alias(self):
+        (item,) = _parse_evidence({"type": "code", "file": "app.py:L10-L12 @base", "content": "x"})
+        assert (item.file, item.lines, item.snapshot) == ("app.py", [10, 12], "base")
+
+    def test_single_line_alias(self):
+        (item,) = _parse_evidence({"type": "code", "file": "app.py:L5 @pr", "content": "x"})
+        assert (item.file, item.lines, item.snapshot) == ("app.py", [5, 5], "pr")
+
+    def test_path_only_alias_has_no_range(self):
+        (item,) = _parse_evidence({"type": "code", "file": "app.py @pr", "content": "x"})
+        assert (item.file, item.lines, item.snapshot) == ("app.py", None, "pr")
+
+    def test_explicit_lines_win_over_alias_range(self):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "app.py:L3-L5 @pr", "lines": [7, 9], "content": "x"}
+        )
+        assert item.lines == [7, 9]
+        assert item.file == "app.py"
+        assert item.snapshot == "pr"
+
+    def test_agreeing_structured_snapshot_and_alias_have_no_conflict(self):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "app.py:L1-L2 @pr", "snapshot": " PR ", "content": "x"}
+        )
+        assert (item.snapshot, item.snapshot_conflict) == ("pr", False)
+
+    @pytest.mark.parametrize("structured,alias", [("base", "pr"), ("pr", "base")])
+    def test_field_and_alias_disagreement_sets_conflict(self, structured, alias):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": f"app.py:L1-L2 @{alias}", "snapshot": structured, "content": "x"}
+        )
+        assert item.snapshot_conflict is True
+
+    def test_plain_path_is_untouched_and_unlabelled(self):
+        (item,) = _parse_evidence({"type": "code", "file": "app.py", "lines": [1, 2], "content": "x"})
+        assert (item.file, item.lines, item.snapshot, item.snapshot_conflict) == (
+            "app.py", [1, 2], None, False,
+        )
+
+    def test_supplied_sha_is_never_used_as_label(self):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "app.py", "snapshot": "a" * 40, "content": "x"}
+        )
+        assert item.snapshot is None
+        assert item.snapshot_conflict is True
+
+
+class TestToolFailureEvidenceDropped:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[CODEGRAPH snapshot=pr sha=" + "a" * 40 + ' status=ok query="x"]\nbody',
+            "[READ snapshot=base sha=" + "a" * 40 + " path=app.py lines=1-3]\n1: x",
+            "[GREP snapshot=pr sha=" + "a" * 40 + ' pattern="x"]',
+            "ERROR: file 'app.py' not present in pr snapshot @" + "a" * 40 + ".",
+            "stuff status=unavailable reason=timeout more",
+            "ERROR: tool call budget exhausted",
+            "the tool call budget exhausted earlier",
+        ],
+    )
+    def test_envelope_or_failure_content_is_dropped(self, content):
+        evidence = _parse_evidence(
+            {"type": "code", "file": "app.py", "lines": [1, 1], "content": content}
+        )
+        assert evidence == []
+
+    def test_other_evidence_survives_a_dropped_item(self):
+        evidence = _parse_evidence(
+            {"type": "code", "file": "app.py", "content": "ERROR: boom"},
+            {"type": "code", "file": "app.py", "lines": [1, 1], "content": "real code"},
+        )
+        assert [e.content for e in evidence] == ["real code"]
+
+    def test_defensive_fallbacks_are_preserved(self):
+        evidence = _parse_evidence(
+            "not a dict",
+            {"file": "a.py", "lines": 4, "content": "x"},
+            {"source": "policy.md", "type": "bogus", "content": "p"},
+        )
+        assert [(e.type, e.lines) for e in evidence] == [("code", [4, 4]), ("policy", None)]
+        assert parse_agent_output("no json at all", "f").verdict == "insufficient_evidence"
+
+
+UNCHANGED = (
+    "import os\n"
+    "def stable(value):\n"
+    "    cleaned = value.strip()\n"
+    "    return cleaned.upper()\n"
+    "\n"
+    "STABLE_LIMIT = 100\n"
+)
+SHIFTED_BASE = (
+    "import os\n"
+    "def target(arg):\n"
+    "    legacy_helper(config, retries=3, verbose=True)\n"
+    "    return compute(arg)\n"
+)
+SHIFTED_PR = (
+    "import os\n"
+    "import sys\n"
+    "import json\n"
+    "def target(arg):\n"
+    "    return compute(arg)\n"
+)
+DELETED = "def removed():\n    return 'gone'\n"
+ADDED = "def brand_new(request):\n    token = request.args['token']\n    return token\n"
+
+CAP_MARKER = (
+    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
+    "for this finding and no cited evidence validated against the PR snapshot or the diff.]"
+)
+
+
+def _run_git(repo: Path, *args: str) -> str:
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+@pytest.fixture(scope="module")
+def snap(tmp_path_factory):
+    """Committed base/pr snapshots (added, deleted, shifted, unchanged) under a dirty working tree."""
+    repo = tmp_path_factory.mktemp("snaprepo")
+    _run_git(repo, "init", "-q", "-b", "main")
+    _run_git(repo, "config", "user.email", "t@t.local")
+    _run_git(repo, "config", "user.name", "T")
+    _run_git(repo, "config", "commit.gpgsign", "false")
+    _run_git(repo, "config", "core.autocrlf", "false")
+    (repo / "unchanged.py").write_text(UNCHANGED, encoding="utf-8")
+    (repo / "shifted.py").write_text(SHIFTED_BASE, encoding="utf-8")
+    (repo / "deleted.py").write_text(DELETED, encoding="utf-8")
+    (repo / "policy.md").write_text(
+        "# Policy\n\nAll SQL must use bound parameters.\n", encoding="utf-8"
+    )
+    _run_git(repo, "add", "-A")
+    _run_git(repo, "commit", "-q", "-m", "base")
+    base = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "shifted.py").write_text(SHIFTED_PR, encoding="utf-8")
+    (repo / "added.py").write_text(ADDED, encoding="utf-8")
+    _run_git(repo, "rm", "-q", "deleted.py")
+    _run_git(repo, "add", "-A")
+    _run_git(repo, "commit", "-q", "-m", "pr")
+    pr = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", "main")
+    (repo / "unchanged.py").write_text(
+        UNCHANGED + "WORKTREE_ONLY_LINE = 'dirty-tree-marker'\n", encoding="utf-8"
+    )
+    (repo / "shifted.py").write_text(
+        SHIFTED_BASE + "    dirty_only_call(secret_token_value)\n", encoding="utf-8"
+    )
+    (repo / "added.py").write_text(ADDED, encoding="utf-8")
+    (repo / "untracked.py").write_text("def only_in_tree():\n    return 1\n", encoding="utf-8")
+    return SimpleNamespace(
+        repo=repo, shas={"base": base, "pr": pr}, diffs=get_pr_diff(repo, base, pr)
+    )
+
+
+def _validator(snap, shas=None) -> EvidenceValidator:
+    return EvidenceValidator(snap.repo, "main", snap.diffs, shas=shas or snap.shas)
+
+
+def _item(file, lines, content, snapshot, **extra) -> EvidenceItem:
+    return EvidenceItem(
+        type="code", file=file, lines=lines, content=content, snapshot=snapshot, **extra
+    )
+
+
+def _check(validator, *items, verdict="possible", pr_graph_ok=None, explanation="Because."):
+    finding = AgentFinding(
+        finding_id="f", verdict=verdict, confidence=0.7, explanation=explanation,
+        evidence=list(items), pr_graph_ok=pr_graph_ok,
+    )
+    return validator.validate_all([finding])[0]
+
+
+class TestStrictLabelledValidation:
+    @pytest.mark.parametrize(
+        "item",
+        [
+            _item("added.py", [2, 3], "token = request.args['token']\nreturn token", "pr"),
+            _item("shifted.py", [4, 5], "def target(arg):\n    return compute(arg)", "pr"),
+            _item("shifted.py", [2, 4], "legacy_helper(config, retries=3, verbose=True)", "base"),
+            _item("deleted.py", [1, 2], "def removed():   return 'gone'", "base"),
+            _item("unchanged.py", [2, 4], "cleaned = value.strip()", "base"),
+            _item("unchanged.py", [2, 4], "cleaned = value.strip()", "pr"),
+            _item("unchanged.py", None, "STABLE_LIMIT = 100", "pr"),
+        ],
+        ids=["added-pr", "shifted-pr", "shifted-base", "deleted-base", "unchanged-base",
+             "unchanged-pr", "no-range"],
+    )
+    def test_item_cited_at_its_own_snapshot_is_valid(self, snap, item):
+        finding = _check(_validator(snap), item)
+        assert finding.evidence_issues == []
+        assert finding.evidence_valid is True
+
+    @pytest.mark.parametrize(
+        "file,label",
+        [("added.py", "base"), ("deleted.py", "pr"), ("untracked.py", "base"),
+         ("untracked.py", "pr"), ("ghost.py", "pr")],
+    )
+    def test_file_missing_at_label_is_rejected_even_when_in_working_tree(self, snap, file, label):
+        finding = _check(_validator(snap), _item(file, [1, 1], "x", label))
+        assert finding.evidence_issues == [f"cited file does not exist at {label} snapshot"]
+        assert finding.evidence_valid is False
+
+    def test_dirty_working_tree_lines_are_out_of_range(self, snap):
+        finding = _check(
+            _validator(snap),
+            _item("unchanged.py", [1, 7], "WORKTREE_ONLY_LINE = 'dirty-tree-marker'", "base"),
+        )
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues == [
+            "cited lines 1-7 out of range for unchanged.py at base snapshot (6 lines)"
+        ]
+
+    def test_dirty_working_tree_snippet_is_not_found(self, snap):
+        finding = _check(
+            _validator(snap),
+            _item("shifted.py", [1, 4], "dirty_only_call(secret_token_value)", "base"),
+        )
+        assert finding.evidence_valid is False
+        assert len(finding.evidence_issues) == 1
+        assert finding.evidence_issues[0].startswith(
+            "cited code snippet not found in shifted.py at base snapshot: "
+        )
+
+    def test_snippet_from_other_snapshot_is_not_found(self, snap):
+        legacy = "legacy_helper(config, retries=3, verbose=True)"
+        finding = _check(_validator(snap), _item("shifted.py", [2, 5], legacy, "pr"))
+        assert finding.evidence_issues == [
+            f"cited code snippet not found in shifted.py at pr snapshot: {legacy!r}"
+        ]
+        assert finding.evidence_valid is False
+
+    def test_snippet_message_shows_first_80_characters(self, snap):
+        content = "zq_unrelated_token_" * 10
+        finding = _check(_validator(snap), _item("unchanged.py", [1, 2], content, "base"))
+        assert finding.evidence_issues == [
+            f"cited code snippet not found in unchanged.py at base snapshot: {content[:80]!r}"
+        ]
+
+    def test_line_numbers_from_the_other_snapshot_do_not_fit(self, snap):
+        finding = _check(
+            _validator(snap), _item("shifted.py", [4, 5], "return compute(arg)", "base")
+        )
+        assert finding.evidence_issues == [
+            "cited lines 4-5 out of range for shifted.py at base snapshot (4 lines)"
+        ]
+
+    @pytest.mark.parametrize("lines", [[1, 7], [7, 7], [5, 50]])
+    def test_range_beyond_end_has_no_slack(self, snap, lines):
+        finding = _check(
+            _validator(snap), _item("unchanged.py", lines, "STABLE_LIMIT = 100", "base")
+        )
+        assert finding.evidence_issues == [
+            f"cited lines {lines[0]}-{lines[1]} out of range for unchanged.py "
+            "at base snapshot (6 lines)"
+        ]
+
+    @pytest.mark.parametrize("lines", [[0, 2], [-3, 2], [5, 3], [0, 0]])
+    def test_range_must_be_ordered_positive_integers(self, snap, lines):
+        finding = _check(
+            _validator(snap), _item("unchanged.py", lines, "STABLE_LIMIT = 100", "base")
+        )
+        assert finding.evidence_issues == [
+            "invalid cited line range for unchanged.py at base snapshot"
+        ]
+        assert finding.evidence_valid is False
+
+    def test_whole_file_range_is_in_bounds(self, snap):
+        finding = _check(
+            _validator(snap), _item("unchanged.py", [1, 6], "STABLE_LIMIT = 100", "base")
+        )
+        assert finding.evidence_issues == []
+
+    def test_labelled_code_evidence_without_file_is_reported(self, snap):
+        finding = _check(
+            _validator(snap), EvidenceItem(type="code", file=None, content="x", snapshot="pr")
+        )
+        assert finding.evidence_issues == ["code evidence has no file path"]
+
+    def test_label_without_frozen_sha_is_unavailable(self, snap):
+        only_base = _validator(snap, {"base": snap.shas["base"]})
+        finding = _check(only_base, _item("added.py", [1, 1], "def brand_new(request):", "pr"))
+        assert finding.evidence_issues == ["snapshot 'pr' is unavailable for this review"]
+        assert _check(
+            only_base, _item("deleted.py", [1, 1], "def removed():", "base")
+        ).evidence_issues == []
+
+    def test_label_missing_from_given_shas_is_unavailable(self, snap):
+        validator = EvidenceValidator(
+            snap.repo, "main", snap.diffs, shas={"base": snap.shas["base"]}
+        )
+        finding = _check(validator, _item("added.py", [1, 1], "def brand_new(request):", "pr"))
+        assert finding.evidence_issues == ["snapshot 'pr' is unavailable for this review"]
+
+    @pytest.mark.parametrize(
+        "file,lines,content",
+        [
+            ("added.py", [1, 1], "def brand_new(request):"),
+            ("untracked.py", [1, 2], "def only_in_tree():"),
+            ("ghost.py", [1, 1], "x"),
+            ("unchanged.py", [1, 6 + 50], "STABLE_LIMIT = 100"),
+        ],
+    )
+    def test_validator_without_shas_ignores_labels_and_conflicts(self, snap, file, lines, content):
+        legacy = EvidenceValidator(snap.repo, "main", snap.diffs)
+        plain = _check(legacy, _item(file, lines, content, None))
+        labelled = _check(legacy, _item(file, lines, content, "pr"))
+        conflicted = _check(legacy, _item(file, lines, content, "base", snapshot_conflict=True))
+        assert labelled.evidence_issues == plain.evidence_issues
+        assert conflicted.evidence_issues == plain.evidence_issues
+        assert labelled.evidence_valid == conflicted.evidence_valid == plain.evidence_valid
+
+    def test_unknown_supplied_label_reports_raw_value_and_never_validates(self, snap):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "unchanged.py", "lines": [1, 2], "snapshot": "deadbeef",
+             "content": "def stable(value):"}
+        )
+        finding = _check(_validator(snap), item)
+        assert "unknown snapshot label: 'deadbeef'" in finding.evidence_issues
+        assert finding.evidence_valid is False
+
+    def test_supplied_sha_is_reported_not_resolved(self, snap):
+        sha = snap.shas["pr"]
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "added.py", "lines": [1, 1], "snapshot": sha,
+             "content": "def brand_new(request):"}
+        )
+        finding = _check(_validator(snap), item)
+        assert f"unknown snapshot label: {sha!r}" in finding.evidence_issues
+        assert finding.evidence_valid is False
+
+    def test_field_alias_disagreement_is_reported_and_invalid(self, snap):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "unchanged.py:L2-L2 @pr", "snapshot": "base",
+             "content": "def stable(value):"}
+        )
+        finding = _check(_validator(snap), item)
+        assert "evidence snapshot field and @alias disagree" in finding.evidence_issues
+        assert finding.evidence_valid is False
+
+    def test_alias_label_is_validated_strictly(self, snap):
+        (item,) = _parse_evidence(
+            {"type": "code", "file": "added.py:L1-L1 @base", "content": "def brand_new(request):"}
+        )
+        finding = _check(_validator(snap), item)
+        assert finding.evidence_issues == ["cited file does not exist at base snapshot"]
+
+    def test_policy_evidence_ignores_snapshot_and_conflict(self, snap):
+        (conflicted,) = _parse_evidence(
+            {"type": "policy", "source": "policy.md", "snapshot": "deadbeef",
+             "content": "All SQL must use bound parameters."}
+        )
+        labelled = EvidenceItem(
+            type="policy", source="policy.md", snapshot="pr",
+            content="All SQL must use bound parameters.",
+        )
+        finding = _check(_validator(snap), conflicted, labelled)
+        assert finding.evidence_issues == []
+        assert finding.evidence_valid is True
+
+    def test_unlabelled_items_keep_legacy_fallbacks_with_frozen_shas(self, snap):
+        validator = _validator(snap)
+        in_tree = _check(validator, _item("untracked.py", [1, 2], "def only_in_tree():", None))
+        assert in_tree.evidence_issues == []
+        slack = _check(validator, _item("unchanged.py", [1, 6 + 50], "STABLE_LIMIT = 100", None))
+        assert slack.evidence_issues == []
+        missing = _check(validator, _item("ghost.py", [1, 1], "x", None))
+        assert missing.evidence_issues == ["cited file does not exist: ghost.py"]
+
+    def test_unlabelled_locator_suffix_still_resolves(self, snap):
+        finding = _check(
+            _validator(snap), _item("unchanged.py:2-4", None, "cleaned = value.strip()", None)
+        )
+        assert finding.evidence_issues == []
+
+
+def _evidence_kinds():
+    """Name -> (items, exempts the vulnerable verdict from the cap)."""
+    return {
+        "none": ([], False),
+        "valid-pr": ([_item("added.py", [1, 3], "return token", "pr")], True),
+        "valid-base": ([_item("deleted.py", [1, 2], "def removed():", "base")], False),
+        "valid-policy": (
+            [EvidenceItem(type="policy", source="policy.md", content="bound parameters")], False,
+        ),
+        "unlabelled-in-diff": (
+            [_item("added.py", [1, 3], "token = request.args['token']", None)], True,
+        ),
+        "unlabelled-not-in-diff": (
+            [_item("unchanged.py", [2, 4], "cleaned = value.strip()", None)], False,
+        ),
+        "invalid-pr": (
+            [_item("added.py", [1, 3], "os.system('rm -rf /') totally invented", "pr")], False,
+        ),
+        "pr-label-wrong-snapshot": (
+            [_item("deleted.py", [1, 2], "def removed():", "pr")], False,
+        ),
+        "valid-pr-empty-content": ([_item("added.py", [1, 3], "", "pr")], False),
+        "valid-pr-plus-invalid-other": (
+            [_item("added.py", [1, 3], "return token", "pr"),
+             _item("ghost.py", [1, 1], "x", "base")],
+            True,
+        ),
+        "invalid-other-then-valid-pr": (
+            [_item("ghost.py", [1, 1], "x", None),
+             _item("added.py", [1, 3], "return token", "pr")],
+            True,
+        ),
+    }
+
+
+KINDS = list(_evidence_kinds())
+
+
+class TestPrGroundingCap:
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("pr_graph_ok", [True, False, None])
+    @pytest.mark.parametrize(
+        "verdict", ["vulnerable", "safe", "possible", "insufficient_evidence"]
+    )
+    def test_downgrade_only_when_graph_down_vulnerable_and_no_pr_or_diff_evidence(
+        self, snap, verdict, pr_graph_ok, kind
+    ):
+        items, exempt = _evidence_kinds()[kind]
+        uncapped = _check(_validator(snap), *_evidence_kinds()[kind][0], verdict=verdict)
+        finding = _check(
+            _validator(snap), *items,
+            verdict=verdict, pr_graph_ok=pr_graph_ok, explanation="Original explanation.",
+        )
+        should_cap = pr_graph_ok is False and verdict == "vulnerable" and not exempt
+        assert finding.confidence == 0.7
+        assert finding.evidence_valid == uncapped.evidence_valid
+        assert finding.evidence_issues == uncapped.evidence_issues
+        if should_cap:
+            assert finding.verdict == "possible"
+            assert finding.explanation == "Original explanation.\n\n" + CAP_MARKER
+        else:
+            assert finding.verdict == verdict
+            assert finding.explanation == "Original explanation."
+
+    def test_valid_pr_item_exempts_while_other_items_issues_are_still_reported(self, snap):
+        items, _ = _evidence_kinds()["valid-pr-plus-invalid-other"]
+        finding = _check(_validator(snap), *items, verdict="vulnerable", pr_graph_ok=False)
+        assert finding.verdict == "vulnerable"
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues == ["cited file does not exist at base snapshot"]
+
+    def test_marker_is_appended_once_across_repeated_validation(self, snap):
+        items, _ = _evidence_kinds()["valid-base"]
+        validator = _validator(snap)
+        finding = _check(validator, *items, verdict="vulnerable", pr_graph_ok=False)
+        validator.validate_all([finding])
+        assert finding.verdict == "possible"
+        assert finding.explanation.count(CAP_MARKER) == 1
+
+    def test_cap_keeps_invalid_evidence_flags(self, snap):
+        items, _ = _evidence_kinds()["invalid-pr"]
+        finding = _check(_validator(snap), *items, verdict="vulnerable", pr_graph_ok=False)
+        assert finding.verdict == "possible"
+        assert finding.evidence_valid is False
+        assert len(finding.evidence_issues) == 1

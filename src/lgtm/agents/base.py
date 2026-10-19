@@ -21,6 +21,11 @@ VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
 
 SNAPSHOT_LABELS = ("base", "pr")
 
+_LOCATOR_ALIAS = re.compile(
+    r"^(?P<path>.+?)(?::L(?P<start>\d+)(?:-L?(?P<end>\d+))?)?\s+@(?P<label>base|pr)$",
+    re.IGNORECASE,
+)
+
 
 class EvidenceItem(BaseModel):
     type: Literal["code", "policy"] = "code"
@@ -30,20 +35,36 @@ class EvidenceItem(BaseModel):
     content: str = ""
     snapshot: Literal["base", "pr"] | None = None
     snapshot_conflict: bool = False
+    raw_snapshot: Any = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
-    def _normalize_snapshot(cls, data: Any) -> Any:
-        # Unknown values are never kept as labels; the conflict flag records them.
-        if not isinstance(data, dict) or data.get("snapshot") is None:
+    def _normalize_locator_and_snapshot(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
             return data
-        raw = data["snapshot"]
+        updates: dict[str, Any] = {}
+
+        alias_label = None
+        file = data.get("file")
+        alias = _LOCATOR_ALIAS.match(file.strip()) if isinstance(file, str) else None
+        if alias is not None:
+            alias_label = alias["label"].lower()
+            updates["file"] = alias["path"]
+            if data.get("lines") is None and alias["start"] is not None:
+                start = int(alias["start"])
+                end = int(alias["end"]) if alias["end"] is not None else start
+                updates["lines"] = [start, end]
+
+        # Unknown values are never kept as labels; the conflict flag and raw value record them.
+        raw = data.get("snapshot")
         label = raw.strip().lower() if isinstance(raw, str) else raw
-        if label == "":
-            return {**data, "snapshot": None}
-        if label in SNAPSHOT_LABELS:
-            return {**data, "snapshot": label}
-        return {**data, "snapshot": None, "snapshot_conflict": True}
+        if label in SNAPSHOT_LABELS and alias_label not in (None, label):
+            updates.update(snapshot=None, snapshot_conflict=True)
+        elif label in SNAPSHOT_LABELS or label in (None, ""):
+            updates["snapshot"] = label if label in SNAPSHOT_LABELS else alias_label
+        else:
+            updates.update(snapshot=None, snapshot_conflict=True, raw_snapshot=raw)
+        return {**data, **updates}
 
 
 class AgentFinding(BaseModel):
@@ -182,6 +203,18 @@ def extract_json_object(text: str) -> dict | None:
     return None
 
 
+_TOOL_OUTPUT_PREFIXES = ("[codegraph", "[read", "[grep", "error:")
+_TOOL_OUTPUT_MARKERS = ("status=unavailable", "tool call budget exhausted")
+
+
+def _is_tool_output(content: str) -> bool:
+    """Tool envelopes and failure text are not code evidence."""
+    text = content.lstrip().lower()
+    return text.startswith(_TOOL_OUTPUT_PREFIXES) or any(
+        marker in text for marker in _TOOL_OUTPUT_MARKERS
+    )
+
+
 def parse_agent_output(
     text: str, finding_id: str, default_cwe: str = ""
 ) -> AgentFinding:
@@ -206,6 +239,9 @@ def parse_agent_output(
     for item in data.get("evidence", []) or []:
         if not isinstance(item, dict):
             continue
+        content = str(item.get("content", ""))
+        if _is_tool_output(content):
+            continue
         lines = item.get("lines")
         if isinstance(lines, int):
             lines = [lines, lines]
@@ -223,7 +259,7 @@ def parse_agent_output(
                     file=item.get("file"),
                     lines=lines,
                     source=item.get("source"),
-                    content=str(item.get("content", ""))[:2000],
+                    content=content[:2000],
                     snapshot=item.get("snapshot"),
                 )
             )
