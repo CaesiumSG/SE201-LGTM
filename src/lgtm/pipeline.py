@@ -21,8 +21,10 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lgtm.agents.authz_reviewer import (
     AuthzReviewerAgent,
@@ -44,6 +46,9 @@ from lgtm.sast.semgrep_runner import (
     run_semgrep,
 )
 from lgtm.validation.evidence import EvidenceValidator
+
+if TYPE_CHECKING:
+    from lgtm.graph.session import GraphSession
 
 logger = logging.getLogger(__name__)
 
@@ -74,14 +79,39 @@ class ReviewPipeline:
     def run(
         self, base: str, pr: str, output_dir: str | Path | None = None
     ) -> ReviewResult:
+        if self.config.mode not in ("lgtm", "lgtm-no-sast"):
+            return self._review(base, pr, output_dir)
+
+        # Imported here so sast-only and llm-only runs never load lgtm.graph.
+        from lgtm.graph import session as graph_session
+        from lgtm.graph import snapshot as graph_snapshot
+
+        shas = graph_snapshot.resolve_refs(self.repo, base, pr)
+        session = graph_session.GraphSession(self.repo, shas, self.config)
+        try:
+            return self._review(base, pr, output_dir, shas=shas, session=session)
+        finally:
+            session.close()
+
+    def _review(
+        self,
+        base: str,
+        pr: str,
+        output_dir: str | Path | None,
+        shas: Mapping[str, str] | None = None,
+        session: GraphSession | None = None,
+    ) -> ReviewResult:
         start = time.monotonic()
         mode = self.config.mode
         logger.info(
             "Starting LGTM review (%s): %s..%s in %s", mode, base, pr, self.repo
         )
+        # Agent modes pass resolved commits to every Git read, so moving refs
+        # or a dirty tree cannot change the review inputs.
+        base_rev, pr_rev = (shas["base"], shas["pr"]) if shas is not None else (base, pr)
 
         # ---- Stage 1: context ----------------------------------------
-        diffs = get_pr_diff(self.repo, base, pr, self.config.git_timeout)
+        diffs = get_pr_diff(self.repo, base_rev, pr_rev, self.config.git_timeout)
         diffs = [d for d in diffs if d.status != "deleted"]
         logger.info("PR changes %d file(s)", len(diffs))
 
@@ -98,7 +128,7 @@ class ReviewPipeline:
         semgrep_total = 0
         semgrep_in_diff: list[SemgrepFinding] = []
         if mode in ("lgtm", "sast-only"):
-            semgrep_in_diff, semgrep_total = self._run_sast(diffs, base, pr)
+            semgrep_in_diff, semgrep_total = self._run_sast(diffs, base_rev, pr_rev)
 
         meta = ReviewMetadata(
             repo=str(self.repo),
@@ -108,6 +138,8 @@ class ReviewPipeline:
             model=self.config.ollama_model if mode != "sast-only" else "none",
             semgrep_findings_total=semgrep_total,
             semgrep_findings_in_diff=len(semgrep_in_diff),
+            base_sha=shas["base"] if shas is not None else "",
+            pr_sha=shas["pr"] if shas is not None else "",
         )
 
         findings: list[AgentFinding] = []
@@ -123,7 +155,9 @@ class ReviewPipeline:
             findings = PlainLLMReviewer(self.config, llm).review(llm_diffs)
         else:
             llm = self._llm or build_llm(self.config)
-            toolbox = AgentToolbox(self.repo, base, retriever, self.config)
+            toolbox = AgentToolbox(
+                self.repo, base_rev, retriever, self.config, shas=shas, session=session
+            )
             diff_by_path = {d.path: d for d in llm_diffs}
 
             # ---- Stage 2: SAST triage --------------------------------
@@ -138,8 +172,10 @@ class ReviewPipeline:
                 fd = diff_by_path.get(sf.path) or self._match_diff(sf.path, llm_diffs)
                 facts = ""
                 if self.config.static_facts:
-                    facts = sql_sink_facts(self._pr_source(pr, sf.path), sf.start_line)
-                findings.append(triage_agent.triage(sf, fd, facts))
+                    facts = sql_sink_facts(self._pr_source(pr_rev, sf.path), sf.start_line)
+                finding = triage_agent.triage(sf, fd, facts)
+                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+                findings.append(finding)
 
             # ---- Stage 3: authorization review -----------------------
             endpoints = extract_changed_endpoints(diffs)
@@ -155,15 +191,19 @@ class ReviewPipeline:
                 facts = ""
                 if self.config.static_facts:
                     facts = endpoint_facts(
-                        self._pr_source(pr, ep.file), ep.decorator_line
+                        self._pr_source(pr_rev, ep.file), ep.decorator_line
                     )
-                findings.append(authz_agent.review(ep, fd, notes, facts))
+                finding = authz_agent.review(ep, fd, notes, facts)
+                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+                findings.append(finding)
+            meta.graph_state = toolbox.graph_state()
+            meta.graph_index_seconds = round(session.init_seconds, 2)
 
         if self.config.detect_prompt_injection:
             findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------
-        validator = EvidenceValidator(self.repo, base, diffs, self.config)
+        validator = EvidenceValidator(self.repo, base_rev, diffs, self.config)
         findings = validator.validate_all(findings)
 
         # ---- Stage 5: report ------------------------------------------
