@@ -24,9 +24,9 @@ while an evidence validator keeps the LLM honest.
             │ 3. Authorization Reviewer Agent                  │
             │    (CWE-639 / CWE-862 / CWE-863)                 │
             │    does the change respect the documented policy?│
-            │    Tools (read-only, base branch, max 5 calls):  │
+            │    Tools (read-only, max 5 calls per finding):   │
+            │    investigate_base_code · investigate_pr_code   │
             │    read_file · grep_repo · search_policy         │
-            │    search_code (semantic RAG over source)        │
             └───────────────┬──────────────────────────────────┘
                             ▼
             ┌──────────────────────────────────────────────────┐
@@ -44,6 +44,11 @@ a suggested fix.
 
 Requirements: Python 3.10+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
+
+Optional: Node.js and the `codegraph` CLI on `PATH`. When the binary is
+found, agents also get the `investigate_base_code` and `investigate_pr_code`
+tools; without it, reviews run with `read_file`, `grep_repo` and
+`search_policy` only.
 
 ```bash
 # 1. Install LGTM (editable) + dev and SAST extras
@@ -92,21 +97,83 @@ thinking disabled. It cannot be combined with `--gpu-cluster` or
 `LOCAL_OLLAMA_PORT=11435`. `benchmark/evaluate.py` and
 `benchmark/real_world/evaluate_real.py` accept the same flag.
 
+## Configuration
+
+Settings are read from a JSON file passed with `--config-file`; each key is
+a field name of `LGTMConfig` in `src/lgtm/config.py`. Unknown keys are
+logged as a warning and ignored.
+
+### CodeGraph
+
+The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found.
+The `sast-only` and `llm-only` baselines never use it. There is no setting
+or CLI flag that turns the graph off.
+
+| Key | Default | Limits |
+|---|---|---|
+| `graph_binary` | `"codegraph"` | Executable name or path, no arguments |
+| `graph_init_timeout_s` | `120` | Must be positive |
+| `graph_query_timeout_s` | `20` | Must be positive |
+| `graph_max_output_chars` | `6000` | At least `1024`; values above `6000` are reduced to `6000` |
+| `graph_max_export_files` | `20000` | Must be positive; values above `20000` are reduced to `20000` |
+| `graph_max_export_bytes` | `209715200` | Must be positive; values above `209715200` are reduced to `209715200` |
+
+```json
+{
+  "graph_init_timeout_s": 120,
+  "graph_query_timeout_s": 20
+}
+```
+
+Each snapshot (`base`, `pr`) is exported to a temporary directory and indexed
+on first use. Graph queries read the committed commit only, not the working
+tree. If the graph fails for a snapshot (timeout, non-zero exit, export
+error), that snapshot's graph tools are skipped for the rest of the run and
+agents use `read_file` or `grep_repo` with the same snapshot label. Failures
+are not retried.
+
+The run's graph state is written to `graph_state` in `report.json` and to
+the benchmark records:
+
+- `ok`: no graph failures
+- `unavailable:missing`: the `codegraph` binary was not found
+- `degraded:<label>:<reason>`: the graph failed for that snapshot; multiple
+  entries are separated by `;`
+
+### Policy index
+
+The policy index is stored in `.lgtm/chroma` inside the reviewed repository.
+Deleting that directory also deletes the index, so run
+`lgtm index --repo /path/to/repo` again before the next review. Stale
+collections are not cleaned up automatically.
+
 ## Guardrails
 
 - Agent tools are **read-only**; file access is sandboxed to the repo.
-- Code and docs are read from the **base branch only** — PR changes are
+- Agents read committed snapshots of the **base** and **PR** branches. Each
+  branch is resolved once to a full commit SHA before the run starts, so all
+  reads and graph queries in the run use the same commits. PR content is
   treated as untrusted data (analyzed, never executed or obeyed).
-- Tool calls are **capped** (default 5 per agent invocation).
+- Each finding has a budget of **5 tool calls** (`max_tool_calls`) shared by
+  all of its tools. Every attempted call counts, including calls with invalid
+  arguments or unknown tool names. Once the budget is spent, tools return a
+  budget error.
 - LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
   before an agent run is reported as failed.
 - Tool arguments are **validated** against each tool's schema before the
-  tool runs. Invalid calls return an error to the agent without using the
-  tool-call budget, and the third invalid call in a run forces the final
-  answer.
+  tool runs. Invalid calls return an error to the agent and count toward the
+  tool-call budget. The third invalid call in a run forces the final answer.
 - Final answers that are not valid JSON are **re-requested** up to 3 times.
 - Every citation is **validated** post-hoc; ungrounded findings are flagged
-  with `evidence_valid: false`.
+  with `evidence_valid: false`. A citation labelled `base` or `pr` must name a
+  file in that committed snapshot, and any line range must be ordered,
+  positive and inside the file. The snippet must appear in that file. There
+  is no working-tree, diff or line-slack fallback for labelled citations.
+  Unlabelled code citations and policy citations are validated as before.
+- A `vulnerable` verdict is **downgraded to `possible`** when the PR graph was
+  unavailable for the finding and no valid code citation validated against the
+  PR snapshot or the PR diff. Any one such citation is enough to keep the
+  verdict. The report explanation then carries a marker line.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.
 
 ## Benchmarks
@@ -142,6 +209,9 @@ translated to Python/Flask; vulnerable vs
 parameterized-but-SAST-triggering controls) and 6 authorization pairs
 (IDOR, missing/incorrect role checks, API-key scope violations —
 invisible to SAST by design).
+
+> The results below were measured at an earlier commit and have not been
+> re-measured for the current code.
 
 ```bash
 python benchmark/evaluate.py --mode lgtm
@@ -207,6 +277,9 @@ projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
 tuned on them. The authz cases also run with a short policy written from
 each project's docs (the `policy` variant).
 
+> The results below were measured at an earlier commit and have not been
+> re-measured for the current code.
+
 ```bash
 python benchmark/real_world/fetch.py --policies          # clone + build case branches
 python benchmark/real_world/evaluate_real.py --modes sast-only lgtm
@@ -234,6 +307,9 @@ plus comments, docstrings, fake JSON findings, renamed identifiers or docs
 aimed at the reviewer. **Attack success rate (ASR)** = cases flagged
 `vulnerable` originally but not once injected, out of those flagged
 originally (lower is better).
+
+> The results below were measured at an earlier commit and have not been
+> re-measured for the current code.
 
 ```bash
 python benchmark/injection/run_injection_bench.py --mode sast-only
@@ -300,13 +376,18 @@ src/lgtm/
 ├── sast/rules/             # bundled CWE-89 semgrep rules (offline-safe)
 ├── rag/indexer.py          # doc discovery, chunking, ChromaDB indexing
 ├── rag/retriever.py        # top-k policy retrieval with line metadata
-├── agents/tools.py         # read-only tools + call budget + sandboxing
+├── graph/runner.py         # codegraph subprocess: init and explore, timeouts
+├── graph/session.py        # per-snapshot graph session and failure state
+├── graph/exporter.py       # committed-snapshot export to temporary directories
+├── graph/snapshot.py       # ref to full commit SHA resolution
+├── graph/format.py         # tool output envelopes for READ, GREP and CODEGRAPH
+├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
 ├── agents/sast_triage.py   # CWE-89 triage agent
 ├── agents/authz_reviewer.py# CWE-639/862/863 reviewer + endpoint extraction
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports
-tests/                      # 231 tests, no Ollama needed
+tests/                      # unit and integration tests, no Ollama needed
 benchmark/                  # Shoply app, 36 cases, evaluate.py
 benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
 benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
