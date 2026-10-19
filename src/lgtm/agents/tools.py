@@ -133,6 +133,9 @@ class AgentToolbox:
         self._toolbox_latched: set[str] = set()
         self._health: dict[str, str] = {}
         self._missing_at_startup = False
+        if self.shas is not None and self.session is not None and not self.session.available:
+            self._missing_at_startup = True
+            self._warn_missing_binary()
 
     # ------------------------------------------------------------------
     # Budget
@@ -444,12 +447,8 @@ class AgentToolbox:
             return toolbox._investigate("pr", query)
 
         tools = [read_file, grep_repo, search_policy]
-        if self.shas is not None and self.session is not None:
-            if self.session.available:
-                tools = [investigate_base_code, investigate_pr_code, *tools]
-            else:
-                self._missing_at_startup = True
-                self._warn_missing_binary()
+        if self.shas is not None and self.session is not None and not self._missing_at_startup:
+            tools = [investigate_base_code, investigate_pr_code, *tools]
         for tool_obj in tools:
             tool_obj.metadata = {"toolbox": toolbox}
         return tools

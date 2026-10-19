@@ -80,16 +80,24 @@ class ReviewPipeline:
         self, base: str, pr: str, output_dir: str | Path | None = None
     ) -> ReviewResult:
         if self.config.mode not in ("lgtm", "lgtm-no-sast"):
-            return self._review(base, pr, output_dir)
+            return self._review(base, pr, base, pr, output_dir)
 
-        # Imported here so sast-only and llm-only runs never load lgtm.graph.
+        # Lazy import: sast-only and llm-only do not load lgtm.graph.
         from lgtm.graph import session as graph_session
         from lgtm.graph import snapshot as graph_snapshot
 
         shas = graph_snapshot.resolve_refs(self.repo, base, pr)
         session = graph_session.GraphSession(self.repo, shas, self.config)
         try:
-            return self._review(base, pr, output_dir, shas=shas, session=session)
+            return self._review(
+                base,
+                pr,
+                shas["base"],
+                shas["pr"],
+                output_dir,
+                shas=shas,
+                session=session,
+            )
         finally:
             session.close()
 
@@ -97,6 +105,8 @@ class ReviewPipeline:
         self,
         base: str,
         pr: str,
+        base_rev: str,
+        pr_rev: str,
         output_dir: str | Path | None,
         shas: Mapping[str, str] | None = None,
         session: GraphSession | None = None,
@@ -106,9 +116,7 @@ class ReviewPipeline:
         logger.info(
             "Starting LGTM review (%s): %s..%s in %s", mode, base, pr, self.repo
         )
-        # Agent modes pass resolved commits to every Git read, so moving refs
-        # or a dirty tree cannot change the review inputs.
-        base_rev, pr_rev = (shas["base"], shas["pr"]) if shas is not None else (base, pr)
+        # Resolved SHAs pin Git reads against moving refs.
 
         # ---- Stage 1: context ----------------------------------------
         diffs = get_pr_diff(self.repo, base_rev, pr_rev, self.config.git_timeout)
@@ -138,8 +146,8 @@ class ReviewPipeline:
             model=self.config.ollama_model if mode != "sast-only" else "none",
             semgrep_findings_total=semgrep_total,
             semgrep_findings_in_diff=len(semgrep_in_diff),
-            base_sha=shas["base"] if shas is not None else "",
-            pr_sha=shas["pr"] if shas is not None else "",
+            base_sha=base_rev if shas is not None else "",
+            pr_sha=pr_rev if shas is not None else "",
         )
 
         findings: list[AgentFinding] = []
