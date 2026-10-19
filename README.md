@@ -358,7 +358,7 @@ src/lgtm/
 ├── diff/sanitizer.py       # comment stripper + prompt-injection detector
 ├── analysis/facts.py       # AST facts for the agents (static_facts flag)
 ├── sast/semgrep_runner.py  # semgrep subprocess + JSON parsing
-├── sast/rules/             # bundled CWE-89 semgrep rules (offline-safe)
+├── sast/rules/             # bundled CWE-89 semgrep rules
 ├── rag/indexer.py          # doc discovery, chunking, ChromaDB indexing
 ├── rag/retriever.py        # top-k policy retrieval with line metadata
 ├── graph/runner.py         # codegraph subprocess: init and explore, timeouts

@@ -273,4 +273,3 @@ class TestPushBackFollowsTheToolList:
         pushback = llm.seen[1][-1].content
         assert "read_file" in pushback
         assert "grep_repo" not in pushback and "search_policy" not in pushback
-
