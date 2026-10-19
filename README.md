@@ -46,7 +46,8 @@ Requirements: Python 3.10+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
 
 Optional: Node.js and the `codegraph` CLI on `PATH` enable the
-`investigate_base_code` and `investigate_pr_code` tools.
+`investigate_base_code` and `investigate_pr_code` tools. Without it, only
+`read_file`, `grep_repo` and `search_policy` are offered.
 
 ```bash
 # 1. Install LGTM (editable) + dev and SAST extras
@@ -145,7 +146,8 @@ are ignored with an `Ignoring unknown config keys` warning.
   branch is resolved once to a full commit SHA before the run starts. PR
   content is treated as untrusted data (analyzed, never executed or obeyed).
 - Each finding has a budget of **5 tool calls** (`max_tool_calls`) shared by
-  all of its tools. Once the budget is spent, tools return a budget error.
+  all of its tools, including calls with invalid arguments or unknown tool
+  names. Once the budget is spent, tools return a budget error.
 - LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
   before an agent run is reported as failed.
 - Tool arguments are **validated** against each tool's schema before the
@@ -159,7 +161,7 @@ are ignored with an `Ignoring unknown config keys` warning.
 - A `vulnerable` verdict is **downgraded to `possible`** when the PR graph was
   unavailable for the finding and no valid code citation validated against the
   PR snapshot or the PR diff. Any one such citation is enough to keep the
-  verdict. The report explanation then carries a marker line.
+  verdict.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.
 
 ## Benchmarks
