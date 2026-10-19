@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from lgtm.agents.base import SNAPSHOT_LABELS
+
 _TOOL_LINES = {
     "investigate_base_code": (
         "investigate_base_code(query): CodeGraph symbols, definitions and call "
@@ -35,7 +37,7 @@ def tool_guidance(toolbox) -> ToolGuidance:
     return ToolGuidance(
         tool_names=names,
         graph_tools=any(name.startswith("investigate_") for name in names),
-        snapshot_labels=("base", "pr") if getattr(toolbox, "shas", None) is not None else ("base",),
+        snapshot_labels=SNAPSHOT_LABELS if getattr(toolbox, "shas", None) is not None else ("base",),
         max_tool_calls=toolbox.config.max_tool_calls,
     )
 

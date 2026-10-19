@@ -526,3 +526,50 @@ class TestGraphMetadataOnRecords:
         with pytest.raises(SystemExit):
             er.main(["--help"])
         assert "graph" not in capsys.readouterr().out.lower()
+
+
+class TestPostReviewFailureAndErrorCounts:
+    def test_run_unit_error_after_review_keeps_the_four_graph_fields(
+            self, tmp_path, monkeypatch):
+        base, pr = "a" * 40, "b" * 40
+
+        class BrokenFinding:
+            def model_dump(self, exclude=None):
+                raise RuntimeError("cannot serialise finding")
+
+        meta = type("Meta", (), {
+            "semgrep_findings_in_diff": 0, "graph_state": "ok",
+            "graph_index_seconds": 2.5, "base_sha": base, "pr_sha": pr})()
+        result = type("Result", (), {"findings": [BrokenFinding()], "meta": meta})()
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base_branch, pr_branch, output_dir=None):
+                return result
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        rec = er.run_unit(TestGraphMetadataOnRecords.CASE, "own", "llm-only",
+                          tmp_path, tmp_path, er.LGTMConfig())
+        assert rec["outcome"] == "ERROR" and rec["error"]
+        assert (rec["graph_state"], rec["graph_index_seconds"],
+                rec["base_sha"], rec["pr_sha"]) == ("ok", 2.5, base, pr)
+
+    def test_dir_summary_counts_error_rows_under_state_or_unknown(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        rows = {
+            "a": {"graph_state": "ok"},
+            "b": {"graph_state": "ok", "outcome": "ERROR", "predicted": "error",
+                  "error": "boom"},
+            "c": {"graph_state": None, "outcome": "ERROR", "predicted": "error",
+                  "error": "boom"},
+        }
+        for cid, extra in rows.items():
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP"), **extra}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        summary = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")
+        assert summary["summary"]["overall"]["errors"] == 2
+        assert summary["summary"]["graph_states"] == {"ok": 2, "unknown": 1}

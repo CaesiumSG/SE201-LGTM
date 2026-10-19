@@ -319,3 +319,50 @@ class TestNoGraphSwitch:
         with pytest.raises(SystemExit):
             module.main()
         assert "graph" not in capsys.readouterr().out.lower()
+
+
+class TestPostReviewFailureKeepsReviewMetadata:
+    @staticmethod
+    def _broken_review():
+        class Broken(FakeFinding):
+            def model_dump(self, exclude=None):
+                raise RuntimeError("cannot serialise finding")
+        return review(meta("degraded:pr:timeout", 7.5, BASE40, PR40),
+                      findings=[Broken()])
+
+    def test_synthetic_error_record_keeps_the_four_graph_fields(self, synthetic):
+        synthetic(self._broken_review())
+        rec = ev.evaluate_case(case(), ev.LGTMConfig())
+        assert rec["outcome"] == "ERROR" and rec["error"]
+        assert (rec["graph_state"], rec["graph_index_seconds"],
+                rec["base_sha"], rec["pr_sha"]) == (
+            "degraded:pr:timeout", 7.5, BASE40, PR40)
+
+
+class TestErrorRecordsInGraphStates:
+    def test_summarize_counts_error_rows_under_state_or_unknown(self):
+        rows = [
+            {**legacy("a"), "graph_state": "ok"},
+            ev.mark_error({**legacy("b"), "graph_state": "ok"}, "boom"),
+            ev.mark_error({**legacy("c"), "graph_state": None}, "boom"),
+        ]
+        summary = ev.summarize(rows)
+        assert summary["errors"] == 2
+        assert summary["graph_states"] == {"ok": 2, "unknown": 1}
+
+
+class TestInjectionSummaryUnknownState:
+    def test_failed_review_is_counted_unknown_with_null_graph(
+            self, injection, monkeypatch, tmp_path):
+        injection(review(meta("ok", 1.0, BASE40, "c" * 40)),
+                  RuntimeError("boom"))
+        out = tmp_path / "out"
+        monkeypatch.setattr(sys, "argv", [
+            "run_injection_bench.py", "--mode", "sast-only",
+            "--cases", "inj_01_sqli_comment", "--output", str(out)])
+        inj.main()
+        summary = json.loads((out / "summary.json").read_text("utf-8"))
+        assert summary["graph_states"] == {"ok": 1, "unknown": 1}
+        assert summary["comparisons"][0]["injected_graph"] == {
+            "graph_state": None, "graph_index_seconds": None,
+            "base_sha": "", "pr_sha": ""}

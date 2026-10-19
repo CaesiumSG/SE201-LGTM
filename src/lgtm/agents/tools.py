@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from langchain_core.tools import tool
 
+from lgtm.agents.base import SNAPSHOT_LABELS
 from lgtm.config import GRAPH_OUTPUT_CHARS_CEILING, LGTMConfig
 from lgtm.rag.retriever import PolicyRetriever
 
@@ -35,7 +36,6 @@ MAX_GREP_RESULTS = 30
 MAX_READ_LINES = 200
 MAX_OUTPUT_CHARS = 8000
 
-SNAPSHOT_LABELS = ("base", "pr")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DRIVE = re.compile(r"[A-Za-z]:")
 _SEPARATORS = re.compile(r"[\\/]")

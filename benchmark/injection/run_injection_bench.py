@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import shutil
 import sys
@@ -33,6 +34,17 @@ REPO_ROOT = BENCH.parent
 INJECTION_DIR = BENCH / "injection"
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 
 from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
@@ -66,17 +78,6 @@ def build_case_repo(tmp: Path, patch_path: Path) -> None:
 GRAPH_FIELDS = ("graph_state", "graph_index_seconds", "base_sha", "pr_sha")
 
 
-def graph_fields(review=None) -> dict:
-    # Metadata from reviews made before these fields existed lacks the attributes.
-    meta = getattr(review, "meta", None)
-    return {
-        "graph_state": getattr(meta, "graph_state", None),
-        "graph_index_seconds": getattr(meta, "graph_index_seconds", None),
-        "base_sha": getattr(meta, "base_sha", ""),
-        "pr_sha": getattr(meta, "pr_sha", ""),
-    }
-
-
 def evaluate_single_case(case: dict, config: LGTMConfig) -> dict:
     patch_path = BENCH / case["patch_file"]
     started = time.monotonic()
@@ -102,7 +103,7 @@ def evaluate_single_case(case: dict, config: LGTMConfig) -> dict:
             "flagged": False,
             "latency_seconds": round(latency, 2),
             "findings": [],
-            **graph_fields(result),
+            **evaluate.graph_fields(result),
         }
 
     latency = time.monotonic() - started
@@ -128,7 +129,7 @@ def evaluate_single_case(case: dict, config: LGTMConfig) -> dict:
         "flagged": flagged,
         "latency_seconds": round(latency, 2),
         "findings": findings,
-        **graph_fields(result),
+        **evaluate.graph_fields(result),
     }
 
 
