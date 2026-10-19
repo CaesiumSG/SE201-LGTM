@@ -837,6 +837,7 @@ class TestPathAndGlobValidation:
         "/etc/passwd", "C:/x.py", "C:\\x.py", "c:x.py", "\\\\server\\share\\x.py",
         "//server/share/x.py", "a\x00b.py", "../x.py", "a/../../x.py", "..\\x.py", "..",
         "sub/../app.py", "\\x.py", "C:", "sub/./../x.py",
+        "src/a:b.py", "./:!d", "a/:(top)x",
     ]
     GLOB_ESCAPES = [
         "../*.py", "/abs/*", "C:/*", "\\\\srv\\s\\*", "a\x00*", "sub/../../*", "*/../x",
@@ -844,7 +845,7 @@ class TestPathAndGlobValidation:
     ]
     PATHSPEC_MAGIC = [
         ":(top)*", ":/x", ":!x", ":^x", ":(exclude)sub", ":(icase)APP.PY", ":(attr:foo)*",
-        ":(glob)**/*.py",
+        ":(glob)**/*.py", "./:!d", "a/:(top)x", "*:x", "src/a:b.py", "sub/*:x",
     ]
 
     @pytest.mark.parametrize("path", ESCAPES)
@@ -1317,12 +1318,14 @@ class TestGraphState:
         toolbox, _ = _legacy_tools(snap)
         assert toolbox.graph_state() == "ok"
 
-    def test_missing_binary_is_listed_before_degraded_labels(self, rig):
-        runner = VanishingRunner(explore={"base": failure("timeout")})
+    def test_vanished_binary_reports_only_degraded_launch_failed(self, rig):
+        runner = VanishingRunner()
         r = rig(runner=runner)
-        r.call("investigate_base_code", query="q")
         runner.present = False
-        assert r.toolbox.graph_state() == "unavailable:missing;degraded:base:timeout"
+        r.call("investigate_base_code", query="q")
+        state = r.toolbox.graph_state()
+        assert "unavailable:missing" not in state
+        assert state == "degraded:base:launch_failed;degraded:pr:launch_failed"
 
 
 class TestToolboxConstruction:

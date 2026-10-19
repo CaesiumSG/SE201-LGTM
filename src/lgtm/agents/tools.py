@@ -62,7 +62,7 @@ _LATCH_WARNING = (
 
 def _relative_path(value: str) -> str | None:
     """Normalize a repository-relative path or glob; None when it is absolute or leaves the tree."""
-    if not value or "\x00" in value or value[0] in "\\/" or _DRIVE.match(value):
+    if not value or "\x00" in value or ":" in value or value[0] in "\\/" or _DRIVE.match(value):
         return None
     parts = [part for part in _SEPARATORS.split(value) if part not in ("", ".")]
     if not parts or ".." in parts:
@@ -132,6 +132,7 @@ class AgentToolbox:
         self._latch_warned: set[str] = set()
         self._toolbox_latched: set[str] = set()
         self._health: dict[str, str] = {}
+        self._missing_at_startup = False
 
     # ------------------------------------------------------------------
     # Budget
@@ -255,7 +256,7 @@ class AgentToolbox:
             return error
         glob = None
         if file_glob:
-            glob = None if file_glob.startswith(":") else _relative_path(file_glob)
+            glob = _relative_path(file_glob)
             if glob is None:
                 return _ESCAPE
         if "\x00" in pattern or "\n" in pattern:
@@ -368,7 +369,7 @@ class AgentToolbox:
         if self.session is None:
             return "ok"
         self._sync_health()
-        entries = [] if self.session.available else ["unavailable:missing"]
+        entries = ["unavailable:missing"] if self._missing_at_startup else []
         entries += [f"degraded:{label}:{reason}" for label, reason in self._health.items()]
         return ";".join(entries) or "ok"
 
@@ -447,6 +448,7 @@ class AgentToolbox:
             if self.session.available:
                 tools = [investigate_base_code, investigate_pr_code, *tools]
             else:
+                self._missing_at_startup = True
                 self._warn_missing_binary()
         for tool_obj in tools:
             tool_obj.metadata = {"toolbox": toolbox}
