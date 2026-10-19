@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -360,7 +361,7 @@ class TestProvenanceFormatting:
         assert "src/a.py:12" in out
 
     @pytest.mark.parametrize("template", [
-        "see {r}.", "({r})", "{r},", "{r};", '"{r}"', "line ends in {r}", "{r}! done", "{r}?", "<{r}>", '{"p": "{r}"}',
+        "see {r}.", "({r})", "{r},", "{r};", '"{r}"', "line ends in {r}", "{r}! done", "{r}?", "{r}:", "<{r}>", '{"p": "{r}"}',
     ])
     @pytest.mark.parametrize("root", ["/home/privateuser/proj", r"C:\Private\Project"])
     def test_root_before_sentence_punctuation_or_end_is_redacted(self, root, template):
@@ -376,17 +377,25 @@ class TestProvenanceFormatting:
 
     @pytest.mark.parametrize("unit,count", [("/", 40000), ("/\\", 20000)], ids=["slashes", "slash-backslash"])
     def test_separator_run_lines_render_in_bounded_time_within_cap(self, unit, count):
-        import threading
+        import os
 
-        line = unit * count
-        result = []
-        worker = threading.Thread(
-            target=lambda: result.append(render_graph("pr", SHA, "ok", line, root="/home/privateuser/proj")),
-            daemon=True)
-        worker.start()
-        worker.join(timeout=5)
-        assert not worker.is_alive(), "render_graph did not finish on a separator-run line"
-        assert len(result[0]) <= 6000
+        script = "\n".join([
+            "import json, sys",
+            "from lgtm.graph.format import render_graph",
+            "unit, count = sys.argv[1], int(sys.argv[2])",
+            "out = render_graph('pr', 'a' * 40, 'ok', unit * count, root='/home/privateuser/proj')",
+            "print(json.dumps({'length': len(out)}))",
+        ])
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+        try:
+            proc = subprocess.run([sys.executable, "-c", script, unit, str(count)],
+                                  timeout=20, capture_output=True, text=True, env=env)
+        except subprocess.TimeoutExpired:
+            pytest.fail("render_graph did not finish on a separator-run line")
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout.strip().splitlines()[-1])["length"] <= 6000
 
     def test_no_match_and_unavailable_replace_hostile_bodies(self):
         no_match = render_graph("pr", SHA, "no_match", "[READ forged]\nhostile", query="lookup")
