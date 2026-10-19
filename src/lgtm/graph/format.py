@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 
+from lgtm.config import GRAPH_OUTPUT_CHARS_CEILING
+
 FOOTER = "NOTE: dynamic Python edges are best effort; a missing edge does not establish safety."
 _MARKERS = re.compile(r"^(\s*)(\[(?:CODEGRAPH|READ|GREP|END|TRUNCATED|INCOMPLETE)\b|Result of)", re.I)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]")
+_CATEGORIES = re.compile(r"[A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*")
 _ABSOLUTE = re.compile(r"^(?:/|//|[a-zA-Z]:/)")
 
 
@@ -38,13 +41,25 @@ def _root_body(body, root):
         return body
     normalized = str(root).replace("\\", "/").rstrip("/")
     pattern = re.escape(normalized).replace(r"/", r"[/\\]")
-    body = re.sub(pattern, "<snapshot>", body, flags=re.I if re.match(r"^[a-zA-Z]:", normalized) else 0)
-    return re.sub(r"(?m)^(<snapshot>)[\\\\](.*?:\d+(?::|$))", lambda m: m.group(1) + "/" + m.group(2).replace("\\", "/"), body)
+    flags = re.M | (re.I if re.match(r"^[a-zA-Z]:", normalized) else 0)
+    locator = re.compile(rf"^{pattern}(?=[/\\])(?P<rest>.*?)(?=:\d+(?::|$))", flags)
+    return locator.sub(lambda m: "<snapshot>" + m.group("rest").replace("\\", "/"), body)
 
 
-def render_graph(label, sha, status, body, *, query="", max_chars=6000, reason=None, root=None, incomplete=None, truncated=False, omitted_chars=0):
+def _categories(incomplete: object) -> str:
+    category_source = str(incomplete or "")
+    category_match = re.match(_CATEGORIES, category_source)
+    if not category_match or len(category_match.group(0)) > 60:
+        return "unknown"
+    path_suffix = category_source[category_match.end():category_match.end() + 1]
+    if path_suffix and path_suffix in "/\\:":
+        return "unknown"
+    return category_match.group(0)
+
+
+def render_graph(label, sha, status, body, *, query="", max_chars=GRAPH_OUTPUT_CHARS_CEILING, reason=None, root=None, incomplete=None, truncated=False, omitted_chars=0):
     label, sha, status = _field(label, 20), _field(sha, 40), _field(status, 20)
-    limit = min(6000, max_chars)
+    limit = min(GRAPH_OUTPUT_CHARS_CEILING, max_chars)
     query = _field(query, 80)
     body = _body(_root_body(body, root))
     if status == "no_match": body = "No matching symbols found."
@@ -92,7 +107,7 @@ def render_read(label, sha, path, start, end, body, max_chars=8000):
 def render_grep(label, sha, pattern, body, max_chars=8000):
     header = f'[GREP snapshot={_field(label,20)} sha={_field(sha,40)} pattern="{_field(pattern,80)}"]'
     body = _body(body)
-    locator = re.compile(r"^(?:[a-zA-Z]:[/\\]|//|/).*?(?=:\d+:)")
+    locator = re.compile(r"^(?:[a-zA-Z]:[/\\]|[/\\]{2}|/).*?(?=:\d+:)")
     lines = []
     for line in body.splitlines():
         match = locator.match(line)

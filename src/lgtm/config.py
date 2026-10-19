@@ -9,6 +9,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+GRAPH_OUTPUT_CHARS_CEILING = 6000
+GRAPH_EXPORT_FILES_CEILING = 20000
+GRAPH_EXPORT_BYTES_CEILING = 200 * 1024 * 1024
+
 
 @dataclass
 class LGTMConfig:
@@ -59,19 +63,25 @@ class LGTMConfig:
     graph_binary: str = "codegraph"
     graph_init_timeout_s: int = 120
     graph_query_timeout_s: int = 20
-    graph_max_output_chars: int = 6000
-    graph_max_export_files: int = 20000
-    graph_max_export_bytes: int = 209715200
+    graph_max_output_chars: int = GRAPH_OUTPUT_CHARS_CEILING
+    graph_max_export_files: int = GRAPH_EXPORT_FILES_CEILING
+    graph_max_export_bytes: int = GRAPH_EXPORT_BYTES_CEILING
 
     def __post_init__(self) -> None:
-        for key in ("graph_init_timeout_s", "graph_query_timeout_s", "graph_max_export_files", "graph_max_export_bytes"):
+        positive_fields = (
+            "graph_init_timeout_s",
+            "graph_query_timeout_s",
+            "graph_max_export_files",
+            "graph_max_export_bytes",
+        )
+        for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
         if self.graph_max_output_chars < 1024:
             raise ValueError("graph_max_output_chars must be at least 1024")
-        self.graph_max_output_chars = min(self.graph_max_output_chars, 6000)
-        self.graph_max_export_files = min(self.graph_max_export_files, 20000)
-        self.graph_max_export_bytes = min(self.graph_max_export_bytes, 209715200)
+        self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)
+        self.graph_max_export_files = min(self.graph_max_export_files, GRAPH_EXPORT_FILES_CEILING)
+        self.graph_max_export_bytes = min(self.graph_max_export_bytes, GRAPH_EXPORT_BYTES_CEILING)
 
     # Output
     output_dir: str = "lgtm-output"
