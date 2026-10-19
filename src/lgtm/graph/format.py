@@ -42,12 +42,12 @@ def _root_body(body, root):
     normalized = str(root).replace("\\", "/").rstrip("/")
     if not normalized:
         return body
-    core = r"[\\/]+".join(re.escape(part) for part in normalized.split("/"))
+    core = r"[\\/]{1,2}".join(re.escape(part) for part in normalized.split("/"))
     flags = re.I if re.match(r"^[a-zA-Z]:", normalized) else 0
     segment = r"""[^\s()\[\]`'",=]"""
-    boundary = r"""[^\s()\[\]`'",=:]"""
+    continuation = r"""[A-Za-z0-9_-]|\.[A-Za-z0-9_-]"""
     token = re.compile(
-        rf"(?:file:[\\/]{{2,3}})?{core}(?:(?P<rest>[\\/]{segment}*)|(?!{boundary}))",
+        rf"(?:file:[\\/]{{2,3}})?{core}(?:(?P<rest>[\\/]{segment}*)|(?!{continuation}))",
         flags,
     )
 

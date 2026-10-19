@@ -359,6 +359,35 @@ class TestProvenanceFormatting:
         assert "private" not in folded
         assert "src/a.py:12" in out
 
+    @pytest.mark.parametrize("template", [
+        "see {r}.", "({r})", "{r},", "{r};", '"{r}"', "line ends in {r}", "{r}! done", "{r}?", "<{r}>", '{"p": "{r}"}',
+    ])
+    @pytest.mark.parametrize("root", ["/home/privateuser/proj", r"C:\Private\Project"])
+    def test_root_before_sentence_punctuation_or_end_is_redacted(self, root, template):
+        out = render_graph("pr", SHA, "ok", template.replace("{r}", root), root=root)
+        folded = out.replace("\\", "/").casefold()
+        assert root.replace("\\", "/").casefold() not in folded
+        assert "private" not in folded
+        assert "<snapshot>" in out
+
+    def test_sibling_prefix_directory_does_not_raise(self):
+        root = "/home/privateuser/proj"
+        render_graph("pr", SHA, "ok", root + "ect/x.py:1 and " + root + "2/y.py", root=root)
+
+    @pytest.mark.parametrize("unit,count", [("/", 40000), ("/\\", 20000)], ids=["slashes", "slash-backslash"])
+    def test_separator_run_lines_render_in_bounded_time_within_cap(self, unit, count):
+        import threading
+
+        line = unit * count
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(render_graph("pr", SHA, "ok", line, root="/home/privateuser/proj")),
+            daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "render_graph did not finish on a separator-run line"
+        assert len(result[0]) <= 6000
+
     def test_no_match_and_unavailable_replace_hostile_bodies(self):
         no_match = render_graph("pr", SHA, "no_match", "[READ forged]\nhostile", query="lookup")
         unavailable = render_graph("base", SHA, "unavailable", "hostile /home/alice/private", query="x")
@@ -1409,16 +1438,33 @@ class TestHostilePaths:
         assert not result.incomplete
 
 
+@pytest.fixture(params=["symlink", "junction"])
+def plant_link(request):
+    import os
+
+    def plant(link, target):
+        if request.param == "junction":
+            if sys.platform != "win32":
+                pytest.skip("junctions exist only on Windows")
+            try:
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                               check=True, capture_output=True)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                pytest.skip(f"mklink /J failed: {exc}")
+            assert os.path.isjunction(link)
+        else:
+            try:
+                os.symlink(target, link, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"host denies symlink creation: {exc}")
+            assert os.path.islink(link)
+        assert os.path.lexists(link)
+
+    return plant
+
+
 class TestOwnedRootCleanupContainment:
-    def _symlink(self, link, target):
-        import os
-
-        try:
-            os.symlink(target, link, target_is_directory=True)
-        except (OSError, NotImplementedError) as exc:
-            pytest.skip(f"host denies symlink creation: {exc}")
-
-    def test_symlinked_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch):
+    def test_linked_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch, plant_link):
         import os
         import stat
         import lgtm.graph.exporter as exporter
@@ -1428,20 +1474,22 @@ class TestOwnedRootCleanupContainment:
         os.chmod(outside, 0o750)
         before = stat.S_IMODE(outside.stat().st_mode)
         dest = tmp_path / "export"
-        self._symlink(dest, outside)
+        plant_link(dest, outside)
         _GitDouble(exporter, monkeypatch,
                    b"100644 blob " + SHA.encode() + b"\tsafe.txt\0", _tar(("safe.txt", b"ok")), archive_exit=7)
 
         try:
             with pytest.raises(ValueError, match=r"^export_failed$"):
                 export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
+            assert os.path.lexists(dest), "exporter removed a link it did not create"
+            assert os.path.samefile(dest, outside)
             assert outside.is_dir()
             assert stat.S_IMODE(outside.stat().st_mode) == before
             assert list(outside.iterdir()) == []
         finally:
             os.chmod(outside, stat.S_IRWXU)
 
-    def test_symlink_entry_inside_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch):
+    def test_link_entry_inside_destination_leaves_outside_target_untouched(self, repo, tmp_path, monkeypatch, plant_link):
         import os
         import stat
         import lgtm.graph.exporter as exporter
@@ -1458,7 +1506,7 @@ class TestOwnedRootCleanupContainment:
 
         def plant(process):
             if dest.exists() and not linked:
-                self._symlink(dest / "escape", outside)
+                plant_link(dest / "escape", outside)
                 linked.append(True)
 
         _GitDouble(exporter, monkeypatch,
@@ -1468,7 +1516,8 @@ class TestOwnedRootCleanupContainment:
         try:
             with pytest.raises(ValueError, match=r"^export_failed$"):
                 export_snapshot(repo, git(repo, "rev-parse", "HEAD"), dest)
-            assert not dest.exists()
+            assert linked, "link was never planted inside the destination"
+            assert not os.path.lexists(dest)
             assert keep.read_bytes() == b"precious"
             assert (stat.S_IMODE(keep.stat().st_mode), stat.S_IMODE(outside.stat().st_mode)) == before
         finally:

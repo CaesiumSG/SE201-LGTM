@@ -82,7 +82,8 @@ def _within_root(path: str, root: Path) -> bool:
         return False
     real_root = os.path.realpath(root)
     try:
-        return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+        real_root = os.path.normcase(real_root)
+        return os.path.commonpath([real_root, os.path.normcase(os.path.realpath(path))]) == real_root
     except ValueError:
         return False
 
@@ -274,6 +275,13 @@ def export_snapshot(
     if max_files <= 0 or max_bytes <= 0 or timeout <= 0:
         _fail()
     dest = Path(destination)
+    dest_abs = os.path.abspath(dest)
+    if _is_link(dest_abs):
+        _fail()
+    if os.path.exists(dest_abs):
+        real_dest = os.path.join(os.path.realpath(os.path.dirname(dest_abs)), os.path.basename(dest_abs))
+        if os.path.normcase(os.path.realpath(dest_abs)) != os.path.normcase(real_dest):
+            _fail()
     if dest.exists() or dest.is_symlink():
         if not dest.is_dir() or any(dest.iterdir()):
             _fail()
