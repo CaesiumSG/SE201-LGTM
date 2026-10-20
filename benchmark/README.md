@@ -89,14 +89,8 @@ thinking disabled; it cannot be combined with `--gpu-cluster` or
 `--model`, and `--ollama-url` overrides the URL. The summary records
 `model` and `reasoning`.
 
-`--resume` skips cases whose result JSON exists, is not an error and is not
-`scan_failure`, re-runs the rest, leaves completed results untouched, and
-rebuilds `summary.json` from all case JSONs. Each output directory holds a
-`run.json` manifest (`model`, `ollama_base_url`, `reasoning`, `mode`, `pin`).
-`--resume` refuses a directory whose manifest has a different model or
-reasoning setting, has no `pin`, or has a `pin` that differs in any entry
-other than `base_sha` and `pr_sha`. The output directory is excluded from the
-`code_dirty` check, so files written there do not count as changes.
+`--resume` rebuilds `summary.json` from all case JSONs. Its refusal and skip
+rules are listed in the Run manifest and `--resume` section.
 
 **Dev/eval protocol:** pairs are split as follows (pairs 1–3, 7–9 and 13 → dev;
 pairs 4–6, 10–12 and 14 → eval), so each split holds 13 vulnerable + 13 safe
@@ -240,9 +234,10 @@ Each metrics block (`overall`, `per_category`, `per_split`, and the
 
 `run.json` stores `model`, `ollama_base_url`, `reasoning`, `mode` and `pin`.
 The `pin` is built by `run_pin` with empty `base_sha` and `pr_sha`. Each case
-result carries its own `pin` with the case's SHAs.
+result carries its own `pin` with the case's SHAs. The `code_dirty` check
+excludes the output directory, so files written there do not count as changes.
 
-`--resume` checks the existing `run.json` in this order:
+`--resume` checks the existing `run.json` in this order, then runs the cases:
 
 1. `model` and `reasoning` must match the current run; otherwise
    `--resume: <dir> was produced with a different model or reasoning setting`.
@@ -250,7 +245,5 @@ result carries its own `pin` with the case's SHAs.
    `--resume: <dir> has no run pin; start a new output directory`.
 3. Every `pin` key other than `base_sha` and `pr_sha` must match; otherwise
    `--resume: <dir> was produced with a different run pin (differs in: <keys>)`.
-
-A case is skipped when its
-result is not an error and its `case_label` is not `scan_failure`; other
-cases are run again.
+4. A case is skipped when its result is not an error and its `case_label` is
+   not `scan_failure`; other cases are run again.
