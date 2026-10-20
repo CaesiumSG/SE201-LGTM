@@ -50,17 +50,24 @@ CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
 COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
 
 
-def infra_failure_ids(findings: list[dict]) -> list[str]:
+def infra_failure_ids(findings: list[dict], skip_authz: bool = False) -> list[str]:
     return [
         f.get("finding_id") or "unknown"
         for f in findings
-        if str(f.get("explanation", "")).startswith(INFRA_PREFIXES)
-        or f.get("finding_id") == "plain:unparsable"
+        if not (skip_authz and f.get("category") == "authz")
+        and (
+            str(f.get("explanation", "")).startswith(INFRA_PREFIXES)
+            or f.get("finding_id") == "plain:unparsable"
+        )
     ]
 
 
 def has_coverage(result: dict) -> bool:
     return isinstance(result.get("coverage"), dict)
+
+
+def result_infra_ids(result: dict) -> list[str]:
+    return infra_failure_ids(result.get("findings") or [], skip_authz=has_coverage(result))
 
 
 def result_is_error(result: dict) -> bool:
@@ -69,8 +76,7 @@ def result_is_error(result: dict) -> bool:
         or result.get("outcome") == ERROR
         or bool(result.get("error"))
         or (result.get("infra_failures") or 0) > 0
-        or (not has_coverage(result)
-            and bool(infra_failure_ids(result.get("findings") or [])))
+        or bool(result_infra_ids(result))
     )
 
 
@@ -270,10 +276,14 @@ def outcome_for_label(label: str, expected: str) -> str:
     return "UNCREDITED"
 
 
-def _relevant_verdicts(row: dict, grounded: bool = False) -> list:
+def _relevant_verdicts(
+    row: dict, grounded: bool = False, files: set[str] | None = None
+) -> list:
     verdicts = []
     for f in row.get("findings", []):
         if f.get("category") not in (row["category"], "", "sast", None):
+            continue
+        if files is not None and f.get("file") and f["file"] not in files:
             continue
         verdict = f.get("verdict")
         if grounded and verdict == "vulnerable" and not f.get("evidence_valid"):
@@ -337,8 +347,11 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     if not targets:
         return "no_candidate", "no_candidate", target_ids, False
     missing = any(s["status"] != "completed" for s in targets)
-    label = _verdict_label(_relevant_verdicts(row), missing)
-    grounded_label = _verdict_label(_relevant_verdicts(row, grounded=True), missing)
+    files = {h["file"] for s in targets for h in s["hunks"]} | {row.get("file")}
+    label = _verdict_label(_relevant_verdicts(row, files=files), missing)
+    grounded_label = _verdict_label(
+        _relevant_verdicts(row, grounded=True, files=files), missing
+    )
     gap = label == "detected_vulnerability" and (
         not cov["complete"] or cov["sections_failed"] > 0 or cov["hunks_leftover"] > 0
     )
@@ -349,7 +362,7 @@ def score_case(result: dict) -> dict:
     """(Re)compute predictions and outcomes from a result's findings."""
     findings = result.get("findings", [])
     legacy = "pin" not in result
-    ids = [] if has_coverage(result) else infra_failure_ids(findings)
+    ids = result_infra_ids(result)
     result["infra_failures"], result["infra_failure_ids"] = len(ids), ids
     if legacy:
         result["legacy"] = True

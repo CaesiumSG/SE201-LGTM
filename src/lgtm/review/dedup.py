@@ -96,7 +96,7 @@ def _merge(group: list[AgentFinding]) -> AgentFinding:
     if len(group) == 1:
         return group[0]
 
-    first = group[0]
+    lead = max(group, key=lambda f: _VERDICT_RANK.get(f.verdict, 0))
     evidence: list[EvidenceItem] = []
     seen: set[tuple] = set()
     for finding in group:
@@ -106,14 +106,12 @@ def _merge(group: list[AgentFinding]) -> AgentFinding:
                 seen.add(key)
                 evidence.append(item)
 
-    return first.model_copy(
+    return group[0].model_copy(
         update={
-            "verdict": max(
-                (f.verdict for f in group), key=lambda v: _VERDICT_RANK.get(v, 0)
-            ),
-            "confidence": max(f.confidence for f in group),
-            "explanation": max((f.explanation for f in group), key=len),
-            "suggested_fix": max((f.suggested_fix for f in group), key=len),
+            "verdict": lead.verdict,
+            "confidence": lead.confidence,
+            "explanation": lead.explanation,
+            "suggested_fix": lead.suggested_fix,
             "pr_graph_ok": _merged_pr_graph_ok(group),
             "evidence": evidence,
         }

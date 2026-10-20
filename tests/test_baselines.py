@@ -1258,6 +1258,26 @@ class TestCaseLabels:
         cov = _coverage([_target_section()], investigator_error="boom")
         assert _label(findings=[_f("authz", "safe")], coverage=cov) == "explicit_safe"
 
+    def test_verdict_in_a_file_outside_the_target_is_not_a_detection(self):
+        elsewhere = dict(_f("authz", "vulnerable"), file="app/other.py")
+        cov = _coverage([_target_section()])
+        assert _label(findings=[elsewhere], coverage=cov) == "explicit_safe"
+
+    def test_verdict_in_the_target_file_is_a_detection(self):
+        here = dict(_f("authz", "vulnerable"), file=ROW_FILE)
+        cov = _coverage([_target_section()])
+        assert _label(findings=[here], coverage=cov) == "detected_vulnerability"
+
+    def test_sast_triage_crash_is_an_error_even_with_authz_coverage(self):
+        crash = dict(
+            _f("sast", "insufficient_evidence"),
+            finding_id="sast:1", explanation="Agent execution failed: timeout",
+        )
+        row = evaluate.score_case(_case_row(
+            findings=[crash], coverage=_coverage([_target_section()])))
+        assert evaluate.result_is_error(row)
+        assert row["infra_failure_ids"] == ["sast:1"]
+
     def test_nothing_scheduled_and_no_error_is_no_candidate(self):
         assert _label(findings=[_f("authz", "safe")], coverage=_coverage([])) == "no_candidate"
 

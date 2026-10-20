@@ -38,7 +38,7 @@ def test_findings_on_the_same_line_with_same_cwe_merge_into_one():
     assert ids(merged) == ["a"]
 
 
-def test_merged_finding_keeps_strongest_verdict_highest_confidence_and_longest_text():
+def test_merged_finding_takes_verdict_confidence_and_text_from_the_strongest_finding():
     first = finding(
         "a", line=10, verdict="insufficient_evidence", confidence=0.9,
         explanation="short", suggested_fix="a much longer suggested fix",
@@ -51,9 +51,9 @@ def test_merged_finding_keeps_strongest_verdict_highest_confidence_and_longest_t
     (merged,) = dedup_findings([first, second, third])
     assert merged.finding_id == "a"
     assert merged.verdict == "vulnerable"
-    assert merged.confidence == 0.9
+    assert merged.confidence == 0.4
     assert merged.explanation == "a considerably longer explanation"
-    assert merged.suggested_fix == "a much longer suggested fix"
+    assert merged.suggested_fix == "fix"
 
 
 def test_possible_beats_insufficient_evidence():
@@ -219,7 +219,7 @@ def test_merging_is_transitive_through_a_bridging_finding():
     (merged,) = dedup_findings([a, c, bridge])
     assert merged.finding_id == "a"
     assert merged.verdict == "vulnerable"
-    assert merged.confidence == 0.8
+    assert merged.confidence == 0.2
 
 
 def test_output_keeps_first_occurrence_order():
