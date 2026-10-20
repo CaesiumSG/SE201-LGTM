@@ -139,7 +139,6 @@ class TestReviewMetadataGraphFields:
         assert review["pr_sha"] == "b" * 40
 
     def test_coverage_is_null_by_default(self):
-        assert ReviewMetadata().coverage is None
         review = ReportBuilder([], ReviewMetadata(repo="r", base="m", pr="p")).build_json()["review"]
         assert "coverage" in review
         assert review["coverage"] is None

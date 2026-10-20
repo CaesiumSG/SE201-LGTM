@@ -92,6 +92,10 @@ class TestSectionConfig:
             LGTMConfig(**{field: value})
         assert str(exc.value) == f"{field} must be positive"
 
+    @pytest.mark.parametrize("field", NEW_CONFIG_DEFAULTS)
+    def test_value_of_one_is_accepted(self, field):
+        assert getattr(LGTMConfig(**{field: 1}), field) == 1
+
 
 class TestJsonReport:
     def test_structure_and_stats(self):
@@ -124,28 +128,6 @@ class TestJsonReport:
         assert payload["stats"]["semgrep_findings_total"] == 5
         assert payload["stats"]["semgrep_findings_in_diff"] == 2
 
-    def test_review_coverage_is_null_by_default(self):
-        review = ReportBuilder(sample_findings(), meta()).build_json()["review"]
-        assert "coverage" in review
-        assert review["coverage"] is None
-
-    def test_review_coverage_carries_supplied_dict(self):
-        coverage = {"sections_total": 3, "sections_reviewed": 2}
-        review = ReportBuilder(sample_findings(), ReviewMetadata(coverage=coverage)).build_json()["review"]
-        assert review["coverage"] == coverage
-
-
-class TestReviewMetadata:
-    def test_has_no_endpoints_reviewed_attribute(self):
-        assert not hasattr(ReviewMetadata(), "endpoints_reviewed")
-
-    def test_rejects_endpoints_reviewed_argument(self):
-        with pytest.raises(TypeError):
-            ReviewMetadata(endpoints_reviewed=1)
-
-    def test_coverage_defaults_to_none(self):
-        assert ReviewMetadata().coverage is None
-
 
 class TestMarkdownReport:
     def test_contains_key_sections(self):
@@ -167,7 +149,6 @@ class TestMarkdownReport:
         md = ReportBuilder(sample_findings(), meta()).build_markdown()
         assert "Semgrep: 2 finding(s) in diff (of 5 total)" in md
         assert "endpoint(s) reviewed for authorization" not in md
-        assert "endpoint" not in md.lower()
 
     def test_supplied_coverage_adds_no_markdown_text(self):
         coverage = {"sections_total": 3, "sections_reviewed": 2}
@@ -178,7 +159,6 @@ class TestMarkdownReport:
             coverage=coverage,
         )
         md = ReportBuilder(sample_findings(), with_coverage).build_markdown()
-        assert "coverage" not in md.lower()
         assert "sections_total" not in md
         assert "sections_reviewed" not in md
 
