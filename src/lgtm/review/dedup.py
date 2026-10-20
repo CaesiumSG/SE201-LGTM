@@ -82,6 +82,16 @@ def _evidence_key(item: EvidenceItem) -> tuple:
     return (item.type, item.file, lines, item.source, item.content)
 
 
+def _merged_pr_graph_ok(group: list[AgentFinding]) -> bool | None:
+    # False takes precedence so the PR-grounding cap applies to the merged finding in any member order.
+    stamps = [f.pr_graph_ok for f in group]
+    if False in stamps:
+        return False
+    if True in stamps:
+        return True
+    return None
+
+
 def _merge(group: list[AgentFinding]) -> AgentFinding:
     if len(group) == 1:
         return group[0]
@@ -104,6 +114,7 @@ def _merge(group: list[AgentFinding]) -> AgentFinding:
             "confidence": max(f.confidence for f in group),
             "explanation": max((f.explanation for f in group), key=len),
             "suggested_fix": max((f.suggested_fix for f in group), key=len),
+            "pr_graph_ok": _merged_pr_graph_ok(group),
             "evidence": evidence,
         }
     )

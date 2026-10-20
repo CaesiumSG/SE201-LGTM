@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
+from lgtm.diff.git_diff import get_pr_diff
 from lgtm.review.dedup import dedup_findings
+from lgtm.validation.evidence import PR_GROUNDING_CAP_MARKER, EvidenceValidator
 
 FILE = "app/views.py"
 
@@ -250,3 +252,53 @@ def test_safe_findings_keep_their_position_among_merged_ones():
     result = dedup_findings([first, safe, dup])
     assert ids(result) == ["a", "s"]
     assert result[0].verdict == "vulnerable"
+
+
+def _stamped_pair(first_stamp, second_stamp):
+    first = finding("a", line=10, verdict="possible", pr_graph_ok=first_stamp)
+    second = finding("b", line=10, verdict="vulnerable", pr_graph_ok=second_stamp)
+    return first, second
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["possible-first", "vulnerable-first"])
+def test_merged_vulnerable_finding_keeps_pr_graph_down_stamp_whatever_the_section_order(reverse):
+    pair = list(_stamped_pair(True, False))
+    if reverse:
+        pair.reverse()
+    (merged,) = dedup_findings(pair)
+    assert merged.verdict == "vulnerable"
+    assert merged.pr_graph_ok is False
+
+
+@pytest.mark.parametrize("stamp", [True, None])
+def test_merged_findings_with_the_same_pr_graph_stamp_keep_it(stamp):
+    (merged,) = dedup_findings(_stamped_pair(stamp, stamp))
+    assert merged.pr_graph_ok is stamp
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["possible-first", "vulnerable-first"])
+def test_ungrounded_vulnerable_finding_merged_after_pr_graph_went_down_is_capped(
+    git_repo, reverse
+):
+    pair = list(_stamped_pair(True, False))
+    if reverse:
+        pair.reverse()
+    (merged,) = dedup_findings(pair)
+    EvidenceValidator(git_repo, "main").validate(merged)
+    assert merged.verdict == "possible"
+    assert PR_GROUNDING_CAP_MARKER in merged.explanation
+
+
+def test_merged_vulnerable_finding_grounded_in_pr_code_is_not_capped(git_repo):
+    snippet = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
+    grounded = EvidenceItem(type="code", file="app.py", content=snippet)
+    first = finding("a", line=10, file="app.py", verdict="possible", pr_graph_ok=True)
+    second = finding(
+        "b", line=10, file="app.py", verdict="vulnerable", pr_graph_ok=False,
+        evidence=[grounded],
+    )
+    (merged,) = dedup_findings([first, second])
+    diffs = get_pr_diff(git_repo, "main", "pr")
+    EvidenceValidator(git_repo, "main", diffs).validate(merged)
+    assert merged.verdict == "vulnerable"
+    assert PR_GROUNDING_CAP_MARKER not in merged.explanation
