@@ -93,6 +93,13 @@ def _run_agent(kind, sc, script, config=None):
     return llm
 
 
+def _expected_names(kind, scenario):
+    names = scenario.expect["names"]
+    if kind == "sast_triage":
+        return [n for n in names if not n.startswith("investigate_")]
+    return names
+
+
 def _prompt(llm):
     return "\n".join(str(m.content) for m in llm.seen[0])
 
@@ -211,7 +218,7 @@ class TestGraphGuidanceSection:
 class TestAgentPromptMatrix:
     def test_prompt_names_every_registered_tool(self, kind, scenario):
         text = _prompt(_run_agent(kind, scenario, [SAFE]))
-        for name in scenario.expect["names"]:
+        for name in _expected_names(kind, scenario):
             assert name in text, f"{kind}/{scenario.name}: prompt does not mention {name}"
 
     def test_prompt_never_advertises_an_unregistered_tool(self, kind, scenario):
@@ -225,7 +232,10 @@ class TestAgentPromptMatrix:
 
     def test_graph_prompt_includes_the_tool_guidance_section(self, kind, graph_scenario):
         text = _flat(_prompt(_run_agent(kind, graph_scenario, [SAFE])))
-        assert _flat(_guidance_section(graph_scenario.toolbox)) in text
+        if kind == "sast_triage":
+            assert "investigate_" not in text
+        else:
+            assert _flat(_guidance_section(graph_scenario.toolbox)) in text
 
     def test_graph_prompt_never_claims_no_match_or_missing_edge_proves_safety(self, kind, graph_scenario):
         text = _prompt(_run_agent(kind, graph_scenario, [SAFE]))
@@ -258,7 +268,7 @@ class TestAgentPromptMatrix:
         config = LGTMConfig(max_tool_calls=BUDGET, require_tool_use=True)
         llm = _run_agent(kind, scenario, [SAFE, SAFE], config)
         pushback = llm.seen[1][-1].content
-        for name in scenario.expect["names"]:
+        for name in _expected_names(kind, scenario):
             assert name in pushback, f"{kind}/{scenario.name}: push-back omits {name}"
         if not scenario.expect["graph"]:
             assert "investigate_" not in pushback

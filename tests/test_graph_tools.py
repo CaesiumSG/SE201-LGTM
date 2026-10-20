@@ -434,8 +434,8 @@ class TestRejectedCallsAreChargedForPlainToolLists:
     def plain_tools(self, request, monkeypatch):
         original = AgentToolbox.build_tools
 
-        def build(self):
-            tools = original(self)
+        def build(self, *args, **kwargs):
+            tools = original(self, *args, **kwargs)
             return list(tools) if request.param == "list_copy" else tools[:]
 
         monkeypatch.setattr(AgentToolbox, "build_tools", build)
@@ -1432,7 +1432,7 @@ class TestGraphToolsThroughTheAgentLoop:
         endpoint = ChangedEndpoint(file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1)
         return AuthzReviewerAgent(r.toolbox, r.config, llm=llm).review(endpoint, None)
 
-    @pytest.fixture(params=["sast_triage", "authz_reviewer"])
+    @pytest.fixture(params=["authz_reviewer"])
     def kind(self, request):
         return request.param
 
@@ -1504,3 +1504,12 @@ class TestGraphToolsThroughTheAgentLoop:
         assert "reason=timeout" in _tool_messages(llm, 3)[-1].content
         assert r.runner.count("explore") == 1
         assert len(_latch_warnings(caplog, "base")) == 1
+
+
+def test_sast_triage_is_not_given_graph_tools(rig):
+    r = rig(runner=FakeRunner())
+    llm = ScriptedLLM([_msg(SAFE)])
+    TestGraphToolsThroughTheAgentLoop._review("sast_triage", r, llm)
+    prompt = "\n".join(str(m.content) for m in llm.seen[0])
+    assert "investigate_" not in prompt
+    assert r.toolbox.call_log == []

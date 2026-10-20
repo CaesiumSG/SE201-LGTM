@@ -416,13 +416,15 @@ class AgentToolbox:
     # ------------------------------------------------------------------
     # LangChain tool objects
     # ------------------------------------------------------------------
-    def build_tools(self) -> list:
+    def build_tools(self, graph: bool = True) -> list:
         toolbox = self
 
         @tool
         def read_file(path: str, start_line: int = 0, end_line: int = 0, snapshot: str = "base") -> str:
-            """Read a file (or a range of lines) from a committed snapshot of
-            the repository: "base" (default) or "pr". Use start_line/end_line
+            """Read the exact lines of a file from a committed snapshot of the
+            repository: "base" (default) or "pr". Use it to see and quote
+            precise lines, including code that investigate_* located or only
+            partly showed. Use start_line/end_line
             (1-based, inclusive) to read a specific range; pass 0 for both to
             read from the beginning. Returns numbered lines."""
             args = {"path": path, "start_line": start_line, "end_line": end_line, "snapshot": snapshot}
@@ -435,7 +437,8 @@ class AgentToolbox:
         @tool
         def grep_repo(pattern: str, file_glob: str = "", snapshot: str = "base") -> str:
             """Search a committed snapshot of the repository ("base" default or
-            "pr") for a regular expression. Optionally restrict to files
+            "pr") for a literal string or regular expression. Use it to confirm a
+            known location or find literal text. Optionally restrict to files
             matching file_glob (e.g. '*.py'). Returns matches as
             'file:line:content' (limited count)."""
             args = {"pattern": pattern, "file_glob": file_glob, "snapshot": snapshot}
@@ -454,16 +457,24 @@ class AgentToolbox:
 
         @tool
         def investigate_base_code(query: str) -> str:
-            """Query the CodeGraph index of the base snapshot for symbols and call relations."""
+            """Explore the base snapshot (code before the PR) to discover what is
+            involved: related definitions, callers and call paths. Query the
+            CodeGraph index with a natural-language question or symbol and file
+            names; returns source fragments that can be partial or truncated,
+            so use read_file for the exact lines you will cite."""
             return toolbox._investigate("base", query)
 
         @tool
         def investigate_pr_code(query: str) -> str:
-            """Query the CodeGraph index of the PR snapshot for symbols and call relations."""
+            """Explore the PR snapshot (the changed code) to discover what is
+            involved: related definitions, callers and call paths. Query the
+            CodeGraph index with a natural-language question or symbol and file
+            names; returns source fragments that can be partial or truncated,
+            so use read_file for the exact lines you will cite."""
             return toolbox._investigate("pr", query)
 
         tools = [read_file, grep_repo, search_policy]
-        if self.shas is not None and self.session is not None and not self._missing_at_startup:
+        if graph and self.shas is not None and self.session is not None and not self._missing_at_startup:
             tools = [investigate_base_code, investigate_pr_code, *tools]
         for tool_obj in tools:
             tool_obj.metadata = {"toolbox": toolbox}

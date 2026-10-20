@@ -108,8 +108,8 @@ class SASTTriageAgent:
     ) -> AgentFinding:
         """Triage one Semgrep finding; returns a structured AgentFinding."""
         self.toolbox.reset_budget()
-        tools = self.toolbox.build_tools()
-        guidance = prompt_parts.tool_guidance(self.toolbox)
+        tools = self.toolbox.build_tools(graph=False)
+        guidance = prompt_parts.tool_guidance(self.toolbox, graph=False)
 
         diff_text = file_diff.hunk_text() if file_diff else "(diff unavailable)"
         extra_context = ""
