@@ -1446,3 +1446,43 @@ class TestSummaryContract:
         assert cov["planners"] == {"deterministic": 1, "llm": 1}
         assert cov["investigator_status"] == {"ok": 1, "failed": 1}
         assert cov["detected_with_gap"] == 1
+
+    def test_complete_rate_is_rounded_to_three_places(self):
+        rows = [
+            evaluate.score_case(_case_row(
+                cid, "safe", findings=[_f("authz", "safe")],
+                coverage=_coverage(
+                    [_target_section("completed" if cid == "a" else "failed")])))
+            for cid in ("a", "b", "c")
+        ]
+        cov = evaluate.summarize(rows)["coverage"]
+        assert (cov["complete"], cov["rows"]) == (1, 3)
+        assert cov["complete_rate"] == 0.333
+
+    def test_detected_with_gap_excludes_error_rows(self):
+        gappy = _coverage([_target_section()], hunks_leftover=2)
+        detected = evaluate.score_case(_case_row(
+            "d", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")]))
+        errored = copy.deepcopy(detected)
+        errored["id"] = "e"
+        errored["error"] = "boom"
+        assert detected["coverage_gap"] is True
+        assert evaluate.coverage_summary([detected, errored])["detected_with_gap"] == 1
+
+    def test_error_rescore_clears_stale_target_sections_and_gap(self):
+        gappy = _coverage([_target_section()], hunks_leftover=2)
+        row = evaluate.score_case(_case_row(
+            "d", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")]))
+        assert row["coverage_gap"] is True
+        assert row["target_sections"] != []
+        row["error"] = "boom"
+        row = evaluate.score_case(row)
+        assert row["target_sections"] == []
+        assert row["coverage_gap"] is False
+        assert row["case_label"] == "scan_failure"
+
+    def test_fresh_error_row_carries_target_sections_and_boolean_gap(self):
+        row = evaluate.score_case(_case_row(
+            "e", "safe", coverage=_coverage([_target_section()]), error="boom"))
+        assert row["target_sections"] == []
+        assert row["coverage_gap"] is False

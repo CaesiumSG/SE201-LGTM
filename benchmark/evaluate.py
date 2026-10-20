@@ -56,13 +56,17 @@ def infra_failure_ids(findings: list[dict]) -> list[str]:
     ]
 
 
+def has_coverage(result: dict) -> bool:
+    return isinstance(result.get("coverage"), dict)
+
+
 def result_is_error(result: dict) -> bool:
     return (
         result.get("predicted") == "error"
         or result.get("outcome") == ERROR
         or bool(result.get("error"))
         or (result.get("infra_failures") or 0) > 0
-        or (not isinstance(result.get("coverage"), dict)
+        or (not has_coverage(result)
             and bool(infra_failure_ids(result.get("findings") or [])))
     )
 
@@ -277,7 +281,7 @@ def _target_sections(row: dict, sections: list[dict]) -> list[dict]:
 def _scan_failed(cov: dict) -> bool:
     scheduled = cov["sections_scheduled"]
     return (scheduled > 0 and cov["sections_completed"] == 0) or (
-        bool(cov.get("investigator_error")) and scheduled == 0
+        bool(cov["investigator_error"]) and scheduled == 0
     )
 
 
@@ -312,7 +316,7 @@ def score_case(result: dict) -> dict:
     """(Re)compute predictions and outcomes from a result's findings."""
     findings = result.get("findings", [])
     legacy = "pin" not in result
-    ids = [] if isinstance(result.get("coverage"), dict) else infra_failure_ids(findings)
+    ids = [] if has_coverage(result) else infra_failure_ids(findings)
     result["infra_failures"], result["infra_failure_ids"] = len(ids), ids
     if legacy:
         result["legacy"] = True
@@ -320,7 +324,9 @@ def score_case(result: dict) -> dict:
         message = result.get("error") or (
             "infra failure: " + ", ".join(ids) if ids else "unknown error")
         mark_error(result, message)
-        if not legacy:
+        if legacy:
+            result.update(case_label=None, case_label_grounded=None)
+        else:
             result.update(target_sections=[], coverage_gap=False)
     elif legacy:
         result["predicted"] = predict_case_verdict(findings, result["category"])
@@ -332,6 +338,7 @@ def score_case(result: dict) -> dict:
         result["outcome_grounded"] = outcome_for(
             result["predicted_grounded"], result["expected"]
         )
+        result.update(case_label=None, case_label_grounded=None)
     else:
         label, grounded_label, targets, gap = derive_case_labels(result)
         outcome = outcome_for_label(label, result["expected"])
@@ -346,8 +353,6 @@ def score_case(result: dict) -> dict:
             outcome_grounded=outcome_for_label(grounded_label, result["expected"]),
             correct=outcome in ("TP", "TN"),
         )
-    if legacy:
-        result.update(case_label=None, case_label_grounded=None)
     return result
 
 
@@ -388,11 +393,11 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
 
 def coverage_summary(results: list[dict]) -> dict:
     scored = [r for r in results if not result_is_error(r)]
-    covs = [r["coverage"] for r in scored if isinstance(r.get("coverage"), dict)]
-    complete = sum(1 for c in covs if c.get("complete"))
+    covs = [r["coverage"] for r in scored if has_coverage(r)]
+    complete = sum(1 for c in covs if c["complete"])
 
     def total(field: str) -> int:
-        return sum(c.get(field) or 0 for c in covs)
+        return sum(c[field] for c in covs)
 
     return {
         "rows": len(covs),
@@ -405,10 +410,10 @@ def coverage_summary(results: list[dict]) -> dict:
         "hunks_total": total("hunks_total"),
         "hunks_reviewed": total("hunks_reviewed"),
         "hunks_leftover": total("hunks_leftover"),
-        "invalid_refs": sum(len(c.get("invalid_refs") or []) for c in covs),
-        "planners": dict(Counter(c.get("planner") or "unknown" for c in covs)),
+        "invalid_refs": sum(len(c["invalid_refs"]) for c in covs),
+        "planners": dict(Counter(c["planner"] or "unknown" for c in covs)),
         "investigator_status": dict(Counter(
-            c.get("investigator_status") or "unknown" for c in covs)),
+            c["investigator_status"] or "unknown" for c in covs)),
         "detected_with_gap": sum(
             1 for r in scored
             if r.get("case_label") == "detected_vulnerability" and r.get("coverage_gap")
@@ -498,6 +503,8 @@ def summarize(results: list[dict]) -> dict:
             for val in sorted({r.get(field) for r in results if r.get(field)})
         }
 
+    case_labels = Counter(r.get("case_label") or "legacy" for r in results)
+
     return {
         "overall": metrics(results),
         "per_category": by("category"),
@@ -536,8 +543,8 @@ def summarize(results: list[dict]) -> dict:
         "median_est_tokens_per_pr": (
             int(statistics.median(tokens)) if tokens else None
         ),
-        "case_labels": dict(Counter(r.get("case_label") or "legacy" for r in results)),
-        "legacy_rows": sum(1 for r in results if not r.get("case_label")),
+        "case_labels": dict(case_labels),
+        "legacy_rows": case_labels.get("legacy", 0),
         "coverage": coverage_summary(results),
     }
 
