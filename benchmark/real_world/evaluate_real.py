@@ -69,9 +69,6 @@ from lgtm.review.provenance import run_pin  # noqa: E402
 
 MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
 DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
-COVERAGE_SCALAR_KEYS = ("planner", "files_total", "files_in_scope", "hunks_total",
-                        "hunks_reviewed", "sections_scheduled", "sections_completed",
-                        "sections_failed", "complete")
 DEFAULT_OUTPUT = BENCH / "results" / "real_world"
 INFRA_PREFIXES = evaluate.INFRA_PREFIXES
 
@@ -157,8 +154,8 @@ def expected_ids(cases, mode: str, variant: str) -> set[str]:
 def coverage_summary(coverage: dict | None) -> dict | None:
     if coverage is None:
         return None
-    return {**{k: coverage[k] for k in COVERAGE_SCALAR_KEYS},
-            "exclusions_total": len(coverage["exclusions"])}
+    scalars = {k: v for k, v in coverage.items() if not isinstance(v, (list, dict))}
+    return {**scalars, "exclusions_total": len(coverage["exclusions"])}
 
 
 def git_out(clone: Path, *args: str) -> str:
@@ -215,7 +212,7 @@ def diff_stats(diffs) -> dict:
 
 
 def error_result(case: dict, mode: str, variant: str, exc: Exception,
-                 review=None) -> dict:
+                 review=None, file: str | None = None, pin: dict | None = None) -> dict:
     """A crash is recorded as an error result and is not scored."""
     base = {
         "id": case["id"], "category": case["category"], "split": "real_world",
@@ -224,6 +221,7 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
+        "file": file, "pin": pin,
         **evaluate.graph_fields(review),
     }
     return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
@@ -279,7 +277,8 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
         if mode in DOC_MODES:
             coverage = getattr(result.meta, "coverage", None)
-            extra.update(coverage=coverage, coverage_summary=coverage_summary(coverage))
+            extra["coverage"] = coverage
+            extra["coverage_summary"] = coverage_summary(coverage)
         return evaluate.score_case({
             "id": cid, "category": case["category"], "split": "real_world",
             "expected": case["expected_verdict"], "n_findings": len(findings),
@@ -291,8 +290,9 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
             "findings": findings, **extra, **graph,
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
-        return {**error_result(case, mode, variant, exc, review=result),
-                "file": extra["file"], "pin": pin}
+        kept = {k: extra[k] for k in ("coverage", "coverage_summary") if k in extra}
+        return {**error_result(case, mode, variant, exc, review=result,
+                               file=extra["file"], pin=pin), **kept}
 
 
 # ----------------------------------------------------------------------
@@ -446,9 +446,10 @@ def main(argv: list[str] | None = None) -> int:
             print("\ninterrupted", file=sys.stderr)
             return 3
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
-            result = {**error_result(case, mode, variant, exc),
-                      "file": str(out_dir_for(args.output, mode, variant) / f"{case['id']}.json"),
-                      "pin": run_pin(config, REPO_ROOT, {})}
+            result = error_result(
+                case, mode, variant, exc,
+                file=str(out_dir_for(args.output, mode, variant) / f"{case['id']}.json"),
+                pin=run_pin(config, REPO_ROOT, {}))
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1

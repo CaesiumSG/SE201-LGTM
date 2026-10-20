@@ -349,9 +349,8 @@ that can see one.
 
 Decoding ran at about 5 tokens/s, so a single agent call took 37–139 s.
 These figures are specific to this laptop; see the latency caveat above.
-Indexes are skipped only when the pipeline's own functions show that no
-agent can run (`index_skipped` and `index_skip_reason` are in every JSON);
-the output is then determined without the index.
+`lgtm` and `lgtm-no-sast` units always build the index and run the authz
+scan; `index_skipped` and `index_skip_reason` are in every JSON.
 
 ## Bugs found while running
 

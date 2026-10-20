@@ -10,11 +10,15 @@ from pathlib import Path
 
 import pytest
 
+from lgtm.review.coverage import SectionResult, build_coverage
+from lgtm.review.sections import Exclusion, HunkRef, ScanPlan, Section
+
 RW = Path(__file__).resolve().parent.parent / "benchmark" / "real_world"
 _spec = importlib.util.spec_from_file_location("rw_evaluate_real", RW / "evaluate_real.py")
 er = importlib.util.module_from_spec(_spec)
 sys.modules["rw_evaluate_real"] = er
 _spec.loader.exec_module(er)
+
 
 class TestScrub:
     def test_replaces_longest_path_first_in_nested_values(self):
@@ -538,14 +542,37 @@ class TestPostReviewFailureAndErrorCounts:
 class TestAuthzScanRecords:
     BASE40, PR40 = "a" * 40, "b" * 40
     CASE = TestGraphMetadataOnRecords.CASE
-    COVERAGE = {
-        "planner": "investigator", "files_total": 3, "files_in_scope": 2,
-        "hunks_total": 4, "hunks_reviewed": 4, "sections_scheduled": 2,
-        "sections_completed": 2, "sections_failed": 0, "complete": True,
-        "exclusions": [{"path": "a.lock", "reason": "lockfile"},
-                       {"path": "b.min.js", "reason": "minified"}],
-        "invalid_refs": [], "sections": [{"section_id": "s1"}, {"section_id": "s2"}],
-    }
+    @staticmethod
+    def _build_coverage():
+        def hunk(hid):
+            return HunkRef(hid, "a.py", 1, 1, 1, 1, "modify")
+
+        plan = ScanPlan(
+            sections=[Section("s1", "investigator", "one", files=["a.py"],
+                              hunks=[hunk("h1"), hunk("h2")]),
+                      Section("s2", "investigator", "two", files=["a.py"],
+                              hunks=[hunk("h3")])],
+            exclusions=[Exclusion("a.lock", "lockfile"),
+                        Exclusion("b.min.js", "minified"),
+                        Exclusion("c.svg", "binary")],
+            invalid_refs=["zz"], planner="investigator", files_total=5,
+            files_in_scope=3, hunks_total=4, hunks_assigned=3, hunks_leftover=1,
+            sections_coalesced=1)
+        return build_coverage(
+            plan, investigator_status="ok", investigator_error=None,
+            investigator_input="full", investigator_tool_calls=4,
+            results={"s1": SectionResult("completed", [], [], None),
+                     "s2": SectionResult("failed", [], [], "boom")})
+
+    COVERAGE = _build_coverage.__func__()
+    COVERAGE_SUMMARY = {
+        "planner": "investigator", "investigator_status": "ok",
+        "investigator_error": None, "investigator_input": "full",
+        "investigator_tool_calls": 4, "files_total": 5, "files_in_scope": 3,
+        "hunks_total": 4, "hunks_assigned": 3, "hunks_leftover": 1,
+        "hunks_reviewed": 2, "sections_scheduled": 2, "sections_completed": 1,
+        "sections_failed": 1, "sections_coalesced": 1, "complete": False,
+        "exclusions_total": 3}
 
     @staticmethod
     def _diff(path, status, added, deleted):
@@ -600,28 +627,31 @@ class TestAuthzScanRecords:
     @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
     def test_doc_mode_record_has_pin_file_coverage_and_summary(
             self, tmp_path, monkeypatch, mode):
+        real_run_pin = er.run_pin
+        calls = []
+
+        def spy(config, repo_root, refs):
+            calls.append((repo_root, dict(refs)))
+            return real_run_pin(config, repo_root, refs)
+
+        monkeypatch.setattr(er, "run_pin", spy)
         rec, _ = self._run(monkeypatch, tmp_path, mode, {"coverage": self.COVERAGE})
         assert rec["pin"]["base_sha"] == self.BASE40
         assert rec["pin"]["pr_sha"] == self.PR40
         assert rec["pin"]["flags"]["mode"] == mode
-        assert isinstance(rec["file"], str) and rec["file"]
-        assert rec["coverage"] == self.COVERAGE
-        assert rec["coverage_summary"] == {
-            "planner": "investigator", "files_total": 3, "files_in_scope": 2,
-            "hunks_total": 4, "hunks_reviewed": 4, "sections_scheduled": 2,
-            "sections_completed": 2, "sections_failed": 0, "complete": True,
-            "exclusions_total": 2}
-
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
-    def test_record_pin_is_run_pin_on_lgtm_root_with_review_shas(
-            self, tmp_path, monkeypatch, mode):
-        calls = []
-        rec, _ = self._run(monkeypatch, tmp_path, mode, pin_calls=calls)
-        assert rec["pin"] == self.PIN
         assert len(calls) == 1
-        _config, root, refs = calls[0]
+        root, refs = calls[0]
         assert Path(root) == er.REPO_ROOT
         assert refs == {"base": self.BASE40, "pr": self.PR40}
+        assert isinstance(rec["file"], str) and rec["file"]
+        assert rec["coverage"] == self.COVERAGE
+        assert rec["coverage_summary"] == self.COVERAGE_SUMMARY
+
+    def test_exclusions_total_counts_exclusions_not_sections(
+            self, tmp_path, monkeypatch):
+        none_excluded = {**self.COVERAGE, "exclusions": []}
+        rec, _ = self._run(monkeypatch, tmp_path, "lgtm", {"coverage": none_excluded})
+        assert rec["coverage_summary"]["exclusions_total"] == 0
 
     @pytest.mark.parametrize("mode,index_builds", [("lgtm", 1), ("llm-only", 0)])
     def test_diff_stats_count_only_non_deleted_files(
@@ -655,18 +685,6 @@ class TestAuthzScanRecords:
         rec, _ = self._run(monkeypatch, tmp_path, "lgtm")
         assert ("endpoints" + "_detected") not in rec
 
-    def test_manifest_has_pin(self, tmp_path, monkeypatch):
-        cache = tmp_path / "cache"
-        (cache / "aegra" / ".git").mkdir(parents=True)
-        out = tmp_path / "out"
-        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
-        monkeypatch.setattr(er, "run_unit", lambda *a, **k: None)
-        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own", "--cases", "aegra_authz_safe", "--model", "x:1"])
-        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
-        assert manifest["pin"]["model"] == "x:1"
-        assert "code_sha" in manifest["pin"]
-
     def test_manifest_pin_is_run_pin_on_lgtm_root(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache"
         (cache / "aegra" / ".git").mkdir(parents=True)
@@ -681,6 +699,53 @@ class TestAuthzScanRecords:
         assert manifest["pin"] == self.PIN
         assert calls and all(Path(root) == er.REPO_ROOT for _c, root, _r in calls)
         assert all(c.ollama_model == "x:1" for c, _root, _r in calls)
+
+    @pytest.mark.parametrize("mode", ["lgtm", "llm-only"])
+    def test_run_unit_crash_record_keeps_file_and_pin_without_coverage(
+            self, tmp_path, monkeypatch, mode):
+        class BrokenFinding:
+            def model_dump(self, exclude=None):
+                raise RuntimeError("cannot serialise finding")
+
+        meta = type("Meta", (), {
+            "semgrep_findings_in_diff": 0, "graph_state": "ok",
+            "graph_index_seconds": 1.0, "base_sha": self.BASE40,
+            "pr_sha": self.PR40, "coverage": self.COVERAGE})()
+        result = type("Result", (), {"findings": [BrokenFinding()], "meta": meta})()
+        calls = []
+        self._record_pin(monkeypatch, calls)
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ensure_index",
+                            lambda *a, **k: {"seconds": 0.5, "chunks": 3, "reused": False})
+        monkeypatch.setattr(
+            er, "ReviewPipeline",
+            TestGraphMetadataOnRecords._pipeline([result], []))
+        rec = er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+        assert rec["outcome"] == "ERROR"
+        assert rec["pin"] == self.PIN
+        assert rec["file"] == str(tmp_path / mode / "x.json")
+        assert "coverage" not in rec and "coverage_summary" not in rec
+
+    def test_main_crash_record_keeps_file_and_pin_without_coverage(
+            self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        self._record_pin(monkeypatch, [])
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", boom)
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        path = out / "lgtm" / "aegra_authz_safe.json"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["outcome"] == "ERROR"
+        assert saved["pin"] == self.PIN
+        assert Path(saved["file"]).parts[-2:] == ("lgtm", "aegra_authz_safe.json")
+        assert "coverage" not in saved and "coverage_summary" not in saved
 
     @pytest.mark.parametrize("name", ["count_agent" + "_items",
                                       "extract_changed" + "_endpoints"])
