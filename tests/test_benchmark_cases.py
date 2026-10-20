@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -54,7 +55,9 @@ class TestLabels:
     def test_vulnerable_cases_have_lines(self):
         for case in LABELS["cases"]:
             if case["expected_verdict"] == "vulnerable":
-                assert case["vulnerable_lines"], case["id"]
+                assert (
+                    case.get("vulnerable_lines") or case.get("vulnerable_locations")
+                ), case["id"]
 
     def test_cwes_valid(self):
         allowed = {"CWE-89", "CWE-639", "CWE-862", "CWE-863"}
@@ -92,8 +95,12 @@ def test_vulnerable_lines_point_at_added_code(base_repo, case, tmp_path):
     work = tmp_path / "work"
     shutil.copytree(base_repo, work)
     git(work, "apply", str(BENCH / case["patch_file"]))
-    content = (work / case["file"]).read_text(encoding="utf-8").splitlines()
-    for line_no in case["vulnerable_lines"]:
+    labelled = work / case["file"]
+    if not labelled.is_file():
+        assert not case.get("vulnerable_lines"), case["id"]
+        return
+    content = labelled.read_text(encoding="utf-8").splitlines()
+    for line_no in case.get("vulnerable_lines", []):
         assert 1 <= line_no <= len(content), f"{case['id']}: line {line_no} out of range"
 
 
@@ -354,3 +361,216 @@ class TestSplitRule:
     def test_pair_number_determines_split(self, gen, pair, expected):
         case = make_case(gen, id=f"authz_{pair:02d}_safe", expected_verdict="safe")
         assert case.split == expected
+
+
+PAIRS = {
+    7: dict(split="dev", cwe="CWE-639", shape="deletion_only"),
+    8: dict(split="dev", cwe="CWE-863", shape="shared_helper"),
+    9: dict(split="dev", cwe="CWE-639", shape="decorator_outside_hunk"),
+    10: dict(split="eval", cwe="CWE-862", shape="deleted_file"),
+    11: dict(split="eval", cwe="CWE-639", shape="oversized_diff"),
+    12: dict(split="eval", cwe="CWE-639", shape="cross_file_move"),
+    13: dict(split="dev", cwe="CWE-863", shape="renamed_route"),
+    14: dict(split="eval", cwe="CWE-862", shape="removed_auth_decorator"),
+}
+LABELLED_FILE = {
+    7: "app/routes/users.py", 8: "app/auth.py", 9: "app/routes/orders.py",
+    10: "app/auth/__init__.py", 11: "app/routes/users.py",
+    12: "app/ownership.py", 13: "app/routes/admin.py",
+}
+EXPECTED_SIDES = {
+    10: {("app/auth.py", "old"), ("app/auth/__init__.py", "new")},
+    11: {("app/routes/users.py", "new")},
+    12: {("app/auth.py", "old"), ("app/ownership.py", "new")},
+    13: {("app/routes/admin.py", "new")},
+}
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+ROUTE_RE = re.compile(r"route\(\s*[\"']([^\"']+)[\"']")
+
+BOTH = pytest.mark.parametrize("kind", ["vulnerable", "safe"])
+PAIR = pytest.mark.parametrize("pair", sorted(PAIRS))
+
+
+def label_for(pair: int, kind: str) -> dict:
+    case_id = f"authz_{pair:02d}_{kind}"
+    matches = [c for c in LABELS["cases"] if c["id"] == case_id]
+    assert len(matches) == 1, f"{case_id} missing from labels.json"
+    return matches[0]
+
+
+def patch_text(pair: int, kind: str) -> str:
+    label = label_for(pair, kind)
+    path = BENCH / label["patch_file"]
+    assert path.is_file(), f"{label['id']}: patch file missing"
+    return path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def parse_patch(text: str) -> list[dict]:
+    files = []
+    for block in re.split(r"(?m)^(?=diff --git )", text):
+        if not block.startswith("diff --git "):
+            continue
+        old = new = None
+        hunks = []
+        for ln in block.split("\n"):
+            if ln.startswith("--- ") and not hunks:
+                old = None if ln == "--- /dev/null" else ln[6:]
+            elif ln.startswith("+++ ") and not hunks:
+                new = None if ln == "+++ /dev/null" else ln[6:]
+            elif ln.startswith("@@"):
+                a, b, c, d = HUNK_RE.match(ln).groups()
+                hunks.append(dict(
+                    old=(int(a), int(a) + int(b if b is not None else 1) - 1),
+                    new=(int(c), int(c) + int(d if d is not None else 1) - 1),
+                    body=[],
+                ))
+            elif hunks:
+                hunks[-1]["body"].append(ln)
+        files.append(dict(old=old, new=new, hunks=hunks))
+    return files
+
+
+def file_body(f: dict) -> list[str]:
+    return [ln for h in f["hunks"] for ln in h["body"]]
+
+
+def hunk_bodies(text: str) -> list[str]:
+    return [ln for f in parse_patch(text) for ln in file_body(f)]
+
+
+def is_decorator(ln: str) -> bool:
+    return ln[1:].lstrip().startswith("@")
+
+
+def overlaps(a, b) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+class TestNewAuthzPairLabels:
+    @PAIR
+    @BOTH
+    def test_pair_label_metadata(self, pair, kind):
+        label = label_for(pair, kind)
+        spec = PAIRS[pair]
+        assert label["category"] == "authz"
+        assert label["origin"] == "custom"
+        assert label["split"] == spec["split"]
+        assert label["cwe"] == spec["cwe"]
+        assert label["expected_verdict"] == kind
+        assert label["patch_file"] == f"cases/authz/case_{pair:02d}_{kind}.patch"
+        assert label["diff_shape"] == spec["shape"]
+        if pair in LABELLED_FILE:
+            assert label["file"] == LABELLED_FILE[pair]
+
+    @PAIR
+    @BOTH
+    def test_locations_overlap_real_hunks_and_have_contract_shape(self, pair, kind):
+        label = label_for(pair, kind)
+        locations = label.get("vulnerable_locations")
+        assert locations, f"{label['id']}: vulnerable_locations missing"
+        files = parse_patch(patch_text(pair, kind))
+        for loc in locations:
+            assert list(loc) == ["file", "old_range", "new_range"]
+            assert loc["old_range"] or loc["new_range"]
+            for key, side in (("old_range", "old"), ("new_range", "new")):
+                rng = loc[key]
+                if rng is None:
+                    continue
+                assert isinstance(rng, list) and len(rng) == 2
+                assert all(isinstance(n, int) for n in rng)
+                assert 1 <= rng[0] <= rng[1]
+                spans = [h[side] for f in files if f[side] == loc["file"]
+                         for h in f["hunks"]]
+                assert any(overlaps(rng, s) for s in spans), (
+                    f"{label['id']}: {key} {rng} in {loc['file']} overlaps no hunk"
+                )
+
+    @pytest.mark.parametrize("pair", sorted(EXPECTED_SIDES))
+    @BOTH
+    def test_locations_cover_the_changed_region_per_side(self, pair, kind):
+        sides = set()
+        for loc in label_for(pair, kind).get("vulnerable_locations") or []:
+            if loc["old_range"]:
+                sides.add((loc["file"], "old"))
+            if loc["new_range"]:
+                sides.add((loc["file"], "new"))
+        assert EXPECTED_SIDES[pair] <= sides
+
+    @BOTH
+    def test_pair_14_locations_are_old_ranges_of_removed_decorator(self, kind):
+        locations = label_for(14, kind).get("vulnerable_locations") or []
+        assert locations and all(loc["old_range"] for loc in locations)
+
+    @pytest.mark.parametrize("pair", [7, 8, 14])
+    def test_vulnerable_twin_relies_on_locations_not_lines(self, pair):
+        label = label_for(pair, "vulnerable")
+        assert label["vulnerable_lines"] == []
+        assert label.get("vulnerable_locations")
+
+
+class TestNewAuthzPairDiffShapes:
+    @BOTH
+    def test_deletion_only_has_no_added_lines_and_no_decorator(self, kind):
+        body = hunk_bodies(patch_text(7, kind))
+        assert any(ln.startswith("-") for ln in body)
+        assert not [ln for ln in body if ln.startswith("+")]
+        assert not [ln for ln in body if is_decorator(ln)]
+
+    @BOTH
+    def test_shared_helper_touches_only_auth_module(self, kind):
+        paths = {p for f in parse_patch(patch_text(8, kind))
+                 for p in (f["old"], f["new"]) if p}
+        assert paths == {"app/auth.py"}
+
+    @BOTH
+    def test_decorator_outside_hunk_shows_neither_decorator_nor_def(self, kind):
+        body = hunk_bodies(patch_text(9, kind))
+        assert body
+        assert not [ln for ln in body if is_decorator(ln)]
+        assert not [ln for ln in body if "def my_orders" in ln]
+
+    @BOTH
+    def test_deleted_file_marks_deletion(self, kind):
+        text = patch_text(10, kind)
+        assert "deleted file mode" in text
+        assert "+++ /dev/null" in text
+
+    @BOTH
+    def test_oversized_diff_is_large_with_marker_in_final_tenth(self, kind):
+        text = patch_text(11, kind)
+        assert len(text) > 18000
+        marker = text.rfind("/users/<id>/export")
+        assert marker >= len(text) * 0.9
+
+    @BOTH
+    def test_cross_file_move_defines_function_in_two_files(self, kind):
+        text = patch_text(12, kind)
+        assert "new file mode" in text
+        files = parse_patch(text)
+
+        def files_with(prefix, side):
+            return {f[side] for f in files for ln in file_body(f)
+                    if ln.startswith(prefix) and "def is_owner_or_admin" in ln}
+
+        removed, added = files_with("-", "old"), files_with("+", "new")
+        assert removed and added
+        assert not (removed & added)
+
+    @BOTH
+    def test_renamed_route_swaps_path_in_admin_routes(self, kind):
+        admin = [f for f in parse_patch(patch_text(13, kind))
+                 if f["new"] == "app/routes/admin.py"]
+        assert admin
+        body = file_body(admin[0])
+
+        def paths(prefix):
+            return {m.group(1) for ln in body if ln.startswith(prefix)
+                    for m in [ROUTE_RE.search(ln)] if m}
+
+        old_paths, new_paths = paths("-"), paths("+")
+        assert old_paths and new_paths and not (old_paths & new_paths)
+
+    def test_vulnerable_twin_removes_decorator_without_adding_one(self):
+        body = hunk_bodies(patch_text(14, "vulnerable"))
+        assert [ln for ln in body if ln.startswith("-") and is_decorator(ln)]
+        assert not [ln for ln in body if ln.startswith("+") and is_decorator(ln)]

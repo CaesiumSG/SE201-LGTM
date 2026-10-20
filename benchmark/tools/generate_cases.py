@@ -1115,6 +1115,451 @@ def orders_report():
     description="Report endpoint enforces the reports:read API-key scope.",
 ))
 
+# --- Pair 7: profile update without ownership check -------------------------
+CASES.append(Case(
+    id="authz_07_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    context=1,
+    replacements=[(
+        '    """Update profile fields (email, shipping preferences). Owner or admin."""\n'
+        '    if not is_owner_or_admin(g.current_user, user_id):\n'
+        '        return jsonify({"error": "forbidden"}), 403\n',
+        '    """Update profile fields (email, shipping preferences). Owner or admin."""\n',
+    )],
+    location_markers=[{
+        "file": "app/routes/users.py",
+        "old_markers": [
+            "if not is_owner_or_admin(g.current_user, user_id):",
+            'return jsonify({"error": "forbidden"}), 403',
+        ],
+    }],
+    diff_shape="deletion_only",
+    description="Profile update drops the ownership check, letting any "
+                "authenticated user edit any profile.",
+))
+
+CASES.append(Case(
+    id="authz_07_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[(
+        '    if "email" in payload:\n        user.email = payload["email"]\n',
+        "",
+    )],
+    location_markers=[{
+        "file": "app/routes/users.py",
+        "old_markers": [
+            'if "email" in payload:',
+            'user.email = payload["email"]',
+        ],
+    }],
+    diff_shape="deletion_only",
+    description="Same profile update without the email branch, keeping the "
+                "ownership check.",
+))
+
+# --- Pair 8: role comparison extracted into a helper ------------------------
+ROLE_HELPER_ANCHOR = 'ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}\n'
+ROLE_HELPER = (
+    ROLE_HELPER_ANCHOR
+    + "\n\ndef role_below(role: str, minimum_role: str) -> bool:\n"
+    + "    return ROLE_RANK.get(role, 0) < ROLE_RANK.get(minimum_role, 99)\n"
+)
+ROLE_COMPARISON = "ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99)"
+
+CASES.append(Case(
+    id="authz_08_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-863",
+    file="app/auth.py",
+    replacements=[(
+        f'            if {ROLE_COMPARISON}:\n'
+        '                return jsonify({"error": "insufficient role"}), 403\n',
+        "",
+    )],
+    location_markers=[{
+        "file": "app/auth.py",
+        "old_markers": [ROLE_COMPARISON, "insufficient role"],
+    }],
+    diff_shape="shared_helper",
+    description="require_role loses its rank comparison, so every "
+                "authenticated user passes role gates.",
+))
+
+CASES.append(Case(
+    id="authz_08_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-863",
+    file="app/auth.py",
+    replacements=[
+        (ROLE_HELPER_ANCHOR, ROLE_HELPER),
+        (f"if {ROLE_COMPARISON}:", "if role_below(user.role, minimum_role):"),
+    ],
+    location_markers=[{
+        "file": "app/auth.py",
+        "old_markers": [ROLE_COMPARISON],
+    }],
+    diff_shape="shared_helper",
+    description="Rank comparison moved into role_below with identical semantics.",
+))
+
+# --- Pair 9: owner filter replaced by a status filter -----------------------
+OWNER_FILTER = ".filter(Order.user_id == g.current_user.id)"
+
+CASES.append(Case(
+    id="authz_09_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/orders.py",
+    replacements=[(OWNER_FILTER, '.filter(Order.status != "cancelled")')],
+    location_markers=[{
+        "file": "app/routes/orders.py",
+        "old_markers": [OWNER_FILTER],
+        "new_markers": ['.filter(Order.status != "cancelled")'],
+    }],
+    diff_shape="decorator_outside_hunk",
+    description="my_orders filters by status instead of owner, exposing other "
+                "users' orders.",
+))
+
+CASES.append(Case(
+    id="authz_09_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/orders.py",
+    replacements=[(
+        OWNER_FILTER,
+        '.filter(Order.user_id == g.current_user.id, Order.status != "cancelled")',
+    )],
+    location_markers=[{
+        "file": "app/routes/orders.py",
+        "old_markers": [OWNER_FILTER],
+        "new_markers": ['Order.status != "cancelled"'],
+    }],
+    diff_shape="decorator_outside_hunk",
+    description="my_orders keeps the owner filter and adds a status filter.",
+))
+
+# --- Pair 10: auth module moved into a package, scope check dropped ---------
+AUTH_MODULE = (BENCH / "app" / "auth.py").read_text(encoding="utf-8")
+SCOPE_CHECK = (
+    "            if key.scope != required_scope:\n"
+    '                return jsonify({"error": "API key lacks required scope"}), 403\n'
+)
+SCOPE_MARKERS = ["def require_api_key_scope", "g.api_key = key"]
+
+CASES.append(Case(
+    id="authz_10_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-862",
+    file="app/auth/__init__.py",
+    delete_files=["app/auth.py"],
+    new_files={"app/auth/__init__.py": AUTH_MODULE},
+    replacements=[(SCOPE_CHECK, "")],
+    location_markers=[
+        {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
+        {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
+    ],
+    diff_shape="deleted_file",
+    description="auth module moved into a package with the API-key scope "
+                "check removed from require_api_key_scope.",
+))
+
+CASES.append(Case(
+    id="authz_10_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-862",
+    file="app/auth/__init__.py",
+    delete_files=["app/auth.py"],
+    new_files={"app/auth/__init__.py": AUTH_MODULE},
+    location_markers=[
+        {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
+        {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
+    ],
+    diff_shape="deleted_file",
+    description="auth module moved into a package without changes.",
+))
+
+# --- Pair 11: oversized patch with the export endpoint last -----------------
+# Filler routes push the users.py endpoint into the final tenth of the patch.
+REPORT_FILLER = "".join(
+    f'''
+@admin_bp.route("/reports/{n:03d}", methods=["GET"])
+@require_role("admin")
+def report_{n:03d}():
+    """Read-only report section {n}."""
+    session = get_session()
+    return jsonify({{"section": {n}, "users": session.query(User).count()}})
+'''
+    for n in range(1, 91)
+)
+
+EXPORT_UNGUARDED = '''
+@users_bp.route("/<int:user_id>/export", methods=["GET"])
+@require_auth
+def export_user(user_id: int):
+    """Export a user's profile and orders (/users/<id>/export)."""
+    session = get_session()
+    user = session.get(User, user_id)
+    if user is None:
+        return jsonify({"error": "not found"}), 404
+    orders = session.query(Order).filter(Order.user_id == user_id).all()
+    return jsonify(
+        {
+            "user": user.to_dict(include_email=True),
+            "orders": [o.to_dict() for o in orders],
+        }
+    )
+'''
+
+EXPORT_GUARDED = '''
+@users_bp.route("/<int:user_id>/export", methods=["GET"])
+@require_auth
+def export_user(user_id: int):
+    """Export a user's profile and orders (/users/<id>/export)."""
+    if not is_owner_or_admin(g.current_user, user_id):
+        return jsonify({"error": "forbidden"}), 403
+    session = get_session()
+    user = session.get(User, user_id)
+    if user is None:
+        return jsonify({"error": "not found"}), 404
+    orders = session.query(Order).filter(Order.user_id == user_id).all()
+    return jsonify(
+        {
+            "user": user.to_dict(include_email=True),
+            "orders": [o.to_dict() for o in orders],
+        }
+    )
+'''
+
+EXPORT_LOCATION = [{
+    "file": "app/routes/users.py",
+    "new_markers": [
+        '@users_bp.route("/<int:user_id>/export"',
+        '"orders": [o.to_dict() for o in orders]',
+    ],
+}]
+
+CASES.append(Case(
+    id="authz_11_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[USERS_ADD_ORDER_IMPORT],
+    append=EXPORT_UNGUARDED,
+    edits=[{"file": "app/routes/admin.py", "append": REPORT_FILLER}],
+    location_markers=EXPORT_LOCATION,
+    diff_shape="oversized_diff",
+    description="Per-user export endpoint with no ownership check, appended "
+                "after generated admin-only report routes.",
+))
+
+CASES.append(Case(
+    id="authz_11_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[USERS_ADD_ORDER_IMPORT],
+    append=EXPORT_GUARDED,
+    edits=[{"file": "app/routes/admin.py", "append": REPORT_FILLER}],
+    location_markers=EXPORT_LOCATION,
+    diff_shape="oversized_diff",
+    description="Same generated report routes with the export endpoint "
+                "guarded by is_owner_or_admin.",
+))
+
+# --- Pair 12: ownership helper moved to its own module ----------------------
+OWNERSHIP_MODULE = (
+    "from app.models import User\n"
+    "\n"
+    "\n"
+    "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n"
+    '    """Ownership check used for per-object access (orders, profiles)."""\n'
+    '    return user.id == owner_id or user.role == "admin"\n'
+)
+OWNERSHIP_RETURN = '    return user.id == owner_id or user.role == "admin"'
+
+CASES.append(Case(
+    id="authz_12_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/ownership.py",
+    new_files={"app/ownership.py": OWNERSHIP_MODULE},
+    replacements=[(OWNERSHIP_RETURN, "    return user is not None")],
+    edits=[{
+        "file": "app/auth.py",
+        "replacements": [
+            ("from app.models import ApiKey, User, get_session\n",
+             "from app.models import ApiKey, User, get_session\n"
+             "from app.ownership import is_owner_or_admin\n"),
+            ('\n\ndef is_owner_or_admin(user: User, owner_id: int) -> bool:\n'
+             '    """Ownership check used for per-object access (orders, profiles)."""\n'
+             '    return user.id == owner_id or user.role == "admin"\n',
+             "\n"),
+        ],
+    }],
+    location_markers=[
+        {
+            "file": "app/auth.py",
+            "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+        },
+        {
+            "file": "app/ownership.py",
+            "new_markers": ["def is_owner_or_admin", "return user is not None"],
+        },
+    ],
+    diff_shape="cross_file_move",
+    description="is_owner_or_admin moved to app/ownership.py, where it returns "
+                "True for every authenticated user.",
+))
+
+CASES.append(Case(
+    id="authz_12_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/ownership.py",
+    new_files={"app/ownership.py": OWNERSHIP_MODULE},
+    edits=[{
+        "file": "app/auth.py",
+        "replacements": [
+            ("from app.models import ApiKey, User, get_session\n",
+             "from app.models import ApiKey, User, get_session\n"
+             "from app.ownership import is_owner_or_admin\n"),
+            ('\n\ndef is_owner_or_admin(user: User, owner_id: int) -> bool:\n'
+             '    """Ownership check used for per-object access (orders, profiles)."""\n'
+             '    return user.id == owner_id or user.role == "admin"\n',
+             "\n"),
+        ],
+    }],
+    location_markers=[
+        {
+            "file": "app/auth.py",
+            "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+        },
+        {
+            "file": "app/ownership.py",
+            "new_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+        },
+    ],
+    diff_shape="cross_file_move",
+    description="is_owner_or_admin moved to app/ownership.py without changes.",
+))
+
+# --- Pair 13: admin route renamed, decorator swapped in the vulnerable twin --
+CASES.append(Case(
+    id="authz_13_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-863",
+    file="app/routes/admin.py",
+    replacements=[
+        ("from app.auth import require_role",
+         "from app.auth import require_auth, require_role"),
+        ('@admin_bp.route("/stats", methods=["GET"])\n'
+         '@require_role("admin")\n'
+         "def stats():",
+         '@admin_bp.route("/platform-stats", methods=["GET"])\n'
+         "@require_auth\n"
+         "def platform_stats():"),
+    ],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
+    }],
+    diff_shape="renamed_route",
+    description="Admin stats route renamed, with @require_role('admin') swapped "
+                "for @require_auth.",
+))
+
+CASES.append(Case(
+    id="authz_13_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-863",
+    file="app/routes/admin.py",
+    replacements=[(
+        '@admin_bp.route("/stats", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def stats():",
+        '@admin_bp.route("/platform-stats", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def platform_stats():",
+    )],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
+    }],
+    diff_shape="renamed_route",
+    description="Admin stats route renamed with @require_role('admin') kept.",
+))
+
+# --- Pair 14: auth decorator removed from an admin route --------------------
+CASES.append(Case(
+    id="authz_14_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-862",
+    file="app/routes/admin.py",
+    replacements=[(
+        '@admin_bp.route("/audit", methods=["GET"])\n'
+        '@require_role("admin")\n',
+        '@admin_bp.route("/audit", methods=["GET"])\n',
+    )],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "old_markers": ['@require_role("admin")'],
+    }],
+    diff_shape="removed_auth_decorator",
+    description="Audit log route loses its @require_role('admin') decorator and "
+                "becomes unauthenticated.",
+))
+
+CASES.append(Case(
+    id="authz_14_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-862",
+    file="app/routes/admin.py",
+    replacements=[
+        ("from app.auth import require_role",
+         "from app.auth import get_current_user, require_role"),
+        ('@admin_bp.route("/audit", methods=["GET"])\n'
+         '@require_role("admin")\n'
+         "def audit_log():\n"
+         '    """Most recent audit log entries."""\n',
+         '@admin_bp.route("/audit", methods=["GET"])\n'
+         "def audit_log():\n"
+         '    """Most recent audit log entries."""\n'
+         "    user = get_current_user()\n"
+         "    if user is None:\n"
+         '        return jsonify({"error": "authentication required"}), 401\n'
+         "    if user.role != \"admin\":\n"
+         '        return jsonify({"error": "insufficient role"}), 403\n'),
+    ],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "old_markers": ['@require_role("admin")'],
+    }],
+    diff_shape="removed_auth_decorator",
+    description="Audit log route checks the admin role inside the handler "
+                "instead of through a decorator.",
+))
+
 
 # ---------------------------------------------------------------------------
 # Generation machinery
