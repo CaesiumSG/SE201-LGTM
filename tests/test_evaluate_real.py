@@ -10,34 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from lgtm.diff.git_diff import parse_unified_diff
-
 RW = Path(__file__).resolve().parent.parent / "benchmark" / "real_world"
 _spec = importlib.util.spec_from_file_location("rw_evaluate_real", RW / "evaluate_real.py")
 er = importlib.util.module_from_spec(_spec)
 sys.modules["rw_evaluate_real"] = er
 _spec.loader.exec_module(er)
-
-DIFF_ENDPOINT_AND_SINK = """\
-diff --git a/app.py b/app.py
---- a/app.py
-+++ b/app.py
-@@ -1,2 +1,5 @@
- import x
-+@app.get("/items")
-+def items():
-+    cur.execute(f"SELECT * FROM t WHERE id = {i}")
-"""
-
-DIFF_COMMENT_ONLY = """\
-diff --git a/app.py b/app.py
---- a/app.py
-+++ b/app.py
-@@ -1,2 +1,3 @@
- import x
-+# just a comment
-"""
-
 
 class TestScrub:
     def test_replaces_longest_path_first_in_nested_values(self):
@@ -130,23 +107,6 @@ class TestPlanning:
         assert len(er.expected_ids(cases, "lgtm", "own")) == 12
         assert len(er.expected_ids(cases, "lgtm", "policy")) == 6
         assert er.expected_ids(cases, "llm-only", "policy") == set()
-
-
-class TestAgentItems:
-    def test_no_sast_counts_endpoints_and_heuristic_sinks(self):
-        diffs = parse_unified_diff(DIFF_ENDPOINT_AND_SINK)
-        work = er.count_agent_items("lgtm-no-sast", diffs, [])
-        assert work["endpoint_ids"] and work["sink_count"] == 1
-        assert work["agent_items"] == 2
-
-    def test_lgtm_uses_the_semgrep_findings_it_is_given(self):
-        diffs = parse_unified_diff(DIFF_COMMENT_ONLY)
-        assert er.count_agent_items("lgtm", diffs, [])["agent_items"] == 0
-        assert er.count_agent_items("lgtm", diffs, ["finding"])["agent_items"] == 1
-
-    def test_nothing_to_review_means_zero(self):
-        diffs = parse_unified_diff(DIFF_COMMENT_ONLY)
-        assert er.count_agent_items("lgtm-no-sast", diffs, [])["agent_items"] == 0
 
 
 class TestIndexMarker:
@@ -573,3 +533,156 @@ class TestPostReviewFailureAndErrorCounts:
         summary = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")
         assert summary["summary"]["overall"]["errors"] == 2
         assert summary["summary"]["graph_states"] == {"ok": 2, "unknown": 1}
+
+
+class TestAuthzScanRecords:
+    BASE40, PR40 = "a" * 40, "b" * 40
+    CASE = TestGraphMetadataOnRecords.CASE
+    COVERAGE = {
+        "planner": "investigator", "files_total": 3, "files_in_scope": 2,
+        "hunks_total": 4, "hunks_reviewed": 4, "sections_scheduled": 2,
+        "sections_completed": 2, "sections_failed": 0, "complete": True,
+        "exclusions": [{"path": "a.lock", "reason": "lockfile"},
+                       {"path": "b.min.js", "reason": "minified"}],
+        "invalid_refs": [], "sections": [{"section_id": "s1"}, {"section_id": "s2"}],
+    }
+
+    @staticmethod
+    def _diff(path, status, added, deleted):
+        hunk = type("Hunk", (), {"added_lines": added, "deleted_lines": deleted,
+                                   "changes": []})()
+        return type("Diff", (), {
+            "path": path, "status": status, "hunks": [hunk],
+            "hunk_text": lambda self: "x" * 10})()
+
+    def _run(self, monkeypatch, tmp_path, mode, meta_extra=None, diffs=(),
+             pin_calls=None):
+        indexed = []
+
+        def fake_ensure_index(clone, base, idx_dir, cfg, **kw):
+            indexed.append(base)
+            return {"seconds": 0.5, "chunks": 3, "reused": False}
+
+        meta = type("Meta", (), {
+            "semgrep_findings_in_diff": 0, "graph_state": "ok",
+            "graph_index_seconds": 1.0, "base_sha": self.BASE40,
+            "pr_sha": self.PR40, **(meta_extra or {})})()
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: list(diffs))
+        monkeypatch.setattr(er, "ensure_index", fake_ensure_index)
+        if pin_calls is not None:
+            self._record_pin(monkeypatch, pin_calls)
+        monkeypatch.setattr(
+            er, "ReviewPipeline",
+            TestGraphMetadataOnRecords._pipeline(
+                [TestGraphMetadataOnRecords._review(meta)], []))
+        rec = er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+        return rec, indexed
+
+    PIN = {"pin": "sentinel"}
+
+    def _record_pin(self, monkeypatch, calls):
+        def fake_run_pin(config, repo_root, refs):
+            calls.append((config, repo_root, dict(refs)))
+            return self.PIN
+
+        monkeypatch.setattr(er, "run_pin", fake_run_pin, raising=False)
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_doc_modes_build_the_index_even_with_zero_endpoints(
+            self, tmp_path, monkeypatch, mode):
+        rec, indexed = self._run(monkeypatch, tmp_path, mode)
+        assert len(indexed) == 1
+        assert rec["index_skipped"] is False and rec["index_skip_reason"] == ""
+        assert (rec["index_seconds"], rec["index_chunks"], rec["index_reused"]) == (
+            0.5, 3, False)
+        assert rec["outcome"] != "ERROR"
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_doc_mode_record_has_pin_file_coverage_and_summary(
+            self, tmp_path, monkeypatch, mode):
+        rec, _ = self._run(monkeypatch, tmp_path, mode, {"coverage": self.COVERAGE})
+        assert rec["pin"]["base_sha"] == self.BASE40
+        assert rec["pin"]["pr_sha"] == self.PR40
+        assert rec["pin"]["flags"]["mode"] == mode
+        assert isinstance(rec["file"], str) and rec["file"]
+        assert rec["coverage"] == self.COVERAGE
+        assert rec["coverage_summary"] == {
+            "planner": "investigator", "files_total": 3, "files_in_scope": 2,
+            "hunks_total": 4, "hunks_reviewed": 4, "sections_scheduled": 2,
+            "sections_completed": 2, "sections_failed": 0, "complete": True,
+            "exclusions_total": 2}
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_record_pin_is_run_pin_on_lgtm_root_with_review_shas(
+            self, tmp_path, monkeypatch, mode):
+        calls = []
+        rec, _ = self._run(monkeypatch, tmp_path, mode, pin_calls=calls)
+        assert rec["pin"] == self.PIN
+        assert len(calls) == 1
+        _config, root, refs = calls[0]
+        assert Path(root) == er.REPO_ROOT
+        assert refs == {"base": self.BASE40, "pr": self.PR40}
+
+    @pytest.mark.parametrize("mode,index_builds", [("lgtm", 1), ("llm-only", 0)])
+    def test_diff_stats_count_only_non_deleted_files(
+            self, tmp_path, monkeypatch, mode, index_builds):
+        diffs = [self._diff("kept.py", "modified", ["a", "b"], ["c"]),
+                 self._diff("gone.py", "deleted", ["a"] * 5, ["c"] * 7)]
+        rec, indexed = self._run(monkeypatch, tmp_path, mode, diffs=diffs)
+        assert (rec["diff_files"], rec["diff_added"], rec["diff_deleted"]) == (1, 2, 1)
+        assert (rec["diff_py_chars"], rec["diff_max_file_chars"]) == (10, 10)
+        assert len(indexed) == index_builds
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_doc_mode_without_coverage_records_none(self, tmp_path, monkeypatch, mode):
+        rec, _ = self._run(monkeypatch, tmp_path, mode, {"coverage": None})
+        assert rec["coverage"] is None and rec["coverage_summary"] is None
+        assert rec["pin"]["pr_sha"] == self.PR40
+
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_non_doc_mode_record_skips_index_and_has_no_coverage(
+            self, tmp_path, monkeypatch, mode):
+        rec, indexed = self._run(monkeypatch, tmp_path, mode,
+                                 {"coverage": self.COVERAGE})
+        assert indexed == []
+        assert rec["index_skipped"] is True
+        assert rec["index_skip_reason"] == "mode does not use the index"
+        assert rec["pin"]["base_sha"] == self.BASE40
+        assert isinstance(rec["file"], str) and rec["file"]
+        assert "coverage" not in rec and "coverage_summary" not in rec
+
+    def test_record_has_no_endpoint_detection_field(self, tmp_path, monkeypatch):
+        rec, _ = self._run(monkeypatch, tmp_path, "lgtm")
+        assert ("endpoints" + "_detected") not in rec
+
+    def test_manifest_has_pin(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda *a, **k: None)
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe", "--model", "x:1"])
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"]["model"] == "x:1"
+        assert "code_sha" in manifest["pin"]
+
+    def test_manifest_pin_is_run_pin_on_lgtm_root(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+        calls = []
+        self._record_pin(monkeypatch, calls)
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda *a, **k: None)
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe", "--model", "x:1"])
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"] == self.PIN
+        assert calls and all(Path(root) == er.REPO_ROOT for _c, root, _r in calls)
+        assert all(c.ollama_model == "x:1" for c, _root, _r in calls)
+
+    @pytest.mark.parametrize("name", ["count_agent" + "_items",
+                                      "extract_changed" + "_endpoints"])
+    def test_endpoint_gating_helpers_are_gone(self, name):
+        assert not hasattr(er, name)
