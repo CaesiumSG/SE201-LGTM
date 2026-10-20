@@ -869,6 +869,42 @@ class TestCapIntegration:
             assert finding.explanation.count(CAP_MARKER) == 1
             assert finding.confidence == 0.9
 
+    def test_vulnerable_triage_finding_stays_uncapped_when_the_pr_graph_goes_down_in_a_later_section(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph(FakeRunner(init={"pr": failure("timeout")}))
+        llm = ScriptedLLM([
+            _msg(_vulnerable(_pr_evidence(content="os.system('invented')"))),
+            _msg(_final()),
+            _msg(_final()),
+            _msg(_no_sections()),
+            _call("investigate_pr_code", {"query": "find_a"}),
+            _msg(_findings()),
+        ])
+
+        result = _review(repo, llm)
+
+        triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
+        assert triage.pr_graph_ok is True
+        assert triage.verdict == "vulnerable"
+        assert CAP_MARKER not in triage.explanation
+        assert result.meta.graph_state == "degraded:pr:timeout"
+
+    def test_vulnerable_triage_finding_is_capped_when_the_graph_binary_is_missing(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph(FakeRunner(available=False))
+        llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
+
+        result = _review(repo, llm)
+
+        triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
+        assert triage.pr_graph_ok is False
+        assert triage.verdict == "possible"
+        assert triage.explanation.endswith("\n\n" + CAP_MARKER)
+        assert triage.explanation.count(CAP_MARKER) == 1
+        assert result.meta.graph_state == "unavailable:missing"
+
     def test_vulnerable_authz_findings_downgrade_too(self, repo_with_endpoints, install_graph, semgrep):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
         llm = ScriptedLLM([
