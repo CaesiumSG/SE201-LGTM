@@ -138,6 +138,17 @@ class TestReviewMetadataGraphFields:
         assert review["base_sha"] == "a" * 40
         assert review["pr_sha"] == "b" * 40
 
+    def test_coverage_is_null_by_default(self):
+        assert ReviewMetadata().coverage is None
+        review = ReportBuilder([], ReviewMetadata(repo="r", base="m", pr="p")).build_json()["review"]
+        assert "coverage" in review
+        assert review["coverage"] is None
+
+    def test_json_review_block_carries_supplied_coverage(self):
+        coverage = {"sections_total": 4, "sections_reviewed": 3}
+        review = ReportBuilder([], ReviewMetadata(repo="r", coverage=coverage)).build_json()["review"]
+        assert review["coverage"] == coverage
+
 
 def _parse_evidence(*entries) -> list[EvidenceItem]:
     raw = json.dumps({"verdict": "safe", "confidence": 0.5, "evidence": list(entries)})

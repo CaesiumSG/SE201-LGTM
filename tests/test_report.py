@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from lgtm.agents.base import AgentFinding, EvidenceItem
+from lgtm.config import LGTMConfig
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
 
 
@@ -61,8 +64,33 @@ def meta() -> ReviewMetadata:
         repo="/tmp/repo", base="main", pr="feature", mode="lgtm",
         model="qwen2.5-coder:7b", duration_seconds=12.3,
         semgrep_findings_total=5, semgrep_findings_in_diff=2,
-        endpoints_reviewed=1,
     )
+
+
+NEW_CONFIG_DEFAULTS = {
+    "investigator_max_tool_calls": 12,
+    "investigator_max_iterations": 16,
+    "investigator_diff_chars": 30000,
+    "investigator_max_sections": 12,
+    "section_max_chars": 12000,
+    "max_sections": 24,
+}
+
+
+class TestSectionConfig:
+    @pytest.mark.parametrize(("field", "default"), NEW_CONFIG_DEFAULTS.items())
+    def test_default_value(self, field, default):
+        assert getattr(LGTMConfig(), field) == default
+
+    def test_max_tool_calls_default_is_unchanged(self):
+        assert LGTMConfig().max_tool_calls == 5
+
+    @pytest.mark.parametrize("value", [0, -1])
+    @pytest.mark.parametrize("field", NEW_CONFIG_DEFAULTS)
+    def test_non_positive_value_is_rejected(self, field, value):
+        with pytest.raises(ValueError) as exc:
+            LGTMConfig(**{field: value})
+        assert str(exc.value) == f"{field} must be positive"
 
 
 class TestJsonReport:
@@ -90,6 +118,34 @@ class TestJsonReport:
     def test_json_serializable(self):
         json.dumps(ReportBuilder(sample_findings(), meta()).build_json(), default=str)
 
+    def test_stats_omit_endpoints_reviewed(self):
+        payload = ReportBuilder(sample_findings(), meta()).build_json()
+        assert "endpoints_reviewed" not in payload["stats"]
+        assert payload["stats"]["semgrep_findings_total"] == 5
+        assert payload["stats"]["semgrep_findings_in_diff"] == 2
+
+    def test_review_coverage_is_null_by_default(self):
+        review = ReportBuilder(sample_findings(), meta()).build_json()["review"]
+        assert "coverage" in review
+        assert review["coverage"] is None
+
+    def test_review_coverage_carries_supplied_dict(self):
+        coverage = {"sections_total": 3, "sections_reviewed": 2}
+        review = ReportBuilder(sample_findings(), ReviewMetadata(coverage=coverage)).build_json()["review"]
+        assert review["coverage"] == coverage
+
+
+class TestReviewMetadata:
+    def test_has_no_endpoints_reviewed_attribute(self):
+        assert not hasattr(ReviewMetadata(), "endpoints_reviewed")
+
+    def test_rejects_endpoints_reviewed_argument(self):
+        with pytest.raises(TypeError):
+            ReviewMetadata(endpoints_reviewed=1)
+
+    def test_coverage_defaults_to_none(self):
+        assert ReviewMetadata().coverage is None
+
 
 class TestMarkdownReport:
     def test_contains_key_sections(self):
@@ -106,6 +162,25 @@ class TestMarkdownReport:
     def test_empty_findings(self):
         md = ReportBuilder([], meta()).build_markdown()
         assert "No findings" in md
+
+    def test_summary_keeps_semgrep_sentence_without_endpoint_clause(self):
+        md = ReportBuilder(sample_findings(), meta()).build_markdown()
+        assert "Semgrep: 2 finding(s) in diff (of 5 total)" in md
+        assert "endpoint(s) reviewed for authorization" not in md
+        assert "endpoint" not in md.lower()
+
+    def test_supplied_coverage_adds_no_markdown_text(self):
+        coverage = {"sections_total": 3, "sections_reviewed": 2}
+        with_coverage = ReviewMetadata(
+            repo="/tmp/repo", base="main", pr="feature", mode="lgtm",
+            model="qwen2.5-coder:7b", duration_seconds=12.3,
+            semgrep_findings_total=5, semgrep_findings_in_diff=2,
+            coverage=coverage,
+        )
+        md = ReportBuilder(sample_findings(), with_coverage).build_markdown()
+        assert "coverage" not in md.lower()
+        assert "sections_total" not in md
+        assert "sections_reviewed" not in md
 
 
 class TestWrite:

@@ -36,11 +36,16 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
+    investigator_max_tool_calls: int = 12
+    investigator_max_iterations: int = 16
+    investigator_diff_chars: int = 30000
+    investigator_max_sections: int = 12
+    section_max_chars: int = 12000
+    max_sections: int = 24
     # Experiments (round 4, off by default — see docs/evaluation-log.md):
     # push back once if an agent answers before using any tool
     require_tool_use: bool = False
-    # give agents deterministic AST facts (query construction, decorators)
-    # and give SAST triage the same policy pre-retrieval authz gets
+    # deterministic SQL facts (query construction, bound parameters) for agents and SAST triage
     static_facts: bool = False
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
@@ -69,6 +74,12 @@ class LGTMConfig:
 
     def __post_init__(self) -> None:
         positive_fields = (
+            "investigator_max_tool_calls",
+            "investigator_max_iterations",
+            "investigator_diff_chars",
+            "investigator_max_sections",
+            "section_max_chars",
+            "max_sections",
             "graph_init_timeout_s",
             "graph_query_timeout_s",
             "graph_max_export_files",
