@@ -179,14 +179,14 @@ question, has its own script and its own metric:
 
 | Benchmark | Question | Cases | Script | Metric | Write-up |
 |---|---|---|---|---|---|
-| **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 36 (dev 18 / eval 18) | `benchmark/evaluate.py` | Precision / recall / F1 | `docs/evaluation-log.md` |
+| **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 52 (dev 26 / eval 26) | `benchmark/evaluate.py` | Precision / recall / F1 | `docs/evaluation-log.md` |
 | **Real-world CVEs** | Does that hold on code real developers shipped? | 12 (held out) | `benchmark/real_world/evaluate_real.py` | Precision / recall / F1 | [`docs/real-world-eval.md`](docs/real-world-eval.md) |
 | **Prompt injection** | Can text in a PR trick LGTM into missing a vulnerability? | 6 attacks on Shoply cases | `benchmark/injection/run_injection_bench.py` | Attack success rate | [`docs/prompt-injection.md`](docs/prompt-injection.md) |
 
 The Shoply files (`app/`, `cases/`, `labels.json`, the policy docs and
 `evaluate.py`) sit at the top of `benchmark/` because Shoply came first;
 `evaluate.py` evaluates **only Shoply**, not the other two. Its `--split eval`
-means the 18 held-out *Shoply* cases.
+means the 26 held-out *Shoply* cases.
 
 **Why the results aren't combined into one score:** the benchmarks measure
 different things (accuracy vs. resistance to attack) with different metrics,
@@ -199,10 +199,10 @@ section](#all-results-at-a-glance) does that.
 ### 1. Shoply (synthetic)
 
 `benchmark/` contains **Shoply**, a Flask e-commerce API with token auth
-and RBAC, plus **18 matched PR pairs** (36 cases): 12 SQL-injection pairs
+and RBAC, plus **26 matched PR pairs** (52 cases): 12 SQL-injection pairs
 (6 hand-written + 6 derived from the OWASP Benchmark SQLi taxonomy,
 translated to Python/Flask; vulnerable vs
-parameterized-but-SAST-triggering controls) and 6 authorization pairs
+parameterized-but-SAST-triggering controls) and 14 authorization pairs
 (IDOR, missing/incorrect role checks, API-key scope violations —
 invisible to SAST by design).
 
@@ -226,7 +226,7 @@ Errors are left out of TP/FP/TN/FN and out of precision, recall and F1.
 The summary reports `scored`, `errors`, `error_rate` and `error_cases`,
 and metrics that cannot be computed are `null`.
 
-The 36 cases carry a balanced **dev/eval split** (9 vulnerable + 9 safe in
+The 52 cases carry a balanced **dev/eval split** (13 vulnerable + 13 safe in
 each), recorded in the `split` field of `labels.json`: tune prompts and
 config on `--split dev`, report results on the held-out `--split eval`.
 
@@ -381,7 +381,7 @@ src/lgtm/
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports
 tests/                      # unit and integration tests, no Ollama needed
-benchmark/                  # Shoply app, 36 cases, evaluate.py
+benchmark/                  # Shoply app, 52 cases, evaluate.py
 benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
 benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
 ```
