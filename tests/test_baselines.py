@@ -233,6 +233,93 @@ class TestRescore:
         assert saved["summary"]["overall"]["scored"] == 1
 
 
+class TestRescoreNewFormat:
+    LABEL_LOCATION = {"file": "app/orders.py", "old_range": None, "new_range": [10, 14]}
+    LABEL_SHAPE = {"kind": "single_hunk"}
+    STORED_PIN = {"code_sha": "stored-sha", "model": "stored-model"}
+
+    @pytest.fixture(autouse=True)
+    def no_run_pin(self, monkeypatch):
+        def refuse(*args, **kwargs):
+            raise AssertionError("rescore must not compute a run pin")
+
+        monkeypatch.setattr(evaluate, "run_pin", refuse, raising=False)
+
+    def _setup(self, tmp_path):
+        out = tmp_path / "run"
+        out.mkdir()
+        cases = [
+            {"id": "a", "category": "authz", "split": "dev",
+             "expected_verdict": "vulnerable", "file": "app/orders.py",
+             "vulnerable_locations": [self.LABEL_LOCATION],
+             "diff_shape": self.LABEL_SHAPE},
+            {"id": "b", "category": "authz", "split": "eval",
+             "expected_verdict": "safe", "file": "app/orders.py",
+             "vulnerable_locations": [self.LABEL_LOCATION],
+             "diff_shape": self.LABEL_SHAPE},
+        ]
+        stale_location = {"file": "app/old.py", "old_range": None, "new_range": [900, 905]}
+        new_row = _case_row(
+            "a", "vulnerable", findings=[_f("authz", "vulnerable")],
+            coverage=_coverage([_target_section()]), file="app/old.py",
+            locations=[stale_location], diff_shape={"kind": "stale"},
+            pin=copy.deepcopy(self.STORED_PIN))
+        (out / "a.json").write_text(json.dumps(new_row), encoding="utf-8")
+        (out / "b.json").write_text(json.dumps({
+            "id": "b", "category": "authz", "expected": "safe",
+            "findings": [_f("authz", "safe")], "latency_seconds": 1, "est_tokens": 1,
+        }), encoding="utf-8")
+        (out / "summary.json").write_text(json.dumps({
+            "mode": "lgtm", "model": "m", "generated_at": "then", "git_commit": "abc",
+            "split": "all", "outcomes": {"a": "TP", "b": "TN"}, "summary": {},
+        }), encoding="utf-8")
+        return out, cases
+
+    def test_new_rows_are_rederived_from_current_labels(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "a.json").read_text())
+        assert row["file"] == "app/orders.py"
+        assert row["vulnerable_locations"] == [self.LABEL_LOCATION]
+        assert row["diff_shape"] == self.LABEL_SHAPE
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["outcome"] == "TP"
+        assert "legacy" not in row
+
+    def test_new_rows_keep_their_stored_pin_and_coverage(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "a.json").read_text())
+        assert row["pin"] == self.STORED_PIN
+        assert row["coverage"] == _coverage([_target_section()])
+
+    def test_legacy_rows_are_rescored_without_gaining_graph_fields(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "b.json").read_text())
+        assert row["legacy"] is True
+        assert row["case_label"] is None
+        assert row["outcome"] == "TN"
+        for key in ("pin", "file", "vulnerable_locations", "diff_shape", "coverage",
+                    "target_sections", "coverage_gap", "mode"):
+            assert key not in row
+
+    def test_partial_rescore_of_new_format_run_is_still_refused(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+        before = (out / "a.json").read_bytes()
+
+        with pytest.raises(SystemExit):
+            evaluate.rescore(out, cases[:1], "lgtm")
+
+        assert (out / "a.json").read_bytes() == before
+
+
 def _run_benchmark(tmp_path, monkeypatch, argv):
     (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
     summary = MagicMock()
@@ -452,6 +539,36 @@ class TestErrorAccounting:
         assert summary["error_cases"] == [{"id": "a", "error": "x" * 300}]
 
 
+def _pin_for(model, mode, static_facts, base="", pr=""):
+    return {
+        "model": model, "code_sha": "c" * 40, "code_dirty": False,
+        "base_sha": base, "pr_sha": pr,
+        "sampling": {"llm_temperature": 0.0, "reasoning": False},
+        "budgets": {"max_tool_calls": 8},
+        "flags": {"mode": mode, "static_facts": static_facts},
+    }
+
+
+@pytest.fixture(autouse=True)
+def pin(monkeypatch):
+    """Deterministic run_pin derived from the config it receives; no git runs.
+
+    Returns the list of (config, repo_root, refs) calls.
+    """
+    calls = []
+
+    def fake_run_pin(config, repo_root, refs):
+        calls.append((config, Path(repo_root), dict(refs)))
+        return _pin_for(config.ollama_model, config.mode, config.static_facts,
+                        refs.get("base", ""), refs.get("pr", ""))
+
+    monkeypatch.setattr(evaluate, "run_pin", fake_run_pin, raising=False)
+    return calls
+
+
+_DROP = object()
+
+
 class TestResume:
     EXPECTED = {"a": "vulnerable", "b": "safe", "c": "vulnerable"}
 
@@ -607,11 +724,197 @@ class TestResume:
                    "--ollama-url", "http://127.0.0.1:11435")
 
         manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
-        assert set(manifest) == {"model", "ollama_base_url", "reasoning", "mode"}
+        assert set(manifest) == {"model", "ollama_base_url", "reasoning", "mode", "pin"}
         assert manifest["model"] == "m:1"
         assert manifest["ollama_base_url"] == "http://127.0.0.1:11435"
         assert manifest["reasoning"] is False
         assert manifest["mode"] == "lgtm"
+
+    PIN = _pin_for("m:1", "lgtm", False)
+
+    def _manifest(self, out, **over):
+        manifest = {
+            "model": "m:1", "ollama_base_url": "http://localhost:11434",
+            "reasoning": False, "mode": "lgtm", "pin": copy.deepcopy(self.PIN),
+        }
+        manifest.update(over)
+        manifest = {k: v for k, v in manifest.items() if v is not _DROP}
+        path = out / "run.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return path
+
+    def _new_row(self, cid, **over):
+        verdict = "vulnerable" if self.EXPECTED[cid] == "vulnerable" else "safe"
+        return evaluate.score_case(_case_row(
+            cid, self.EXPECTED[cid], coverage=_coverage([_target_section()]),
+            findings=[_f("authz", verdict)], **over))
+
+    def test_run_json_pin_is_computed_from_the_cli_adjusted_config(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+
+        self._main(monkeypatch, out, "--model", "m:1", "--static-facts",
+                   "--mode", "lgtm-no-sast")
+
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"] == _pin_for("m:1", "lgtm-no-sast", True)
+        assert pin and all(
+            root == evaluate.REPO_ROOT and not refs.get("base") and not refs.get("pr")
+            for _, root, refs in pin)
+
+    def test_resume_refuses_when_only_an_experiment_flag_differs(
+            self, tmp_path, monkeypatch, capsys):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1", "--static-facts")
+
+        assert exc.value.code == 2
+        assert "(differs in: flags)" in capsys.readouterr().err
+        assert ran == []
+
+    def test_resume_pin_difference_ignores_base_and_pr_sha_in_the_message(
+            self, tmp_path, monkeypatch, capsys):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, pin={**self.PIN, "code_sha": "d" * 40,
+                                 "base_sha": "a" * 40, "pr_sha": "b" * 40})
+
+        with pytest.raises(SystemExit):
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert "(differs in: code_sha)" in capsys.readouterr().err
+
+    def test_new_run_overwrites_a_pinless_manifest_with_a_pinned_one(
+            self, tmp_path, monkeypatch):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, pin=_DROP)
+
+        self._main(monkeypatch, out, "--model", "m:1")
+
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"] == self.PIN
+
+    def test_resume_refuses_manifest_without_pin(
+            self, tmp_path, monkeypatch, capsys, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        manifest = self._manifest(out, pin=_DROP)
+        a = self._write(out, self._new_row("a"))
+        before = (a.read_bytes(), manifest.read_bytes())
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        assert (f"--resume: {out} has no run pin; start a new output directory"
+                in capsys.readouterr().err)
+        assert ran == []
+        assert (a.read_bytes(), manifest.read_bytes()) == before
+        assert not (out / "b.json").exists() and not (out / "summary.json").exists()
+
+    @pytest.mark.parametrize("changes,differs", [
+        ({"code_sha": "d" * 40}, "code_sha"),
+        ({"code_dirty": True}, "code_dirty"),
+        ({"flags": {"mode": "lgtm", "static_facts": True}}, "flags"),
+        ({"budgets": {"max_tool_calls": 9}}, "budgets"),
+        ({"sampling": {"llm_temperature": 0.7, "reasoning": False}}, "sampling"),
+        ({"code_sha": "d" * 40, "budgets": {}, "flags": {}}, "budgets, code_sha, flags"),
+    ])
+    def test_resume_refuses_different_pin(
+            self, tmp_path, monkeypatch, capsys, pin, changes, differs):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        stored = {**copy.deepcopy(self.PIN), **changes}
+        manifest = self._manifest(out, pin=stored)
+        a = self._write(out, self._new_row("a"))
+        before = (a.read_bytes(), manifest.read_bytes())
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        assert (f"--resume: {out} was produced with a different run pin "
+                f"(differs in: {differs})" in capsys.readouterr().err)
+        assert ran == []
+        assert (a.read_bytes(), manifest.read_bytes()) == before
+        assert not (out / "b.json").exists()
+
+    def test_resume_checks_model_before_the_pin(
+            self, tmp_path, monkeypatch, capsys, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, model="other:1b", pin={**self.PIN, "code_sha": "d" * 40})
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "different model or reasoning setting" in err
+        assert "run pin" not in err
+
+    def test_resume_accepts_pin_differing_only_in_base_and_pr_sha(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        stored = {**copy.deepcopy(self.PIN), "base_sha": "a" * 40, "pr_sha": "b" * 40}
+        self._manifest(out, pin=stored)
+        self._write(out, self._new_row("a"))
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert sorted(ran) == ["b", "c"]
+
+    def test_resume_reruns_scan_failure_rows_and_keeps_scored_new_rows(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+        done = self._write(out, self._new_row("a"))
+        failed = evaluate.score_case(_case_row(
+            "b", "safe", findings=[_f("authz", "safe")], coverage=None))
+        assert failed["case_label"] == "scan_failure"
+        self._write(out, failed)
+        before = done.read_bytes()
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert sorted(ran) == ["b", "c"]
+        assert done.read_bytes() == before
+
+    def test_fresh_harness_exception_is_a_new_format_scan_failure_that_resume_reruns(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch, raises={"a"})
+
+        self._main(monkeypatch, out, "--model", "m:1")
+
+        row = json.loads((out / "a.json").read_text(encoding="utf-8"))
+        assert row["outcome"] == "ERROR" and "boom" in row["error"]
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert row["pin"] == manifest["pin"] == self.PIN
+        assert "legacy" not in row
+        assert row["case_label"] == "scan_failure"
+        ran.clear()
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert ran == ["a"]
+
+    @pytest.mark.parametrize("label,expected", [
+        ("detected_vulnerability", "vulnerable"),
+        ("explicit_safe", "safe"),
+    ])
+    def test_console_line_prints_the_case_label(
+            self, tmp_path, monkeypatch, capsys, pin, label, expected):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        row = evaluate.score_case(_case_row("a", expected, **_scenario(label)))
+        assert row["case_label"] == label
+        monkeypatch.setattr(evaluate, "evaluate_case", lambda case, config: row)
+        (tmp_path / "bench" / "labels.json").write_text(json.dumps({"cases": [
+            {"id": "a", "category": "authz", "expected_verdict": expected,
+             "split": "dev", "patch_file": "patches/a.patch"}]}), encoding="utf-8")
+
+        self._main(monkeypatch, out)
+
+        lines = capsys.readouterr().out.splitlines()
+        [progress] = [line for line in lines if line.startswith("[1/1] a")]
+        assert label in progress
 
     def test_is_done_treats_unreadable_json_as_pending(self, tmp_path):
         corrupt = tmp_path / "corrupt.json"

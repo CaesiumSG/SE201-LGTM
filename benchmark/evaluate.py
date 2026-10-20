@@ -42,6 +42,7 @@ from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.coverage import location_overlaps  # noqa: E402
+from lgtm.review.provenance import run_pin  # noqa: E402
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
@@ -85,6 +86,10 @@ def mark_error(result: dict, message: str) -> dict:
     return result
 
 
+CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
+COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
+
+
 def graph_fields(review=None) -> dict:
     # Metadata from reviews made before these fields existed lacks the attributes.
     meta = getattr(review, "meta", None)
@@ -96,7 +101,17 @@ def graph_fields(review=None) -> dict:
     }
 
 
-def error_record(case: dict, review=None) -> dict:
+def case_fields(case: dict) -> dict:
+    return {k: case[k] for k in CASE_FIELDS if k in case}
+
+
+def coverage_fields(mode: str, review=None) -> dict:
+    if mode not in COVERAGE_MODES:
+        return {}
+    return {"coverage": getattr(getattr(review, "meta", None), "coverage", None)}
+
+
+def error_record(case: dict, mode: str, pin: dict, review=None) -> dict:
     return {
         "id": case["id"],
         "category": case["category"],
@@ -105,6 +120,10 @@ def error_record(case: dict, review=None) -> dict:
         "n_findings": 0, "verdicts": [], "grounded": 0,
         "grounding_rate": None, "latency_seconds": 0.0,
         "est_tokens": 0, "findings": [],
+        "mode": mode,
+        "pin": pin,
+        **case_fields(case),
+        **coverage_fields(mode, review),
         **graph_fields(review),
     }
 
@@ -135,6 +154,21 @@ def write_run_manifest(out_dir: Path, manifest: dict, resume: bool, parser) -> N
         ):
             parser.error(
                 f"--resume: {out_dir} was produced with a different model or reasoning setting"
+            )
+        stored = previous.get("pin")
+        if not isinstance(stored, dict):
+            parser.error(
+                f"--resume: {out_dir} has no run pin; start a new output directory"
+            )
+        current = manifest["pin"]
+        differing = sorted(
+            key for key in stored.keys() | current.keys()
+            if key not in ("base_sha", "pr_sha") and stored.get(key) != current.get(key)
+        )
+        if differing:
+            parser.error(
+                f"--resume: {out_dir} was produced with a different run pin "
+                f"(differs in: {', '.join(differing)})"
             )
         return
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -370,6 +404,11 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
         result = pipeline.run("main", "pr", output_dir=None)
     latency = time.monotonic() - started
 
+    review_fields = graph_fields(result)
+    pin = run_pin(
+        config, REPO_ROOT,
+        {"base": review_fields["base_sha"], "pr": review_fields["pr_sha"]},
+    )
     try:
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
         grounded = [f for f in findings if f.get("evidence_valid")]
@@ -385,10 +424,15 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             "latency_seconds": round(latency, 2),
             "est_tokens": estimate_tokens(findings, {}),
             "findings": findings,
-            **graph_fields(result),
+            "mode": config.mode,
+            "pin": pin,
+            **case_fields(case),
+            **coverage_fields(config.mode, result),
+            **review_fields,
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
-        return mark_error(error_record(case, result), str(exc))
+        return score_case(mark_error(
+            error_record(case, config.mode, pin, result), str(exc)))
 
 
 def coverage_summary(results: list[dict]) -> dict:
@@ -666,10 +710,11 @@ def main() -> None:
         rescore(out_dir, cases, args.mode)
         return
 
+    pin = run_pin(config, REPO_ROOT, {})
     write_run_manifest(
         out_dir,
         {"model": config.ollama_model, "ollama_base_url": config.ollama_base_url,
-         "reasoning": config.reasoning, "mode": config.mode},
+         "reasoning": config.reasoning, "mode": config.mode, "pin": pin},
         args.resume, parser,
     )
 
@@ -683,12 +728,14 @@ def main() -> None:
             try:
                 result = evaluate_case(case, config)
             except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
-                result = mark_error(error_record(case), str(exc))
+                result = score_case(mark_error(
+                    error_record(case, config.mode, pin), str(exc)))
             if result_is_error(result):
                 print(f"ERROR: {result['error']}")
             else:
                 print(
-                    f"{result['outcome']} (expected {result['expected']}, "
+                    f"{result['outcome']} {result['case_label']} "
+                    f"(expected {result['expected']}, "
                     f"predicted {result['predicted']}, {result['latency_seconds']}s)"
                 )
             path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -777,6 +824,10 @@ def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
             continue
         result = json.loads(path.read_text(encoding="utf-8"))
         result["split"] = case.get("split", "eval")
+        if "pin" in result:
+            for key in CASE_FIELDS:
+                result.pop(key, None)
+            result.update(case_fields(case))
         result = score_case(result)
         path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         results.append(result)
