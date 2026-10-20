@@ -55,7 +55,7 @@ Authorization pairs 07–14 (vulnerable case; safe control):
   `@require_role("admin")` swapped for `@require_auth`; safe: the route is
   renamed with the decorator kept.
 - `authz_14` (CWE-862, eval, `removed_auth_decorator`): audit log route loses
-  `@require_role("admin")`; safe: the admin check runs inside the handler.
+  `@require_role("admin")`; safe: the audit log route is removed entirely.
 
 ## Running the evaluation
 

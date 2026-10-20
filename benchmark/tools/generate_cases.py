@@ -1507,29 +1507,29 @@ CASES.append(Case(
     expected_verdict="safe",
     cwe="CWE-862",
     file="app/routes/admin.py",
-    replacements=[
-        ("from app.auth import require_role",
-         "from app.auth import get_current_user, require_role"),
-        ('@admin_bp.route("/audit", methods=["GET"])\n'
-         '@require_role("admin")\n'
-         "def audit_log():\n"
-         '    """Most recent audit log entries."""\n',
-         '@admin_bp.route("/audit", methods=["GET"])\n'
-         "def audit_log():\n"
-         '    """Most recent audit log entries."""\n'
-         "    user = get_current_user()\n"
-         "    if user is None:\n"
-         '        return jsonify({"error": "authentication required"}), 401\n'
-         '    if user.role != "admin":\n'
-         '        return jsonify({"error": "insufficient role"}), 403\n'),
-    ],
+    replacements=[(
+        '\n\n@admin_bp.route("/audit", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def audit_log():\n"
+        '    """Most recent audit log entries."""\n'
+        "    session = get_session()\n"
+        "    events = (\n"
+        "        session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n"
+        "    )\n"
+        "    return jsonify(\n"
+        "        [\n"
+        '            {"id": e.id, "user_id": e.user_id, "action": e.action}\n'
+        "            for e in events\n"
+        "        ]\n"
+        "    )",
+        "",
+    )],
     location_markers=[{
         "file": "app/routes/admin.py",
         "old_markers": ['@require_role("admin")'],
     }],
     diff_shape="removed_auth_decorator",
-    description="Audit log route checks the admin role inside the handler "
-                "instead of through a decorator.",
+    description="Audit log route removed entirely.",
 ))
 
 
@@ -1538,7 +1538,7 @@ CASES.append(Case(
 # ---------------------------------------------------------------------------
 
 def run(cmd: list[str], cwd: Path) -> str:
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr}")
     return result.stdout

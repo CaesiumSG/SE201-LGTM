@@ -801,6 +801,31 @@ class TestNewAuthzPairDiffShapes:
         assert '"/audit"' in rows[at - 1]["text"] and rows[at - 1]["op"] == " "
         assert "def audit_log" in rows[at + 1]["text"] and rows[at + 1]["op"] == " "
 
+    def test_safe_twin_deletes_whole_audit_route_without_adding_lines(self):
+        text = patch_text(14, "safe")
+        files = parse_patch(text)
+        assert [f["new"] for f in files] == ["app/routes/admin.py"]
+        rows = walk_patch(text)
+        assert not [r for r in rows if r["op"] == "+"]
+        gone = [r["text"] for r in rows if r["op"] == "-"]
+        joined = "\n".join(gone)
+        assert '"/audit"' in joined
+        assert '@require_role("admin")' in joined
+        assert "def audit_log" in joined
+        assert "session.query(AuditLog)" in joined
+
+    def test_safe_twin_introduces_no_in_body_role_check(self):
+        added_text = "\n".join(ln for ln in hunk_bodies(patch_text(14, "safe"))
+                               if ln.startswith("+"))
+        assert "role" not in added_text
+        assert "get_current_user" not in added_text
+
+    def test_safe_twin_location_lies_within_deleted_lines(self):
+        gone = removed(patch_text(14, "safe"), "app/routes/admin.py")
+        got = locations_of(14, "safe", "app/routes/admin.py", "old_range")
+        assert len(got) == 1
+        assert set(range(got[0][0], got[0][1] + 1)) <= set(gone)
+
 
 class TestNewAuthzPairLocationExtent:
     @PAIR
@@ -858,7 +883,10 @@ class TestNewAuthzPairLocationExtent:
     @BOTH
     def test_pair_14_old_range_is_the_removed_decorator_line(self, kind):
         gone = removed(patch_text(14, kind), "app/routes/admin.py")
-        decorators = [n for n, ln in gone.items() if ln.lstrip().startswith("@")]
+        if kind == "vulnerable":
+            assert len([n for n, ln in gone.items() if ln.lstrip().startswith("@")]) == 1
+        decorators = [n for n, ln in gone.items()
+                      if ln.lstrip().startswith('@require_role("admin")')]
         assert len(decorators) == 1
         got = locations_of(14, kind, "app/routes/admin.py", "old_range")
         assert len(got) == 1 and got[0][0] <= decorators[0] <= got[0][1]
