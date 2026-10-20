@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the 24 benchmark PR patches and labels.json.
+"""Generate the 52 benchmark PR patches and labels.json.
 
 Each case is defined as a set of edits (string replacements and/or an
 appended endpoint) against the base Shoply app. Patches are produced by a
@@ -24,6 +24,7 @@ from pathlib import Path
 BENCH = Path(__file__).resolve().parent.parent
 
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK_START_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)")
 
 
 @dataclass
@@ -38,6 +39,12 @@ class Case:
     vuln_markers: list[str] = field(default_factory=list)
     description: str = ""
     origin: str = "custom"  # "custom" | "owasp-derived"
+    context: int = 3  # unified diff context lines (git diff -U)
+    delete_files: list[str] = field(default_factory=list)
+    new_files: dict[str, str] = field(default_factory=dict)
+    edits: list[dict] = field(default_factory=list)  # {"file", "replacements", "append"?}
+    location_markers: list[dict] = field(default_factory=list)  # {"file", "old_markers", "new_markers"}
+    diff_shape: str | None = None
 
     @property
     def patch_name(self) -> str:
@@ -48,9 +55,12 @@ class Case:
     @property
     def split(self) -> str:
         """Alternate blocks of three pairs between dev and eval (1-3 dev,
-        4-6 eval, 7-9 dev, 10-12 eval, ...). Both splits stay balanced
-        because every pair contributes one vulnerable and one safe case."""
+        4-6 eval, 7-9 dev, 10-12 eval, ...), with pair 14 in eval. Both
+        splits stay balanced because every pair contributes one vulnerable
+        and one safe case."""
         num = int(self.id.split("_")[1])
+        if num == 14:
+            return "eval"
         return "dev" if ((num - 1) % 6) < 3 else "eval"
 
 
@@ -1129,23 +1139,98 @@ def build_base_repo(tmp: Path) -> None:
     run(["git", "commit", "-q", "-m", "base"], tmp)
 
 
+def edit_file(tmp: Path, case_id: str, file: str,
+              replacements: list[tuple[str, str]], append: str) -> None:
+    target = tmp / file
+    content = target.read_text(encoding="utf-8")
+    for old, new in replacements:
+        if old not in content:
+            raise RuntimeError(f"{case_id}: replacement anchor not found: {old!r}")
+        content = content.replace(old, new, 1)
+    if append:
+        content = content.rstrip("\n") + "\n" + append.lstrip("\n")
+        if not content.endswith("\n"):
+            content += "\n"
+    target.write_text(content, encoding="utf-8")
+
+
 def apply_case(tmp: Path, case: Case) -> str:
     """Apply a case's edits in tmp and return the git diff."""
-    target = tmp / case.file
-    content = target.read_text(encoding="utf-8")
-    for old, new in case.replacements:
-        if old not in content:
-            raise RuntimeError(f"{case.id}: replacement anchor not found: {old!r}")
-        content = content.replace(old, new, 1)
-    content = content.rstrip("\n") + "\n" + case.append.lstrip("\n")
-    if not content.endswith("\n"):
-        content += "\n"
-    target.write_text(content, encoding="utf-8")
-    diff = run(["git", "diff", "--no-color"], tmp)
-    run(["git", "checkout", "-q", "--", "."], tmp)
+    for rel in case.delete_files:
+        (tmp / rel).unlink()
+    for rel, content in case.new_files.items():
+        path = tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    edit_file(tmp, case.id, case.file, case.replacements, case.append)
+    for edit in case.edits:
+        edit_file(tmp, case.id, edit["file"],
+                  edit.get("replacements", []), edit.get("append", ""))
+    if case.delete_files or case.new_files:
+        # Untracked new files only appear in the diff once staged.
+        run(["git", "add", "-A"], tmp)
+        diff = run(["git", "diff", "--cached", "--no-color", "--no-renames",
+                    f"-U{case.context}"], tmp)
+        run(["git", "reset", "-q", "--hard"], tmp)
+        run(["git", "clean", "-fdq"], tmp)
+    else:
+        diff = run(["git", "diff", "--no-color", f"-U{case.context}"], tmp)
+        run(["git", "checkout", "-q", "--", "."], tmp)
     if not diff.strip():
         raise RuntimeError(f"{case.id}: produced an empty diff")
     return diff
+
+
+def side_lines(diff: str, file: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """Removed (old-side) and added (new-side) lines of ``file`` as (line number, text)."""
+    removed: list[tuple[int, str]] = []
+    added: list[tuple[int, str]] = []
+    selected = in_hunk = False
+    old_no = new_no = 0
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            selected = raw == f"diff --git a/{file} b/{file}"
+            in_hunk = False
+            continue
+        start = HUNK_START_RE.match(raw)
+        if start:
+            in_hunk = True
+            old_no, new_no = int(start.group(1)), int(start.group(2))
+            continue
+        if not (selected and in_hunk):
+            continue
+        if raw.startswith("-"):
+            removed.append((old_no, raw[1:]))
+            old_no += 1
+        elif raw.startswith("+"):
+            added.append((new_no, raw[1:]))
+            new_no += 1
+        elif raw.startswith(" ") or raw == "":
+            old_no += 1
+            new_no += 1
+    return removed, added
+
+
+def marker_range(case_id: str, side: list[tuple[int, str]],
+                 markers: list[str]) -> list[int] | None:
+    if not markers:
+        return None
+    numbers: list[int] = []
+    for marker in markers:
+        matched = [number for number, text in side if marker in text]
+        if not matched:
+            raise RuntimeError(f"{case_id}: location marker not found: {marker}")
+        numbers.extend(matched)
+    return [min(numbers), max(numbers)]
+
+
+def location_label(case_id: str, diff: str, location: dict) -> dict:
+    removed, added = side_lines(diff, location["file"])
+    return {
+        "file": location["file"],
+        "old_range": marker_range(case_id, removed, location.get("old_markers", [])),
+        "new_range": marker_range(case_id, added, location.get("new_markers", [])),
+    }
 
 
 def vulnerable_lines_from_patch(diff: str, markers: list[str]) -> list[int]:
@@ -1188,22 +1273,28 @@ def main() -> None:
                 if case.vuln_markers
                 else []
             )
-            if case.expected_verdict == "vulnerable" and not vuln_lines:
-                raise RuntimeError(f"{case.id}: no vulnerable lines matched markers")
-            labels["cases"].append(
-                {
-                    "id": case.id,
-                    "category": case.category,
-                    "split": case.split,
-                    "origin": case.origin,
-                    "expected_verdict": case.expected_verdict,
-                    "cwe": case.cwe,
-                    "file": case.file,
-                    "vulnerable_lines": vuln_lines,
-                    "patch_file": f"cases/{case.category}/{case.patch_name}",
-                    "description": case.description,
-                }
-            )
+            vuln_locations = [
+                location_label(case.id, diff, loc) for loc in case.location_markers
+            ]
+            if case.expected_verdict == "vulnerable" and not (vuln_lines or vuln_locations):
+                raise RuntimeError(f"{case.id}: no vulnerable lines or locations matched markers")
+            entry = {
+                "id": case.id,
+                "category": case.category,
+                "split": case.split,
+                "origin": case.origin,
+                "expected_verdict": case.expected_verdict,
+                "cwe": case.cwe,
+                "file": case.file,
+                "vulnerable_lines": vuln_lines,
+                "patch_file": f"cases/{case.category}/{case.patch_name}",
+                "description": case.description,
+            }
+            if case.diff_shape:
+                entry["diff_shape"] = case.diff_shape
+            if vuln_locations:
+                entry["vulnerable_locations"] = vuln_locations
+            labels["cases"].append(entry)
             counts[case.category] += 1
             print(f"  wrote {patch_path.relative_to(BENCH)} "
                   f"({len(vuln_lines)} labeled lines)")
