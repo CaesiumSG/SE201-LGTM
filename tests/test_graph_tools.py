@@ -1112,6 +1112,67 @@ class TestGraphToolOutcomes:
         assert git_commands == []
 
 
+class TestBudgetOverride:
+    @staticmethod
+    def _spend(tools, count):
+        return [tools["search_policy"].invoke({"query": "q"}) for _ in range(count)]
+
+    def test_budget_override_caps_calls_at_n_and_refuses_the_next(self, snap):
+        toolbox, tools = _legacy_tools(snap, max_tool_calls=5)
+        toolbox.reset_budget(2)
+        results = self._spend(tools, 3)
+        assert results[2] == EXHAUSTED
+        assert results[1] != EXHAUSTED
+        assert toolbox.calls_used == 2
+
+    def test_budget_override_can_exceed_the_configured_default(self, snap):
+        toolbox, tools = _legacy_tools(snap, max_tool_calls=1)
+        toolbox.reset_budget(3)
+        results = self._spend(tools, 4)
+        assert EXHAUSTED not in results[:3]
+        assert results[3] == EXHAUSTED
+
+    def test_budget_without_argument_uses_configured_max_tool_calls(self, snap):
+        toolbox, tools = _legacy_tools(snap, max_tool_calls=3)
+        toolbox.reset_budget()
+        results = self._spend(tools, 4)
+        assert EXHAUSTED not in results[:3]
+        assert results[3] == EXHAUSTED
+        assert toolbox.budget == 3
+
+    def test_budget_reset_without_argument_restores_the_default_after_override(self, snap):
+        toolbox, tools = _legacy_tools(snap, max_tool_calls=4)
+        toolbox.reset_budget(1)
+        assert toolbox.budget == 1
+        toolbox.reset_budget()
+        assert toolbox.budget == 4
+        results = self._spend(tools, 5)
+        assert EXHAUSTED not in results[:4]
+        assert results[4] == EXHAUSTED
+
+    def test_budget_attribute_reflects_the_effective_cap(self, snap):
+        toolbox, _ = _legacy_tools(snap, max_tool_calls=6)
+        toolbox.reset_budget(2)
+        assert toolbox.budget == 2
+
+    def test_budget_in_tool_guidance_is_the_toolbox_budget_not_the_config(self, snap):
+        from lgtm.agents.prompt_parts import tool_guidance
+
+        toolbox, _ = _legacy_tools(snap, max_tool_calls=6)
+        toolbox.reset_budget(2)
+        assert tool_guidance(toolbox).max_tool_calls == 2
+        toolbox.reset_budget()
+        assert tool_guidance(toolbox).max_tool_calls == 6
+
+    def test_budget_guidance_text_drops_the_discover_which_endpoints_wording(self, rig):
+        from lgtm.agents.prompt_parts import render_tool_section, tool_guidance
+
+        r = rig()
+        guidance = tool_guidance(r.toolbox)
+        assert guidance.graph_tools
+        assert "discover which endpoints" not in render_tool_section(guidance)
+
+
 class TestGraphWarnings:
     LATCH = "CodeGraph unavailable for {label} snapshot ({reason}); further graph calls for it are skipped"
 

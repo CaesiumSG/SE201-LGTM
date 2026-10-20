@@ -44,7 +44,7 @@ def tool_guidance(toolbox, graph: bool = True) -> ToolGuidance:
         tool_names=names,
         graph_tools=any(name.startswith("investigate_") for name in names),
         snapshot_labels=SNAPSHOT_LABELS if getattr(toolbox, "shas", None) is not None else ("base",),
-        max_tool_calls=toolbox.config.max_tool_calls,
+        max_tool_calls=toolbox.budget,
     )
 
 
@@ -69,7 +69,7 @@ def render_tool_section(guidance: ToolGuidance) -> str:
         graph_names = " and ".join(n for n in guidance.tool_names if n.startswith("investigate_"))
         lines += [
             "",
-            f"Use {graph_names} first for exploration: discover which endpoints, "
+            f"Use {graph_names} first for exploration: review which changed functions, "
             "decorators, helpers and callers are involved before judging. Graph output can be partial or "
             "truncated, so then use read_file to see and quote the exact lines and "
             "grep_repo for literal or regex searches. When the graph is unavailable, "
