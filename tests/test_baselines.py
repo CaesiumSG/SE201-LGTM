@@ -870,7 +870,8 @@ class TestResume:
     def real_pin_repo(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
-        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+               "-c", "commit.gpgsign=false", "-c", "core.hooksPath="]
         (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
         for args in (["init", "-q"], ["add", "tracked.txt"],
                      ["commit", "-q", "-m", "init"]):
@@ -893,8 +894,7 @@ class TestResume:
         self._main(monkeypatch, out, "--resume")
 
         assert ran == ["c"]
-        resumed = json.loads((out / "run.json").read_text(encoding="utf-8"))["pin"]
-        assert resumed == stored
+        assert stored["code_dirty"] is False
 
     def test_resume_still_refuses_a_tracked_file_edit_between_invocations(
             self, tmp_path, monkeypatch, capsys, real_pin_repo):

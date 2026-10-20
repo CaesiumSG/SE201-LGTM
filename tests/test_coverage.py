@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -472,3 +473,88 @@ def test_run_pin_exclude_nonexistent_path_does_not_raise(pin_repo):
     pin = run_pin(pin_config(), pin_repo, REFS, exclude=pin_repo / "runs" / "missing")
     assert pin["code_sha"] == git(pin_repo, "rev-parse", "HEAD").strip()
     assert pin["code_dirty"] is False
+
+
+def test_run_pin_exclude_equal_to_the_repo_root_still_flags_tracked_edits(pin_repo):
+    (pin_repo / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=pin_repo)
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_relative_exclude_resolves_against_the_working_directory(
+    pin_repo, run_dir, monkeypatch
+):
+    monkeypatch.chdir(pin_repo)
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=Path("runs") / "current")
+    assert pin["code_dirty"] is False
+
+
+def test_run_pin_exclude_naming_a_file_hides_only_that_file(pin_repo, run_dir):
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=run_dir / "case_01.json")
+    assert pin["code_dirty"] is False
+    (run_dir / "case_02.json").write_text("{}\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=run_dir / "case_01.json")
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_exclude_does_not_hide_a_sibling_directory_sharing_its_prefix(
+    pin_repo, run_dir
+):
+    sibling = pin_repo / "runs2"
+    sibling.mkdir()
+    (sibling / "case_01.json").write_text("{}\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=pin_repo / "runs")
+    assert pin["code_dirty"] is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="'*' is not valid in Windows file names")
+def test_run_pin_exclude_with_glob_characters_in_its_name_matches_only_that_directory(
+    pin_repo,
+):
+    excluded = pin_repo / "a*b"
+    lookalike = pin_repo / "ab"
+    excluded.mkdir()
+    lookalike.mkdir()
+    (excluded / "out.json").write_text("{}\n", encoding="utf-8")
+    (lookalike / "src.py").write_text("y = 1\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=excluded)
+    assert pin["code_dirty"] is True
+
+
+@pytest.fixture
+def git_calls(monkeypatch):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(repo_root, *args):
+        calls.append(args)
+        return "deadbeef\n" if args[0] == "rev-parse" else ""
+
+    monkeypatch.setattr("lgtm.review.provenance._git", fake_git)
+    return calls
+
+
+def status_args(calls):
+    (call,) = [c for c in calls if c[0] == "status"]
+    return call
+
+
+def test_run_pin_passes_an_exclude_pathspec_for_a_path_inside_the_repo(
+    git_calls, tmp_path
+):
+    run_pin(pin_config(), tmp_path, REFS, exclude=tmp_path / "runs" / "current")
+    args = status_args(git_calls)
+    assert "--porcelain" in args
+    assert "--" in args
+    specs = args[args.index("--") + 1 :]
+    assert ":(exclude,literal)runs/current" in specs
+
+
+@pytest.mark.parametrize("where", ["none", "outside", "repo_root"])
+def test_run_pin_passes_no_pathspec_when_nothing_inside_the_repo_is_excluded(
+    git_calls, tmp_path, where
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    exclude = {"none": None, "outside": tmp_path / "elsewhere", "repo_root": repo}[where]
+    run_pin(pin_config(), repo, REFS, exclude=exclude)
+    assert "--" not in status_args(git_calls)

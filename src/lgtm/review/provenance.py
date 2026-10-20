@@ -66,7 +66,7 @@ def _exclude_args(repo_root: Path, exclude: Path | None) -> list[str]:
         return []
     if not rel.parts:
         return []
-    return ["--", ".", f":(exclude){rel.as_posix()}"]
+    return ["--", ".", f":(exclude,literal){rel.as_posix()}"]
 
 
 def _git(repo_root: Path, *args: str) -> str | None:
