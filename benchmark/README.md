@@ -140,9 +140,7 @@ A finding is relevant when its category is the case category or is empty,
 apply in that order.
 
 `case_label_grounded` applies the same rules after a `vulnerable` finding
-whose evidence failed validation is treated as `possible`. A vulnerable
-verdict with invalid evidence therefore counts as `possible_vulnerability`
-in the grounded label.
+whose evidence failed validation is treated as `possible`.
 
 `coverage_gap` is `true` when `case_label` is `detected_vulnerability` and
 the coverage is incomplete, has failed sections, or has leftover hunks.
@@ -167,8 +165,7 @@ ranges.
 | `safe` | `missing_review`, `scan_failure` | EXCLUDED |
 | `safe` | `possible_vulnerability`, `insufficient_evidence`, `no_candidate` | UNCREDITED |
 
-`correct` is `true` for TP and TN. Error rows are excluded from every count
-and are reported under `errors`, `error_rate` and `error_cases`.
+`correct` is `true` for TP and TN.
 
 ### Legacy rows
 
@@ -180,9 +177,9 @@ A result without a `pin` is scored as a legacy row: `legacy` is `true`,
 
 `summary.json` contains these top-level keys:
 
-- `case_labels`: row count per `case_label`; legacy rows are counted under
-  `legacy`.
-- `legacy_rows`: number of legacy rows.
+- `case_labels`: row count per `case_label`, including error rows; legacy
+  rows, and legacy error rows, are counted under `legacy`.
+- `legacy_rows`: number of legacy rows, including legacy error rows.
 - `coverage`: totals over non-error rows with a coverage block: `rows`,
   `complete`, `complete_rate`, `sections_scheduled`, `sections_completed`,
   `sections_failed`, `sections_coalesced`, `hunks_total`, `hunks_reviewed`,
@@ -190,10 +187,10 @@ A result without a `pin` is scored as a legacy row: `legacy` is `true`,
   `detected_with_gap`.
 
 Each metrics block (`overall`, `per_category`, `per_split`, and the
-`grounded_only` variants) reports:
+`grounded_only` variants) covers non-error rows and reports:
 
-- `vulnerable_scored` and `safe_scored`: scored rows by expected verdict.
-  `safe_scored` excludes EXCLUDED rows.
+- `vulnerable_scored`: scored vulnerable rows.
+  `safe_scored`: scored safe rows other than EXCLUDED.
 - `false_positive_rate_on_safe`: FP / `safe_scored`.
 - `accuracy`: (TP + TN) / (`scored` − `excluded_on_safe`).
 - `abstentions`: rows labelled `insufficient_evidence` or
@@ -209,23 +206,13 @@ result carries its own `pin` with the case's SHAs.
 
 `--resume` checks the existing `run.json` in this order:
 
-1. `model` and `reasoning` must match the current run. Otherwise it refuses:
+1. `model` and `reasoning` must match the current run; otherwise
    `--resume: <dir> was produced with a different model or reasoning setting`.
-2. The manifest must have a `pin`. Otherwise it refuses:
+2. The manifest must have a `pin`; otherwise
    `--resume: <dir> has no run pin; start a new output directory`.
-3. Every `pin` key other than `base_sha` and `pr_sha` must match. Otherwise
-   it refuses:
+3. Every `pin` key other than `base_sha` and `pr_sha` must match; otherwise
    `--resume: <dir> was produced with a different run pin (differs in: <keys>)`.
 
-When the checks pass, `run.json` is left unchanged. A case is skipped when its
+A case is skipped when its
 result is not an error and its `case_label` is not `scan_failure`; other
 cases are run again.
-
-### Rescore
-
-`--rescore` applies the current scoring rules to the saved case JSON files
-for the selected cases. Rows with a `pin` have `file`, `vulnerable_locations`
-and `diff_shape` replaced from the current case definition. Run provenance is
-kept from the existing `summary.json`, and the rescoring time and commit are
-written as `rescored_at` and `rescored_at_commit`. Rescoring is refused when
-the selected cases differ from the outcomes in the saved summary.

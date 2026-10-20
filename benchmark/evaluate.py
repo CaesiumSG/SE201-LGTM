@@ -88,7 +88,6 @@ def mark_error(result: dict, message: str) -> dict:
     return result
 
 
-
 def graph_fields(review=None) -> dict:
     # Metadata from reviews made before these fields existed lacks the attributes.
     meta = getattr(review, "meta", None)
