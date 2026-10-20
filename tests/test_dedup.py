@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.review.dedup import dedup_findings
 
@@ -70,14 +72,45 @@ def test_merged_evidence_is_the_union_without_duplicates():
     assert [e.content for e in merged.evidence] == ["shared", "only a", "only b", "policy text"]
 
 
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"type": "policy"},
+        {"file": "app/helpers.py"},
+        {"source": "docs/policy_b.md"},
+    ],
+    ids=["type", "file", "source"],
+)
+def test_evidence_differing_only_by_type_file_or_source_is_kept_apart(other):
+    base = {"type": "code", "file": FILE, "source": "docs/policy_a.md"}
+    a = finding("a", line=10, evidence=[ev([10, 12], content="same", **base)])
+    b = finding("b", line=10, evidence=[ev([10, 12], content="same", **{**base, **other})])
+    (merged,) = dedup_findings([a, b])
+    assert len(merged.evidence) == 2
+
+
+def test_evidence_identical_in_type_file_lines_source_and_content_is_collapsed():
+    item = dict(type="code", file=FILE, source="docs/policy_a.md", content="same")
+    a = finding("a", line=10, evidence=[ev([10, 12], **item)])
+    b = finding("b", line=10, evidence=[ev([10, 12], **item)])
+    (merged,) = dedup_findings([a, b])
+    assert len(merged.evidence) == 1
+
+
+def test_merging_does_not_modify_the_input_findings():
+    a = finding("a", line=10, evidence=[ev([10, 12], content="x")], confidence=0.2)
+    b = finding("b", line=10, evidence=[ev([10, 13], content="y")], verdict="vulnerable",
+                confidence=0.9, explanation="longer text")
+    before = [f.model_dump() for f in (a, b)]
+    dedup_findings([a, b])
+    assert [f.model_dump() for f in (a, b)] == before
+
+
 def test_evidence_with_different_lines_or_content_is_kept_apart():
     a = finding("a", line=10, evidence=[ev([10, 12], content="x")])
     b = finding("b", line=10, evidence=[ev([10, 13], content="x"), ev([10, 12], content="y")])
     (merged,) = dedup_findings([a, b])
     assert len(merged.evidence) == 3
-
-
-# --- overlap on the new side -----------------------------------------------------
 
 
 def test_new_side_range_comes_from_line_and_unlabelled_or_pr_evidence():
@@ -86,6 +119,30 @@ def test_new_side_range_comes_from_line_and_unlabelled_or_pr_evidence():
     c = finding("c", line=0, evidence=[ev([50, 55], snapshot="pr")])
     assert ids(dedup_findings([a, b])) == ["a"]
     assert ids(dedup_findings([a, c])) == ["a"]
+
+
+def test_reversed_evidence_line_pair_is_read_as_an_ordered_range():
+    a = finding("a", line=0, evidence=[ev([12, 10])])
+    b = finding("b", line=11)
+    assert ids(dedup_findings([a, b])) == ["a"]
+
+
+def test_evidence_from_another_file_does_not_contribute_ranges_for_overlap():
+    a = finding("a", line=0, evidence=[ev([10, 12], file="app/helpers.py")])
+    b = finding("b", line=11)
+    assert ids(dedup_findings([a, b])) == ["a", "b"]
+
+
+def test_evidence_from_another_file_on_the_old_side_does_not_contribute_ranges():
+    a = finding("a", line=0, evidence=[ev([20, 25], snapshot="base", file="app/helpers.py")])
+    b = finding("b", line=0, evidence=[ev([22, 24], snapshot="base")])
+    assert ids(dedup_findings([a, b])) == ["a", "b"]
+
+
+def test_evidence_of_the_findings_own_file_or_without_file_contributes_ranges():
+    a = finding("a", line=0, evidence=[ev([10, 12], file=None, type="policy", source="p.md")])
+    b = finding("b", line=11)
+    assert ids(dedup_findings([a, b])) == ["a"]
 
 
 def test_adjacent_but_non_overlapping_new_ranges_stay_separate():
@@ -104,9 +161,6 @@ def test_line_zero_gives_no_new_side_range_from_line():
     assert ids(dedup_findings([a, b])) == ["a", "b"]
 
 
-# --- overlap on the old side -------------------------------------------------------
-
-
 def test_base_snapshot_evidence_overlaps_on_the_old_side():
     a = finding("a", line=0, evidence=[ev([20, 25], snapshot="base")])
     b = finding("b", line=0, evidence=[ev([25, 30], snapshot="base")])
@@ -123,9 +177,6 @@ def test_finding_overlapping_on_either_side_merges():
     a = finding("a", line=100, evidence=[ev([20, 25], snapshot="base")])
     b = finding("b", line=0, evidence=[ev([24, 30], snapshot="base")])
     assert ids(dedup_findings([a, b])) == ["a"]
-
-
-# --- non-merge conditions ----------------------------------------------------------
 
 
 def test_different_files_do_not_merge():
@@ -159,9 +210,6 @@ def test_non_overlapping_lines_do_not_merge_and_pass_through_unchanged():
     assert result == [a, b]
 
 
-# --- transitivity and order --------------------------------------------------------
-
-
 def test_merging_is_transitive_through_a_bridging_finding():
     a = finding("a", line=0, evidence=[ev([10, 12])], verdict="insufficient_evidence")
     c = finding("c", line=0, evidence=[ev([20, 25])], verdict="possible", confidence=0.8)
@@ -179,9 +227,6 @@ def test_output_keeps_first_occurrence_order():
     w = finding("w", line=70, cwe="CWE-89")
     result = dedup_findings([x, y, z, w])
     assert ids(result) == ["x", "y", "w"]
-
-
-# --- safe findings -----------------------------------------------------------------
 
 
 def test_safe_findings_pass_through_unchanged_and_unmerged():

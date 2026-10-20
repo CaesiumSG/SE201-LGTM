@@ -27,7 +27,11 @@ def dedup_findings(findings: Iterable[AgentFinding]) -> list[AgentFinding]:
         if not spans[i]:
             continue
         for j in range(i + 1, len(items)):
-            if not spans[j] or not _same_group(items[i], items[j]):
+            if (
+                not spans[j]
+                or items[i].file != items[j].file
+                or items[i].cwe_id != items[j].cwe_id
+            ):
                 continue
             if _overlaps(spans[i], spans[j]):
                 root_i, root_j = find(i), find(j)
@@ -46,13 +50,11 @@ def _mergeable(finding: AgentFinding) -> bool:
     return finding.verdict != "safe" and bool(finding.file) and bool(finding.cwe_id)
 
 
-def _same_group(left: AgentFinding, right: AgentFinding) -> bool:
-    return left.file == right.file and left.cwe_id == right.cwe_id
-
-
 def _spans(finding: AgentFinding) -> list[_Span]:
     spans: list[_Span] = [("new", finding.line, finding.line)] if finding.line > 0 else []
     for item in finding.evidence:
+        if item.file and item.file != finding.file:
+            continue
         bounds = _line_bounds(item)
         if bounds is not None:
             side = "old" if item.snapshot == "base" else "new"

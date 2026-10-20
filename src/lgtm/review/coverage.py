@@ -69,11 +69,7 @@ def build_coverage(
 
 
 def hunks_overlap(a: HunkRef, b: HunkRef, side: Side) -> bool:
-    if side == "old":
-        return _ranges_overlap(
-            _span(a.old_start, a.old_count), _span(b.old_start, b.old_count)
-        )
-    return _ranges_overlap(_span(a.new_start, a.new_count), _span(b.new_start, b.new_count))
+    return _ranges_overlap(_side_span(a, side), _side_span(b, side))
 
 
 def location_overlaps(hunk: Mapping[str, Any], location: Mapping[str, Any]) -> bool:
@@ -92,6 +88,12 @@ def location_overlaps(hunk: Mapping[str, Any], location: Mapping[str, Any]) -> b
     )
 
 
+def _side_span(hunk: HunkRef, side: Side) -> tuple[int, int]:
+    if side == "old":
+        return _span(hunk.old_start, hunk.old_count)
+    return _span(hunk.new_start, hunk.new_count)
+
+
 def _span(start: int, count: int) -> tuple[int, int]:
     return start, start + max(count, 1) - 1
 
@@ -101,6 +103,11 @@ def _ranges_overlap(first: tuple[int, int], second: Sequence[int]) -> bool:
 
 
 def _section_row(section: Section, result: SectionResult | None) -> dict[str, Any]:
+    status, verdicts, finding_ids, error = (
+        (None, [], [], None)
+        if result is None
+        else (result.status, list(result.verdicts), list(result.finding_ids), result.error)
+    )
     return {
         "section_id": section.section_id,
         "origin": section.origin,
@@ -109,10 +116,10 @@ def _section_row(section: Section, result: SectionResult | None) -> dict[str, An
         "split": section.split,
         "partial_hunk": section.partial_hunk,
         "hunks": [_hunk_row(h) for h in section.hunks],
-        "status": result.status if result is not None else None,
-        "verdicts": list(result.verdicts) if result is not None else [],
-        "finding_ids": list(result.finding_ids) if result is not None else [],
-        "error": result.error if result is not None else None,
+        "status": status,
+        "verdicts": verdicts,
+        "finding_ids": finding_ids,
+        "error": error,
     }
 
 

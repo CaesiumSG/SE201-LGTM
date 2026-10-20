@@ -25,8 +25,8 @@ def run_pin(config: LGTMConfig, repo_root: Path, refs: Mapping[str, str]) -> dic
         "model": config.ollama_model,
         "code_sha": code_sha,
         "code_dirty": code_dirty,
-        "base_sha": refs["base"],
-        "pr_sha": refs["pr"],
+        "base_sha": refs.get("base", ""),
+        "pr_sha": refs.get("pr", ""),
         "sampling": {
             "llm_temperature": config.llm_temperature,
             "reasoning": config.reasoning,

@@ -77,9 +77,6 @@ def all_completed(p):
     return {s.section_id: completed() for s in p.sections}
 
 
-# --- build_coverage ---------------------------------------------------------
-
-
 def test_coverage_has_exactly_the_contract_keys(main_plan):
     cov = coverage(main_plan, all_completed(main_plan))
     assert set(cov) == TOP_KEYS
@@ -183,7 +180,23 @@ def test_split_hunk_with_a_failed_piece_is_incomplete():
     results[p.sections[-1].section_id] = failed()
     cov = coverage(p, results)
     assert cov["sections_failed"] == 1
+    assert cov["hunks_reviewed"] == 1
     assert cov["complete"] is False
+
+
+def test_section_without_a_result_is_neither_completed_nor_failed_and_blocks_completeness(main_plan):
+    results = all_completed(main_plan)
+    del results["s2"]
+    cov = coverage(main_plan, results)
+    n = len(main_plan.sections)
+    assert cov["sections_scheduled"] == n
+    assert cov["sections_completed"] == n - 1
+    assert cov["sections_failed"] == 0
+    assert cov["hunks_reviewed"] == cov["hunks_total"] - 1
+    assert cov["complete"] is False
+    row = next(r for r in cov["sections"] if r["section_id"] == "s2")
+    assert row["status"] is None
+    assert row["verdicts"] == [] and row["finding_ids"] == [] and row["error"] is None
 
 
 def test_fallback_plan_reports_planner_and_skipped_investigator():
@@ -197,9 +210,6 @@ def test_fallback_plan_reports_planner_and_skipped_investigator():
     assert cov["investigator_input"] == "none"
     assert cov["investigator_tool_calls"] == 0
     assert cov["complete"] is True
-
-
-# --- hunks_overlap -------------------------------------------------------------------
 
 
 def one_hunk(old_start, old_count, new_start, new_count):
@@ -230,9 +240,6 @@ def test_hunks_overlap_treats_zero_count_as_one_line():
     assert not hunks_overlap(deletion, one_hunk(1, 1, 8, 1), side="new")
     assert hunks_overlap(insertion, one_hunk(7, 1, 1, 1), side="old")
     assert not hunks_overlap(insertion, one_hunk(8, 1, 1, 1), side="old")
-
-
-# --- location_overlaps ------------------------------------------------------------------
 
 
 def hunk_dict(file="pkg/m.py", old=(10, 5), new=(100, 5), change="mixed"):
@@ -283,13 +290,12 @@ def test_location_zero_count_hunk_occupies_one_line():
     assert not location_overlaps(addition_only, loc(old_range=[8, 9]))
 
 
-def test_location_with_both_ranges_matches_when_both_sides_overlap():
+def test_location_with_both_ranges_matches_when_either_side_overlaps():
     h = hunk_dict(old=(10, 5), new=(100, 5))
     assert location_overlaps(h, loc(old_range=[10, 10], new_range=[100, 100]))
+    assert location_overlaps(h, loc(old_range=[10, 10], new_range=[1, 2]))
+    assert location_overlaps(h, loc(old_range=[1, 2], new_range=[100, 100]))
     assert not location_overlaps(h, loc(old_range=[1, 2], new_range=[1, 2]))
-
-
-# --- run_pin ----------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -319,6 +325,8 @@ def pin_config():
         require_tool_use=True,
         investigator_max_tool_calls=3,
         investigator_max_iterations=4,
+        max_agent_iterations=5,
+        reasoning=True,
         investigator_diff_chars=5000,
         investigator_max_sections=6,
         section_max_chars=2000,
@@ -342,23 +350,51 @@ def test_run_pin_flags_uncommitted_changes_as_dirty(pin_repo):
     assert pin["code_dirty"] is True
 
 
+def test_run_pin_flags_untracked_files_as_dirty(pin_repo):
+    (pin_repo / "new_file.py").write_text("y = 1\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS)
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_flags_staged_only_changes_as_dirty(pin_repo):
+    (pin_repo / "tracked.py").write_text("x = 3\n", encoding="utf-8")
+    git(pin_repo, "add", "tracked.py")
+    pin = run_pin(pin_config(), pin_repo, REFS)
+    assert pin["code_dirty"] is True
+
+
+@pytest.mark.parametrize(
+    "refs, base_sha, pr_sha",
+    [
+        ({}, "", ""),
+        ({"base": "only-base"}, "only-base", ""),
+        ({"pr": "only-pr"}, "", "only-pr"),
+    ],
+)
+def test_run_pin_with_missing_ref_keys_gives_empty_shas_without_raising(
+    pin_repo, refs, base_sha, pr_sha
+):
+    pin = run_pin(pin_config(), pin_repo, refs)
+    assert pin["base_sha"] == base_sha
+    assert pin["pr_sha"] == pr_sha
+    assert pin["code_sha"] == git(pin_repo, "rev-parse", "HEAD").strip()
+
+
 def test_run_pin_records_model_sampling_budgets_and_flags(pin_repo):
     config = pin_config()
     pin = run_pin(config, pin_repo, REFS)
     assert pin["model"] == config.ollama_model
-    assert pin["sampling"]["llm_temperature"] == 0.25
-    assert "reasoning" in pin["sampling"]
-    budgets = pin["budgets"]
-    for name, value in {
+    assert pin["sampling"] == {"llm_temperature": 0.25, "reasoning": True}
+    assert pin["budgets"] == {
+        "max_tool_calls": 8,
+        "max_agent_iterations": 5,
         "investigator_max_tool_calls": 3,
         "investigator_max_iterations": 4,
         "investigator_diff_chars": 5000,
         "investigator_max_sections": 6,
         "section_max_chars": 2000,
         "max_sections": 9,
-        "max_tool_calls": 8,
-    }.items():
-        assert budgets[name] == value
+    }
     assert pin["flags"] == {
         "mode": "sast-only",
         "static_facts": True,

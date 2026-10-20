@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import pytest
 
@@ -110,9 +111,6 @@ def titled(n):
     ]
 
 
-# --- parse_investigator_output ---------------------------------------------
-
-
 def test_parse_accepts_fenced_json_with_surrounding_prose():
     raw = "Here is the plan:\n```json\n" + proposal(section("s1", ["app/a.py#0"])) + "\n```\nDone."
     assert len(parse_investigator_output(raw)) == 1
@@ -164,9 +162,6 @@ def test_parse_drops_malformed_sections_and_context_entries(main_diffs):
     )
 
 
-# --- id resolution and coordinates ---------------------------------------------
-
-
 def test_investigator_section_resolves_ids_with_coordinates_from_diff(main_diffs):
     raw = proposal(section("authz", ["app/a.py#1", "app/a.py#0"], title="Auth change",
                            rationale="why it matters"))
@@ -206,6 +201,24 @@ def test_deleted_file_uses_old_path_and_deletion_only_hunks_are_in_scope(main_di
     assert "-removed_two" in text
 
 
+def test_render_deleted_file_header_has_dev_null_on_the_new_side():
+    diffs = parse(file_diff_text("old/c.py", [(1, 0, DELS)], status="deleted"))
+    text = render_section(plan(diffs, None).sections[0])
+    assert text == (
+        "--- a/old/c.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n"
+        "-removed_one\n-removed_two\n-removed_three\n"
+    )
+
+
+def test_render_added_file_header_has_dev_null_on_the_old_side():
+    added = (
+        "diff --git a/new/e.py b/new/e.py\nnew file mode 100644\n"
+        "--- /dev/null\n+++ b/new/e.py\n@@ -0,0 +1,2 @@\n+first\n+second\n"
+    )
+    text = render_section(plan(parse(added), None).sections[0])
+    assert text == "--- /dev/null\n+++ b/new/e.py\n@@ -0,0 +1,2 @@\n+first\n+second\n"
+
+
 def test_plan_counters_for_partially_assigned_diff(main_diffs):
     p = plan(main_diffs, proposal(section("s1", ["app/a.py#0", "app/b.py#0"])))
     assert p.files_total == 6
@@ -216,17 +229,11 @@ def test_plan_counters_for_partially_assigned_diff(main_diffs):
     assert p.sections_coalesced == 0
 
 
-# --- exclusions -----------------------------------------------------------------
-
-
 def test_non_python_and_hunkless_python_files_are_excluded_with_reasons(main_diffs):
     p = plan(main_diffs, proposal(section("s1", ["app/a.py#0"])))
     got = {(field(e, "path"), field(e, "reason")) for e in p.exclusions}
     assert got == {("notes.md", "non_python"), ("app/e.py", "no_hunks")}
     assert not any(h.startswith(("notes.md", "app/e.py")) for h in hunk_ids(p))
-
-
-# --- invalid refs, duplicates, empty sections ---------------------------------
 
 
 def test_unknown_duplicate_and_out_of_scope_ids_go_to_invalid_refs(main_diffs):
@@ -235,11 +242,16 @@ def test_unknown_duplicate_and_out_of_scope_ids_go_to_invalid_refs(main_diffs):
         section("second", ["app/a.py#0", "app/b.py#0"]),
     )
     p = plan(main_diffs, raw)
-    assert {"missing.py#0", "app/a.py#9", "notes.md#0", "app/a.py#0"} <= set(p.invalid_refs)
-    assert all(isinstance(r, str) for r in p.invalid_refs)
+    assert p.invalid_refs == ["missing.py#0", "app/a.py#9", "notes.md#0", "app/a.py#0"]
     assert [h.hunk_id for h in by_id(p, "first").hunks] == ["app/a.py#0"]
     assert [h.hunk_id for h in by_id(p, "second").hunks] == ["app/b.py#0"]
     assert hunk_ids(p).count("app/a.py#0") == 1
+
+
+def test_hunk_repeated_within_one_section_is_planned_once_and_reported_once():
+    p = plan(equal_files(1), proposal(section("s1", ["pkg/f1.py#0", "pkg/f1.py#0"])))
+    assert p.invalid_refs == ["pkg/f1.py#0"]
+    assert hunk_ids(p) == ["pkg/f1.py#0"]
 
 
 def test_sections_without_valid_hunks_are_dropped(main_diffs):
@@ -251,7 +263,7 @@ def test_sections_without_valid_hunks_are_dropped(main_diffs):
     p = plan(main_diffs, raw)
     assert not any(s.title in ("nothing here", "only invalid") for s in p.sections)
     assert by_id(p, "real").hunks[0].hunk_id == "app/b.py#0"
-    assert "missing.py#3" in p.invalid_refs
+    assert p.invalid_refs == ["missing.py#3"]
 
 
 def test_duplicate_section_ids_get_numeric_suffixes():
@@ -270,6 +282,25 @@ def test_empty_section_id_becomes_s_number():
     assert re.fullmatch(r"s\d+", p.sections[0].section_id)
 
 
+def test_empty_section_ids_stay_unique():
+    raw = proposal(section("", ["pkg/f1.py#0"]), section("", ["pkg/f2.py#0"]))
+    p = plan(equal_files(2), raw)
+    assert len({s.section_id for s in p.sections}) == 2
+    assert all(s.section_id for s in p.sections)
+
+
+def test_section_id_equal_to_a_generated_suffix_stays_unique():
+    raw = proposal(
+        section("x", ["pkg/f1.py#0"]),
+        section("x", ["pkg/f2.py#0"]),
+        section("x-2", ["pkg/f3.py#0"]),
+    )
+    p = plan(equal_files(3), raw)
+    ids = [s.section_id for s in p.sections]
+    assert len(set(ids)) == 3
+    assert ids[0] == "x"
+
+
 def test_sections_beyond_investigator_max_send_hunks_to_leftover():
     raw = proposal(
         section("keep", ["pkg/f1.py#0"], title="kept"),
@@ -280,9 +311,6 @@ def test_sections_beyond_investigator_max_send_hunks_to_leftover():
     assert not any(s.title == "over the cap" for s in p.sections)
     assert by_id(p, "leftover:pkg/f2.py").hunks[0].hunk_id == "pkg/f2.py#0"
     assert sorted(hunk_ids(p)) == ["pkg/f1.py#0", "pkg/f2.py#0", "pkg/f3.py#0"]
-
-
-# --- leftovers ---------------------------------------------------------------------
 
 
 def test_unassigned_hunks_form_one_leftover_section_per_file_in_diff_order(main_diffs):
@@ -306,9 +334,6 @@ def test_multiple_leftover_hunks_of_one_file_share_one_section(main_diffs):
 def test_every_in_scope_hunk_is_planned_exactly_once(main_diffs):
     p = plan(main_diffs, proposal(section("s1", ["app/d.py#0"])))
     assert sorted(hunk_ids(p)) == sorted(ALL_MAIN_HUNKS)
-
-
-# --- fallback ----------------------------------------------------------------------
 
 
 def test_no_investigator_output_uses_one_fallback_section_per_python_file(main_diffs):
@@ -347,14 +372,14 @@ def test_fallback_applies_split_and_coalesce_steps():
     )
     full = plan(diffs, None)
     big = len(render_section(by_id(full, "fallback:pkg/a.py")))
-    p = plan(diffs, None, section_max_chars=big // 2, max_sections=3)
-    assert len(p.sections) <= 3
-    assert p.sections_coalesced >= 1
+    limit = big // 2
+    uncapped = plan(diffs, None, section_max_chars=limit, max_sections=100)
+    p = plan(diffs, None, section_max_chars=limit, max_sections=3)
+    assert len(uncapped.sections) > 3
+    assert len(p.sections) == 3
+    assert p.sections_coalesced == len(uncapped.sections) - 3
     rendered = "".join(render_section(s) for s in p.sections)
     assert all(line in rendered for line in lines)
-
-
-# --- splitting -----------------------------------------------------------------------
 
 
 def three_equal_hunks_file():
@@ -413,12 +438,55 @@ def test_single_oversized_hunk_splits_at_lines_with_recomputed_coordinates():
         assert nxt.new_start == prev.new_start + prev.new_count
     assert sum(h.new_count for h in refs) == 40
     assert sum(h.old_count for h in refs) == 0
+    assert all(h.old_start == 5 for h in refs)
     text = "\n".join(render_section(s) for s in pieces)
     for line in lines:
         assert text.count(line) == 1
 
 
-# --- coalescing ----------------------------------------------------------------------
+def line_pieces(old_start, new_start, lines, per_piece):
+    diffs = parse(file_diff_text("pkg/long.py", [(old_start, new_start, lines)]))
+    probe = parse(file_diff_text("pkg/long.py", [(old_start, new_start, lines[:per_piece])]))
+    limit = len(render_section(plan(probe, None).sections[0]))
+    p = plan(diffs, proposal(section("long", ["pkg/long.py#0"])), section_max_chars=limit)
+    return p.sections
+
+
+def piece_coordinates(pieces):
+    return [
+        (h.old_start, h.old_count, h.new_start, h.new_count) for s in pieces for h in s.hunks
+    ]
+
+
+def assert_rendered_headers_match(pieces):
+    for s in pieces:
+        (h,) = s.hunks
+        header = f"@@ -{h.old_start},{h.old_count} +{h.new_start},{h.new_count} @@"
+        assert header in render_section(s).splitlines()
+
+
+def test_deletion_only_hunk_splits_with_old_ranges_advancing_and_new_side_fixed():
+    lines = [f"-del_{i}" for i in range(6)]
+    pieces = line_pieces(10, 9, lines, per_piece=2)
+    assert piece_coordinates(pieces) == [(10, 2, 9, 0), (12, 2, 9, 0), (14, 2, 9, 0)]
+    assert all(s.split and s.partial_hunk for s in pieces)
+    assert all(h.change == "delete" for s in pieces for h in s.hunks)
+    assert_rendered_headers_match(pieces)
+
+
+def test_mixed_hunk_splits_with_context_counted_on_both_sides():
+    lines = [" ctx_0", "-del_0", "-del_1", "+add_0", " ctx_1", "-del_2", "+add_1", " ctx_2"]
+    pieces = line_pieces(10, 20, lines, per_piece=3)
+    assert piece_coordinates(pieces) == [(10, 3, 20, 1), (13, 2, 21, 2), (15, 1, 23, 2)]
+    assert [h.change for s in pieces for h in s.hunks] == ["delete", "mixed", "add"]
+    assert_rendered_headers_match(pieces)
+    body = [
+        line
+        for s in pieces
+        for line in render_section(s).splitlines()
+        if not line.startswith(("---", "+++", "@@"))
+    ]
+    assert body == lines
 
 
 def test_coalescing_merges_adjacent_pair_with_smallest_combined_size():
@@ -437,7 +505,7 @@ def test_coalescing_merges_adjacent_pair_with_smallest_combined_size():
     assert merged.files == ["pkg/f2.py", "pkg/f3.py"]
     assert merged.rationale.index("R2.") < merged.rationale.index("R3.")
     assert [c.symbol for c in merged.context] == ["sym2", "sym3"]
-    assert p.sections_coalesced >= 1
+    assert p.sections_coalesced == 1
     assert sorted(hunk_ids(p)) == [f"pkg/f{i}.py#0" for i in range(1, 5)]
 
 
@@ -452,6 +520,7 @@ def test_coalescing_repeats_until_within_max_sections_without_dropping_hunks():
     assert sorted(hunk_ids(p)) == [f"pkg/f{i}.py#0" for i in range(1, 6)]
     assert all(s.origin == "coalesced" for s in p.sections)
     assert len({s.section_id for s in p.sections}) == 2
+    assert p.sections_coalesced == 3
 
 
 def test_coalescing_orders_sections_by_file_then_hunk_position():
@@ -489,10 +558,10 @@ def test_coalesced_section_may_exceed_section_max_chars_and_renders_in_full():
 def test_split_flags_are_ored_when_coalescing():
     lines = [f"+only_line_{i:02d}" for i in range(40)]
     diffs = parse(
-        file_diff_text("pkg/long.py", [(5, 6, lines)]),
         file_diff_text("pkg/other.py", [(1, 1, ["+x"])]),
+        file_diff_text("pkg/long.py", [(5, 6, lines)]),
     )
-    raw = proposal(section("long", ["pkg/long.py#0"]), section("other", ["pkg/other.py#0"]))
+    raw = proposal(section("other", ["pkg/other.py#0"]), section("long", ["pkg/long.py#0"]))
     limit = len(render_section(by_id(plan(diffs, raw), "long"))) // 3
     p = plan(diffs, raw, section_max_chars=limit, max_sections=1)
     assert len(p.sections) == 1
@@ -500,7 +569,26 @@ def test_split_flags_are_ored_when_coalescing():
     assert p.sections[0].split and p.sections[0].partial_hunk
 
 
-# --- render_section --------------------------------------------------------------------
+def test_hunk_boundary_split_coalesces_without_marking_a_partial_hunk():
+    diffs = parse(
+        file_diff_text("pkg/other.py", [(1, 1, ["+x"])]),
+        file_diff_text(
+            "pkg/big.py",
+            [(10 * n, 10 * n, [f"+equal_size_line_{n}", f"+equal_size_more_{n}"]) for n in (1, 2, 3)],
+        ),
+    )
+    singles = plan(diffs, proposal(*(section(f"h{i}", [f"pkg/big.py#{i}"]) for i in range(3))))
+    limit = max(len(render_section(s)) for s in singles.sections)
+    raw = proposal(
+        section("other", ["pkg/other.py#0"]),
+        section("big", [f"pkg/big.py#{i}" for i in range(3)]),
+    )
+    uncapped = plan(diffs, raw, section_max_chars=limit, max_sections=10)
+    assert any(s.split and not s.partial_hunk for s in uncapped.sections)
+    p = plan(diffs, raw, section_max_chars=limit, max_sections=1)
+    assert len(p.sections) == 1
+    assert p.sections[0].split
+    assert not p.sections[0].partial_hunk
 
 
 def test_render_has_one_header_pair_per_file_and_one_hunk_header_per_hunk(main_diffs):
@@ -513,3 +601,66 @@ def test_render_has_one_header_pair_per_file_and_one_hunk_header_per_hunk(main_d
     for line in ("+new_value", "-old_value", "+added_one", "+added_two"):
         assert line in text
     assert text.index("app/a.py") < text.index("app/b.py")
+
+
+def three_hunk_file(path):
+    return file_diff_text(path, [(10, 10, MIXED), (40, 41, ADDS), (70, 72, DELS)])
+
+
+def test_leftover_hunks_merged_into_a_coalesced_section_still_count_as_leftover():
+    diffs = parse(three_hunk_file("pkg/a.py"), file_diff_text("pkg/b.py", [(5, 5, MIXED), (30, 30, ADDS)]))
+    p = plan(diffs, proposal(section("s1", ["pkg/a.py#0"])), max_sections=2)
+    assert len(p.sections) == 2
+    assert p.sections_coalesced == 1
+    assert p.hunks_total == 5
+    assert p.hunks_assigned == 1
+    assert p.hunks_leftover == 4
+
+
+@pytest.mark.parametrize(
+    "claimed, cfg",
+    [
+        (["app/a.py#0"], {}),
+        (["app/a.py#0", "app/b.py#0"], {"max_sections": 2}),
+        (["app/a.py#0"], {"max_sections": 1}),
+        (["app/a.py#0", "app/a.py#1", "app/b.py#0", "old/c.py#0", "app/d.py#0"], {"max_sections": 1}),
+        (["app/b.py#0"], {"section_max_chars": 150, "max_sections": 3}),
+    ],
+)
+def test_investigator_plan_assigned_and_leftover_partition_the_hunks(claimed, cfg):
+    diffs = parse_unified_diff(MAIN_DIFF)
+    p = plan(diffs, proposal(section("s1", claimed)), **cfg)
+    assert p.planner == "investigator"
+    assert p.hunks_assigned == len(claimed)
+    assert p.hunks_assigned + p.hunks_leftover == p.hunks_total == 5
+
+
+def test_hunks_beyond_investigator_section_cap_count_as_leftover():
+    raw = proposal(section("keep", ["pkg/f1.py#0"]), section("over", ["pkg/f2.py#0"]))
+    p = plan(equal_files(3), raw, investigator_max_sections=1)
+    assert (p.hunks_assigned, p.hunks_leftover, p.hunks_total) == (1, 2, 3)
+
+
+PLANNING_TIME_LIMIT_S = 5.0
+
+
+def test_planning_many_small_hunks_finishes_within_a_bounded_time():
+    hunks = [(10 * n, 10 * n, [f"+row_{n}"]) for n in range(1, 21)]
+    diffs = parse(*(file_diff_text(f"pkg/f{i}.py", hunks) for i in range(150)))
+    started = time.perf_counter()
+    p = plan(diffs, None, section_max_chars=400, max_sections=10)
+    elapsed = time.perf_counter() - started
+    assert elapsed < PLANNING_TIME_LIMIT_S
+    assert p.hunks_total == 3000
+    assert len(p.sections) <= 10
+    assert len(hunk_ids(p)) == 3000
+
+
+def test_planning_one_huge_hunk_finishes_within_a_bounded_time():
+    diffs = parse(file_diff_text("pkg/huge.py", [(1, 1, [f"+row_{i}" for i in range(20000)])]))
+    started = time.perf_counter()
+    p = plan(diffs, None, section_max_chars=2000, max_sections=10)
+    elapsed = time.perf_counter() - started
+    assert elapsed < PLANNING_TIME_LIMIT_S
+    assert len(p.sections) <= 10
+    assert sum(h.new_count for s in p.sections for h in s.hunks) == 20000

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import heapq
+from dataclasses import dataclass, field, replace
+from itertools import count
 from typing import Literal, TypeVar
 
 from lgtm.agents.base import extract_json_object
@@ -91,6 +93,17 @@ class ScanPlan:
     hunks_assigned: int = 0
     hunks_leftover: int = 0
     sections_coalesced: int = 0
+
+
+@dataclass
+class _Run:
+    section: Section
+    size: int
+    headers: dict[str, int]
+    rank: int
+    prev: _Run | None = None
+    next: _Run | None = None
+    alive: bool = True
 
 
 def parse_investigator_output(raw: str) -> list[ProposedSection]:
@@ -200,12 +213,13 @@ def plan_sections(
         planner = "fallback"
         sections = _fallback_sections(all_refs)
 
+    hunks_assigned = sum(len(s.hunks) for s in sections if s.origin != "leftover")
+    hunks_leftover = sum(len(s.hunks) for s in sections if s.origin == "leftover")
+
     order = {ref.hunk_id: position for position, ref in enumerate(all_refs)}
     sections, coalesced = _split_and_coalesce(sections, config, order)
     _assign_unique_ids(sections)
 
-    assigned = {h.hunk_id for s in sections if s.origin != "leftover" for h in s.hunks}
-    leftover = {h.hunk_id for s in sections if s.origin == "leftover" for h in s.hunks}
     return ScanPlan(
         sections=sections,
         exclusions=exclusions,
@@ -215,8 +229,8 @@ def plan_sections(
         files_total=len(diffs),
         files_in_scope=len(in_scope),
         hunks_total=len(all_refs),
-        hunks_assigned=len(assigned),
-        hunks_leftover=len(leftover),
+        hunks_assigned=hunks_assigned,
+        hunks_leftover=hunks_leftover,
         sections_coalesced=coalesced,
     )
 
@@ -303,7 +317,7 @@ def _split_and_coalesce(
 
 
 def _split_section(section: Section, group_id: str, limit: int) -> list[Section]:
-    if _rendered_len(section.hunks) <= limit:
+    if _measure(section.hunks)[0] <= limit:
         return [section]
     groups = _pack_hunks(section.hunks, limit)
     if len(groups) < 2:
@@ -330,17 +344,25 @@ def _split_section(section: Section, group_id: str, limit: int) -> list[Section]
 def _pack_hunks(hunks: list[HunkRef], limit: int) -> list[tuple[list[HunkRef], bool]]:
     groups: list[tuple[list[HunkRef], bool]] = []
     current: list[HunkRef] = []
+    size = 0
+    files: set[str] = set()
     for hunk in hunks:
-        if _rendered_len([hunk]) > limit:
+        block = _hunk_block_len(hunk, _body_len(hunk.changes))
+        header = _header_len(hunk)
+        if header + block > limit:
             if current:
                 groups.append((current, False))
-                current = []
+                current, size, files = [], 0, set()
             groups.extend(([piece], True) for piece in _split_lines(hunk, limit))
-        elif current and _rendered_len(current + [hunk]) > limit:
+            continue
+        added = block if hunk.file in files else block + header
+        if current and size + added > limit:
             groups.append((current, False))
-            current = [hunk]
+            current, size, files = [hunk], block + header, {hunk.file}
         else:
             current.append(hunk)
+            size += added
+            files.add(hunk.file)
     if current:
         groups.append((current, False))
     return groups
@@ -350,16 +372,23 @@ def _split_lines(hunk: HunkRef, limit: int) -> list[HunkRef]:
     pieces: list[HunkRef] = []
     current: list[LineChange] = []
     old_done = new_done = 0
+    old_count = new_count = body = 0
     for change in hunk.changes:
-        if current:
-            trial = _line_piece(hunk, current + [change], old_done, new_done)
-            if _rendered_len([trial]) > limit:
-                piece = _line_piece(hunk, current, old_done, new_done)
-                pieces.append(piece)
-                old_done += piece.old_count
-                new_done += piece.new_count
-                current = []
+        old_add = 0 if change.kind == "add" else 1
+        new_add = 0 if change.kind == "del" else 1
+        line = len(change.content) + 2
+        if current and _line_piece_len(
+            hunk, old_done, new_done, old_count + old_add, new_count + new_add, body + line
+        ) > limit:
+            pieces.append(_line_piece(hunk, current, old_done, new_done))
+            old_done += old_count
+            new_done += new_count
+            current = []
+            old_count = new_count = body = 0
         current.append(change)
+        old_count += old_add
+        new_count += new_add
+        body += line
     if current:
         pieces.append(_line_piece(hunk, current, old_done, new_done))
     return pieces
@@ -382,6 +411,19 @@ def _line_piece(
     )
 
 
+def _line_piece_len(
+    hunk: HunkRef, old_done: int, new_done: int, old_count: int, new_count: int, body: int
+) -> int:
+    probe = replace(
+        hunk,
+        old_start=_piece_start(hunk.old_start, hunk.old_count, old_done, old_count),
+        old_count=old_count,
+        new_start=_piece_start(hunk.new_start, hunk.new_count, new_done, new_count),
+        new_count=new_count,
+    )
+    return _header_len(probe) + _hunk_block_len(probe, body)
+
+
 def _piece_start(start: int, count: int, taken: int, piece_count: int) -> int:
     # Zero-count ranges name the line before the insertion point, as git does.
     base = start if count else start + 1
@@ -392,34 +434,93 @@ def _coalesce(
     sections: list[Section], max_sections: int, order: dict[str, int]
 ) -> tuple[list[Section], int]:
     current = list(sections)
-    merges = 0
     limit = max(max_sections, 1)
     if len(current) > limit:
         current.sort(key=lambda s: min(order[h.hunk_id] for h in s.hunks))
-    while len(current) > limit:
-        best = min(
-            range(len(current) - 1),
-            key=lambda i: _rendered_len(_union(current[i].hunks, current[i + 1].hunks)),
-        )
+    if len(current) <= limit:
+        return current, 0
+
+    runs: list[_Run] = []
+    for rank, section in enumerate(current):
+        size, headers = _measure(section.hunks)
+        runs.append(_Run(section, size, headers, rank))
+    heap: list[tuple[int, int, int, _Run, _Run]] = []
+    serial = count()
+
+    def push(left: _Run, right: _Run) -> None:
+        size = left.size + right.size - _shared_header_total(left.headers, right.headers)
+        heapq.heappush(heap, (size, left.rank, next(serial), left, right))
+
+    for left, right in zip(runs, runs[1:]):
+        left.next = right
+        right.prev = left
+        push(left, right)
+
+    head = runs[0]
+    live = len(runs)
+    merges = 0
+    while live > limit:
+        size, _, _, left, right = heapq.heappop(heap)
+        # Entries for pairs broken by an earlier merge are skipped here.
+        if not (left.alive and right.alive and left.next is right):
+            continue
         merges += 1
-        merged = _merge(current[best], current[best + 1], f"coalesced:{merges}")
-        current[best : best + 2] = [merged]
-    return current, merges
+        merged = _Run(
+            _merge(left.section, right.section, f"coalesced:{merges}"),
+            size,
+            _combine_headers(left.headers, right.headers),
+            left.rank,
+        )
+        left.alive = right.alive = False
+        merged.prev, merged.next = left.prev, right.next
+        if left.prev is None:
+            head = merged
+        else:
+            left.prev.next = merged
+            push(left.prev, merged)
+        if right.next is not None:
+            right.next.prev = merged
+            push(merged, right.next)
+        live -= 1
+
+    result: list[Section] = []
+    run: _Run | None = head
+    while run is not None:
+        section = run.section
+        if section.origin == "coalesced":
+            section.files = list(dict.fromkeys(h.file for h in section.hunks))
+        result.append(section)
+        run = run.next
+    return result, merges
 
 
 def _merge(first: Section, second: Section, section_id: str) -> Section:
-    hunks = _union(first.hunks, second.hunks)
+    # Sections partition the hunk refs, so concatenation equals the union.
     return Section(
         section_id=section_id,
         origin="coalesced",
         title=f"{first.title} + {second.title}",
         rationale=" ".join(text for text in (first.rationale, second.rationale) if text),
-        files=list(dict.fromkeys(h.file for h in hunks)),
-        hunks=hunks,
+        hunks=first.hunks + second.hunks,
         context=_union(first.context, second.context),
         split=first.split or second.split,
         partial_hunk=first.partial_hunk or second.partial_hunk,
     )
+
+
+def _shared_header_total(first: dict[str, int], second: dict[str, int]) -> int:
+    small, large = (first, second) if len(first) <= len(second) else (second, first)
+    return sum(second[f] for f in small if f in large)
+
+
+def _combine_headers(first: dict[str, int], second: dict[str, int]) -> dict[str, int]:
+    if len(first) >= len(second):
+        for file, header in second.items():
+            first.setdefault(file, header)
+        return first
+    for file, header in first.items():
+        second[file] = header
+    return second
 
 
 def _union(first: list[_T], second: list[_T]) -> list[_T]:
@@ -430,8 +531,26 @@ def _union(first: list[_T], second: list[_T]) -> list[_T]:
     return merged
 
 
-def _rendered_len(hunks: list[HunkRef]) -> int:
-    return len(render_section(_section("", "fallback", "", "", hunks)))
+def _measure(hunks: list[HunkRef]) -> tuple[int, dict[str, int]]:
+    headers: dict[str, int] = {}
+    size = 0
+    for hunk in hunks:
+        if hunk.file not in headers:
+            headers[hunk.file] = _header_len(hunk)
+        size += _hunk_block_len(hunk, _body_len(hunk.changes))
+    return size + sum(headers.values()), headers
+
+
+def _body_len(changes: list[LineChange]) -> int:
+    return sum(len(c.content) + 2 for c in changes)
+
+
+def _hunk_block_len(hunk: HunkRef, body: int) -> int:
+    return len(_hunk_header(hunk)) + 1 + body
+
+
+def _header_len(hunk: HunkRef) -> int:
+    return sum(len(line) + 1 for line in _file_header(hunk))
 
 
 def _assign_unique_ids(sections: list[Section]) -> None:
@@ -478,12 +597,13 @@ def render_section(section: Section) -> str:
     for hunks in _group_by_file(section.hunks).values():
         lines.extend(_file_header(hunks[0]))
         for hunk in hunks:
-            lines.append(
-                f"@@ -{hunk.old_start},{hunk.old_count} "
-                f"+{hunk.new_start},{hunk.new_count} @@"
-            )
+            lines.append(_hunk_header(hunk))
             lines.extend(_LINE_PREFIX[c.kind] + c.content for c in hunk.changes)
     return "".join(line + "\n" for line in lines)
+
+
+def _hunk_header(hunk: HunkRef) -> str:
+    return f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
 
 
 def _file_header(hunk: HunkRef) -> list[str]:
