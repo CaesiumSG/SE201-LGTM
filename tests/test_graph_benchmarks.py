@@ -355,7 +355,7 @@ def pinned(monkeypatch):
     """Deterministic run_pin; no git runs. Returns the (config, root, refs) calls."""
     calls = []
 
-    def fake_run_pin(config, repo_root, refs):
+    def fake_run_pin(config, repo_root, refs, exclude=None):
         calls.append((config, Path(repo_root), dict(refs)))
         return {**PIN, "base_sha": refs.get("base", ""), "pr_sha": refs.get("pr", "")}
 

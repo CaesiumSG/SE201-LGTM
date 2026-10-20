@@ -428,3 +428,47 @@ def test_run_pin_with_missing_directory_reports_unknown_without_raising(tmp_path
     pin = run_pin(pin_config(), tmp_path / "does_not_exist", REFS)
     assert pin["code_sha"] == ""
     assert pin["code_dirty"] is None
+
+
+@pytest.fixture
+def run_dir(pin_repo: Path) -> Path:
+    out = pin_repo / "runs" / "current"
+    out.mkdir(parents=True)
+    (out / "case_01.json").write_text("{}\n", encoding="utf-8")
+    return out
+
+
+def test_run_pin_exclude_ignores_untracked_files_inside_the_excluded_directory(
+    pin_repo, run_dir
+):
+    assert run_pin(pin_config(), pin_repo, REFS)["code_dirty"] is True
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=run_dir)
+    assert pin["code_dirty"] is False
+    assert pin["code_sha"] == git(pin_repo, "rev-parse", "HEAD").strip()
+
+
+def test_run_pin_exclude_still_flags_tracked_edits(pin_repo, run_dir):
+    (pin_repo / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=run_dir)
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_exclude_still_flags_untracked_files_outside_the_excluded_directory(
+    pin_repo, run_dir
+):
+    (pin_repo / "new_file.py").write_text("y = 1\n", encoding="utf-8")
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=run_dir)
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_exclude_outside_the_repo_is_ignored(pin_repo, run_dir, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=elsewhere)
+    assert pin["code_dirty"] is True
+
+
+def test_run_pin_exclude_nonexistent_path_does_not_raise(pin_repo):
+    pin = run_pin(pin_config(), pin_repo, REFS, exclude=pin_repo / "runs" / "missing")
+    assert pin["code_sha"] == git(pin_repo, "rev-parse", "HEAD").strip()
+    assert pin["code_dirty"] is False

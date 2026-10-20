@@ -89,12 +89,14 @@ thinking disabled; it cannot be combined with `--gpu-cluster` or
 `--model`, and `--ollama-url` overrides the URL. The summary records
 `model` and `reasoning`.
 
-`--resume` skips cases whose result JSON exists and is not an error,
-re-runs error results, leaves completed results untouched, and rebuilds
-`summary.json` from all case JSONs. Each output directory holds a
-`run.json` manifest (`model`, `ollama_base_url`, `reasoning`, `mode`);
-`--resume` refuses to continue a directory whose manifest has a
-different model or reasoning setting.
+`--resume` skips cases whose result JSON exists, is not an error and is not
+`scan_failure`, re-runs the rest, leaves completed results untouched, and
+rebuilds `summary.json` from all case JSONs. Each output directory holds a
+`run.json` manifest (`model`, `ollama_base_url`, `reasoning`, `mode`, `pin`).
+`--resume` refuses a directory whose manifest has a different model or
+reasoning setting, has no `pin`, or has a `pin` that differs in any entry
+other than `base_sha` and `pr_sha`. The output directory is excluded from the
+`code_dirty` check, so files written there do not count as changes.
 
 **Dev/eval protocol:** pairs are split as follows (pairs 1–3, 7–9 and 13 → dev;
 pairs 4–6, 10–12 and 14 → eval), so each split holds 13 vulnerable + 13 safe
@@ -120,8 +122,14 @@ and `docs/evaluation-log.md`.
 
 - Precision / recall / F1 — overall, per category (sqli, authz), and per
   dev/eval split.
-- "Grounded" variants of the above: a detection only counts if the evidence
-  validator accepted its citations.
+- "Grounded" variants of the above (`grounded_only`): a detection only counts
+  if the evidence validator accepted its citations.
+- `vulnerable_scored` / `safe_scored`: scored cases per expected label.
+  `excluded_on_safe`: safe rows excluded from the safe-control rates.
+- `abstentions` / `possible_on_safe`: rows labelled `insufficient_evidence` or
+  `possible_vulnerability`, and safe rows labelled `possible_vulnerability`.
+- `case_labels`: row count per case label. `legacy_rows`: rows without a run
+  pin. `coverage`: review-coverage totals over rows with a coverage block.
 - Off-category alarm rate: cases where an agent flags the category the case
   does *not* test (e.g. an ownership warning on a SQLi case).
 - False-positive rate on the safe controls.

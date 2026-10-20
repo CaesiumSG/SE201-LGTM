@@ -708,7 +708,7 @@ def main() -> None:
         rescore(out_dir, cases, args.mode)
         return
 
-    pin = run_pin(config, REPO_ROOT, {})
+    pin = run_pin(config, REPO_ROOT, {}, exclude=out_dir)
     write_run_manifest(
         out_dir,
         {"model": config.ollama_model, "ollama_base_url": config.ollama_base_url,

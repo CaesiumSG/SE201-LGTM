@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,6 +16,7 @@ from lgtm.agents.plain_reviewer import DEFAULT_CWE
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import parse_unified_diff
 from lgtm.pipeline import ReviewPipeline
+from lgtm.review.provenance import run_pin as real_run_pin
 
 _spec = importlib.util.spec_from_file_location(
     "bench_evaluate",
@@ -240,7 +242,7 @@ class TestRescoreNewFormat:
 
     @pytest.fixture(autouse=True)
     def no_run_pin(self, monkeypatch):
-        def refuse(*args, **kwargs):
+        def refuse(config, repo_root, refs, exclude=None):
             raise AssertionError("rescore must not compute a run pin")
 
         monkeypatch.setattr(evaluate, "run_pin", refuse)
@@ -557,7 +559,7 @@ def pin(monkeypatch):
     """
     calls = []
 
-    def fake_run_pin(config, repo_root, refs):
+    def fake_run_pin(config, repo_root, refs, exclude=None):
         calls.append((config, Path(repo_root), dict(refs)))
         return _pin_for(config.ollama_model, config.mode, config.static_facts,
                         refs.get("base", ""), refs.get("pr", ""))
@@ -863,6 +865,53 @@ class TestResume:
         self._main(monkeypatch, out, "--resume", "--model", "m:1")
 
         assert sorted(ran) == ["b", "c"]
+
+    @pytest.fixture
+    def real_pin_repo(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
+        for args in (["init", "-q"], ["add", "tracked.txt"],
+                     ["commit", "-q", "-m", "init"]):
+            subprocess.run([*git, *args], cwd=repo, check=True, capture_output=True)
+        monkeypatch.setattr(evaluate, "run_pin", real_run_pin)
+        monkeypatch.setattr(evaluate, "REPO_ROOT", repo)
+        return repo
+
+    def test_resume_accepts_a_run_written_into_an_untracked_repo_directory(
+            self, tmp_path, monkeypatch, real_pin_repo):
+        _, ran = self._setup(tmp_path, monkeypatch)
+        out = real_pin_repo / "runs" / "dev-run"
+
+        self._main(monkeypatch, out)
+        assert sorted(ran) == ["a", "b", "c"]
+        stored = json.loads((out / "run.json").read_text(encoding="utf-8"))["pin"]
+        (out / "c.json").unlink()
+        ran.clear()
+
+        self._main(monkeypatch, out, "--resume")
+
+        assert ran == ["c"]
+        resumed = json.loads((out / "run.json").read_text(encoding="utf-8"))["pin"]
+        assert resumed == stored
+
+    def test_resume_still_refuses_a_tracked_file_edit_between_invocations(
+            self, tmp_path, monkeypatch, capsys, real_pin_repo):
+        _, ran = self._setup(tmp_path, monkeypatch)
+        out = real_pin_repo / "runs" / "dev-run"
+        self._main(monkeypatch, out)
+        (out / "c.json").unlink()
+        ran.clear()
+        (real_pin_repo / "tracked.txt").write_text("two\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume")
+
+        assert exc.value.code == 2
+        assert "(differs in: code_dirty)" in capsys.readouterr().err
+        assert ran == []
+        assert not (out / "c.json").exists()
 
     def test_resume_reruns_scan_failure_rows_and_keeps_scored_new_rows(
             self, tmp_path, monkeypatch, pin):

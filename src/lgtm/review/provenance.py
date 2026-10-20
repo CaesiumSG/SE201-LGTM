@@ -12,12 +12,17 @@ from lgtm.config import LGTMConfig
 _GIT_TIMEOUT_S = 10
 
 
-def run_pin(config: LGTMConfig, repo_root: Path, refs: Mapping[str, str]) -> dict[str, Any]:
+def run_pin(
+    config: LGTMConfig,
+    repo_root: Path,
+    refs: Mapping[str, str],
+    exclude: Path | None = None,
+) -> dict[str, Any]:
     head = _git(repo_root, "rev-parse", "HEAD")
     code_sha = head.strip() if head is not None else ""
     code_dirty: bool | None = None
     if head is not None:
-        status = _git(repo_root, "status", "--porcelain")
+        status = _git(repo_root, "status", "--porcelain", *_exclude_args(repo_root, exclude))
         if status is not None:
             code_dirty = bool(status.strip())
 
@@ -50,6 +55,18 @@ def run_pin(config: LGTMConfig, repo_root: Path, refs: Mapping[str, str]) -> dic
             "require_tool_use": config.require_tool_use,
         },
     }
+
+
+def _exclude_args(repo_root: Path, exclude: Path | None) -> list[str]:
+    if exclude is None:
+        return []
+    try:
+        rel = exclude.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return []
+    if not rel.parts:
+        return []
+    return ["--", ".", f":(exclude){rel.as_posix()}"]
 
 
 def _git(repo_root: Path, *args: str) -> str | None:
