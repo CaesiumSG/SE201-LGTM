@@ -243,7 +243,7 @@ class TestRescoreNewFormat:
         def refuse(*args, **kwargs):
             raise AssertionError("rescore must not compute a run pin")
 
-        monkeypatch.setattr(evaluate, "run_pin", refuse, raising=False)
+        monkeypatch.setattr(evaluate, "run_pin", refuse)
 
     def _setup(self, tmp_path):
         out = tmp_path / "run"
@@ -562,7 +562,7 @@ def pin(monkeypatch):
         return _pin_for(config.ollama_model, config.mode, config.static_facts,
                         refs.get("base", ""), refs.get("pr", ""))
 
-    monkeypatch.setattr(evaluate, "run_pin", fake_run_pin, raising=False)
+    monkeypatch.setattr(evaluate, "run_pin", fake_run_pin)
     return calls
 
 
@@ -587,7 +587,9 @@ class TestResume:
         bench.mkdir()
         (bench / "labels.json").write_text(json.dumps({"cases": [
             {"id": cid, "category": "authz", "expected_verdict": expected,
-             "split": "dev", "patch_file": f"patches/{cid}.patch"}
+             "split": "dev", "patch_file": f"patches/{cid}.patch",
+             **({"file": "app/orders.py", "vulnerable_locations": [LOCATION],
+                 "diff_shape": "single_hunk"} if cid in raises else {})}
             for cid, expected in self.EXPECTED.items()
         ]}), encoding="utf-8")
         out = tmp_path / "out"
@@ -890,6 +892,11 @@ class TestResume:
         assert row["pin"] == manifest["pin"] == self.PIN
         assert "legacy" not in row
         assert row["case_label"] == "scan_failure"
+        assert row["mode"] == "lgtm"
+        assert row["file"] == "app/orders.py"
+        assert row["vulnerable_locations"] == [LOCATION]
+        assert row["diff_shape"] == "single_hunk"
+        assert "coverage" in row
         ran.clear()
 
         self._main(monkeypatch, out, "--resume", "--model", "m:1")

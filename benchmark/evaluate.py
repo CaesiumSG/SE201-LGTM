@@ -46,6 +46,8 @@ from lgtm.review.provenance import run_pin  # noqa: E402
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
+CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
+COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
 
 
 def infra_failure_ids(findings: list[dict]) -> list[str]:
@@ -85,9 +87,6 @@ def mark_error(result: dict, message: str) -> dict:
     )
     return result
 
-
-CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
-COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
 
 
 def graph_fields(review=None) -> dict:

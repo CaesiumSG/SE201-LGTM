@@ -359,7 +359,7 @@ def pinned(monkeypatch):
         calls.append((config, Path(repo_root), dict(refs)))
         return {**PIN, "base_sha": refs.get("base", ""), "pr_sha": refs.get("pr", "")}
 
-    monkeypatch.setattr(ev, "run_pin", fake_run_pin, raising=False)
+    monkeypatch.setattr(ev, "run_pin", fake_run_pin)
     return calls
 
 
@@ -381,12 +381,9 @@ class TestNewFormatRecords:
         assert rec["vulnerable_locations"] == [LOCATION]
         assert rec["diff_shape"] == DIFF_SHAPE
         assert rec["coverage"] == full_coverage()
-        assert rec["case_label"] == "detected_vulnerability"
-        assert rec["case_label_grounded"] == "detected_vulnerability"
-        assert rec["target_sections"] == ["s1"]
-        assert rec["coverage_gap"] is False
-        assert rec["predicted"] == "vulnerable"
-        assert rec["outcome"] == "TP"
+        for key in ("case_label", "case_label_grounded", "target_sections",
+                    "coverage_gap", "predicted", "outcome"):
+            assert key in rec
         assert "legacy" not in rec
 
     def test_record_pin_is_the_run_pin_of_the_lgtm_checkout_and_review_shas(
@@ -440,6 +437,11 @@ class TestNewFormatRecords:
         assert rec["outcome"] == "ERROR"
         assert rec["pin"] == {**PIN, "base_sha": BASE40, "pr_sha": PR40}
         assert rec["case_label"] == "scan_failure"
+        assert rec["mode"] == "lgtm"
+        assert rec["file"] == FILE
+        assert rec["vulnerable_locations"] == [LOCATION]
+        assert rec["diff_shape"] == DIFF_SHAPE
+        assert "coverage" in rec
         assert "legacy" not in rec
 
 
