@@ -23,8 +23,7 @@ from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent.parent
 
-HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-HUNK_START_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)")
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 @dataclass
@@ -39,7 +38,7 @@ class Case:
     vuln_markers: list[str] = field(default_factory=list)
     description: str = ""
     origin: str = "custom"  # "custom" | "owasp-derived"
-    context: int = 3  # unified diff context lines (git diff -U)
+    context: int = 3
     delete_files: list[str] = field(default_factory=list)
     new_files: dict[str, str] = field(default_factory=dict)
     edits: list[dict] = field(default_factory=list)  # {"file", "replacements", "append"?}
@@ -1220,6 +1219,7 @@ CASES.append(Case(
     cwe="CWE-639",
     file="app/routes/orders.py",
     replacements=[(OWNER_FILTER, '.filter(Order.status != "cancelled")')],
+    vuln_markers=['.filter(Order.status != "cancelled")'],
     location_markers=[{
         "file": "app/routes/orders.py",
         "old_markers": [OWNER_FILTER],
@@ -1256,6 +1256,10 @@ SCOPE_CHECK = (
     '                return jsonify({"error": "API key lacks required scope"}), 403\n'
 )
 SCOPE_MARKERS = ["def require_api_key_scope", "g.api_key = key"]
+SCOPE_LOCATIONS = [
+    {"file": "app/auth.py", "old_markers": SCOPE_MARKERS + ["return decorator"]},
+    {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
+]
 
 CASES.append(Case(
     id="authz_10_vulnerable",
@@ -1266,10 +1270,8 @@ CASES.append(Case(
     delete_files=["app/auth.py"],
     new_files={"app/auth/__init__.py": AUTH_MODULE},
     replacements=[(SCOPE_CHECK, "")],
-    location_markers=[
-        {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
-        {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
-    ],
+    vuln_markers=SCOPE_MARKERS,
+    location_markers=SCOPE_LOCATIONS,
     diff_shape="deleted_file",
     description="auth module moved into a package with the API-key scope "
                 "check removed from require_api_key_scope.",
@@ -1283,10 +1285,7 @@ CASES.append(Case(
     file="app/auth/__init__.py",
     delete_files=["app/auth.py"],
     new_files={"app/auth/__init__.py": AUTH_MODULE},
-    location_markers=[
-        {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
-        {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
-    ],
+    location_markers=SCOPE_LOCATIONS,
     diff_shape="deleted_file",
     description="auth module moved into a package without changes.",
 ))
@@ -1305,12 +1304,17 @@ def report_{n:03d}():
     for n in range(1, 91)
 )
 
-EXPORT_UNGUARDED = '''
+EXPORT_HEAD = '''
 @users_bp.route("/<int:user_id>/export", methods=["GET"])
 @require_auth
 def export_user(user_id: int):
     """Export a user's profile and orders (/users/<id>/export)."""
-    session = get_session()
+'''
+EXPORT_GUARD = (
+    "    if not is_owner_or_admin(g.current_user, user_id):\n"
+    '        return jsonify({"error": "forbidden"}), 403\n'
+)
+EXPORT_BODY = '''    session = get_session()
     user = session.get(User, user_id)
     if user is None:
         return jsonify({"error": "not found"}), 404
@@ -1322,32 +1326,15 @@ def export_user(user_id: int):
         }
     )
 '''
-
-EXPORT_GUARDED = '''
-@users_bp.route("/<int:user_id>/export", methods=["GET"])
-@require_auth
-def export_user(user_id: int):
-    """Export a user's profile and orders (/users/<id>/export)."""
-    if not is_owner_or_admin(g.current_user, user_id):
-        return jsonify({"error": "forbidden"}), 403
-    session = get_session()
-    user = session.get(User, user_id)
-    if user is None:
-        return jsonify({"error": "not found"}), 404
-    orders = session.query(Order).filter(Order.user_id == user_id).all()
-    return jsonify(
-        {
-            "user": user.to_dict(include_email=True),
-            "orders": [o.to_dict() for o in orders],
-        }
-    )
-'''
+EXPORT_UNGUARDED = EXPORT_HEAD + EXPORT_BODY
+EXPORT_GUARDED = EXPORT_HEAD + EXPORT_GUARD + EXPORT_BODY
 
 EXPORT_LOCATION = [{
     "file": "app/routes/users.py",
     "new_markers": [
         '@users_bp.route("/<int:user_id>/export"',
         '"orders": [o.to_dict() for o in orders]',
+        "    )",
     ],
 }]
 
@@ -1359,6 +1346,7 @@ CASES.append(Case(
     file="app/routes/users.py",
     replacements=[USERS_ADD_ORDER_IMPORT],
     append=EXPORT_UNGUARDED,
+    vuln_markers=['@users_bp.route("/<int:user_id>/export"', "def export_user("],
     edits=[{"file": "app/routes/admin.py", "append": REPORT_FILLER}],
     location_markers=EXPORT_LOCATION,
     diff_shape="oversized_diff",
@@ -1382,15 +1370,26 @@ CASES.append(Case(
 ))
 
 # --- Pair 12: ownership helper moved to its own module ----------------------
-OWNERSHIP_MODULE = (
-    "from app.models import User\n"
-    "\n"
-    "\n"
+OWNERSHIP_FUNCTION = (
     "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n"
     '    """Ownership check used for per-object access (orders, profiles)."""\n'
     '    return user.id == owner_id or user.role == "admin"\n'
 )
+OWNERSHIP_MODULE = "from app.models import User\n\n\n" + OWNERSHIP_FUNCTION
 OWNERSHIP_RETURN = '    return user.id == owner_id or user.role == "admin"'
+AUTH_MOVE_EDIT = {
+    "file": "app/auth.py",
+    "replacements": [
+        ("from app.models import ApiKey, User, get_session\n",
+         "from app.models import ApiKey, User, get_session\n"
+         "from app.ownership import is_owner_or_admin\n"),
+        ("\n\n" + OWNERSHIP_FUNCTION, "\n"),
+    ],
+}
+OWNERSHIP_OLD_LOCATION = {
+    "file": "app/auth.py",
+    "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+}
 
 CASES.append(Case(
     id="authz_12_vulnerable",
@@ -1400,23 +1399,10 @@ CASES.append(Case(
     file="app/ownership.py",
     new_files={"app/ownership.py": OWNERSHIP_MODULE},
     replacements=[(OWNERSHIP_RETURN, "    return user is not None")],
-    edits=[{
-        "file": "app/auth.py",
-        "replacements": [
-            ("from app.models import ApiKey, User, get_session\n",
-             "from app.models import ApiKey, User, get_session\n"
-             "from app.ownership import is_owner_or_admin\n"),
-            ('\n\ndef is_owner_or_admin(user: User, owner_id: int) -> bool:\n'
-             '    """Ownership check used for per-object access (orders, profiles)."""\n'
-             '    return user.id == owner_id or user.role == "admin"\n',
-             "\n"),
-        ],
-    }],
+    vuln_markers=["return user is not None"],
+    edits=[AUTH_MOVE_EDIT],
     location_markers=[
-        {
-            "file": "app/auth.py",
-            "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
-        },
+        OWNERSHIP_OLD_LOCATION,
         {
             "file": "app/ownership.py",
             "new_markers": ["def is_owner_or_admin", "return user is not None"],
@@ -1434,23 +1420,9 @@ CASES.append(Case(
     cwe="CWE-639",
     file="app/ownership.py",
     new_files={"app/ownership.py": OWNERSHIP_MODULE},
-    edits=[{
-        "file": "app/auth.py",
-        "replacements": [
-            ("from app.models import ApiKey, User, get_session\n",
-             "from app.models import ApiKey, User, get_session\n"
-             "from app.ownership import is_owner_or_admin\n"),
-            ('\n\ndef is_owner_or_admin(user: User, owner_id: int) -> bool:\n'
-             '    """Ownership check used for per-object access (orders, profiles)."""\n'
-             '    return user.id == owner_id or user.role == "admin"\n',
-             "\n"),
-        ],
-    }],
+    edits=[AUTH_MOVE_EDIT],
     location_markers=[
-        {
-            "file": "app/auth.py",
-            "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
-        },
+        OWNERSHIP_OLD_LOCATION,
         {
             "file": "app/ownership.py",
             "new_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
@@ -1461,6 +1433,11 @@ CASES.append(Case(
 ))
 
 # --- Pair 13: admin route renamed, decorator swapped in the vulnerable twin --
+PLATFORM_STATS_LOCATION = [{
+    "file": "app/routes/admin.py",
+    "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
+}]
+
 CASES.append(Case(
     id="authz_13_vulnerable",
     category="authz",
@@ -1477,10 +1454,8 @@ CASES.append(Case(
          "@require_auth\n"
          "def platform_stats():"),
     ],
-    location_markers=[{
-        "file": "app/routes/admin.py",
-        "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
-    }],
+    location_markers=PLATFORM_STATS_LOCATION,
+    vuln_markers=["@require_auth", "def platform_stats():"],
     diff_shape="renamed_route",
     description="Admin stats route renamed, with @require_role('admin') swapped "
                 "for @require_auth.",
@@ -1500,10 +1475,7 @@ CASES.append(Case(
         '@require_role("admin")\n'
         "def platform_stats():",
     )],
-    location_markers=[{
-        "file": "app/routes/admin.py",
-        "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
-    }],
+    location_markers=PLATFORM_STATS_LOCATION,
     diff_shape="renamed_route",
     description="Admin stats route renamed with @require_role('admin') kept.",
 ))
@@ -1548,7 +1520,7 @@ CASES.append(Case(
          "    user = get_current_user()\n"
          "    if user is None:\n"
          '        return jsonify({"error": "authentication required"}), 401\n'
-         "    if user.role != \"admin\":\n"
+         '    if user.role != "admin":\n'
          '        return jsonify({"error": "insufficient role"}), 403\n'),
     ],
     location_markers=[{
@@ -1637,7 +1609,7 @@ def side_lines(diff: str, file: str) -> tuple[list[tuple[int, str]], list[tuple[
             selected = raw == f"diff --git a/{file} b/{file}"
             in_hunk = False
             continue
-        start = HUNK_START_RE.match(raw)
+        start = HUNK_RE.match(raw)
         if start:
             in_hunk = True
             old_no, new_no = int(start.group(1)), int(start.group(2))
@@ -1650,7 +1622,7 @@ def side_lines(diff: str, file: str) -> tuple[list[tuple[int, str]], list[tuple[
         elif raw.startswith("+"):
             added.append((new_no, raw[1:]))
             new_no += 1
-        elif raw.startswith(" ") or raw == "":
+        elif raw.startswith(" "):
             old_no += 1
             new_no += 1
     return removed, added
@@ -1685,7 +1657,7 @@ def vulnerable_lines_from_patch(diff: str, markers: list[str]) -> list[int]:
     for raw in diff.splitlines():
         match = HUNK_RE.match(raw)
         if match:
-            new_lineno = int(match.group(1))
+            new_lineno = int(match.group(2))
             continue
         if raw.startswith("+++") or raw.startswith("---"):
             continue

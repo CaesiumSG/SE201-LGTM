@@ -133,14 +133,19 @@ def bench(tmp_path, gen, monkeypatch) -> Path:
     shutil.copytree(BENCH / "app", root / "app")
     for doc in ("security-policy.md", "api-spec.md", "README.md"):
         shutil.copy(BENCH / doc, root / doc)
-    for name, content in FIXTURE_FILES.items():
-        (root / name).write_text(content, encoding="utf-8", newline="\n")
     monkeypatch.setattr(gen, "BENCH", root)
     return root
 
 
 @pytest.fixture
-def repo(tmp_path, gen, bench) -> Path:
+def seeded_bench(bench) -> Path:
+    for name, content in FIXTURE_FILES.items():
+        (bench / name).write_text(content, encoding="utf-8", newline="\n")
+    return bench
+
+
+@pytest.fixture
+def repo(tmp_path, gen, seeded_bench) -> Path:
     path = tmp_path / "repo"
     path.mkdir()
     gen.build_base_repo(path)
@@ -245,6 +250,33 @@ class TestDeletedAndNewFiles:
         assert not (repo / "app/fresh.py").exists()
         assert status(repo) == ""
 
+    @pytest.mark.parametrize("context,expected", [(0, 0), (1, 2), (3, 5)])
+    def test_staged_diff_honours_context(self, gen, repo, context, expected):
+        case = make_case(
+            gen,
+            replacements=[("    y = 2\n", "    y = 20\n")],
+            delete_files=["app/legacy.py"],
+            new_files={"app/fresh.py": "z = 1\n"},
+            context=context,
+        )
+        diff = gen.apply_case(repo, case)
+        assert "deleted file mode" in diff
+        assert "new file mode" in diff
+        assert len([ln for ln in diff.splitlines() if ln.startswith(" ")]) == expected
+
+    def test_new_file_in_new_directory_leaves_no_stray_paths(self, gen, repo):
+        def tree() -> set[str]:
+            return {
+                p.relative_to(repo).as_posix() for p in repo.rglob("*")
+                if ".git" not in p.relative_to(repo).parts
+            }
+
+        before = tree()
+        case = make_case(gen, new_files={"app/pkg/sub/fresh.py": "z = 1\n"})
+        gen.apply_case(repo, case)
+        assert tree() == before
+        assert status(repo) == ""
+
     def test_moved_content_is_not_reported_as_rename(self, gen, repo):
         case = make_case(
             gen,
@@ -260,7 +292,7 @@ class TestDeletedAndNewFiles:
 
 class TestVulnerableLocations:
     def test_old_and_new_side_markers_resolve_to_separate_ranges(
-        self, gen, bench, monkeypatch
+        self, gen, seeded_bench, monkeypatch
     ):
         loc = {"file": "app/sample.py", "old_markers": ["y = 2", "z = 3"],
                "new_markers": ["z = 30", "y2 = 21"]}
@@ -271,7 +303,7 @@ class TestVulnerableLocations:
         assert list(labels[0]["vulnerable_locations"][0]) == [
             "file", "old_range", "new_range"]
 
-    def test_side_without_markers_has_null_range(self, gen, bench, monkeypatch):
+    def test_side_without_markers_has_null_range(self, gen, seeded_bench, monkeypatch):
         old_only = {"file": "app/sample.py", "old_markers": ["y = 2"]}
         new_only = {"file": "app/sample.py", "new_markers": ["y2 = 21"]}
         labels = generate(
@@ -283,7 +315,7 @@ class TestVulnerableLocations:
             {"file": "app/sample.py", "old_range": None, "new_range": [7, 7]},
         ]
 
-    def test_locations_alone_satisfy_vulnerable_case(self, gen, bench, monkeypatch):
+    def test_locations_alone_satisfy_vulnerable_case(self, gen, seeded_bench, monkeypatch):
         loc = {"file": "app/sample.py", "new_markers": ["z = 30"]}
         labels = generate(gen, monkeypatch, [make_case(gen, location_markers=[loc])])
         assert labels[0]["vulnerable_lines"] == []
@@ -291,15 +323,15 @@ class TestVulnerableLocations:
             {"file": "app/sample.py", "old_range": None, "new_range": [8, 8]}
         ]
 
-    def test_old_markers_ignore_added_lines(self, gen, bench, monkeypatch):
+    def test_old_markers_ignore_added_lines(self, gen, seeded_bench, monkeypatch):
         wrong_side = {"file": "app/sample.py", "old_markers": ["y2 = 21"]}
         monkeypatch.setattr(
             gen, "CASES", [make_case(gen, location_markers=[wrong_side])]
         )
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="location marker not found: y2 = 21"):
             gen.main()
 
-    def test_unmatched_marker_names_case_and_marker(self, gen, bench, monkeypatch):
+    def test_unmatched_marker_names_case_and_marker(self, gen, seeded_bench, monkeypatch):
         loc = {"file": "app/sample.py", "new_markers": ["no such line"]}
         monkeypatch.setattr(gen, "CASES", [make_case(gen, location_markers=[loc])])
         with pytest.raises(RuntimeError) as err:
@@ -308,17 +340,111 @@ class TestVulnerableLocations:
             "authz_99_vulnerable: location marker not found: no such line"
         )
 
+    @pytest.mark.parametrize("side", ["old_markers", "new_markers"])
+    def test_context_lines_are_not_marker_matches(
+        self, gen, seeded_bench, monkeypatch, side
+    ):
+        loc = {"file": "app/sample.py", side: ["x = 1"]}
+        monkeypatch.setattr(gen, "CASES", [make_case(gen, location_markers=[loc])])
+        with pytest.raises(RuntimeError, match="location marker not found: x = 1"):
+            gen.main()
+
+    @pytest.mark.parametrize(
+        "side,marker", [("new_markers", "y = 2"), ("old_markers", "w = 9")]
+    )
+    def test_markers_on_the_wrong_side_are_not_matches(
+        self, gen, seeded_bench, monkeypatch, side, marker
+    ):
+        case = make_case(
+            gen,
+            replacements=[("    y = 2\n", "    w = 9\n")],
+            location_markers=[{"file": "app/sample.py", side: [marker]}],
+        )
+        monkeypatch.setattr(gen, "CASES", [case])
+        with pytest.raises(RuntimeError, match=f"location marker not found: {marker}"):
+            gen.main()
+
+    def test_extra_edit_file_location_uses_its_own_hunk(
+        self, gen, seeded_bench, monkeypatch
+    ):
+        loc = {"file": "app/other.py", "old_markers": ["a = 1"],
+               "new_markers": ["b = 7"]}
+        case = make_case(
+            gen,
+            edits=[{"file": "app/other.py", "replacements": [("a = 1", "b = 7")]}],
+            location_markers=[loc],
+        )
+        labels = generate(gen, monkeypatch, [case])
+        assert labels[0]["vulnerable_locations"] == [
+            {"file": "app/other.py", "old_range": [1, 1], "new_range": [1, 1]}
+        ]
+
+    def test_markers_from_another_files_hunk_are_ignored(
+        self, gen, seeded_bench, monkeypatch
+    ):
+        loc = {"file": "app/other.py", "new_markers": ["z = 30"]}
+        case = make_case(
+            gen,
+            edits=[{"file": "app/other.py", "replacements": [("a = 1", "b = 7")]}],
+            location_markers=[loc],
+        )
+        monkeypatch.setattr(gen, "CASES", [case])
+        with pytest.raises(RuntimeError, match="location marker not found: z = 30"):
+            gen.main()
+
+    def test_deleted_file_location_has_only_old_range(
+        self, gen, seeded_bench, monkeypatch
+    ):
+        loc = {"file": "app/legacy.py", "old_markers": ["def old", "return 1"]}
+        case = make_case(gen, delete_files=["app/legacy.py"], location_markers=[loc])
+        labels = generate(gen, monkeypatch, [case])
+        assert labels[0]["vulnerable_locations"] == [
+            {"file": "app/legacy.py", "old_range": [1, 2], "new_range": None}
+        ]
+
+    def test_new_file_location_has_only_new_range(
+        self, gen, seeded_bench, monkeypatch
+    ):
+        loc = {"file": "app/fresh.py", "new_markers": ["a = 1", "c = 3"]}
+        case = make_case(
+            gen,
+            new_files={"app/fresh.py": "a = 1\nb = 2\nc = 3\n"},
+            location_markers=[loc],
+        )
+        labels = generate(gen, monkeypatch, [case])
+        assert labels[0]["vulnerable_locations"] == [
+            {"file": "app/fresh.py", "old_range": None, "new_range": [1, 3]}
+        ]
+
+    @pytest.mark.parametrize(
+        "file,side,marker",
+        [("app/legacy.py", "new_markers", "return 1"),
+         ("app/fresh.py", "old_markers", "a = 1")],
+    )
+    def test_deleted_and_new_files_reject_markers_on_missing_side(
+        self, gen, seeded_bench, monkeypatch, file, side, marker
+    ):
+        case = make_case(
+            gen,
+            delete_files=["app/legacy.py"],
+            new_files={"app/fresh.py": "a = 1\n"},
+            location_markers=[{"file": file, side: [marker]}],
+        )
+        monkeypatch.setattr(gen, "CASES", [case])
+        with pytest.raises(RuntimeError, match="location marker not found"):
+            gen.main()
+
     def test_vulnerable_case_without_lines_or_locations_is_rejected(
-        self, gen, bench, monkeypatch
+        self, gen, seeded_bench, monkeypatch
     ):
         monkeypatch.setattr(gen, "CASES", [make_case(gen)])
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="authz_99_vulnerable"):
             gen.main()
 
 
 class TestLabelFields:
     def test_optional_fields_follow_description_only_when_set(
-        self, gen, bench, monkeypatch
+        self, gen, seeded_bench, monkeypatch
     ):
         loc = {"file": "app/sample.py", "old_markers": ["y = 2"]}
         both = make_case(gen, id="authz_97_vulnerable", location_markers=[loc],
@@ -339,8 +465,6 @@ class TestLabelFields:
     def test_existing_cases_regenerate_to_committed_labels_and_patches(
         self, gen, bench, monkeypatch
     ):
-        for name in FIXTURE_FILES:
-            (bench / name).unlink()
         gen.main()
         normalize = lambda p: p.read_bytes().replace(b"\r\n", b"\n")
         assert normalize(bench / "labels.json") == normalize(BENCH / "labels.json")
@@ -412,7 +536,10 @@ def parse_patch(text: str) -> list[dict]:
             continue
         old = new = None
         hunks = []
+        header = []
         for ln in block.split("\n"):
+            if not hunks and not ln.startswith("@@"):
+                header.append(ln)
             if ln.startswith("--- ") and not hunks:
                 old = None if ln == "--- /dev/null" else ln[6:]
             elif ln.startswith("+++ ") and not hunks:
@@ -426,7 +553,7 @@ def parse_patch(text: str) -> list[dict]:
                 ))
             elif hunks:
                 hunks[-1]["body"].append(ln)
-        files.append(dict(old=old, new=new, hunks=hunks))
+        files.append(dict(old=old, new=new, hunks=hunks, header="\n".join(header)))
     return files
 
 
@@ -444,6 +571,90 @@ def is_decorator(ln: str) -> bool:
 
 def overlaps(a, b) -> bool:
     return a[0] <= b[1] and b[0] <= a[1]
+
+
+def walk_patch(text: str) -> list[dict]:
+    """Every hunk body line with its file, character offset and line numbers."""
+    rows = []
+    offset = 0
+    old_path = new_path = None
+    old_no = new_no = 0
+    in_hunk = False
+    for ln in text.split("\n"):
+        if ln.startswith("diff --git "):
+            in_hunk = False
+            old_path = new_path = None
+        elif not in_hunk and ln.startswith("--- "):
+            old_path = None if ln == "--- /dev/null" else ln[6:]
+        elif not in_hunk and ln.startswith("+++ "):
+            new_path = None if ln == "+++ /dev/null" else ln[6:]
+        elif ln.startswith("@@"):
+            a, _, c, _ = HUNK_RE.match(ln).groups()
+            old_no, new_no, in_hunk = int(a), int(c), True
+        elif in_hunk and ln[:1] in (" ", "+", "-"):
+            rows.append(dict(old=old_path, new=new_path, offset=offset, op=ln[0],
+                             old_no=old_no, new_no=new_no, text=ln[1:]))
+            if ln[0] != "+":
+                old_no += 1
+            if ln[0] != "-":
+                new_no += 1
+        offset += len(ln) + 1
+    return rows
+
+
+def added(text: str, path: str) -> dict[int, str]:
+    return {r["new_no"]: r["text"] for r in walk_patch(text)
+            if r["op"] == "+" and r["new"] == path}
+
+
+def removed(text: str, path: str) -> dict[int, str]:
+    return {r["old_no"]: r["text"] for r in walk_patch(text)
+            if r["op"] == "-" and r["old"] == path}
+
+
+def function_span(lines: list[str], def_no: int) -> tuple[int, int]:
+    """Decorators through last body line of the top-level function at def_no."""
+    start = def_no
+    while start > 1 and lines[start - 2].startswith("@"):
+        start -= 1
+    end = def_no
+    for no in range(def_no + 1, len(lines) + 1):
+        ln = lines[no - 1]
+        if ln.strip() and not ln[0].isspace():
+            break
+        if ln.strip():
+            end = no
+    return start, end
+
+
+def find_def(lines: list[str], name: str) -> int:
+    matches = [n for n, ln in enumerate(lines, 1) if ln.startswith(f"def {name}(")]
+    assert len(matches) == 1, f"def {name} not unique in file"
+    return matches[0]
+
+
+def source_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def locations_of(pair: int, kind: str, path: str, side: str) -> list[list[int]]:
+    return [loc[side] for loc in label_for(pair, kind).get("vulnerable_locations") or []
+            if loc["file"] == path and loc[side]]
+
+
+@pytest.fixture(scope="module")
+def patched(base_repo, tmp_path_factory):
+    cache: dict[tuple[int, str], Path] = {}
+
+    def build(pair: int, kind: str) -> Path:
+        if (pair, kind) not in cache:
+            work = tmp_path_factory.mktemp(f"patched-{pair:02d}-{kind}")
+            shutil.copytree(base_repo, work, dirs_exist_ok=True)
+            git(work, "apply", str(BENCH / label_for(pair, kind)["patch_file"]))
+            cache[(pair, kind)] = work
+        return cache[(pair, kind)]
+
+    return build
 
 
 class TestNewAuthzPairLabels:
@@ -464,7 +675,7 @@ class TestNewAuthzPairLabels:
 
     @PAIR
     @BOTH
-    def test_locations_overlap_real_hunks_and_have_contract_shape(self, pair, kind):
+    def test_locations_lie_within_one_real_hunk_and_have_contract_shape(self, pair, kind):
         label = label_for(pair, kind)
         locations = label.get("vulnerable_locations")
         assert locations, f"{label['id']}: vulnerable_locations missing"
@@ -481,8 +692,9 @@ class TestNewAuthzPairLabels:
                 assert 1 <= rng[0] <= rng[1]
                 spans = [h[side] for f in files if f[side] == loc["file"]
                          for h in f["hunks"]]
-                assert any(overlaps(rng, s) for s in spans), (
-                    f"{label['id']}: {key} {rng} in {loc['file']} overlaps no hunk"
+                assert any(s[0] <= rng[0] and rng[1] <= s[1] for s in spans), (
+                    f"{label['id']}: {key} {rng} in {loc['file']} "
+                    f"is not inside a single hunk of {spans}"
                 )
 
     @pytest.mark.parametrize("pair", sorted(EXPECTED_SIDES))
@@ -531,22 +743,31 @@ class TestNewAuthzPairDiffShapes:
 
     @BOTH
     def test_deleted_file_marks_deletion(self, kind):
-        text = patch_text(10, kind)
-        assert "deleted file mode" in text
-        assert "+++ /dev/null" in text
+        files = parse_patch(patch_text(10, kind))
+        deleted = [f for f in files if f["new"] is None]
+        assert [f["old"] for f in deleted] == ["app/auth.py"]
+        assert "deleted file mode" in deleted[0]["header"]
 
     @BOTH
     def test_oversized_diff_is_large_with_marker_in_final_tenth(self, kind):
         text = patch_text(11, kind)
         assert len(text) > 18000
-        marker = text.rfind("/users/<id>/export")
-        assert marker >= len(text) * 0.9
+        ranges = locations_of(11, kind, "app/routes/users.py", "new_range")
+        assert ranges
+        start, end = ranges[0]
+        in_range = [r for r in walk_patch(text)
+                    if r["op"] == "+" and r["new"] == "app/routes/users.py"
+                    and start <= r["new_no"] <= end]
+        assert in_range, "labelled new_range contains no added line"
+        assert in_range[0]["offset"] >= len(text) * 0.9
 
     @BOTH
     def test_cross_file_move_defines_function_in_two_files(self, kind):
         text = patch_text(12, kind)
-        assert "new file mode" in text
         files = parse_patch(text)
+        created = [f for f in files if f["old"] is None]
+        assert [f["new"] for f in created] == ["app/ownership.py"]
+        assert "new file mode" in created[0]["header"]
 
         def files_with(prefix, side):
             return {f[side] for f in files for ln in file_body(f)
@@ -572,5 +793,85 @@ class TestNewAuthzPairDiffShapes:
 
     def test_vulnerable_twin_removes_decorator_without_adding_one(self):
         body = hunk_bodies(patch_text(14, "vulnerable"))
-        assert [ln for ln in body if ln.startswith("-") and is_decorator(ln)]
         assert not [ln for ln in body if ln.startswith("+") and is_decorator(ln)]
+        rows = walk_patch(patch_text(14, "vulnerable"))
+        gone = [r for r in rows if r["op"] == "-" and is_decorator("-" + r["text"])]
+        assert [r["text"].strip() for r in gone] == ['@require_role("admin")']
+        at = rows.index(gone[0])
+        assert '"/audit"' in rows[at - 1]["text"] and rows[at - 1]["op"] == " "
+        assert "def audit_log" in rows[at + 1]["text"] and rows[at + 1]["op"] == " "
+
+
+class TestNewAuthzPairLocationExtent:
+    @PAIR
+    @BOTH
+    def test_ranges_fall_within_file_length(self, patched, pair, kind):
+        work = patched(pair, kind)
+        for loc in label_for(pair, kind).get("vulnerable_locations") or []:
+            if loc["old_range"]:
+                before = source_lines(BENCH / loc["file"])
+                assert loc["old_range"][1] <= len(before), (
+                    f"{pair}/{kind}: old_range {loc['old_range']} beyond {loc['file']}"
+                )
+            if loc["new_range"]:
+                after = source_lines(work / loc["file"])
+                assert loc["new_range"][1] <= len(after), (
+                    f"{pair}/{kind}: new_range {loc['new_range']} beyond {loc['file']}"
+                )
+
+    @BOTH
+    def test_pair_10_old_range_is_whole_require_api_key_scope(self, kind):
+        lines = source_lines(BENCH / "app/auth.py")
+        want = function_span(lines, find_def(lines, "require_api_key_scope"))
+        got = locations_of(10, kind, "app/auth.py", "old_range")
+        assert len(got) == 1 and got[0][0] <= want[0] and got[0][1] >= want[1]
+
+    @BOTH
+    def test_pair_11_new_range_is_whole_final_export_endpoint(self, patched, kind):
+        lines = source_lines(patched(11, kind) / "app/routes/users.py")
+        routes = [n for n, ln in enumerate(lines, 1)
+                  if (m := ROUTE_RE.search(ln)) and "export" in m.group(1)]
+        assert routes
+        def_no = next(n for n in range(routes[-1], len(lines) + 1)
+                      if lines[n - 1].startswith("def "))
+        want = function_span(lines, def_no)
+        got = locations_of(11, kind, "app/routes/users.py", "new_range")
+        assert len(got) == 1 and got[0][0] <= want[0] and got[0][1] >= want[1]
+
+    @BOTH
+    def test_pair_12_old_range_is_whole_removed_is_owner_or_admin(self, kind):
+        lines = source_lines(BENCH / "app/auth.py")
+        start, end = function_span(lines, find_def(lines, "is_owner_or_admin"))
+        gone = removed(patch_text(12, kind), "app/auth.py")
+        assert set(range(start, end + 1)) <= set(gone)
+        got = locations_of(12, kind, "app/auth.py", "old_range")
+        assert len(got) == 1 and got[0][0] <= start and got[0][1] >= end
+
+    @BOTH
+    def test_pair_13_new_range_is_renamed_route_decorators_and_def(self, kind):
+        new = added(patch_text(13, kind), "app/routes/admin.py")
+        route_no = min(n for n, ln in new.items() if ROUTE_RE.search(ln))
+        def_no = min(n for n, ln in new.items() if ln.startswith("def "))
+        got = locations_of(13, kind, "app/routes/admin.py", "new_range")
+        assert len(got) == 1 and got[0][0] <= route_no and got[0][1] >= def_no
+
+    @BOTH
+    def test_pair_14_old_range_is_the_removed_decorator_line(self, kind):
+        gone = removed(patch_text(14, kind), "app/routes/admin.py")
+        decorators = [n for n, ln in gone.items() if ln.lstrip().startswith("@")]
+        assert len(decorators) == 1
+        got = locations_of(14, kind, "app/routes/admin.py", "old_range")
+        assert len(got) == 1 and got[0][0] <= decorators[0] <= got[0][1]
+
+
+class TestNewVulnerableCasesCarryLines:
+    @pytest.mark.parametrize("pair", [9, 10, 11, 12, 13])
+    def test_vulnerable_lines_point_at_added_code_in_labelled_file(self, pair):
+        label = label_for(pair, "vulnerable")
+        lines = label["vulnerable_lines"]
+        assert lines, f"{label['id']}: vulnerable_lines empty"
+        new = added(patch_text(pair, "vulnerable"), label["file"])
+        assert set(lines) <= set(new), (
+            f"{label['id']}: {sorted(set(lines) - set(new))} are not added lines "
+            f"of {label['file']}"
+        )
