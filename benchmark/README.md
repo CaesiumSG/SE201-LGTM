@@ -1,7 +1,7 @@
 # LGTM Benchmark — Shoply
 
-A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
-(36 cases) used to evaluate the LGTM PR security agent.
+A deliberately reviewable Flask e-commerce API plus **26 matched PR pairs**
+(52 cases) used to evaluate the LGTM PR security agent.
 
 ## Layout
 
@@ -18,14 +18,44 @@ A deliberately reviewable Flask e-commerce API plus **18 matched PR pairs**
   implements the same feature with bound parameters or an allowlist. The
   safe versions still look SQL-ish enough to trigger SAST, which is the
   false-positive test.
-- `cases/authz/` — 6 authorization pairs (CWE-639 / CWE-862 / CWE-863).
+- `cases/authz/` — 14 authorization pairs (CWE-639 / CWE-862 / CWE-863).
   These are invisible to SAST by design; only policy-aware review can catch
   them.
-- `labels.json` — ground truth for all 36 cases (with dev/eval split).
+- `labels.json` — ground truth for all 52 cases (with dev/eval split).
+  Authz cases 07–14 also carry `diff_shape` (the patch shape, e.g.
+  `deletion_only`, `cross_file_move`) and `vulnerable_locations`: a list of
+  `{file, old_range, new_range}` entries with inclusive 1-based line ranges,
+  `null` for a side the location does not have.
 - `evaluate.py` — runs LGTM on every case and reports metrics.
 - `tools/generate_cases.py` — regenerates all patches and `labels.json`
   from the case definitions (patches are produced by real `git diff`, so
   they always apply cleanly).
+
+Authorization pairs 07–14 (vulnerable case; safe control):
+
+- `authz_07` (CWE-639, dev, `deletion_only`): the profile update drops the
+  ownership check; safe: the same update without the email branch, ownership
+  check kept.
+- `authz_08` (CWE-863, dev, `shared_helper`): `require_role` loses its rank
+  comparison; safe: the comparison moves into `role_below` with identical
+  semantics.
+- `authz_09` (CWE-639, dev, `decorator_outside_hunk`): `my_orders` filters by
+  status instead of owner; safe: the owner filter stays and a status filter is
+  added.
+- `authz_10` (CWE-862, eval, `deleted_file`): `app/auth.py` moves into
+  `app/auth/__init__.py` with the API-key scope check removed; safe: the move
+  is unchanged.
+- `authz_11` (CWE-639, eval, `oversized_diff`): per-user export endpoint with
+  no ownership check, appended after generated admin report routes; safe: the
+  endpoint is guarded by `is_owner_or_admin`.
+- `authz_12` (CWE-639, eval, `cross_file_move`): `is_owner_or_admin` moves to
+  `app/ownership.py` and returns `True` for every authenticated user; safe: the
+  move is unchanged.
+- `authz_13` (CWE-863, dev, `renamed_route`): admin stats route renamed with
+  `@require_role("admin")` swapped for `@require_auth`; safe: the route is
+  renamed with the decorator kept.
+- `authz_14` (CWE-862, eval, `removed_auth_decorator`): audit log route loses
+  `@require_role("admin")`; safe: the audit log route is removed entirely.
 
 ## Running the evaluation
 
@@ -66,9 +96,9 @@ re-runs error results, leaves completed results untouched, and rebuilds
 `--resume` refuses to continue a directory whose manifest has a
 different model or reasoning setting.
 
-**Dev/eval protocol:** pairs alternate between splits in blocks of three
-(pairs 1–3 and 7–9 → dev; pairs 4–6 and 10–12 → eval), so each split holds
-9 vulnerable + 9 safe cases. Tune prompts, rules, and config against
+**Dev/eval protocol:** pairs are split as follows (pairs 1–3, 7–9 and 13 → dev;
+pairs 4–6, 10–12 and 14 → eval), so each split holds 13 vulnerable + 13 safe
+cases. Tune prompts, rules, and config against
 `--split dev` only; quote final numbers from `--split eval`. To scale
 further, extract more cases from public corpora (more OWASP Benchmark
 patterns, CVE-derived PRs) while keeping the positive/negative balance.
