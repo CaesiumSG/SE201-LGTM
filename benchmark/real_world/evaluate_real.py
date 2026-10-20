@@ -212,7 +212,7 @@ def diff_stats(diffs) -> dict:
 
 
 def error_result(case: dict, mode: str, variant: str, exc: Exception,
-                 review=None, file: str | None = None, pin: dict | None = None) -> dict:
+                 review=None, pin: dict | None = None) -> dict:
     """A crash is recorded as an error result and is not scored."""
     base = {
         "id": case["id"], "category": case["category"], "split": "real_world",
@@ -221,7 +221,7 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
-        "file": file, "pin": pin,
+        "file": case["file"], "pin": pin,
         **evaluate.graph_fields(review),
     }
     return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
@@ -244,7 +244,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
 
     extra: dict = {
         "project": fetch.project_of(case), "mode": mode, "variant": variant,
-        "file": str(out_dir_for(output, mode, variant) / f"{cid}.json"),
+        "file": case["file"],
         **diff_stats(diffs),
         "index_seconds": None, "index_chunks": None, "index_reused": None,
         "index_skipped": True, "index_skip_reason": "mode does not use the index",
@@ -291,8 +291,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
         kept = {k: extra[k] for k in ("coverage", "coverage_summary") if k in extra}
-        return {**error_result(case, mode, variant, exc, review=result,
-                               file=extra["file"], pin=pin), **kept}
+        return {**error_result(case, mode, variant, exc, review=result, pin=pin), **kept}
 
 
 # ----------------------------------------------------------------------
@@ -448,7 +447,6 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
             result = error_result(
                 case, mode, variant, exc,
-                file=str(out_dir_for(args.output, mode, variant) / f"{case['id']}.json"),
                 pin=run_pin(config, REPO_ROOT, {}))
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")

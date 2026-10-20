@@ -242,7 +242,8 @@ class TestResultsAndSummary:
 
     def test_crash_scores_like_the_synthetic_harness(self):
         vuln = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
-                "repo_url": "https://github.com/o/p"}
+                "repo_url": "https://github.com/o/p",
+            "file": "src/app/routes.py"}
         safe = {**vuln, "expected_verdict": "safe"}
         assert er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
         assert er.error_result(safe, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
@@ -643,7 +644,7 @@ class TestAuthzScanRecords:
         root, refs = calls[0]
         assert Path(root) == er.REPO_ROOT
         assert refs == {"base": self.BASE40, "pr": self.PR40}
-        assert isinstance(rec["file"], str) and rec["file"]
+        assert rec["file"] == self.CASE["file"]
         assert rec["coverage"] == self.COVERAGE
         assert rec["coverage_summary"] == self.COVERAGE_SUMMARY
 
@@ -678,7 +679,7 @@ class TestAuthzScanRecords:
         assert rec["index_skipped"] is True
         assert rec["index_skip_reason"] == "mode does not use the index"
         assert rec["pin"]["base_sha"] == self.BASE40
-        assert isinstance(rec["file"], str) and rec["file"]
+        assert rec["file"] == self.CASE["file"]
         assert "coverage" not in rec and "coverage_summary" not in rec
 
     def test_record_has_no_endpoint_detection_field(self, tmp_path, monkeypatch):
@@ -723,7 +724,7 @@ class TestAuthzScanRecords:
         rec = er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
         assert rec["outcome"] == "ERROR"
         assert rec["pin"] == self.PIN
-        assert rec["file"] == str(tmp_path / mode / "x.json")
+        assert rec["file"] == self.CASE["file"]
         assert "coverage" not in rec and "coverage_summary" not in rec
 
     def test_main_crash_record_keeps_file_and_pin_without_coverage(
@@ -744,7 +745,8 @@ class TestAuthzScanRecords:
         saved = json.loads(path.read_text(encoding="utf-8"))
         assert saved["outcome"] == "ERROR"
         assert saved["pin"] == self.PIN
-        assert Path(saved["file"]).parts[-2:] == ("lgtm", "aegra_authz_safe.json")
+        case = next(c for c in er.fetch.load_cases() if c["id"] == "aegra_authz_safe")
+        assert saved["file"] == case["file"]
         assert "coverage" not in saved and "coverage_summary" not in saved
 
     @pytest.mark.parametrize("name", ["count_agent" + "_items",
