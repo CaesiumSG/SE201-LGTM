@@ -318,7 +318,6 @@ def _scan_failed(cov: dict) -> bool:
 
 
 def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
-    """Return (label, grounded_label, target_section_ids, coverage_gap)."""
     if "coverage" not in row:
         return (
             _findings_label(_relevant_verdicts(row)),

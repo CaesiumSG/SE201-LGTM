@@ -1545,7 +1545,6 @@ def run(cmd: list[str], cwd: Path) -> str:
 
 
 def build_base_repo(tmp: Path) -> None:
-    """Copy the benchmark app + docs into tmp and commit as the base."""
     shutil.copytree(BENCH / "app", tmp / "app")
     for doc in ("security-policy.md", "api-spec.md", "README.md"):
         shutil.copy(BENCH / doc, tmp / doc)
@@ -1572,7 +1571,6 @@ def edit_file(tmp: Path, case_id: str, file: str,
 
 
 def apply_case(tmp: Path, case: Case) -> str:
-    """Apply a case's edits in tmp and return the git diff."""
     for rel in case.delete_files:
         (tmp / rel).unlink()
     for rel, content in case.new_files.items():
@@ -1599,7 +1597,6 @@ def apply_case(tmp: Path, case: Case) -> str:
 
 
 def side_lines(diff: str, file: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
-    """Removed (old-side) and added (new-side) lines of ``file`` as (line number, text)."""
     removed: list[tuple[int, str]] = []
     added: list[tuple[int, str]] = []
     selected = in_hunk = False
@@ -1651,7 +1648,6 @@ def location_label(case_id: str, diff: str, location: dict) -> dict:
 
 
 def vulnerable_lines_from_patch(diff: str, markers: list[str]) -> list[int]:
-    """New-file line numbers of added lines matching any marker substring."""
     lines: list[int] = []
     new_lineno = 0
     for raw in diff.splitlines():

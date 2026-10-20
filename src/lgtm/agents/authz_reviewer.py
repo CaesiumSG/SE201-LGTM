@@ -227,7 +227,6 @@ class AuthzReviewerAgent:
     def review_section(
         self, section: Section, semgrep_notes: str = ""
     ) -> list[AgentFinding]:
-        """Review one PR section for authorization flaws; one finding per reported issue."""
         from lgtm.review.sections import render_section
 
         self.toolbox.reset_budget()
@@ -263,6 +262,9 @@ class AuthzReviewerAgent:
         first_line, last_line = _changed_span(section)
         where = f"{', '.join(section.files)} lines {first_line}-{last_line}"
         failed_id = failed_finding_id(section.section_id)
+        unparsable = _failure(
+            failed_id, f"Section review returned no parsable findings for {where}"
+        )
 
         logger.info("Authz section review: %s", section.section_id)
         try:
@@ -275,10 +277,7 @@ class AuthzReviewerAgent:
         items = _section_items(raw)
         if items is None:
             logger.warning("Authz section review for %s had no parsable findings", section.section_id)
-            failure = _failure(
-                failed_id, f"Section review returned no parsable findings for {where}"
-            )
-            return [self._stamp(failure, first_file, fallback_line)]
+            return [self._stamp(unparsable, first_file, fallback_line)]
 
         findings: list[AgentFinding] = []
         for n, item in enumerate(items, 1):
@@ -286,10 +285,7 @@ class AuthzReviewerAgent:
             try:
                 finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
             except (TypeError, ValueError, OverflowError):
-                failure = _failure(
-                    failed_id, f"Section review returned no parsable findings for {where}"
-                )
-                return [self._stamp(failure, first_file, fallback_line)]
+                return [self._stamp(unparsable, first_file, fallback_line)]
             finding.finding_id = finding_id
             findings.append(
                 self._stamp(
