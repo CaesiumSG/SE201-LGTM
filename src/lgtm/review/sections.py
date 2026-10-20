@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass, field, replace
+from dataclasses import astuple, dataclass, field, replace
 from itertools import count
-from typing import Literal, TypeVar
+from typing import Literal
 
 from lgtm.agents.base import extract_json_object
 from lgtm.config import LGTMConfig
@@ -16,9 +16,7 @@ SnapshotName = Literal["base", "pr"]
 SectionOrigin = Literal["investigator", "leftover", "fallback", "coalesced"]
 Planner = Literal["investigator", "fallback"]
 
-_T = TypeVar("_T")
-
-_SNAPSHOTS = ("base", "pr")
+_SNAPSHOTS =("base", "pr")
 _SHAPE_ERROR = 'investigator output is not a JSON object with a "sections" list'
 _LINE_PREFIX = {"add": "+", "del": "-", "context": " "}
 
@@ -62,6 +60,7 @@ class HunkRef:
     new_count: int
     change: ChangeKind
     changes: list[LineChange] = field(default_factory=list)
+    status: str = "modified"
 
 
 @dataclass
@@ -217,6 +216,7 @@ def plan_sections(
     hunks_leftover = sum(len(s.hunks) for s in sections if s.origin == "leftover")
 
     order = {ref.hunk_id: position for position, ref in enumerate(all_refs)}
+    _assign_unique_ids(sections)
     sections, coalesced = _split_and_coalesce(sections, config, order)
     _assign_unique_ids(sections)
 
@@ -246,6 +246,7 @@ def _hunk_ref(diff: FileDiff, index: int) -> HunkRef:
         new_count=hunk.new_count,
         change=_change_kind(hunk.changes),
         changes=list(hunk.changes),
+        status=diff.status,
     )
 
 
@@ -408,6 +409,7 @@ def _line_piece(
         new_count=new_count,
         change=_change_kind(changes),
         changes=list(changes),
+        status=hunk.status,
     )
 
 
@@ -523,11 +525,14 @@ def _combine_headers(first: dict[str, int], second: dict[str, int]) -> dict[str,
     return second
 
 
-def _union(first: list[_T], second: list[_T]) -> list[_T]:
+def _union(first: list[ContextPointer], second: list[ContextPointer]) -> list[ContextPointer]:
     merged = list(first)
-    for item in second:
-        if item not in merged:
-            merged.append(item)
+    seen = {astuple(pointer) for pointer in first}
+    for pointer in second:
+        key = astuple(pointer)
+        if key not in seen:
+            seen.add(key)
+            merged.append(pointer)
     return merged
 
 
@@ -607,7 +612,7 @@ def _hunk_header(hunk: HunkRef) -> str:
 
 
 def _file_header(hunk: HunkRef) -> list[str]:
-    # Git writes a zero start and zero count for the side a file does not have.
-    old_side = "/dev/null" if hunk.old_start == 0 and hunk.old_count == 0 else f"a/{hunk.file}"
-    new_side = "/dev/null" if hunk.new_start == 0 and hunk.new_count == 0 else f"b/{hunk.file}"
+    # Zero ranges also occur inside partial pieces, so the side is chosen by file status.
+    old_side = "/dev/null" if hunk.status == "added" else f"a/{hunk.file}"
+    new_side = "/dev/null" if hunk.status == "deleted" else f"b/{hunk.file}"
     return [f"--- {old_side}", f"+++ {new_side}"]

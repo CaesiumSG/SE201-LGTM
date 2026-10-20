@@ -664,3 +664,97 @@ def test_planning_one_huge_hunk_finishes_within_a_bounded_time():
     assert elapsed < PLANNING_TIME_LIMIT_S
     assert len(p.sections) <= 10
     assert sum(h.new_count for s in p.sections for h in s.hunks) == 20000
+
+
+def header_pairs(text):
+    old = [line for line in text.splitlines() if line.startswith("--- ")]
+    new = [line for line in text.splitlines() if line.startswith("+++ ")]
+    return old, new
+
+
+def test_modified_file_split_at_lines_never_renders_dev_null_headers():
+    lines = [f"-removed_line_{i:02d}" for i in range(40)]
+    diffs = parse(file_diff_text("pkg/m.py", [(1, 0, lines)]))
+    raw = proposal(section("m", ["pkg/m.py#0"]))
+    limit = len(render_section(plan(diffs, raw).sections[0])) // 3
+    pieces = plan(diffs, raw, section_max_chars=limit).sections
+    assert len(pieces) >= 3
+    for piece in pieces:
+        assert header_pairs(render_section(piece)) == (["--- a/pkg/m.py"], ["+++ b/pkg/m.py"])
+        assert "/dev/null" not in render_section(piece)
+
+
+def test_modified_file_emptied_by_the_pr_renders_both_sides_with_the_path():
+    diffs = parse(file_diff_text("pkg/m.py", [(1, 0, DELS)]))
+    text = render_section(plan(diffs, None).sections[0])
+    assert text == (
+        "--- a/pkg/m.py\n+++ b/pkg/m.py\n@@ -1,3 +0,0 @@\n"
+        "-removed_one\n-removed_two\n-removed_three\n"
+    )
+
+
+def test_split_deleted_file_pieces_keep_dev_null_on_the_new_side_only():
+    lines = [f"-removed_line_{i:02d}" for i in range(40)]
+    diffs = parse(file_diff_text("old/c.py", [(1, 0, lines)], status="deleted"))
+    raw = proposal(section("c", ["old/c.py#0"]))
+    limit = len(render_section(plan(diffs, raw).sections[0])) // 3
+    pieces = plan(diffs, raw, section_max_chars=limit).sections
+    assert len(pieces) >= 3
+    for piece in pieces:
+        assert header_pairs(render_section(piece)) == (["--- a/old/c.py"], ["+++ /dev/null"])
+
+
+def test_split_added_file_pieces_keep_dev_null_on_the_old_side_only():
+    body = "".join(f"+added_line_{i:02d}\n" for i in range(40))
+    added = (
+        "diff --git a/new/e.py b/new/e.py\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/new/e.py\n@@ -0,0 +1,40 @@\n{body}"
+    )
+    diffs = parse(added)
+    raw = proposal(section("e", ["new/e.py#0"]))
+    limit = len(render_section(plan(diffs, raw).sections[0])) // 3
+    pieces = plan(diffs, raw, section_max_chars=limit).sections
+    assert len(pieces) >= 3
+    for piece in pieces:
+        assert header_pairs(render_section(piece)) == (["--- /dev/null"], ["+++ b/new/e.py"])
+
+
+def test_oversized_section_with_a_duplicate_id_is_split_after_the_id_is_made_unique():
+    lines = [f"+only_line_{i:02d}" for i in range(40)]
+    diffs = parse(
+        file_diff_text("pkg/f1.py", [(1, 1, ["+x"])]),
+        file_diff_text("pkg/f2.py", [(5, 6, lines)]),
+    )
+    raw = proposal(section("x", ["pkg/f1.py#0"]), section("x", ["pkg/f2.py#0"]))
+    limit = len(render_section(plan(diffs, raw).sections[1])) // 3
+    ids = [s.section_id for s in plan(diffs, raw, section_max_chars=limit, max_sections=50).sections]
+    assert ids[0] == "x"
+    assert ids[1:] == [f"x-2.{k}" for k in range(1, len(ids))]
+    assert len(ids) >= 4
+
+
+def test_merging_many_context_pointers_is_bounded_and_keeps_the_ordered_union():
+    per_section, shared = 2000, 500
+
+    def pointers(i):
+        start = i * (per_section - shared)
+        return [
+            {"path": "pkg/ctx.py", "symbol": f"sym_{n}", "start_line": n, "end_line": n + 1,
+             "snapshot": "pr", "why": "w"}
+            for n in range(start, start + per_section)
+        ]
+
+    secs = [
+        section(f"s{i}", [f"pkg/f{i}.py#0"], title=f"T{i}", context=pointers(i - 1))
+        for i in range(1, 13)
+    ]
+    ordered: dict[str, None] = {}
+    for s in secs:
+        for p in s["context"]:
+            ordered.setdefault(p["symbol"], None)
+    started = time.perf_counter()
+    p = plan(equal_files(12), proposal(*secs), max_sections=1)
+    elapsed = time.perf_counter() - started
+    assert elapsed < PLANNING_TIME_LIMIT_S
+    assert len(p.sections) == 1
+    assert [c.symbol for c in p.sections[0].context] == list(ordered)
