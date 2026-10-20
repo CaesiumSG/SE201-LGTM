@@ -141,24 +141,3 @@ def sql_sink_facts(source: str, line: int) -> str:
             for name in _names_in(query):
                 facts.extend(f"  - {f}" for f in _input_facts(name, scope, node.lineno))
     return "\n".join(dict.fromkeys(facts))
-
-
-def endpoint_facts(source: str, decorator_line: int) -> str:
-    """The decorators and signature of the function a route decorator sits on."""
-    tree = _parse(source)
-    if tree is None:
-        return ""
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        lines = [d.lineno for d in node.decorator_list]
-        if decorator_line in lines or (
-            lines and min(lines) <= decorator_line <= node.lineno
-        ):
-            decos = ", ".join("@" + ast.unparse(d) for d in node.decorator_list)
-            args = ", ".join(a.arg for a in node.args.args) or "none"
-            return (
-                f"- handler `{node.name}` (line {node.lineno}), parameters: {args}\n"
-                f"- decorators applied: {decos or 'none'}"
-            )
-    return ""

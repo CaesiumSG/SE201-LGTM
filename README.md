@@ -4,7 +4,7 @@ LGTM reviews pull requests for security vulnerabilities by combining
 **deterministic SAST** (Semgrep) with **LLM agents grounded in repository
 context**. Semgrep provides high-recall signal for SQL injection; local
 LLM agents (Qwen via Ollama) triage those findings against the actual code
-and review changed endpoints against the project's *documented* security
+and review changed code sections against the project's *documented* security
 policy (retrieved with RAG) — catching authorization flaws SAST cannot see,
 while an evidence validator keeps the LLM honest.
 
@@ -24,7 +24,7 @@ while an evidence validator keeps the LLM honest.
             │ 3. Authorization Reviewer Agent                  │
             │    (CWE-639 / CWE-862 / CWE-863)                 │
             │    does the change respect the documented policy?│
-            │    Tools (read-only, max 5 calls per finding):   │
+            │    Tools (read-only, max 5 calls per section):   │
             │    investigate_base_code · investigate_pr_code   │
             │    read_file · grep_repo · search_policy         │
             └───────────────┬──────────────────────────────────┘
@@ -35,6 +35,12 @@ while an evidence validator keeps the LLM honest.
             │ 5. Report Builder ── report.json + report.md     │
             └──────────────────────────────────────────────────┘
 ```
+
+The investigator groups the PR's changed hunks into sections. Hunks it does
+not place, and investigator failures, fall back to per-file sections. Every
+Python hunk is reviewed, including deletions. Each section gets one authz
+review that can return several findings. Findings with the `safe` verdict are
+dropped, overlapping duplicates are merged, and the evidence is validated.
 
 Verdicts per finding: `vulnerable` · `safe` · `possible` ·
 `insufficient_evidence`, each with confidence, CWE, evidence citations, and
@@ -145,9 +151,11 @@ are ignored with an `Ignoring unknown config keys` warning.
 - Agents read committed snapshots of the **base** and **PR** branches. Each
   branch is resolved once to a full commit SHA before the run starts. PR
   content is treated as untrusted data (analyzed, never executed or obeyed).
-- Each finding has a budget of **5 tool calls** (`max_tool_calls`) shared by
-  all of its tools, including calls with invalid arguments or unknown tool
-  names. Once the budget is spent, tools return a budget error.
+- Each SAST triage run (one finding) and each authz section review has a
+  budget of **5 tool calls** (`max_tool_calls`) shared by all of its tools,
+  including calls with invalid arguments or unknown tool names. Once the
+  budget is spent, tools return a budget error. The investigator has its own
+  budget.
 - LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
   before an agent run is reported as failed.
 - Tool arguments are **validated** against each tool's schema before the
@@ -368,7 +376,7 @@ src/lgtm/
 ├── graph/format.py         # tool output formatting
 ├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
 ├── agents/sast_triage.py   # CWE-89 triage agent
-├── agents/authz_reviewer.py# CWE-639/862/863 reviewer + endpoint extraction
+├── agents/authz_reviewer.py# CWE-639/862/863 section reviewer
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── validation/evidence.py  # citation validator (anti-hallucination)
 └── reporting/report_builder.py  # JSON + Markdown reports

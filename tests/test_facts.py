@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from lgtm.agents.base import run_tool_loop
-from lgtm.analysis.facts import endpoint_facts, sql_sink_facts
+from lgtm.analysis.facts import sql_sink_facts
 from lgtm.config import LGTMConfig
 
 SRC = '''\
@@ -37,13 +37,8 @@ def test_fstring_interpolation():
     assert "f-string interpolating sort_by" in sql_sink_facts(SRC, 9)
 
 
-def test_endpoint_decorators():
-    facts = endpoint_facts(SRC, 1)
-    assert "run_maintenance" in facts and "@require_role('admin')" in facts
-
-
 def test_unparsable_source_gives_no_facts():
-    assert sql_sink_facts("def (:", 1) == "" and endpoint_facts("def (:", 1) == ""
+    assert sql_sink_facts("def (:", 1) == ""
 
 
 class _ScriptedLLM:

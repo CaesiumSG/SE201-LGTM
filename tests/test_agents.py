@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from lgtm.agents.authz_reviewer import extract_changed_endpoints
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.base import extract_json_object, parse_agent_output, run_tool_loop
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
-from lgtm.diff.git_diff import parse_unified_diff
+from lgtm.diff.git_diff import LineChange
+from lgtm.review.sections import HunkRef, Section
 
 
 class TestToolbox:
@@ -224,38 +230,237 @@ class TestRunToolLoop:
         assert out == '{"verdict": "safe"}'
 
 
-class TestExtractChangedEndpoints:
-    DIFF = """\
-diff --git a/app/routes/orders.py b/app/routes/orders.py
---- a/app/routes/orders.py
-+++ b/app/routes/orders.py
-@@ -40,3 +40,12 @@ def existing():
-     return x
-+
-+
-+@orders_bp.route("/<int:order_id>", methods=["GET"])
-+@require_auth
-+def get_order(order_id):
-+    return fetch(order_id)
-+
-+@api.get("/ping")
-+def ping():
-+    return "pong"
-"""
+def _hunk(file="app.py", start=10, lines=("a = 1", "b = 2", "c = 3"), deletion=False):
+    kind = "del" if deletion else "add"
+    changes = [
+        LineChange(kind, text, start + i if deletion else None, None if deletion else start + i)
+        for i, text in enumerate(lines)
+    ]
+    return HunkRef(
+        hunk_id=f"{file}#{start}", file=file,
+        old_start=start, old_count=len(lines) if deletion else 0,
+        new_start=0 if deletion else start, new_count=0 if deletion else len(lines),
+        change="delete" if deletion else "add", changes=changes,
+    )
 
-    def test_finds_flask_and_fastapi_routes(self):
-        diffs = parse_unified_diff(self.DIFF)
-        endpoints = extract_changed_endpoints(diffs)
-        routes = {e.route_path: e for e in endpoints}
-        assert set(routes) == {"/<int:order_id>", "/ping"}
-        assert routes["/<int:order_id>"].http_methods == ["GET"]
-        assert routes["/ping"].http_methods == ["GET"]
-        assert routes["/<int:order_id>"].file == "app/routes/orders.py"
 
-    def test_ignores_non_python_and_deleted(self):
-        diffs = parse_unified_diff(self.DIFF)
-        diffs[0].status = "deleted"
-        assert extract_changed_endpoints(diffs) == []
+def _section(hunks=None, **overrides):
+    hunks = hunks or [_hunk()]
+    fields = dict(
+        section_id="s1", origin="investigator", title="Order access",
+        files=list(dict.fromkeys(h.file for h in hunks)), hunks=hunks,
+    )
+    return Section(**{**fields, **overrides})
+
+
+def _finding(**fields):
+    return {
+        "verdict": "vulnerable", "cwe_id": "CWE-639", "confidence": 0.8,
+        "explanation": "no ownership check", "evidence": [], "suggested_fix": "check owner",
+        "file": "app.py", "line": 11, **fields,
+    }
+
+
+def _reply(*findings):
+    return _ai_message(json.dumps({"findings": list(findings)}))
+
+
+class _AlwaysLLM:
+    def __init__(self, content=None, exc=None):
+        self.content, self.exc = content, exc
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        if self.exc:
+            raise self.exc
+        return _ai_message(self.content)
+
+
+def _review(git_repo, llm, section=None, notes="", toolbox=None, **config_kwargs):
+    config = LGTMConfig(**config_kwargs)
+    toolbox = toolbox or AgentToolbox(git_repo, "main", None, config)
+    return AuthzReviewerAgent(toolbox, config, llm=llm).review_section(
+        section or _section(), notes
+    )
+
+
+class TestReviewSection:
+    def test_each_finding_is_numbered_and_carries_its_own_fields(self, git_repo):
+        llm = _FakeLLM([_reply(
+            _finding(verdict="vulnerable", cwe_id="CWE-639", line=11),
+            _finding(verdict="possible", cwe_id="CWE-862", confidence=0.4, line=12),
+        )])
+        out = _review(git_repo, llm)
+        assert [f.finding_id for f in out] == ["authz:s1:1", "authz:s1:2"]
+        assert [f.verdict for f in out] == ["vulnerable", "possible"]
+        assert [f.cwe_id for f in out] == ["CWE-639", "CWE-862"]
+        assert [f.line for f in out] == [11, 12]
+        assert all(f.category == "authz" and f.agent == "authz_reviewer" for f in out)
+        assert all(f.file == "app.py" for f in out)
+
+    @pytest.mark.parametrize(
+        "findings",
+        [[], [{"verdict": "safe", "cwe_id": "CWE-639", "confidence": 0.9, "explanation": "ok"}]],
+        ids=["zero_findings", "only_safe_findings"],
+    )
+    def test_zero_or_only_safe_findings_report_no_issue(self, git_repo, findings):
+        out = _review(git_repo, _FakeLLM([_reply(*findings)]))
+        assert all(f.verdict == "safe" for f in out)
+        assert not any(f.finding_id.endswith(":failed") for f in out)
+
+    def test_empty_file_falls_back_to_the_first_section_file(self, git_repo):
+        section = _section([_hunk("orders.py"), _hunk("refunds.py", start=40)])
+        out = _review(git_repo, _FakeLLM([_reply(_finding(file=""))]), section)
+        assert out[0].file == "orders.py"
+
+    @pytest.mark.parametrize(
+        "line", [None, "not a number", 0, -3], ids=["missing", "text", "zero", "negative"]
+    )
+    def test_missing_or_invalid_line_falls_back_to_first_hunk_new_start(self, git_repo, line):
+        section = _section([_hunk(start=10), _hunk(start=50)])
+        raw = _finding()
+        if line is None:
+            del raw["line"]
+        else:
+            raw["line"] = line
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
+        assert out[0].line == 10
+
+    @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN", "1e999"])
+    @pytest.mark.parametrize("deletion", [False, True], ids=["added", "deletion_only"])
+    def test_non_finite_line_falls_back_to_the_contract_line_without_raising(
+        self, git_repo, token, deletion
+    ):
+        hunk = _hunk(start=20, lines=("x", "y"), deletion=True) if deletion else _hunk(start=10)
+        raw = json.dumps({"findings": [_finding(line="@@")]}).replace('"@@"', token)
+        assert not isinstance(json.loads(raw)["findings"][0]["line"], str)
+        out = _review(git_repo, _FakeLLM([_ai_message(raw)]), _section([hunk]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert out[0].line == (20 if deletion else 10)
+
+    def test_deletion_only_section_falls_back_to_old_start(self, git_repo):
+        section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
+        raw = _finding()
+        del raw["line"]
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
+        assert out[0].line == 20
+
+    def test_deletion_only_hunk_with_context_lines_falls_back_to_old_start(self, git_repo):
+        changes = [
+            LineChange("context", "ctx", 20, 22),
+            LineChange("del", "x", 21, None),
+            LineChange("del", "y", 22, None),
+            LineChange("del", "z", 23, None),
+            LineChange("context", "ctx2", 24, 23),
+            LineChange("context", "ctx3", 25, 24),
+        ]
+        hunk = HunkRef(
+            hunk_id="app.py#20", file="app.py", old_start=20, old_count=6,
+            new_start=22, new_count=3, change="delete", changes=changes,
+        )
+        raw = _finding()
+        del raw["line"]
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), _section([hunk]))
+        assert out[0].line == 20
+
+    @staticmethod
+    def _assert_unparsable_failure(out):
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == (
+            "Section review returned no parsable findings for app.py lines 10-12"
+        )
+
+    @pytest.mark.parametrize("token", ["1e999", "Infinity"])
+    def test_non_finite_evidence_line_yields_the_unparsable_failure_finding(
+        self, git_repo, token
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": ["@@", 2], "content": "x = 1"}
+        reply = json.dumps({"findings": [_finding(verdict="possible", evidence=[evidence])]})
+        reply = reply.replace('"@@"', token)
+        assert not isinstance(json.loads(reply)["findings"][0]["evidence"][0]["lines"][0], str)
+        self._assert_unparsable_failure(_review(git_repo, _FakeLLM([_ai_message(reply)])))
+
+    @pytest.mark.parametrize("evidence", [5, True], ids=["int", "bool"])
+    def test_non_iterable_evidence_yields_the_unparsable_failure_finding(
+        self, git_repo, evidence
+    ):
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=evidence))]))
+        self._assert_unparsable_failure(out)
+
+    @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
+    def test_invalid_evidence_line_citation_reaches_the_validator_unchanged(
+        self, git_repo, lines
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=[evidence]))]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert list(out[0].evidence[0].lines) == lines
+
+    def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
+        config = LGTMConfig()
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        toolbox.reset_budget(2)
+        reads = [
+            _ai_message("", [{"name": "read_file", "args": {"path": f"m{i}.py"}, "id": f"c{i}"}])
+            for i in range(1, 6)
+        ]
+        out = _review(git_repo, _FakeLLM(reads + [_reply(_finding())]), toolbox=toolbox)
+        assert toolbox.budget == config.max_tool_calls
+        assert out[0].tool_calls_used == config.max_tool_calls == 5
+
+    def test_tool_calls_do_not_carry_over_between_sections(self, git_repo):
+        config = LGTMConfig()
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        used = []
+        for _ in range(2):
+            read = _ai_message("", [{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}])
+            out = _review(git_repo, _FakeLLM([read, _reply(_finding())]), toolbox=toolbox)
+            used.append(out[0].tool_calls_used)
+        assert used == [1, 1]
+
+    def test_llm_exception_yields_one_failed_insufficient_evidence_finding(self, git_repo):
+        llm = _AlwaysLLM(exc=RuntimeError("boom"))
+        out = _review(git_repo, llm, llm_retries=0)
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == "Section review failed for app.py lines 10-12: boom"
+        assert failed.category == "authz" and failed.agent == "authz_reviewer"
+
+    def test_failed_message_names_every_file_in_section_order(self, git_repo):
+        section = _section([_hunk("orders.py", start=5), _hunk("refunds.py", start=40)])
+        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
+        text = out[0].explanation
+        assert text.index("orders.py") < text.index("refunds.py")
+        assert text.endswith(": boom")
+
+    def test_failed_message_uses_old_side_lines_for_deletion_only_sections(self, git_repo):
+        section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
+        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
+        assert out[0].explanation == "Section review failed for app.py lines 20-21: boom"
+
+    def test_unparsable_reply_yields_one_failed_insufficient_evidence_finding(self, git_repo):
+        llm = _AlwaysLLM(content="The change looks fine to me.")
+        out = _review(git_repo, llm)
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == (
+            "Section review returned no parsable findings for app.py lines 10-12"
+        )
 
 
 class TestTextToolCalls:
@@ -535,3 +740,16 @@ class TestFinalAnswerReask:
         out = run_tool_loop(llm, [], "sys", "user", LGTMConfig(max_answer_reasks=1))
         assert len(llm.seen) == 2
         assert out == "b"
+
+
+@pytest.mark.parametrize("module", ["lgtm.review.sections", "lgtm.review.dedup"])
+def test_review_modules_import_in_a_fresh_interpreter(module):
+    import lgtm
+
+    root = str(Path(lgtm.__file__).resolve().parent.parent)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([root, os.environ.get("PYTHONPATH", "")])}
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr

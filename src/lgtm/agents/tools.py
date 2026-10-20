@@ -150,6 +150,7 @@ class AgentToolbox:
             if not _SHA.fullmatch(sha):
                 raise ValueError("snapshot SHAs must be full 40-character lowercase hex commits")
         self.session = session
+        self.budget = self.config.max_tool_calls
         self.calls_used = 0
         self.call_log: list[dict] = []
         self._legacy_base_sha: str | None = None
@@ -165,17 +166,18 @@ class AgentToolbox:
     # ------------------------------------------------------------------
     # Budget
     # ------------------------------------------------------------------
-    def reset_budget(self) -> None:
+    def reset_budget(self, max_calls: int | None = None) -> None:
+        self.budget = self.config.max_tool_calls if max_calls is None else max_calls
         self.calls_used = 0
         self.call_log = []
 
     def charge(self, tool_name: str, args: dict) -> bool:
         """Spend one slot for an attempted call. Returns False once the budget is spent.
 
-        calls_used saturates at max_tool_calls.
+        calls_used saturates at self.budget.
         """
         self.call_log.append({"tool": tool_name, "args": args})
-        if self.calls_used >= self.config.max_tool_calls:
+        if self.calls_used >= self.budget:
             logger.warning("Tool call budget exhausted for %s", tool_name)
             return False
         self.calls_used += 1

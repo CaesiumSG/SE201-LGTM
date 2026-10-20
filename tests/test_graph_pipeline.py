@@ -18,6 +18,7 @@ from lgtm.graph import session as session_module
 from lgtm.graph import snapshot as snapshot_module
 from lgtm.pipeline import ReviewPipeline
 from lgtm.sast.semgrep_runner import SemgrepFinding
+from lgtm.validation.evidence import EvidenceValidator
 from tests.graph_fakes import FakeRunner, failure
 
 MISSING_WARNING = (
@@ -136,8 +137,35 @@ def _call(name, args, call_id="c1"):
     return _msg("", [{"name": name, "args": args, "id": call_id}])
 
 
+def _route(messages) -> str:
+    system = str(messages[0].content)
+    if "group the changed hunks into sections" in system:
+        return "investigator"
+    if "triaging static analysis" in system:
+        return "triage"
+    if "no tools, no documentation" in system:
+        return "plain"
+    return "section"
+
+
+def _no_sections() -> str:
+    return json.dumps({"sections": []})
+
+
+def _findings(*items: dict) -> str:
+    return json.dumps({"findings": list(items)})
+
+
+def _section_finding(**fields) -> dict:
+    return {
+        "verdict": "vulnerable", "cwe_id": "CWE-639", "confidence": 0.8,
+        "explanation": "No ownership check.", "evidence": [], "suggested_fix": "Check the owner.",
+        "file": "a.py", "line": 4, **fields,
+    }
+
+
 class ScriptedLLM:
-    """Replays a script across findings; answers a safe verdict once it runs out."""
+    """Replays a script across calls; once it runs out, triage gets a safe verdict and the rest an empty plan or no findings."""
 
     def __init__(self, script=()):
         self.script = list(script)
@@ -151,6 +179,11 @@ class ScriptedLLM:
     def invoke(self, messages):
         self.seen.append(list(messages))
         if not self.script:
+            route = _route(messages)
+            if route == "investigator":
+                return _msg(_no_sections())
+            if route == "section":
+                return _msg(_findings())
             return _msg(_final())
         item = self.script.pop(0)
         if isinstance(item, BaseException):
@@ -473,7 +506,7 @@ class TestMetadata:
         )
         assert _stamps(result) == {"a.py": False, "b.py": False, "c.py": False}
 
-    def test_missing_binary_is_reported_even_when_no_agent_item_runs(
+    def test_missing_binary_is_reported_even_when_no_section_yields_a_finding(
         self, repo, install_graph, monkeypatch
     ):
         graph = install_graph(FakeRunner(available=False))
@@ -482,7 +515,9 @@ class TestMetadata:
         result = _review(repo, ScriptedLLM())
 
         assert result.findings == []
-        assert result.meta.endpoints_reviewed == 0
+        coverage = result.meta.coverage
+        assert coverage["sections_scheduled"] == coverage["sections_completed"] > 0
+        assert coverage["complete"] is True
         assert result.meta.graph_state == "unavailable:missing"
         assert graph.runner.calls == []
 
@@ -671,29 +706,30 @@ class TestPrGraphStamp:
         assert result.meta.graph_state == state
         assert graph.runner.count("init") >= 1
 
-    @pytest.mark.parametrize(
-        ("latch_index", "stamps"),
-        [
-            pytest.param(0, [True, True, True, False, False], id="pr-latches-during-first-authz"),
-            pytest.param(1, [True, True, True, True, False], id="pr-latches-during-second-authz"),
-        ],
-    )
-    def test_authz_findings_are_stamped_when_each_returns(
-        self, repo_with_endpoints, install_graph, semgrep, latch_index, stamps
+    @pytest.mark.parametrize("latch_index", [0, 2], ids=["pr-latches-in-first-section", "pr-latches-in-third-section"])
+    def test_section_findings_are_stamped_when_each_returns(
+        self, repo, install_graph, semgrep, latch_index
     ):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
-        authz = [[_msg(_final(pr_graph_ok=False))], [_msg(_final(pr_graph_ok=False))]]
-        authz[latch_index] = [
+        files = ["a.py", "app.py", "b.py", "c.py"]
+        sections = [[_msg(_findings(_section_finding(file=name)))] for name in files]
+        sections[latch_index] = [
             _call("investigate_pr_code", {"query": "show_user"}),
-            _msg(_final(pr_graph_ok=True)),
+            _msg(_findings(_section_finding(file=files[latch_index]))),
         ]
-        llm = ScriptedLLM([*[_msg(_final()) for _ in FILES], *authz[0], *authz[1]])
+        llm = ScriptedLLM([
+            *[_msg(_final()) for _ in FILES],
+            _msg(_no_sections()),
+            *[message for section in sections for message in section],
+        ])
 
-        result = _review(repo_with_endpoints, llm)
+        result = _review(repo, llm)
 
-        assert result.meta.endpoints_reviewed == 2
-        assert [f.category for f in result.findings].count("authz") == 2
-        assert [f.pr_graph_ok for f in result.findings] == stamps
+        assert result.meta.coverage["sections_scheduled"] == 4
+        authz = [f for f in result.findings if f.category == "authz"]
+        assert len(authz) == 4
+        assert [f.pr_graph_ok for f in authz] == [True] * latch_index + [False] * (4 - latch_index)
+        assert all(f.pr_graph_ok is True for f in result.findings if f.category != "authz")
         assert result.meta.graph_state == "degraded:pr:timeout"
 
     def test_authz_finding_inherits_a_pr_failure_latched_during_triage(
@@ -703,7 +739,9 @@ class TestPrGraphStamp:
         llm = ScriptedLLM([
             _call("investigate_pr_code", {"query": "find_a"}), _msg(_final()),
             _msg(_final()), _msg(_final()),
-            _msg(_final(pr_graph_ok=True)), _msg(_final(pr_graph_ok=True)),
+            _msg(_no_sections()),
+            _msg(_findings(_section_finding(file="a.py"))),
+            _msg(_findings(_section_finding(file="app.py", line=3))),
         ])
 
         result = _review(repo_with_endpoints, llm)
@@ -805,8 +843,9 @@ class TestCapIntegration:
         llm = ScriptedLLM([
             _call("investigate_pr_code", {"query": "find_a"}),
             *[_msg(_final()) for _ in FILES],
-            _msg(_vulnerable()),
-            _msg(_vulnerable()),
+            _msg(_no_sections()),
+            _msg(_findings(_section_finding(file="a.py"))),
+            _msg(_findings(_section_finding(file="app.py", line=3))),
         ])
 
         result = _review(repo_with_endpoints, llm)
@@ -867,3 +906,548 @@ class TestCapIntegration:
         first = next(f for f in result.findings if f.file == "a.py")
         assert first.evidence_valid is False
         assert any("at base snapshot" in issue for issue in first.evidence_issues)
+
+
+class RoutedLLM:
+    """Answers by caller: the investigator, section reviewers and triage each get their own reply."""
+
+    def __init__(self, investigator=None, section=None, triage=None, plain=None):
+        self.replies = {
+            "investigator": _no_sections() if investigator is None else investigator,
+            "section": _findings() if section is None else section,
+            "triage": _final() if triage is None else triage,
+            "plain": json.dumps({"assessments": []}) if plain is None else plain,
+        }
+        self.order: list[str] = []
+        self.user_prompts: dict[str, list[str]] = {name: [] for name in self.replies}
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        route = _route(messages)
+        prompt = str(messages[1].content)
+        self.order.append(route)
+        self.user_prompts[route].append(prompt)
+        reply = self.replies[route]
+        if callable(reply):
+            reply = reply(prompt)
+        if isinstance(reply, BaseException):
+            raise reply
+        return _msg(reply)
+
+
+@pytest.fixture
+def no_semgrep(monkeypatch) -> list[str]:
+    """Semgrep that reports nothing; the returned list collects the files it was asked to scan."""
+    scanned: list[str] = []
+
+    def fake_run(root, files, *args, **kwargs):
+        scanned.extend(files)
+        return []
+
+    monkeypatch.setattr("lgtm.pipeline.run_semgrep", fake_run)
+    return scanned
+
+
+def _build_repo(root: Path, base: dict[str, str], pr: dict[str, str | None]) -> Path:
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@t.local")
+    _git(root, "config", "user.name", "T")
+    _git(root, "config", "commit.gpgsign", "false")
+    _git(root, "config", "core.autocrlf", "false")
+    for name, text in base.items():
+        (root / name).write_text(text, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "checkout", "-q", "-b", "pr")
+    for name, text in pr.items():
+        if text is None:
+            (root / name).unlink()
+        else:
+            (root / name).write_text(text, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "pr")
+    _git(root, "checkout", "-q", "main")
+    return root
+
+
+def _hunk_header(row: dict) -> str:
+    return f"@@ -{row['old_start']},{row['old_count']} +{row['new_start']},{row['new_count']} @@"
+
+
+def _assert_hunks_reviewed(result, llm: RoutedLLM, path: str) -> list[dict]:
+    coverage = result.meta.coverage
+    pairs = [
+        (section, hunk)
+        for section in coverage["sections"]
+        for hunk in section["hunks"]
+        if hunk["file"] == path
+    ]
+    assert pairs, f"no hunk of {path} was placed in a section"
+    prompts = llm.user_prompts["section"]
+    for section, hunk in pairs:
+        assert section["status"] == "completed", f"{hunk['hunk_id']} section did not complete"
+        assert any(
+            _hunk_header(hunk) in prompt and f"/{path}\n" in prompt for prompt in prompts
+        ), f"no section review received {hunk['hunk_id']}"
+    return [hunk for _, hunk in pairs]
+
+
+def _changed_lines(base_text: str, pr_text: str) -> tuple[list[str], list[str]]:
+    base, pr = base_text.splitlines(), pr_text.splitlines()
+    removed = [line for line in base if line not in pr]
+    added = [line for line in pr if line not in base]
+    return removed, added
+
+
+def _prompt_file(prompt: str) -> str:
+    return re.search(r"^\+\+\+ b/(\S+)$", prompt, re.MULTILINE).group(1)
+
+
+ORDER_FILE = "\n".join(
+    [
+        "from flask import Flask",
+        "app = Flask(__name__)",
+        "",
+        '@app.route("/orders/<int:oid>")',
+        "@login_required",
+        "def show_order(oid):",
+        "    order = load(oid)",
+        "    log = []",
+        "    log.append(1)",
+        "    log.append(2)",
+        "    log.append(3)",
+        "    log.append(4)",
+        "    log.append(5)",
+        "    return order",
+        "",
+    ]
+)
+OWNERSHIP_FILE = "\n".join(
+    [
+        "def show_order(order, user_id):",
+        "    order = load(order)",
+        "    if order.owner_id != user_id:",
+        "        abort(403)",
+        "    return order",
+        "",
+    ]
+)
+ROLE_HELPER = "\n".join(
+    [
+        "def require_role(user, role):",
+        "    if role not in user.roles:",
+        "        raise Forbidden()",
+        "    return user",
+        "",
+    ]
+)
+URL_RULE = "\n".join(
+    [
+        "def show_user(uid):",
+        "    return {}",
+        "",
+        'app.add_url_rule("/users/<int:uid>", view_func=show_user)',
+        "",
+    ]
+)
+
+SHAPES = [
+    pytest.param(
+        "routes.py", ORDER_FILE,
+        ORDER_FILE.replace("    return order\n", "    return order.public()\n"),
+        "mixed",
+        id="decorator-outside-hunk",
+    ),
+    pytest.param(
+        "urls.py", URL_RULE, URL_RULE.replace("/users/", "/accounts/"), "mixed",
+        id="renamed-route",
+    ),
+    pytest.param(
+        "routes.py", ORDER_FILE, ORDER_FILE.replace("@login_required\n", ""), "delete",
+        id="removed-auth-decorator",
+    ),
+    pytest.param(
+        "orders.py", OWNERSHIP_FILE,
+        OWNERSHIP_FILE.replace("    if order.owner_id != user_id:\n        abort(403)\n", ""),
+        "delete",
+        id="deletion-only-ownership-removal",
+    ),
+    pytest.param(
+        "auth.py", ROLE_HELPER,
+        ROLE_HELPER.replace("if role not in user.roles:", "if not user.roles:"),
+        "mixed",
+        id="shared-helper-role-removal",
+    ),
+]
+
+
+class TestSectionPipeline:
+    @pytest.mark.parametrize(("path", "base_text", "pr_text", "change"), SHAPES)
+    def test_hunks_are_scheduled_and_reviewed_with_no_semgrep_finding_and_no_route_detection(
+        self, tmp_path, install_graph, no_semgrep, path, base_text, pr_text, change
+    ):
+        assert base_text != pr_text
+        repo = _build_repo(tmp_path / "shape", {path: base_text}, {path: pr_text})
+        install_graph()
+        llm = RoutedLLM()
+
+        result = _review(repo, llm)
+
+        assert result.meta.semgrep_findings_total == 0
+        hunks = _assert_hunks_reviewed(result, llm, path)
+        assert [h["change"] for h in hunks] == [change]
+        coverage = result.meta.coverage
+        assert coverage["hunks_reviewed"] == coverage["hunks_total"] == 1
+        assert coverage["complete"] is True
+        reviewed = [p for p in llm.user_prompts["section"] if _prompt_file(p) == path]
+        assert reviewed
+        removed, added = _changed_lines(base_text, pr_text)
+        assert removed or added
+        for line in removed:
+            assert any(f"\n-{line}\n" in p for p in reviewed), f"removed line missing: {line!r}"
+        for line in added:
+            assert any(f"\n+{line}\n" in p for p in reviewed), f"added line missing: {line!r}"
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_zero_semgrep_findings_do_not_suppress_review(
+        self, tmp_path, install_graph, no_semgrep, mode
+    ):
+        repo = _build_repo(
+            tmp_path / "plain", {"svc.py": "VALUE = 1\n"}, {"svc.py": "VALUE = 2\n"}
+        )
+        install_graph()
+        llm = RoutedLLM(section=_findings(_section_finding(file="svc.py", line=1)))
+
+        result = _review(repo, llm, mode=mode)
+
+        assert result.meta.semgrep_findings_in_diff == 0
+        assert len(llm.user_prompts["section"]) == 1
+        assert [(f.category, f.file) for f in result.findings] == [("authz", "svc.py")]
+
+    def test_deleted_file_reaches_the_scan_stage_but_not_sast(
+        self, tmp_path, install_graph, no_semgrep
+    ):
+        repo = _build_repo(
+            tmp_path / "deleted",
+            {"legacy.py": OWNERSHIP_FILE, "keep.py": "VALUE = 1\n"},
+            {"legacy.py": None, "keep.py": "VALUE = 2\n"},
+        )
+        install_graph()
+        llm = RoutedLLM()
+
+        result = _review(repo, llm)
+
+        hunks = _assert_hunks_reviewed(result, llm, "legacy.py")
+        assert [h["change"] for h in hunks] == ["delete"]
+        assert any(
+            "--- a/legacy.py\n+++ /dev/null\n" in prompt for prompt in llm.user_prompts["section"]
+        )
+        assert no_semgrep == ["keep.py"]
+        assert result.meta.coverage["files_in_scope"] == 2
+
+    def test_investigator_failure_falls_back_to_per_file_sections_and_is_recorded(
+        self, repo, install_graph, no_semgrep, tmp_path
+    ):
+        install_graph()
+        llm = RoutedLLM(investigator=RuntimeError("model down"))
+
+        result = _review(repo, llm, llm_retries=0, output_dir=tmp_path / "out")
+
+        coverage = result.meta.coverage
+        assert coverage["planner"] == "fallback"
+        assert coverage["investigator_status"] == "failed"
+        assert "model down" in coverage["investigator_error"]
+        assert {s["origin"] for s in coverage["sections"]} == {"fallback"}
+        assert sorted(tuple(s["files"]) for s in coverage["sections"]) == [
+            ("a.py",), ("app.py",), ("b.py",), ("c.py",)
+        ]
+        for path in ("a.py", "app.py", "b.py", "c.py"):
+            _assert_hunks_reviewed(result, llm, path)
+        assert coverage["complete"] is True
+        report = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
+        assert report["coverage"]["investigator_status"] == "failed"
+        assert "model down" in report["coverage"]["investigator_error"]
+
+    def test_fallback_splits_an_oversized_file_at_hunk_boundaries(
+        self, tmp_path, install_graph, no_semgrep
+    ):
+        def body(tag: str) -> list[str]:
+            return [f"    step_{tag}_{i} = compute_something_long_enough_{i}()" for i in range(12)]
+
+        lines = ["def first():", *body("a"), *[f"FILLER_{i} = {i}" for i in range(30)],
+                 "def second():", *body("b"), ""]
+        base = "\n".join(lines)
+        pr = base.replace("step_a_6 =", "step_a_6x =").replace("step_b_6 =", "step_b_6x =")
+        repo = _build_repo(tmp_path / "split", {"big.py": base}, {"big.py": pr})
+        install_graph()
+        llm = RoutedLLM(investigator=RuntimeError("model down"))
+
+        result = _review(repo, llm, llm_retries=0, section_max_chars=800)
+
+        coverage = result.meta.coverage
+        assert coverage["hunks_total"] == 2
+        assert len(coverage["sections"]) == 2
+        assert all(s["split"] and not s["partial_hunk"] for s in coverage["sections"])
+        assert [len(s["hunks"]) for s in coverage["sections"]] == [1, 1]
+        _assert_hunks_reviewed(result, llm, "big.py")
+        assert coverage["complete"] is True
+
+    def test_investigator_sections_and_leftover_hunks_are_all_reviewed_after_the_investigator(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+        plan = json.dumps({"sections": [{
+            "id": "s1", "title": "A and B", "rationale": "same concern",
+            "hunks": ["a.py#0", "b.py#0"], "context": [],
+        }]})
+        llm = RoutedLLM(investigator=plan)
+
+        result = _review(repo, llm)
+
+        coverage = result.meta.coverage
+        assert coverage["planner"] == "investigator"
+        assert coverage["investigator_status"] == "ok"
+        assert (coverage["hunks_assigned"], coverage["hunks_leftover"]) == (2, 2)
+        for path in ("a.py", "app.py", "b.py", "c.py"):
+            _assert_hunks_reviewed(result, llm, path)
+        assert llm.order.index("investigator") < llm.order.index("section")
+
+    def test_safe_findings_never_appear_in_the_report(
+        self, repo, install_graph, no_semgrep, tmp_path
+    ):
+        install_graph()
+
+        def section(prompt: str) -> str:
+            name = _prompt_file(prompt)
+            if name == "a.py":
+                return _findings(
+                    _section_finding(verdict="safe", file="a.py", line=3),
+                    _section_finding(file="a.py", line=4),
+                )
+            if name == "b.py":
+                return _findings(_section_finding(verdict="safe", file="b.py", line=3))
+            return _findings()
+
+        result = _review(repo, RoutedLLM(section=section), output_dir=tmp_path / "out")
+
+        assert [(f.file, f.verdict) for f in result.findings] == [("a.py", "vulnerable")]
+        report = json.loads(result.json_path.read_text(encoding="utf-8"))
+        assert [f["verdict"] for f in report["findings"]] == ["vulnerable"]
+        assert "safe" not in report["stats"]["by_verdict"]
+
+    def test_overlapping_findings_with_the_same_cwe_merge_and_other_cwes_stay_separate(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+        first = {"type": "code", "file": "a.py", "lines": [3, 4], "content": "def find_a(cursor, name):"}
+        second = {"type": "code", "file": "a.py", "lines": [4, 4], "content": PR_SQL_LINE}
+        adjacent = {"type": "code", "file": "a.py", "lines": [5, 5], "content": PR_SQL_LINE}
+        only_a = _findings(
+            _section_finding(verdict="possible", confidence=0.5, evidence=[first], line=3),
+            _section_finding(verdict="vulnerable", confidence=0.8, evidence=[second], line=4),
+            _section_finding(verdict="possible", confidence=0.3, evidence=[adjacent], line=5),
+            _section_finding(cwe_id="CWE-862", verdict="possible", confidence=0.4, line=4),
+        )
+        llm = RoutedLLM(section=lambda p: only_a if _prompt_file(p) == "a.py" else _findings())
+
+        result = _review(repo, llm)
+
+        assert sorted(f.cwe_id for f in result.findings) == ["CWE-639", "CWE-639", "CWE-862"]
+        by_cwe = {f.cwe_id: f for f in result.findings if f.confidence != 0.3}
+        merged = by_cwe["CWE-639"]
+        assert merged.verdict == "vulnerable"
+        assert merged.confidence == 0.8
+        assert {tuple(e.lines) for e in merged.evidence} == {(3, 4), (4, 4)}
+        assert by_cwe["CWE-862"].verdict == "possible"
+        separate = [f for f in result.findings if f.confidence == 0.3]
+        assert [tuple(e.lines) for f in separate for e in f.evidence] == [(5, 5)]
+
+    def test_a_failed_section_finding_is_never_merged_into_an_overlapping_cwe_862_finding(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+        overlapping = _section_finding(
+            cwe_id="CWE-862", verdict="possible", confidence=0.5, file="b.py", line=1,
+            evidence=[{"type": "code", "file": "b.py", "lines": [1, 40], "content": "x"}],
+        )
+
+        def section(prompt: str):
+            name = _prompt_file(prompt)
+            if name == "b.py":
+                return RuntimeError("model down")
+            if name == "a.py":
+                return _findings(overlapping)
+            return _findings()
+
+        result = _review(repo, RoutedLLM(section=section), llm_retries=0, max_answer_reasks=0)
+
+        authz = [f for f in result.findings if f.category == "authz"]
+        assert sorted(f.verdict for f in authz) == ["insufficient_evidence", "possible"]
+        failed = next(f for f in authz if f.verdict == "insufficient_evidence")
+        assert "Section review failed" in failed.explanation and failed.file == "b.py"
+        assert result.meta.coverage["sections_failed"] == 1
+
+    def test_findings_reach_the_validator_deduplicated_and_without_safe_ones(
+        self, repo, install_graph, no_semgrep, monkeypatch
+    ):
+        install_graph()
+        received: list[list] = []
+
+        class SpyValidator(EvidenceValidator):
+            def validate_all(self, findings):
+                received.append(list(findings))
+                return super().validate_all(findings)
+
+        monkeypatch.setattr("lgtm.pipeline.EvidenceValidator", SpyValidator)
+        span = {"type": "code", "file": "a.py", "lines": [3, 4], "content": "x"}
+        only_a = _findings(
+            _section_finding(verdict="safe", file="a.py", line=3),
+            _section_finding(verdict="possible", confidence=0.4, line=3, evidence=[span]),
+            _section_finding(verdict="vulnerable", confidence=0.8, line=4, evidence=[span]),
+        )
+        llm = RoutedLLM(section=lambda p: only_a if _prompt_file(p) == "a.py" else _findings())
+
+        result = _review(repo, llm)
+
+        assert len(received) == 1
+        authz = [f for f in received[0] if f.category == "authz"]
+        assert [(f.file, f.verdict) for f in authz] == [("a.py", "vulnerable")]
+        assert [(f.file, f.verdict) for f in result.findings if f.category == "authz"] == [
+            ("a.py", "vulnerable")
+        ]
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/etc/passwd", "\\etc\\passwd", "C:x", "C:/x", "C:\\x", "\\\\srv\\share\\x",
+            "//srv/share/x", "../x", "a/../x", "a/..", "a/.. /x", "..\\x", "a/b:stream",
+            "a\x00b.py", "",
+        ],
+        ids=repr,
+    )
+    def test_context_pointer_with_an_unclean_path_is_dropped_before_the_section_prompt(
+        self, repo, install_graph, no_semgrep, path
+    ):
+        install_graph()
+        pointers = [
+            {"path": path, "symbol": "HOSTILE_SYMBOL", "start_line": 1, "end_line": 2,
+             "snapshot": "pr", "why": "hostile"},
+            {"path": "pkg/mod.py", "symbol": "CLEAN_SYMBOL", "start_line": 1, "end_line": 2,
+             "snapshot": "pr", "why": "clean"},
+        ]
+        plan = json.dumps({"sections": [{
+            "id": "s1", "title": "A", "rationale": "r", "hunks": ["a.py#0"], "context": pointers,
+        }]})
+        llm = RoutedLLM(investigator=plan)
+
+        _review(repo, llm)
+
+        prompts = llm.user_prompts["section"]
+        assert any("CLEAN_SYMBOL" in p for p in prompts)
+        assert not any("HOSTILE_SYMBOL" in p for p in prompts)
+
+    @pytest.mark.parametrize(
+        ("reply", "reason"),
+        [
+            pytest.param(RuntimeError("model down"), "model down", id="section-raises"),
+            pytest.param("The change looks fine to me.", "no parsable findings", id="unparsable-reply"),
+        ],
+    )
+    def test_a_failed_section_surfaces_as_an_insufficient_evidence_finding_and_the_rest_still_run(
+        self, repo, install_graph, no_semgrep, reply, reason
+    ):
+        install_graph()
+        llm = RoutedLLM(section=lambda p: reply if _prompt_file(p) == "b.py" else _findings())
+
+        result = _review(repo, llm, llm_retries=0, max_answer_reasks=0)
+
+        failed = [f for f in result.findings if f.category == "authz"]
+        assert len(failed) == 1
+        assert failed[0].verdict == "insufficient_evidence"
+        assert failed[0].file == "b.py"
+        assert reason in failed[0].explanation
+        assert re.search(r"b\.py lines \d+-\d+", failed[0].explanation)
+        coverage = result.meta.coverage
+        by_file = {tuple(s["files"]): s for s in coverage["sections"]}
+        assert by_file[("b.py",)]["status"] == "failed"
+        assert by_file[("b.py",)]["error"]
+        assert all(s["status"] == "completed" for key, s in by_file.items() if key != ("b.py",))
+        assert coverage["sections_failed"] == 1
+        assert coverage["hunks_reviewed"] == coverage["hunks_total"] - 1
+        assert coverage["complete"] is False
+        assert len(llm.user_prompts["section"]) == 4
+
+    def test_semgrep_notes_reach_only_the_sections_that_contain_the_flagged_file(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph()
+        llm = RoutedLLM()
+
+        _review(repo, llm)
+
+        prompts = llm.user_prompts["section"]
+        assert len(prompts) == 4
+        for prompt in prompts:
+            name = _prompt_file(prompt)
+            for flagged in FILES:
+                assert (f"fake.sqli at {flagged}:5" in prompt) == (flagged == name)
+
+    def test_section_findings_follow_the_sast_triage_findings(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph()
+        llm = RoutedLLM(section=lambda p: _findings(_section_finding(file=_prompt_file(p), line=1)))
+
+        result = _review(repo, llm)
+
+        categories = [f.category for f in result.findings]
+        assert categories.count("sqli") == 3 and categories.count("authz") == 4
+        assert max(i for i, c in enumerate(categories) if c == "sqli") < min(
+            i for i, c in enumerate(categories) if c == "authz"
+        )
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_run_is_skipped_when_no_python_file_is_in_scope(
+        self, tmp_path, install_graph, no_semgrep, mode
+    ):
+        repo = _build_repo(
+            tmp_path / "docs", {"README.md": "old\n"}, {"README.md": "new\n"}
+        )
+        install_graph()
+        llm = RoutedLLM()
+
+        result = _review(repo, llm, mode=mode)
+
+        coverage = result.meta.coverage
+        assert coverage["investigator_status"] == "skipped"
+        assert coverage["investigator_input"] == "none"
+        assert coverage["sections_scheduled"] == 0
+        assert coverage["exclusions"] == [{"path": "README.md", "reason": "non_python"}]
+        assert llm.user_prompts["investigator"] == [] and llm.user_prompts["section"] == []
+        assert result.findings == []
+
+    def test_coverage_is_in_the_json_metadata_and_endpoint_counts_are_gone(
+        self, repo, install_graph, no_semgrep, tmp_path
+    ):
+        install_graph()
+
+        result = _review(repo, RoutedLLM(), output_dir=tmp_path / "out")
+
+        review = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
+        assert review["coverage"]["sections_scheduled"] == 4
+        assert "endpoints_reviewed" not in review
+        assert not hasattr(result.meta, "endpoints_reviewed")
+        assert "hunks_total" not in result.md_path.read_text(encoding="utf-8")
+
+    def test_llm_only_mode_is_unchanged_and_runs_no_sections(
+        self, repo, install_graph, semgrep
+    ):
+        llm = RoutedLLM()
+
+        result = _review(repo, llm, mode="llm-only")
+
+        assert set(llm.order) == {"plain"}
+        assert result.meta.coverage is None

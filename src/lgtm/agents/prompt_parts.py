@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from lgtm.agents.base import SNAPSHOT_LABELS
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
 _TOOL_LINES = {
     "investigate_base_code": (
@@ -44,7 +47,7 @@ def tool_guidance(toolbox, graph: bool = True) -> ToolGuidance:
         tool_names=names,
         graph_tools=any(name.startswith("investigate_") for name in names),
         snapshot_labels=SNAPSHOT_LABELS if getattr(toolbox, "shas", None) is not None else ("base",),
-        max_tool_calls=toolbox.config.max_tool_calls,
+        max_tool_calls=toolbox.budget,
     )
 
 
@@ -69,7 +72,7 @@ def render_tool_section(guidance: ToolGuidance) -> str:
         graph_names = " and ".join(n for n in guidance.tool_names if n.startswith("investigate_"))
         lines += [
             "",
-            f"Use {graph_names} first for exploration: discover which endpoints, "
+            f"Use {graph_names} first for exploration: review which changed functions, "
             "decorators, helpers and callers are involved before judging. Graph output can be partial or "
             "truncated, so then use read_file to see and quote the exact lines and "
             "grep_repo for literal or regex searches. When the graph is unavailable, "
@@ -78,3 +81,19 @@ def render_tool_section(guidance: ToolGuidance) -> str:
             "Quote evidence only from what read_file or grep_repo showed.",
         ]
     return "\n".join(lines)
+
+
+def escape_control(text: str) -> str:
+    return _CONTROL_CHARS.sub(lambda m: m.group(0).encode("unicode_escape").decode("ascii"), text)
+
+
+def code_fence(body: str, info: str) -> str:
+    # The closing fence must be longer than any backtick run in the body, or content can end the block.
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    marker = "`" * max(3, longest + 1)
+    separator = "\n" if body and not body.endswith("\n") else ""
+    return f"{marker}{info}\n{body}{separator}{marker}\n"
+
+
+def untrusted_block(body: str, label: str) -> str:
+    return f"{label}\n{code_fence(body, 'text')}"
