@@ -136,10 +136,12 @@ def load_result(path: Path) -> dict | None:
 
 def is_done(path: Path) -> bool:
     data = load_result(path)
+    if data is None or result_is_error(data) or data.get("case_label") == "scan_failure":
+        return False
+    coverage = data.get("coverage") if has_coverage(data) else {}
     return (
-        data is not None
-        and not result_is_error(data)
-        and data.get("case_label") != "scan_failure"
+        (coverage.get("sections_failed") or 0) == 0
+        and coverage.get("investigator_status") != "failed"
     )
 
 

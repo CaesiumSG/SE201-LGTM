@@ -245,5 +245,6 @@ excludes the output directory, so files written there do not count as changes.
    `--resume: <dir> has no run pin; start a new output directory`.
 3. Every `pin` key other than `base_sha` and `pr_sha` must match; otherwise
    `--resume: <dir> was produced with a different run pin (differs in: <keys>)`.
-4. A case is skipped when its result is not an error and its `case_label` is
-   not `scan_failure`; other cases are run again.
+4. A case is skipped when its result is not an error, its `case_label` is not
+   `scan_failure`, and its `coverage` (when present) has no failed section and
+   an `investigator_status` other than `failed`; other cases are run again.

@@ -929,6 +929,46 @@ class TestResume:
         assert sorted(ran) == ["b", "c"]
         assert done.read_bytes() == before
 
+    @pytest.mark.parametrize("failure", [
+        "target_section_failed", "other_section_failed", "investigator_failed"])
+    def test_resume_reruns_a_scored_row_whose_coverage_shows_a_failure(
+            self, tmp_path, monkeypatch, pin, failure):
+        coverage = {
+            "target_section_failed": _failed_target_coverage,
+            "other_section_failed": lambda: _coverage([
+                _target_section(),
+                _section("other", [_hunk(ROW_FILE, 200, 4)], "failed")]),
+            "investigator_failed": lambda: _coverage(
+                [_target_section()], investigator_status="failed",
+                investigator_error="connection reset"),
+        }[failure]()
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+        failed = evaluate.score_case(_case_row(
+            "a", "vulnerable", findings=[_f("authz", "vulnerable")],
+            coverage=coverage))
+        assert failed["case_label"] != "scan_failure"
+        assert not evaluate.result_is_error(failed)
+        self._write(out, failed)
+        kept = self._write(out, self._new_row("b"))
+        before = kept.read_bytes()
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert sorted(ran) == ["a", "c"]
+        assert kept.read_bytes() == before
+
+    def test_resume_keeps_a_row_whose_coverage_has_no_failure(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+        for cid in ("a", "b", "c"):
+            self._write(out, self._new_row(cid))
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert ran == []
+
     def test_fresh_harness_exception_is_a_new_format_scan_failure_that_resume_reruns(
             self, tmp_path, monkeypatch, pin):
         out, ran = self._setup(tmp_path, monkeypatch, raises={"a"})
@@ -1567,12 +1607,18 @@ class TestCoverageRowErrors:
         assert evaluate.is_done(Path("row.json")) is False
 
     @pytest.mark.parametrize("label", [
-        "explicit_safe", "missing_review", "no_candidate",
+        "explicit_safe", "no_candidate",
         "possible_vulnerability", "insufficient_evidence",
         "detected_vulnerability"])
     def test_is_done_is_true_for_scored_coverage_rows(self, stored, label):
         stored(evaluate.score_case(_case_row(**_scenario(label))))
         assert evaluate.is_done(Path("row.json")) is True
+
+    def test_is_done_is_false_for_missing_review_rows_with_a_failed_section(self, stored):
+        row = evaluate.score_case(_case_row(**_scenario("missing_review")))
+        assert row["coverage"]["sections_failed"] > 0
+        stored(row)
+        assert evaluate.is_done(Path("row.json")) is False
 
 
 def _legacy_row():
