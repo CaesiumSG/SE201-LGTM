@@ -14,14 +14,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from lgtm.agents.authz_reviewer import AuthzReviewerAgent, ChangedEndpoint
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
+from lgtm.diff.git_diff import LineChange
 from lgtm.graph.exporter import export_snapshot
 from lgtm.graph.format import FOOTER, render_graph
 from lgtm.graph.session import GraphSession
 from lgtm.graph.snapshot import resolve_refs
+from lgtm.review.sections import HunkRef, Section
 from lgtm.sast.semgrep_runner import SemgrepFinding
 from tests.graph_fakes import FakeRunner, failure, no_match, outcome, success
 
@@ -30,7 +32,33 @@ EXHAUSTED = (
     "JSON answer using the evidence gathered so far."
 )
 SAFE = json.dumps({"verdict": "safe", "confidence": 0.9, "explanation": "ok"})
+SECTION_SAFE = json.dumps({"findings": [json.loads(SAFE)]})
 POLICY_MARK = "TOOLQ"
+
+
+def _section():
+    hunk = HunkRef(
+        hunk_id="app.py#1", file="app.py", old_start=1, old_count=0, new_start=1,
+        new_count=1, change="add", changes=[LineChange("add", "x = 1", None, 1)],
+    )
+    return Section(
+        section_id="s1", origin="investigator", title="Section", files=["app.py"], hunks=[hunk]
+    )
+
+
+def _section_script(script):
+    """Wrap single-verdict replies in the section output shape."""
+    wrapped = []
+    for item in script:
+        content = getattr(item, "content", None)
+        try:
+            data = json.loads(content) if isinstance(content, str) else None
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "verdict" in data:
+            item = _msg(json.dumps({**data, "findings": [data]}))
+        wrapped.append(item)
+    return wrapped
 
 
 def _msg(content="", calls=None):
@@ -143,7 +171,9 @@ def run_agent(request, git_repo):
     def run(script, retriever=None, **config_kwargs):
         config = LGTMConfig(**config_kwargs)
         toolbox = AgentToolbox(git_repo, "main", retriever, config)
-        llm = ScriptedLLM(script)
+        llm = ScriptedLLM(
+            script if request.param == "sast_triage" else _section_script(script)
+        )
         if request.param == "sast_triage":
             finding = SemgrepFinding(
                 rule_id="r",
@@ -156,10 +186,9 @@ def run_agent(request, git_repo):
             )
             result = SASTTriageAgent(toolbox, config, llm=llm).triage(finding, None)
         else:
-            endpoint = ChangedEndpoint(
-                file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1
-            )
-            result = AuthzReviewerAgent(toolbox, config, llm=llm).review(endpoint, None)
+            result = AuthzReviewerAgent(toolbox, config, llm=llm).review_section(
+                _section(), ""
+            )[0]
         return result, llm
 
     return run
@@ -406,7 +435,7 @@ class TestSuccessfulCallsAndResilience:
         for _ in range(2):
             llm = ScriptedLLM(
                 [_native("read_file", {"path": f"m{i}.py"}, f"c{i}") for i in range(1, 6)]
-                + [_msg(SAFE)]
+                + [_msg(SAFE if agent == "sast_triage" else SECTION_SAFE)]
             )
             if agent == "sast_triage":
                 finding = SemgrepFinding(
@@ -415,10 +444,9 @@ class TestSuccessfulCallsAndResilience:
                 )
                 result = SASTTriageAgent(toolbox, config, llm=llm).triage(finding, None)
             else:
-                endpoint = ChangedEndpoint(
-                    file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1
-                )
-                result = AuthzReviewerAgent(toolbox, config, llm=llm).review(endpoint, None)
+                result = AuthzReviewerAgent(toolbox, config, llm=llm).review_section(
+                    _section(), ""
+                )[0]
             assert result.tool_calls_used == 5
 
 
@@ -1497,8 +1525,7 @@ class TestGraphToolsThroughTheAgentLoop:
                 rule_id="r", path="app.py", start_line=2, end_line=2, message="m", severity="ERROR",
             )
             return SASTTriageAgent(r.toolbox, r.config, llm=llm).triage(finding, None)
-        endpoint = ChangedEndpoint(file="app.py", route_path="/u", http_methods=["GET"], decorator_line=1)
-        return AuthzReviewerAgent(r.toolbox, r.config, llm=llm).review(endpoint, None)
+        return AuthzReviewerAgent(r.toolbox, r.config, llm=llm).review_section(_section(), "")[0]
 
     @pytest.fixture(params=["authz_reviewer"])
     def kind(self, request):
@@ -1506,7 +1533,7 @@ class TestGraphToolsThroughTheAgentLoop:
 
     def test_native_call_is_charged_once_and_returns_the_pr_envelope(self, rig, snap, kind):
         r = rig(runner=FakeRunner(explore={"pr": success("PR-TOKEN")}))
-        llm = ScriptedLLM([_native("investigate_pr_code", {"query": self.QUERY}), _msg(SAFE)])
+        llm = ScriptedLLM([_native("investigate_pr_code", {"query": self.QUERY}), _msg(SECTION_SAFE)])
         result = self._review(kind, r, llm)
         assert result.tool_calls_used == 1
         assert _tool_messages(llm, 1)[-1].content == render_graph(
@@ -1517,7 +1544,7 @@ class TestGraphToolsThroughTheAgentLoop:
     def test_text_request_is_parsed_charged_once_and_answered(self, rig, snap, kind):
         r = rig(runner=FakeRunner(explore={"pr": success("PR-TOKEN")}))
         args = {"query": self.QUERY}
-        llm = ScriptedLLM([_text("investigate_pr_code", args), _msg(SAFE)])
+        llm = ScriptedLLM([_text("investigate_pr_code", args), _msg(SECTION_SAFE)])
         result = self._review(kind, r, llm)
         assert result.tool_calls_used == 1
         assert llm.seen[1][-1].content == _text_result(
@@ -1532,7 +1559,7 @@ class TestGraphToolsThroughTheAgentLoop:
             ("investigate_pr_code", {"query": self.QUERY}),
             ("read_file", {"path": "new.py", "snapshot": "pr"}),
         )
-        llm = ScriptedLLM([batch, _msg(SAFE)])
+        llm = ScriptedLLM([batch, _msg(SECTION_SAFE)])
         result = self._review(kind, r, llm)
         assert result.tool_calls_used == 3
         results = _tool_messages(llm, 1)
@@ -1547,7 +1574,7 @@ class TestGraphToolsThroughTheAgentLoop:
         llm = ScriptedLLM([
             _native("investigate_base_code", call, "c1"),
             _native("investigate_base_code", call, "c2"),
-            _msg(SAFE),
+            _msg(SECTION_SAFE),
         ])
         result = self._review(kind, r, llm)
         assert result.tool_calls_used == 2
@@ -1561,8 +1588,8 @@ class TestGraphToolsThroughTheAgentLoop:
         r = rig(runner=FakeRunner(explore={"base": failure("timeout")}))
         call = {"query": self.QUERY}
         llm = ScriptedLLM([
-            _native("investigate_base_code", call, "c1"), _msg(SAFE),
-            _native("investigate_base_code", call, "c2"), _msg(SAFE),
+            _native("investigate_base_code", call, "c1"), _msg(SECTION_SAFE),
+            _native("investigate_base_code", call, "c2"), _msg(SECTION_SAFE),
         ])
         with caplog.at_level(logging.WARNING):
             first = self._review(kind, r, llm)

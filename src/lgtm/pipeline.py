@@ -3,7 +3,7 @@
 Stages:
 1. Context building — git diff, semgrep scan, RAG retriever.
 2. SAST triage — LLM agent triages each semgrep finding in the diff.
-3. Authorization review — LLM agent reviews each changed endpoint.
+3. Authorization review — the investigator groups changed hunks into sections and an LLM agent reviews each one.
 4. Evidence validation — every citation is checked against the repo.
 5. Reporting — JSON + Markdown.
 
@@ -22,22 +22,28 @@ import logging
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
-from lgtm.agents.authz_reviewer import (
-    AuthzReviewerAgent,
-    extract_changed_endpoints,
-)
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.base import AgentFinding, build_llm
-from lgtm.analysis.facts import endpoint_facts, sql_sink_facts
+from lgtm.agents.investigator import run_investigator
+from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, get_pr_diff
 from lgtm.rag.retriever import PolicyRetriever
+from lgtm.review.coverage import (
+    InvestigatorInput,
+    InvestigatorStatus,
+    SectionResult,
+    build_coverage,
+)
+from lgtm.review.dedup import dedup_findings
+from lgtm.review.sections import ScanPlan, Section, plan_sections
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
 from lgtm.sast.semgrep_runner import (
     SemgrepError,
@@ -67,6 +73,17 @@ class ReviewResult:
     json_path: Path | None = None
     md_path: Path | None = None
     diffs: list[FileDiff] = field(default_factory=list)
+
+
+@dataclass
+class _SectionStage:
+    findings: list[AgentFinding]
+    plan: ScanPlan
+    results: dict[str, SectionResult]
+    investigator_status: InvestigatorStatus
+    investigator_error: str | None
+    investigator_input: InvestigatorInput
+    investigator_tool_calls: int
 
 
 class ReviewPipeline:
@@ -119,8 +136,8 @@ class ReviewPipeline:
         # Resolved SHAs pin Git reads against moving refs.
 
         # ---- Stage 1: context ----------------------------------------
-        diffs = get_pr_diff(self.repo, base_rev, pr_rev, self.config.git_timeout)
-        diffs = [d for d in diffs if d.status != "deleted"]
+        scan_diffs = get_pr_diff(self.repo, base_rev, pr_rev, self.config.git_timeout)
+        diffs = [d for d in scan_diffs if d.status != "deleted"]
         logger.info("PR changes %d file(s)", len(diffs))
 
         retriever: PolicyRetriever | None = None
@@ -151,10 +168,14 @@ class ReviewPipeline:
         )
 
         findings: list[AgentFinding] = []
+        section_stage: _SectionStage | None = None
 
         from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
 
         llm_diffs = sanitize_diffs(diffs) if self.config.strip_comments else diffs
+        llm_scan_diffs = (
+            sanitize_diffs(scan_diffs) if self.config.strip_comments else scan_diffs
+        )
 
         if mode == "sast-only":
             findings = [self._sast_finding_to_agent_finding(f) for f in semgrep_in_diff]
@@ -186,24 +207,10 @@ class ReviewPipeline:
                 findings.append(finding)
 
             # ---- Stage 3: authorization review -----------------------
-            endpoints = extract_changed_endpoints(diffs)
-            meta.endpoints_reviewed = len(endpoints)
-            authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
-            for ep in endpoints:
-                fd = diff_by_path.get(ep.file)
-                notes = "\n".join(
-                    f"- {sf.rule_id} at {sf.path}:{sf.start_line}: {sf.message}"
-                    for sf in semgrep_in_diff
-                    if sf.path == ep.file
-                )
-                facts = ""
-                if self.config.static_facts:
-                    facts = endpoint_facts(
-                        self._pr_source(pr_rev, ep.file), ep.decorator_line
-                    )
-                finding = authz_agent.review(ep, fd, notes, facts)
-                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
-                findings.append(finding)
+            section_stage = self._review_sections(
+                llm_scan_diffs, semgrep_in_diff, toolbox, llm
+            )
+            findings.extend(section_stage.findings)
             meta.graph_state = toolbox.graph_state()
             meta.graph_index_seconds = round(session.init_seconds, 2)
 
@@ -219,6 +226,15 @@ class ReviewPipeline:
             shas={"base": base_rev, "pr": pr_rev} if shas is not None else None,
         )
         findings = validator.validate_all(findings)
+        if section_stage is not None:
+            meta.coverage = build_coverage(
+                section_stage.plan,
+                investigator_status=section_stage.investigator_status,
+                investigator_error=section_stage.investigator_error,
+                investigator_input=section_stage.investigator_input,
+                investigator_tool_calls=section_stage.investigator_tool_calls,
+                results=section_stage.results,
+            )
 
         # ---- Stage 5: report ------------------------------------------
         meta.duration_seconds = time.monotonic() - start
@@ -239,6 +255,75 @@ class ReviewPipeline:
             md_path=md_path,
             diffs=diffs,
         )
+
+    # ------------------------------------------------------------------
+    def _review_sections(
+        self,
+        scan_diffs: list[FileDiff],
+        semgrep_in_diff: list[SemgrepFinding],
+        toolbox: AgentToolbox,
+        llm,
+    ) -> _SectionStage:
+        investigator_status: InvestigatorStatus = "skipped"
+        investigator_input: InvestigatorInput = "none"
+        investigator_error: str | None = None
+        investigator_tool_calls = 0
+        proposed = None
+        if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
+            investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
+            investigator_status = investigation.status
+            investigator_input = investigation.input_mode
+            investigator_error = investigation.error
+            investigator_tool_calls = investigation.tool_calls
+            proposed = investigation.proposed
+        plan = plan_sections(scan_diffs, proposed, self.config)
+
+        authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
+        results: dict[str, SectionResult] = {}
+        section_findings: list[AgentFinding] = []
+        for section in plan.sections:
+            scoped = replace(
+                section,
+                context=[p for p in section.context if self._inside_snapshot(p.path)],
+            )
+            notes = "\n".join(
+                f"- {sf.rule_id} at {sf.path}:{sf.start_line}: {sf.message}"
+                for sf in semgrep_in_diff
+                if sf.path in scoped.files
+            )
+            reviewed = authz_agent.review_section(scoped, notes)
+            for finding in reviewed:
+                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+            results[section.section_id] = self._section_result(section, reviewed)
+            section_findings.extend(f for f in reviewed if f.verdict != "safe")
+
+        return _SectionStage(
+            findings=dedup_findings(section_findings),
+            plan=plan,
+            results=results,
+            investigator_status=investigator_status,
+            investigator_error=investigator_error,
+            investigator_input=investigator_input,
+            investigator_tool_calls=investigator_tool_calls,
+        )
+
+    @staticmethod
+    def _section_result(section: Section, findings: list[AgentFinding]) -> SectionResult:
+        failure_id = f"authz:{section.section_id}:failed"
+        failure = next((f for f in findings if f.finding_id == failure_id), None)
+        return SectionResult(
+            status="failed" if failure else "completed",
+            verdicts=[f.verdict for f in findings],
+            finding_ids=[f.finding_id for f in findings],
+            error=failure.explanation if failure else None,
+        )
+
+    @staticmethod
+    def _inside_snapshot(path: str) -> bool:
+        if not path or "\x00" in path:
+            return False
+        windows = PureWindowsPath(path)
+        return not (windows.drive or windows.root) and ".." not in windows.parts
 
     # ------------------------------------------------------------------
     def _run_sast(
