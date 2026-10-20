@@ -347,6 +347,62 @@ class TestReviewSection:
         out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
         assert out[0].line == 20
 
+    def test_deletion_only_hunk_with_context_lines_falls_back_to_old_start(self, git_repo):
+        changes = [
+            LineChange("context", "ctx", 20, 22),
+            LineChange("del", "x", 21, None),
+            LineChange("del", "y", 22, None),
+            LineChange("del", "z", 23, None),
+            LineChange("context", "ctx2", 24, 23),
+            LineChange("context", "ctx3", 25, 24),
+        ]
+        hunk = HunkRef(
+            hunk_id="app.py#20", file="app.py", old_start=20, old_count=6,
+            new_start=22, new_count=3, change="delete", changes=changes,
+        )
+        raw = _finding()
+        del raw["line"]
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), _section([hunk]))
+        assert out[0].line == 20
+
+    @staticmethod
+    def _assert_unparsable_failure(out):
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == (
+            "Section review returned no parsable findings for app.py lines 10-12"
+        )
+
+    @pytest.mark.parametrize("token", ["1e999", "Infinity"])
+    def test_non_finite_evidence_line_yields_the_unparsable_failure_finding(
+        self, git_repo, token
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": ["@@", 2], "content": "x = 1"}
+        reply = json.dumps({"findings": [_finding(verdict="possible", evidence=[evidence])]})
+        reply = reply.replace('"@@"', token)
+        assert not isinstance(json.loads(reply)["findings"][0]["evidence"][0]["lines"][0], str)
+        self._assert_unparsable_failure(_review(git_repo, _FakeLLM([_ai_message(reply)])))
+
+    @pytest.mark.parametrize("evidence", [5, True], ids=["int", "bool"])
+    def test_non_iterable_evidence_yields_the_unparsable_failure_finding(
+        self, git_repo, evidence
+    ):
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=evidence))]))
+        self._assert_unparsable_failure(out)
+
+    @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
+    def test_invalid_evidence_line_citation_reaches_the_validator_unchanged(
+        self, git_repo, lines
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=[evidence]))]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert list(out[0].evidence[0].lines) == lines
+
     def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
         config = LGTMConfig()
         toolbox = AgentToolbox(git_repo, "main", None, config)

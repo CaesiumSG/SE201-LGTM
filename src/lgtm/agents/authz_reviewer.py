@@ -178,7 +178,8 @@ def _fallback_line(section: Section) -> int:
     if not section.hunks:
         return 0
     first = section.hunks[0]
-    deletion_only = bool(first.changes) and all(c.kind == "del" for c in first.changes)
+    kinds = {c.kind for c in first.changes}
+    deletion_only = "del" in kinds and "add" not in kinds
     return first.old_start if deletion_only else first.new_start
 
 
@@ -282,7 +283,13 @@ class AuthzReviewerAgent:
         findings: list[AgentFinding] = []
         for n, item in enumerate(items, 1):
             finding_id = f"authz:{section.section_id}:{n}"
-            finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
+            try:
+                finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
+            except (TypeError, ValueError, OverflowError):
+                failure = _failure(
+                    failed_id, f"Section review returned no parsable findings for {where}"
+                )
+                return [self._stamp(failure, first_file, fallback_line)]
             finding.finding_id = finding_id
             findings.append(
                 self._stamp(
