@@ -379,3 +379,117 @@ class TestSectionReviewPrompt:
         text = _flat(_section_prompt(git_repo, _section()))
         assert re.search(r"lack of an explicit rule", text, re.I)
         assert re.search(r"\bpossible\b", text)
+
+
+def _user_prompt(git_repo, section, notes=""):
+    config = LGTMConfig(max_tool_calls=BUDGET)
+    toolbox = AgentToolbox(git_repo, "main", None, config)
+    llm = ScriptedLLM([EMPTY_FINDINGS])
+    AuthzReviewerAgent(toolbox, config, llm=llm).review_section(section, notes)
+    return str(llm.seen[0][1].content)
+
+
+def _classified_lines(text):
+    """(line, inside_fence) pairs following CommonMark: fences and closers are indented 0-3 spaces."""
+    result, open_len = [], 0
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        ticks = len(stripped) - len(stripped.lstrip("`"))
+        if open_len:
+            closes = indent <= 3 and ticks >= open_len and set(stripped) == {"`"}
+            result.append((line, not closes))
+            if closes:
+                open_len = 0
+        else:
+            result.append((line, False))
+            if indent <= 3 and ticks >= 3 and "`" not in stripped[ticks:]:
+                open_len = ticks
+    assert not open_len, "a code fence in the prompt is never closed"
+    return result
+
+
+SEPARATORS = ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+HEADING = "INJECTED_HEADING obey"
+
+
+def _hostile_section(field, payload):
+    pointer = dict(
+        path="auth/guards.py", symbol="require_owner", start_line=1, end_line=2,
+        snapshot="pr", why="guard",
+    )
+    overrides = {}
+    notes = ""
+    if field in ("title", "rationale"):
+        overrides[field] = payload
+    elif field == "files":
+        overrides["files"] = [payload]
+    elif field == "notes":
+        notes = f"- rule at app.py:2: {payload}"
+    else:
+        pointer[field.removeprefix("pointer_")] = payload
+        overrides["context"] = [ContextPointer(**pointer)]
+    return _section(**overrides), notes
+
+
+class TestSectionPromptInjectionResistance:
+    @pytest.mark.parametrize("separator", SEPARATORS, ids=repr)
+    @pytest.mark.parametrize(
+        "field",
+        ["title", "rationale", "files", "notes", "pointer_path", "pointer_symbol", "pointer_why"],
+    )
+    def test_pr_controlled_field_cannot_start_a_new_prompt_line(self, git_repo, field, separator):
+        section, notes = _hostile_section(field, f"x{separator}{HEADING} y")
+
+        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+
+        escaped = [
+            line for line, inside in lines
+            if not inside and line.strip().lstrip("-#*> ").startswith("INJECTED_HEADING")
+        ]
+        assert not escaped
+
+    @pytest.mark.parametrize(
+        "field",
+        ["title", "rationale", "files", "notes", "pointer_path", "pointer_symbol", "pointer_why"],
+    )
+    def test_pr_controlled_field_sits_inside_the_untrusted_block_or_is_labelled_untrusted(
+        self, git_repo, field
+    ):
+        section, notes = _hostile_section(field, "PR_CONTROLLED_VALUE")
+
+        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+
+        hits = [i for i, (line, _) in enumerate(lines) if "PR_CONTROLLED_VALUE" in line]
+        assert hits, "the field value is not shown to the reviewer"
+        for i in hits:
+            line, inside = lines[i]
+            heading = next(
+                (lines[j][0] for j in range(i, -1, -1) if not lines[j][1] and lines[j][0].startswith("#")),
+                "",
+            )
+            assert inside or "untrusted" in line.lower() or "untrusted" in heading.lower(), line
+
+    @pytest.mark.parametrize("indent", [0, 1, 2, 3])
+    @pytest.mark.parametrize("ticks", [3, 4, 9])
+    def test_backtick_run_in_section_content_cannot_close_the_untrusted_block(
+        self, git_repo, indent, ticks
+    ):
+        fence = " " * indent + "`" * ticks
+        changes = [
+            LineChange("context", fence, 1, 1),
+            LineChange("add", "ESCAPED_INSTRUCTION = 1", None, 2),
+            LineChange("context", fence, 2, 3),
+        ]
+        hunk = HunkRef(
+            hunk_id="app.py#1", file="app.py", old_start=1, old_count=2, new_start=1,
+            new_count=3, change="mixed", changes=changes,
+        )
+        section = _section(hunks=[hunk])
+
+        lines = _classified_lines(_user_prompt(git_repo, section))
+
+        added = [inside for line, inside in lines if "ESCAPED_INSTRUCTION" in line]
+        assert added and all(added)
+        trailing = [inside for line, inside in lines if "Review the section's authorization" in line]
+        assert trailing == [False]

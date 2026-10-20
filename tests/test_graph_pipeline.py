@@ -18,6 +18,7 @@ from lgtm.graph import session as session_module
 from lgtm.graph import snapshot as snapshot_module
 from lgtm.pipeline import ReviewPipeline
 from lgtm.sast.semgrep_runner import SemgrepFinding
+from lgtm.validation.evidence import EvidenceValidator
 from tests.graph_fakes import FakeRunner, failure
 
 MISSING_WARNING = (
@@ -994,6 +995,13 @@ def _assert_hunks_reviewed(result, llm: RoutedLLM, path: str) -> list[dict]:
     return [hunk for _, hunk in pairs]
 
 
+def _changed_lines(base_text: str, pr_text: str) -> tuple[list[str], list[str]]:
+    base, pr = base_text.splitlines(), pr_text.splitlines()
+    removed = [line for line in base if line not in pr]
+    added = [line for line in pr if line not in base]
+    return removed, added
+
+
 def _prompt_file(prompt: str) -> str:
     return re.search(r"^\+\+\+ b/(\S+)$", prompt, re.MULTILINE).group(1)
 
@@ -1094,6 +1102,14 @@ class TestSectionPipeline:
         coverage = result.meta.coverage
         assert coverage["hunks_reviewed"] == coverage["hunks_total"] == 1
         assert coverage["complete"] is True
+        reviewed = [p for p in llm.user_prompts["section"] if _prompt_file(p) == path]
+        assert reviewed
+        removed, added = _changed_lines(base_text, pr_text)
+        assert removed or added
+        for line in removed:
+            assert any(f"\n-{line}\n" in p for p in reviewed), f"removed line missing: {line!r}"
+        for line in added:
+            assert any(f"\n+{line}\n" in p for p in reviewed), f"added line missing: {line!r}"
 
     @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
     def test_zero_semgrep_findings_do_not_suppress_review(
@@ -1248,6 +1264,90 @@ class TestSectionPipeline:
         assert by_cwe["CWE-862"].verdict == "possible"
         separate = [f for f in result.findings if f.confidence == 0.3]
         assert [tuple(e.lines) for f in separate for e in f.evidence] == [(5, 5)]
+
+    def test_a_failed_section_finding_is_never_merged_into_an_overlapping_cwe_862_finding(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+        overlapping = _section_finding(
+            cwe_id="CWE-862", verdict="possible", confidence=0.5, file="b.py", line=1,
+            evidence=[{"type": "code", "file": "b.py", "lines": [1, 40], "content": "x"}],
+        )
+
+        def section(prompt: str):
+            name = _prompt_file(prompt)
+            if name == "b.py":
+                return RuntimeError("model down")
+            if name == "a.py":
+                return _findings(overlapping)
+            return _findings()
+
+        result = _review(repo, RoutedLLM(section=section), llm_retries=0, max_answer_reasks=0)
+
+        authz = [f for f in result.findings if f.category == "authz"]
+        assert sorted(f.verdict for f in authz) == ["insufficient_evidence", "possible"]
+        failed = next(f for f in authz if f.verdict == "insufficient_evidence")
+        assert "Section review failed" in failed.explanation and failed.file == "b.py"
+        assert result.meta.coverage["sections_failed"] == 1
+
+    def test_findings_reach_the_validator_deduplicated_and_without_safe_ones(
+        self, repo, install_graph, no_semgrep, monkeypatch
+    ):
+        install_graph()
+        received: list[list] = []
+
+        class SpyValidator(EvidenceValidator):
+            def validate_all(self, findings):
+                received.append(list(findings))
+                return super().validate_all(findings)
+
+        monkeypatch.setattr("lgtm.pipeline.EvidenceValidator", SpyValidator)
+        span = {"type": "code", "file": "a.py", "lines": [3, 4], "content": "x"}
+        only_a = _findings(
+            _section_finding(verdict="safe", file="a.py", line=3),
+            _section_finding(verdict="possible", confidence=0.4, line=3, evidence=[span]),
+            _section_finding(verdict="vulnerable", confidence=0.8, line=4, evidence=[span]),
+        )
+        llm = RoutedLLM(section=lambda p: only_a if _prompt_file(p) == "a.py" else _findings())
+
+        result = _review(repo, llm)
+
+        assert len(received) == 1
+        authz = [f for f in received[0] if f.category == "authz"]
+        assert [(f.file, f.verdict) for f in authz] == [("a.py", "vulnerable")]
+        assert [(f.file, f.verdict) for f in result.findings if f.category == "authz"] == [
+            ("a.py", "vulnerable")
+        ]
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/etc/passwd", "\\etc\\passwd", "C:x", "C:/x", "C:\\x", "\\\\srv\\share\\x",
+            "//srv/share/x", "../x", "a/../x", "a/..", "a/.. /x", "..\\x", "a/b:stream",
+            "a\x00b.py", "",
+        ],
+        ids=repr,
+    )
+    def test_context_pointer_with_an_unclean_path_is_dropped_before_the_section_prompt(
+        self, repo, install_graph, no_semgrep, path
+    ):
+        install_graph()
+        pointers = [
+            {"path": path, "symbol": "HOSTILE_SYMBOL", "start_line": 1, "end_line": 2,
+             "snapshot": "pr", "why": "hostile"},
+            {"path": "pkg/mod.py", "symbol": "CLEAN_SYMBOL", "start_line": 1, "end_line": 2,
+             "snapshot": "pr", "why": "clean"},
+        ]
+        plan = json.dumps({"sections": [{
+            "id": "s1", "title": "A", "rationale": "r", "hunks": ["a.py#0"], "context": pointers,
+        }]})
+        llm = RoutedLLM(investigator=plan)
+
+        _review(repo, llm)
+
+        prompts = llm.user_prompts["section"]
+        assert any("CLEAN_SYMBOL" in p for p in prompts)
+        assert not any("HOSTILE_SYMBOL" in p for p in prompts)
 
     @pytest.mark.parametrize(
         ("reply", "reason"),

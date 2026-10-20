@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -28,7 +27,6 @@ logger = logging.getLogger(__name__)
 InputMode = Literal["full", "manifest_only"]
 
 _EXCERPT_LINES = 3
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
 SYSTEM_PROMPT = """\
 You are a senior application security engineer preparing a pull request for \
@@ -115,11 +113,11 @@ def run_investigator(
             max_tool_calls=tool_info.max_tool_calls,
         )
         if manifest_only:
-            manifest = EXCERPT_LABEL + _fence(_manifest(refs, excerpt=True), "text")
+            manifest = EXCERPT_LABEL + prompt_parts.code_fence(_manifest(refs, excerpt=True), "text")
             diff_section = ""
         else:
             manifest = _manifest(refs, excerpt=False)
-            diff_section = DIFF_SECTION.format(block=_fence(diff_text, "diff"))
+            diff_section = DIFF_SECTION.format(block=prompt_parts.code_fence(diff_text, "diff"))
         user = USER_PROMPT.format(manifest=manifest, diff_section=diff_section)
         investigator_config = replace(
             config, max_agent_iterations=config.investigator_max_iterations
@@ -147,21 +145,9 @@ def run_investigator(
 def _display_ref(ref: HunkRef) -> HunkRef:
     return replace(
         ref,
-        hunk_id=_escape_controls(ref.hunk_id),
-        file=_escape_controls(ref.file),
+        hunk_id=prompt_parts.escape_control(ref.hunk_id),
+        file=prompt_parts.escape_control(ref.file),
     )
-
-
-def _escape_controls(text: str) -> str:
-    return _CONTROL_CHARS.sub(lambda m: m.group(0).encode("unicode_escape").decode("ascii"), text)
-
-
-def _fence(body: str, info: str) -> str:
-    # The closing fence must be longer than any backtick run in the body, or content can end the block.
-    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
-    fence = "`" * max(3, longest + 1)
-    separator = "\n" if body and not body.endswith("\n") else ""
-    return f"{fence}{info}\n{body}{separator}{fence}\n"
 
 
 def _manifest(refs: list[HunkRef], *, excerpt: bool) -> str:

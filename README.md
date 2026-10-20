@@ -24,7 +24,7 @@ while an evidence validator keeps the LLM honest.
             │ 3. Authorization Reviewer Agent                  │
             │    (CWE-639 / CWE-862 / CWE-863)                 │
             │    does the change respect the documented policy?│
-            │    Tools (read-only, max 5 calls per finding):   │
+            │    Tools (read-only, max 5 calls per section):   │
             │    investigate_base_code · investigate_pr_code   │
             │    read_file · grep_repo · search_policy         │
             └───────────────┬──────────────────────────────────┘
@@ -151,9 +151,11 @@ are ignored with an `Ignoring unknown config keys` warning.
 - Agents read committed snapshots of the **base** and **PR** branches. Each
   branch is resolved once to a full commit SHA before the run starts. PR
   content is treated as untrusted data (analyzed, never executed or obeyed).
-- Each finding has a budget of **5 tool calls** (`max_tool_calls`) shared by
-  all of its tools, including calls with invalid arguments or unknown tool
-  names. Once the budget is spent, tools return a budget error.
+- Each SAST triage run (one finding) and each authz section review has a
+  budget of **5 tool calls** (`max_tool_calls`) shared by all of its tools,
+  including calls with invalid arguments or unknown tool names. Once the
+  budget is spent, tools return a budget error. The investigator has its own
+  budget.
 - LLM calls are **retried** up to 3 times with 2s, 4s and 8s backoff
   before an agent run is reported as failed.
 - Tool arguments are **validated** against each tool's schema before the

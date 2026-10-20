@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -323,6 +327,18 @@ class TestReviewSection:
             raw["line"] = line
         out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
         assert out[0].line == 10
+
+    @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN", "1e999"])
+    @pytest.mark.parametrize("deletion", [False, True], ids=["added", "deletion_only"])
+    def test_non_finite_line_falls_back_to_the_contract_line_without_raising(
+        self, git_repo, token, deletion
+    ):
+        hunk = _hunk(start=20, lines=("x", "y"), deletion=True) if deletion else _hunk(start=10)
+        raw = json.dumps({"findings": [_finding(line="@@")]}).replace('"@@"', token)
+        assert not isinstance(json.loads(raw)["findings"][0]["line"], str)
+        out = _review(git_repo, _FakeLLM([_ai_message(raw)]), _section([hunk]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert out[0].line == (20 if deletion else 10)
 
     def test_deletion_only_section_falls_back_to_old_start(self, git_repo):
         section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
@@ -668,3 +684,16 @@ class TestFinalAnswerReask:
         out = run_tool_loop(llm, [], "sys", "user", LGTMConfig(max_answer_reasks=1))
         assert len(llm.seen) == 2
         assert out == "b"
+
+
+@pytest.mark.parametrize("module", ["lgtm.review.sections", "lgtm.review.dedup"])
+def test_review_modules_import_in_a_fresh_interpreter(module):
+    import lgtm
+
+    root = str(Path(lgtm.__file__).resolve().parent.parent)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([root, os.environ.get("PYTHONPATH", "")])}
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr

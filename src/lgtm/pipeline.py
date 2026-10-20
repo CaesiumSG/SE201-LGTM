@@ -23,16 +23,16 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lgtm.agents.authz_reviewer import AuthzReviewerAgent
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent, failed_finding_id
 from lgtm.agents.base import AgentFinding, build_llm
 from lgtm.agents.investigator import run_investigator
 from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.agents.sast_triage import SASTTriageAgent
-from lgtm.agents.tools import AgentToolbox
+from lgtm.agents.tools import AgentToolbox, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, get_pr_diff
 from lgtm.rag.retriever import PolicyRetriever
@@ -281,6 +281,7 @@ class ReviewPipeline:
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
         results: dict[str, SectionResult] = {}
         section_findings: list[AgentFinding] = []
+        failed_findings: list[AgentFinding] = []
         for section in plan.sections:
             scoped = replace(
                 section,
@@ -294,11 +295,18 @@ class ReviewPipeline:
             reviewed = authz_agent.review_section(scoped, notes)
             for finding in reviewed:
                 finding.pr_graph_ok = toolbox.snapshot_ok("pr")
-            results[section.section_id] = self._section_result(section, reviewed)
-            section_findings.extend(f for f in reviewed if f.verdict != "safe")
+            failed_id = failed_finding_id(section.section_id)
+            results[section.section_id] = self._section_result(reviewed, failed_id)
+            for finding in reviewed:
+                if finding.verdict == "safe":
+                    continue
+                if finding.finding_id == failed_id:
+                    failed_findings.append(finding)
+                else:
+                    section_findings.append(finding)
 
         return _SectionStage(
-            findings=dedup_findings(section_findings),
+            findings=[*dedup_findings(section_findings), *failed_findings],
             plan=plan,
             results=results,
             investigator_status=investigator_status,
@@ -308,9 +316,8 @@ class ReviewPipeline:
         )
 
     @staticmethod
-    def _section_result(section: Section, findings: list[AgentFinding]) -> SectionResult:
-        failure_id = f"authz:{section.section_id}:failed"
-        failure = next((f for f in findings if f.finding_id == failure_id), None)
+    def _section_result(findings: list[AgentFinding], failed_id: str) -> SectionResult:
+        failure = next((f for f in findings if f.finding_id == failed_id), None)
         return SectionResult(
             status="failed" if failure else "completed",
             verdicts=[f.verdict for f in findings],
@@ -320,10 +327,10 @@ class ReviewPipeline:
 
     @staticmethod
     def _inside_snapshot(path: str) -> bool:
-        if not path or "\x00" in path:
+        if relative_path(path) is None:
             return False
-        windows = PureWindowsPath(path)
-        return not (windows.drive or windows.root) and ".." not in windows.parts
+        # Windows strips trailing dots and spaces from components, so these resolve to "..".
+        return not any(re.fullmatch(r"\.\.[. ]*", part) for part in re.split(r"[\\/]", path))
 
     # ------------------------------------------------------------------
     def _run_sast(
