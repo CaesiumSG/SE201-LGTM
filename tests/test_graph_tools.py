@@ -1150,6 +1150,13 @@ class TestBudgetOverride:
         assert EXHAUSTED not in results[:4]
         assert results[4] == EXHAUSTED
 
+    def test_budget_zero_override_refuses_the_first_call_instead_of_using_the_default(self, snap):
+        toolbox, tools = _legacy_tools(snap, max_tool_calls=3)
+        toolbox.reset_budget(0)
+        assert toolbox.budget == 0
+        results = self._spend(tools, 1)
+        assert results[0] == EXHAUSTED
+
     def test_budget_attribute_reflects_the_effective_cap(self, snap):
         toolbox, _ = _legacy_tools(snap, max_tool_calls=6)
         toolbox.reset_budget(2)
