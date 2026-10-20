@@ -267,7 +267,8 @@ class TestResultsAndSummary:
         monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
         monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
         case = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
-                "repo_url": "https://github.com/o/p"}
+                "repo_url": "https://github.com/o/p",
+                "file": "src/app/routes.py"}
         result = er.run_unit(case, "own", "llm-only", tmp_path, tmp_path, er.LGTMConfig())
         assert result["outcome"] == "ERROR"
         assert result["infra_failures"] == 1
@@ -354,7 +355,8 @@ class TestGraphMetadataOnRecords:
 
     BASE40, PR40 = "a" * 40, "b" * 40
     CASE = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
-            "repo_url": "https://github.com/o/p"}
+            "repo_url": "https://github.com/o/p",
+            "file": "src/app/routes.py"}
 
     @staticmethod
     def _pipeline(steps, cleaned):
