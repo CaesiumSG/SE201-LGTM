@@ -312,6 +312,139 @@ class TestInterruptExitsThree:
         assert script.cleaned == 1
 
 
+FILE = "app/orders.py"
+LOCATION = {"file": FILE, "old_range": None, "new_range": [10, 14]}
+DIFF_SHAPE = {"kind": "single_hunk"}
+PIN = {
+    "model": "m:1", "code_sha": "c" * 40, "code_dirty": False,
+    "base_sha": "", "pr_sha": "", "sampling": {}, "budgets": {}, "flags": {},
+}
+
+
+def graph_case(cid="sqli_01_vulnerable", expected="vulnerable"):
+    return {**case(cid, expected), "file": FILE,
+            "vulnerable_locations": [LOCATION], "diff_shape": DIFF_SHAPE}
+
+
+def full_coverage():
+    hunk = {"hunk_id": "h1", "file": FILE, "old_start": 10, "old_count": 5,
+            "new_start": 10, "new_count": 5, "change": "modified"}
+    section = {"section_id": "s1", "origin": "planner", "title": "s1",
+               "files": [FILE], "split": False, "partial_hunk": False,
+               "hunks": [hunk], "status": "completed", "verdicts": [],
+               "finding_ids": [], "error": None}
+    return {
+        "planner": "deterministic", "investigator_status": "ok",
+        "investigator_error": None, "investigator_input": "full",
+        "investigator_tool_calls": 0, "files_total": 1, "files_in_scope": 1,
+        "hunks_total": 1, "hunks_assigned": 1, "hunks_leftover": 0,
+        "hunks_reviewed": 1, "sections_scheduled": 1, "sections_completed": 1,
+        "sections_failed": 0, "sections_coalesced": 0, "complete": True,
+        "exclusions": [], "invalid_refs": [], "sections": [section],
+    }
+
+
+def coverage_review(coverage, findings=None):
+    m = ReviewMetadata(graph_state="ok", graph_index_seconds=1.0,
+                       base_sha=BASE40, pr_sha=PR40, coverage=coverage)
+    return review(m, findings)
+
+
+@pytest.fixture(autouse=True)
+def pinned(monkeypatch):
+    """Deterministic run_pin; no git runs. Returns the (config, root, refs) calls."""
+    calls = []
+
+    def fake_run_pin(config, repo_root, refs):
+        calls.append((config, Path(repo_root), dict(refs)))
+        return {**PIN, "base_sha": refs.get("base", ""), "pr_sha": refs.get("pr", "")}
+
+    monkeypatch.setattr(ev, "run_pin", fake_run_pin)
+    return calls
+
+
+def broken_review():
+    class Broken(FakeFinding):
+        def model_dump(self, exclude=None):
+            raise RuntimeError("cannot serialise finding")
+    return review(meta("degraded:pr:timeout", 7.5, BASE40, PR40),
+                  findings=[Broken()])
+
+
+class TestNewFormatRecords:
+    def test_lgtm_record_carries_the_new_format_keys(self, synthetic, pinned):
+        synthetic(coverage_review(
+            full_coverage(), [FakeFinding("vulnerable", "sqli")]))
+        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode="lgtm"))
+        assert rec["mode"] == "lgtm"
+        assert rec["file"] == FILE
+        assert rec["vulnerable_locations"] == [LOCATION]
+        assert rec["diff_shape"] == DIFF_SHAPE
+        assert rec["coverage"] == full_coverage()
+        for key in ("case_label", "case_label_grounded", "target_sections",
+                    "coverage_gap", "predicted", "outcome"):
+            assert key in rec
+        assert "legacy" not in rec
+
+    def test_record_pin_is_the_run_pin_of_the_lgtm_checkout_and_review_shas(
+            self, synthetic, pinned):
+        synthetic(coverage_review(full_coverage()))
+        config = ev.LGTMConfig(mode="lgtm")
+        rec = ev.evaluate_case(graph_case(), config)
+        assert rec["pin"] == {**PIN, "base_sha": BASE40, "pr_sha": PR40}
+        assert pinned
+        for seen_config, root, refs in pinned:
+            assert seen_config is config
+            assert root == ev.REPO_ROOT
+            assert refs == {"base": BASE40, "pr": PR40}
+
+    def test_lgtm_no_sast_record_carries_coverage(self, synthetic, pinned):
+        synthetic(coverage_review(full_coverage()))
+        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode="lgtm-no-sast"))
+        assert rec["mode"] == "lgtm-no-sast"
+        assert rec["coverage"] == full_coverage()
+
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_baseline_records_have_no_coverage_key(self, synthetic, pinned, mode):
+        synthetic(coverage_review(full_coverage(), [FakeFinding("vulnerable", "sqli")]))
+        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode=mode))
+        assert "coverage" not in rec
+        assert rec["mode"] == mode
+        assert rec["pin"]["base_sha"] == BASE40
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("review_meta", [
+        meta(), SimpleNamespace(semgrep_findings_in_diff=0)],
+        ids=["coverage-none", "no-coverage-attribute"])
+    def test_missing_coverage_in_a_coverage_mode_is_a_scan_failure(
+            self, synthetic, pinned, mode, review_meta):
+        synthetic(review(review_meta))
+        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode=mode))
+        assert "coverage" in rec and rec["coverage"] is None
+        assert rec["case_label"] == "scan_failure"
+
+    def test_case_without_graph_labels_omits_those_keys(self, synthetic, pinned):
+        synthetic(coverage_review(full_coverage()))
+        rec = ev.evaluate_case(case(), ev.LGTMConfig(mode="lgtm"))
+        assert "vulnerable_locations" not in rec
+        assert "diff_shape" not in rec
+        assert "pin" in rec
+
+    def test_post_review_failure_row_is_a_new_format_scan_failure(
+            self, synthetic, pinned):
+        synthetic(broken_review())
+        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode="lgtm"))
+        assert rec["outcome"] == "ERROR"
+        assert rec["pin"] == {**PIN, "base_sha": BASE40, "pr_sha": PR40}
+        assert rec["case_label"] == "scan_failure"
+        assert rec["mode"] == "lgtm"
+        assert rec["file"] == FILE
+        assert rec["vulnerable_locations"] == [LOCATION]
+        assert rec["diff_shape"] == DIFF_SHAPE
+        assert "coverage" in rec
+        assert "legacy" not in rec
+
+
 class TestNoGraphSwitch:
     @pytest.mark.parametrize("module", [ev, inj], ids=["synthetic", "injection"])
     def test_help_has_no_graph_option(self, module, monkeypatch, capsys):
@@ -324,11 +457,7 @@ class TestNoGraphSwitch:
 class TestPostReviewFailureKeepsReviewMetadata:
     @staticmethod
     def _broken_review():
-        class Broken(FakeFinding):
-            def model_dump(self, exclude=None):
-                raise RuntimeError("cannot serialise finding")
-        return review(meta("degraded:pr:timeout", 7.5, BASE40, PR40),
-                      findings=[Broken()])
+        return broken_review()
 
     def test_synthetic_error_record_keeps_the_four_graph_fields(self, synthetic):
         synthetic(self._broken_review())

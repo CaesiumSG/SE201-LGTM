@@ -233,6 +233,93 @@ class TestRescore:
         assert saved["summary"]["overall"]["scored"] == 1
 
 
+class TestRescoreNewFormat:
+    LABEL_LOCATION = {"file": "app/orders.py", "old_range": None, "new_range": [10, 14]}
+    LABEL_SHAPE = {"kind": "single_hunk"}
+    STORED_PIN = {"code_sha": "stored-sha", "model": "stored-model"}
+
+    @pytest.fixture(autouse=True)
+    def no_run_pin(self, monkeypatch):
+        def refuse(*args, **kwargs):
+            raise AssertionError("rescore must not compute a run pin")
+
+        monkeypatch.setattr(evaluate, "run_pin", refuse)
+
+    def _setup(self, tmp_path):
+        out = tmp_path / "run"
+        out.mkdir()
+        cases = [
+            {"id": "a", "category": "authz", "split": "dev",
+             "expected_verdict": "vulnerable", "file": "app/orders.py",
+             "vulnerable_locations": [self.LABEL_LOCATION],
+             "diff_shape": self.LABEL_SHAPE},
+            {"id": "b", "category": "authz", "split": "eval",
+             "expected_verdict": "safe", "file": "app/orders.py",
+             "vulnerable_locations": [self.LABEL_LOCATION],
+             "diff_shape": self.LABEL_SHAPE},
+        ]
+        stale_location = {"file": "app/old.py", "old_range": None, "new_range": [900, 905]}
+        new_row = _case_row(
+            "a", "vulnerable", findings=[_f("authz", "vulnerable")],
+            coverage=_coverage([_target_section()]), file="app/old.py",
+            locations=[stale_location], diff_shape={"kind": "stale"},
+            pin=copy.deepcopy(self.STORED_PIN))
+        (out / "a.json").write_text(json.dumps(new_row), encoding="utf-8")
+        (out / "b.json").write_text(json.dumps({
+            "id": "b", "category": "authz", "expected": "safe",
+            "findings": [_f("authz", "safe")], "latency_seconds": 1, "est_tokens": 1,
+        }), encoding="utf-8")
+        (out / "summary.json").write_text(json.dumps({
+            "mode": "lgtm", "model": "m", "generated_at": "then", "git_commit": "abc",
+            "split": "all", "outcomes": {"a": "TP", "b": "TN"}, "summary": {},
+        }), encoding="utf-8")
+        return out, cases
+
+    def test_new_rows_are_rederived_from_current_labels(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "a.json").read_text())
+        assert row["file"] == "app/orders.py"
+        assert row["vulnerable_locations"] == [self.LABEL_LOCATION]
+        assert row["diff_shape"] == self.LABEL_SHAPE
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["outcome"] == "TP"
+        assert "legacy" not in row
+
+    def test_new_rows_keep_their_stored_pin_and_coverage(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "a.json").read_text())
+        assert row["pin"] == self.STORED_PIN
+        assert row["coverage"] == _coverage([_target_section()])
+
+    def test_legacy_rows_are_rescored_without_gaining_graph_fields(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+
+        evaluate.rescore(out, cases, "lgtm")
+
+        row = json.loads((out / "b.json").read_text())
+        assert row["legacy"] is True
+        assert row["case_label"] is None
+        assert row["outcome"] == "TN"
+        for key in ("pin", "file", "vulnerable_locations", "diff_shape", "coverage",
+                    "target_sections", "coverage_gap", "mode"):
+            assert key not in row
+
+    def test_partial_rescore_of_new_format_run_is_still_refused(self, tmp_path):
+        out, cases = self._setup(tmp_path)
+        before = (out / "a.json").read_bytes()
+
+        with pytest.raises(SystemExit):
+            evaluate.rescore(out, cases[:1], "lgtm")
+
+        assert (out / "a.json").read_bytes() == before
+
+
 def _run_benchmark(tmp_path, monkeypatch, argv):
     (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
     summary = MagicMock()
@@ -452,6 +539,36 @@ class TestErrorAccounting:
         assert summary["error_cases"] == [{"id": "a", "error": "x" * 300}]
 
 
+def _pin_for(model, mode, static_facts, base="", pr=""):
+    return {
+        "model": model, "code_sha": "c" * 40, "code_dirty": False,
+        "base_sha": base, "pr_sha": pr,
+        "sampling": {"llm_temperature": 0.0, "reasoning": False},
+        "budgets": {"max_tool_calls": 8},
+        "flags": {"mode": mode, "static_facts": static_facts},
+    }
+
+
+@pytest.fixture(autouse=True)
+def pin(monkeypatch):
+    """Deterministic run_pin derived from the config it receives; no git runs.
+
+    Returns the list of (config, repo_root, refs) calls.
+    """
+    calls = []
+
+    def fake_run_pin(config, repo_root, refs):
+        calls.append((config, Path(repo_root), dict(refs)))
+        return _pin_for(config.ollama_model, config.mode, config.static_facts,
+                        refs.get("base", ""), refs.get("pr", ""))
+
+    monkeypatch.setattr(evaluate, "run_pin", fake_run_pin)
+    return calls
+
+
+_DROP = object()
+
+
 class TestResume:
     EXPECTED = {"a": "vulnerable", "b": "safe", "c": "vulnerable"}
 
@@ -470,7 +587,9 @@ class TestResume:
         bench.mkdir()
         (bench / "labels.json").write_text(json.dumps({"cases": [
             {"id": cid, "category": "authz", "expected_verdict": expected,
-             "split": "dev", "patch_file": f"patches/{cid}.patch"}
+             "split": "dev", "patch_file": f"patches/{cid}.patch",
+             **({"file": "app/orders.py", "vulnerable_locations": [LOCATION],
+                 "diff_shape": "single_hunk"} if cid in raises else {})}
             for cid, expected in self.EXPECTED.items()
         ]}), encoding="utf-8")
         out = tmp_path / "out"
@@ -607,11 +726,202 @@ class TestResume:
                    "--ollama-url", "http://127.0.0.1:11435")
 
         manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
-        assert set(manifest) == {"model", "ollama_base_url", "reasoning", "mode"}
+        assert set(manifest) == {"model", "ollama_base_url", "reasoning", "mode", "pin"}
         assert manifest["model"] == "m:1"
         assert manifest["ollama_base_url"] == "http://127.0.0.1:11435"
         assert manifest["reasoning"] is False
         assert manifest["mode"] == "lgtm"
+
+    PIN = _pin_for("m:1", "lgtm", False)
+
+    def _manifest(self, out, **over):
+        manifest = {
+            "model": "m:1", "ollama_base_url": "http://localhost:11434",
+            "reasoning": False, "mode": "lgtm", "pin": copy.deepcopy(self.PIN),
+        }
+        manifest.update(over)
+        manifest = {k: v for k, v in manifest.items() if v is not _DROP}
+        path = out / "run.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return path
+
+    def _new_row(self, cid, **over):
+        verdict = "vulnerable" if self.EXPECTED[cid] == "vulnerable" else "safe"
+        return evaluate.score_case(_case_row(
+            cid, self.EXPECTED[cid], coverage=_coverage([_target_section()]),
+            findings=[_f("authz", verdict)], **over))
+
+    def test_run_json_pin_is_computed_from_the_cli_adjusted_config(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+
+        self._main(monkeypatch, out, "--model", "m:1", "--static-facts",
+                   "--mode", "lgtm-no-sast")
+
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"] == _pin_for("m:1", "lgtm-no-sast", True)
+        assert pin and all(
+            root == evaluate.REPO_ROOT and not refs.get("base") and not refs.get("pr")
+            for _, root, refs in pin)
+
+    def test_resume_refuses_when_only_an_experiment_flag_differs(
+            self, tmp_path, monkeypatch, capsys):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1", "--static-facts")
+
+        assert exc.value.code == 2
+        assert "(differs in: flags)" in capsys.readouterr().err
+        assert ran == []
+
+    def test_resume_pin_difference_ignores_base_and_pr_sha_in_the_message(
+            self, tmp_path, monkeypatch, capsys):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, pin={**self.PIN, "code_sha": "d" * 40,
+                                 "base_sha": "a" * 40, "pr_sha": "b" * 40})
+
+        with pytest.raises(SystemExit):
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert "(differs in: code_sha)" in capsys.readouterr().err
+
+    def test_new_run_overwrites_a_pinless_manifest_with_a_pinned_one(
+            self, tmp_path, monkeypatch):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, pin=_DROP)
+
+        self._main(monkeypatch, out, "--model", "m:1")
+
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert manifest["pin"] == self.PIN
+
+    def test_resume_refuses_manifest_without_pin(
+            self, tmp_path, monkeypatch, capsys, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        manifest = self._manifest(out, pin=_DROP)
+        a = self._write(out, self._new_row("a"))
+        before = (a.read_bytes(), manifest.read_bytes())
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        assert (f"--resume: {out} has no run pin; start a new output directory"
+                in capsys.readouterr().err)
+        assert ran == []
+        assert (a.read_bytes(), manifest.read_bytes()) == before
+        assert not (out / "b.json").exists() and not (out / "summary.json").exists()
+
+    @pytest.mark.parametrize("changes,differs", [
+        ({"code_sha": "d" * 40}, "code_sha"),
+        ({"code_dirty": True}, "code_dirty"),
+        ({"flags": {"mode": "lgtm", "static_facts": True}}, "flags"),
+        ({"budgets": {"max_tool_calls": 9}}, "budgets"),
+        ({"sampling": {"llm_temperature": 0.7, "reasoning": False}}, "sampling"),
+        ({"code_sha": "d" * 40, "budgets": {}, "flags": {}}, "budgets, code_sha, flags"),
+    ])
+    def test_resume_refuses_different_pin(
+            self, tmp_path, monkeypatch, capsys, pin, changes, differs):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        stored = {**copy.deepcopy(self.PIN), **changes}
+        manifest = self._manifest(out, pin=stored)
+        a = self._write(out, self._new_row("a"))
+        before = (a.read_bytes(), manifest.read_bytes())
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        assert (f"--resume: {out} was produced with a different run pin "
+                f"(differs in: {differs})" in capsys.readouterr().err)
+        assert ran == []
+        assert (a.read_bytes(), manifest.read_bytes()) == before
+        assert not (out / "b.json").exists()
+
+    def test_resume_checks_model_before_the_pin(
+            self, tmp_path, monkeypatch, capsys, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out, model="other:1b", pin={**self.PIN, "code_sha": "d" * 40})
+
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "different model or reasoning setting" in err
+        assert "run pin" not in err
+
+    def test_resume_accepts_pin_differing_only_in_base_and_pr_sha(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        stored = {**copy.deepcopy(self.PIN), "base_sha": "a" * 40, "pr_sha": "b" * 40}
+        self._manifest(out, pin=stored)
+        self._write(out, self._new_row("a"))
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert sorted(ran) == ["b", "c"]
+
+    def test_resume_reruns_scan_failure_rows_and_keeps_scored_new_rows(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        self._manifest(out)
+        done = self._write(out, self._new_row("a"))
+        failed = evaluate.score_case(_case_row(
+            "b", "safe", findings=[_f("authz", "safe")], coverage=None))
+        assert failed["case_label"] == "scan_failure"
+        self._write(out, failed)
+        before = done.read_bytes()
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert sorted(ran) == ["b", "c"]
+        assert done.read_bytes() == before
+
+    def test_fresh_harness_exception_is_a_new_format_scan_failure_that_resume_reruns(
+            self, tmp_path, monkeypatch, pin):
+        out, ran = self._setup(tmp_path, monkeypatch, raises={"a"})
+
+        self._main(monkeypatch, out, "--model", "m:1")
+
+        row = json.loads((out / "a.json").read_text(encoding="utf-8"))
+        assert row["outcome"] == "ERROR" and "boom" in row["error"]
+        manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        assert row["pin"] == manifest["pin"] == self.PIN
+        assert "legacy" not in row
+        assert row["case_label"] == "scan_failure"
+        assert row["mode"] == "lgtm"
+        assert row["file"] == "app/orders.py"
+        assert row["vulnerable_locations"] == [LOCATION]
+        assert row["diff_shape"] == "single_hunk"
+        assert "coverage" in row
+        ran.clear()
+
+        self._main(monkeypatch, out, "--resume", "--model", "m:1")
+
+        assert ran == ["a"]
+
+    @pytest.mark.parametrize("label,expected", [
+        ("detected_vulnerability", "vulnerable"),
+        ("explicit_safe", "safe"),
+    ])
+    def test_console_line_prints_the_case_label(
+            self, tmp_path, monkeypatch, capsys, pin, label, expected):
+        out, ran = self._setup(tmp_path, monkeypatch)
+        row = evaluate.score_case(_case_row("a", expected, **_scenario(label)))
+        assert row["case_label"] == label
+        monkeypatch.setattr(evaluate, "evaluate_case", lambda case, config: row)
+        (tmp_path / "bench" / "labels.json").write_text(json.dumps({"cases": [
+            {"id": "a", "category": "authz", "expected_verdict": expected,
+             "split": "dev", "patch_file": "patches/a.patch"}]}), encoding="utf-8")
+
+        self._main(monkeypatch, out)
+
+        lines = capsys.readouterr().out.splitlines()
+        [progress] = [line for line in lines if line.startswith("[1/1] a")]
+        assert label in progress
 
     def test_is_done_treats_unreadable_json_as_pending(self, tmp_path):
         corrupt = tmp_path / "corrupt.json"
@@ -711,3 +1021,778 @@ def test_llm_only_baseline_leaves_graph_fields_empty(git_repo):
     assert result.meta.graph_index_seconds is None
     assert result.meta.base_sha == ""
     assert result.meta.pr_sha == ""
+
+
+def _hunk(file, new_start=10, new_count=5, hunk_id=None, old_start=None):
+    old_start = new_start if old_start is None else old_start
+    return {
+        "hunk_id": hunk_id or f"{file}:{new_start}", "file": file,
+        "old_start": old_start, "old_count": new_count,
+        "new_start": new_start, "new_count": new_count, "change": "modified",
+    }
+
+
+def _section(section_id, hunks, status="completed"):
+    return {
+        "section_id": section_id, "origin": "planner", "title": section_id,
+        "files": sorted({h["file"] for h in hunks}), "split": False,
+        "partial_hunk": False, "hunks": hunks, "status": status,
+        "verdicts": [], "finding_ids": [], "error": None,
+    }
+
+
+def _coverage(sections, **over):
+    completed = sum(1 for s in sections if s["status"] == "completed")
+    failed = sum(1 for s in sections if s["status"] not in ("completed", None))
+    hunks = sum(len(s["hunks"]) for s in sections)
+    base = {
+        "planner": "deterministic", "investigator_status": "ok",
+        "investigator_error": None, "investigator_input": "diff",
+        "investigator_tool_calls": 0, "files_total": 1, "files_in_scope": 1,
+        "hunks_total": hunks, "hunks_assigned": hunks, "hunks_leftover": 0,
+        "hunks_reviewed": sum(
+            len(s["hunks"]) for s in sections if s["status"] == "completed"),
+        "sections_scheduled": len(sections), "sections_completed": completed,
+        "sections_failed": failed, "sections_coalesced": 0,
+        "complete": failed == 0 and completed == len(sections),
+        "exclusions": [], "invalid_refs": [], "sections": sections,
+    }
+    base.update(over)
+    return base
+
+
+ROW_FILE = "app/orders.py"
+LOCATION = {"file": ROW_FILE, "old_range": None, "new_range": [10, 14]}
+
+
+def _case_row(cid="c", expected="vulnerable", findings=(), coverage="absent",
+              mode="lgtm", locations="default", file=ROW_FILE, split="dev",
+              **extra):
+    """`locations=None` omits the vulnerable_locations key."""
+    row = {
+        "id": cid, "category": "authz", "split": split, "expected": expected,
+        "findings": copy.deepcopy(list(findings)), "latency_seconds": 1.0,
+        "est_tokens": 10, "mode": mode, "file": file,
+        "pin": {"code_sha": "abc"}, **extra,
+    }
+    if locations == "default":
+        locations = [LOCATION]
+    if locations is not None:
+        row["vulnerable_locations"] = copy.deepcopy(list(locations))
+    if coverage != "absent":
+        row["coverage"] = copy.deepcopy(coverage)
+    return row
+
+
+def _target_section(status="completed"):
+    return _section("s-target", [_hunk(ROW_FILE, 10, 5)], status)
+
+
+def _failed_target_coverage():
+    return _coverage([
+        _target_section("failed"),
+        _section("done", [_hunk(ROW_FILE, 200, 4)]),
+    ])
+
+
+def _scenario(label):
+    """Coverage-mode row inputs whose derived label is `label`."""
+    complete = _coverage([_target_section()])
+    return {
+        "detected_vulnerability": dict(
+            findings=[_f("authz", "vulnerable")], coverage=complete),
+        "possible_vulnerability": dict(
+            findings=[_f("authz", "possible")], coverage=complete),
+        "insufficient_evidence": dict(
+            findings=[_f("authz", "insufficient_evidence")], coverage=complete),
+        "explicit_safe": dict(findings=[_f("authz", "safe")], coverage=complete),
+        "missing_review": dict(
+            findings=[_f("authz", "safe")],
+            coverage=_failed_target_coverage()),
+        "no_candidate": dict(
+            findings=[_f("authz", "safe")],
+            coverage=_coverage([_section("other", [_hunk("app/other.py")])])),
+        "scan_failure": dict(findings=[_f("authz", "vulnerable")], coverage=None),
+    }[label]
+
+
+def _label(**kw):
+    return evaluate.score_case(_case_row(**kw))["case_label"]
+
+
+COVERAGE_MODES = ["lgtm", "lgtm-no-sast"]
+ALL_LABELS = [
+    "detected_vulnerability", "possible_vulnerability", "insufficient_evidence",
+    "explicit_safe", "missing_review", "no_candidate", "scan_failure",
+]
+
+
+class TestCaseLabels:
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    @pytest.mark.parametrize("label", ALL_LABELS)
+    def test_each_label_is_derived_from_coverage_and_findings(self, label, mode):
+        row = evaluate.score_case(_case_row(mode=mode, **_scenario(label)))
+        assert row["case_label"] == label
+        assert row["case_label_grounded"] == label
+
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    @pytest.mark.parametrize("label,predicted", [
+        ("detected_vulnerability", "vulnerable"),
+        ("possible_vulnerability", "possible"),
+        ("insufficient_evidence", "insufficient_evidence"),
+        ("explicit_safe", "safe"),
+        ("missing_review", "missing_review"),
+        ("no_candidate", "no_candidate"),
+        ("scan_failure", "scan_failure"),
+    ])
+    def test_predicted_follows_the_label(self, label, predicted, mode):
+        row = evaluate.score_case(_case_row(mode=mode, **_scenario(label)))
+        assert row["predicted"] == predicted
+
+    def test_new_format_rows_are_not_legacy(self):
+        row = evaluate.score_case(_case_row(**_scenario("explicit_safe")))
+        assert not row.get("legacy")
+
+    def test_scan_failure_when_sections_scheduled_but_none_completed(self):
+        cov = _coverage([_target_section("failed")], sections_completed=0)
+        assert _label(findings=[_f("authz", "vulnerable")], coverage=cov) == "scan_failure"
+
+    def test_scan_failure_outranks_no_candidate_when_no_section_touches_the_target(self):
+        cov = _coverage([_section("other", [_hunk("app/other.py")], "failed")])
+        assert _label(findings=[_f("authz", "safe")], coverage=cov) == "scan_failure"
+
+    def test_scan_failure_when_investigator_errored_with_nothing_scheduled(self):
+        cov = _coverage([], investigator_error="boom", investigator_status="failed")
+        assert _label(findings=[], coverage=cov) == "scan_failure"
+
+    def test_investigator_error_with_completed_sections_is_not_scan_failure(self):
+        cov = _coverage([_target_section()], investigator_error="boom")
+        assert _label(findings=[_f("authz", "safe")], coverage=cov) == "explicit_safe"
+
+    def test_nothing_scheduled_and_no_error_is_no_candidate(self):
+        assert _label(findings=[_f("authz", "safe")], coverage=_coverage([])) == "no_candidate"
+
+    def test_no_candidate_outranks_a_vulnerable_finding(self):
+        cov = _coverage([_section("other", [_hunk("app/other.py")])])
+        assert _label(findings=[_f("authz", "vulnerable")], coverage=cov) == "no_candidate"
+
+    def test_row_file_counts_as_a_target_file(self):
+        elsewhere = {"file": "app/models.py", "old_range": None, "new_range": [1, 3]}
+        cov = _coverage([_target_section()])
+        assert _label(findings=[_f("authz", "safe")], coverage=cov,
+                      locations=[elsewhere]) == "explicit_safe"
+
+    def test_detected_with_failed_target_section_reports_gap(self):
+        cov = _coverage([
+            _target_section("failed"),
+            _section("ok", [_hunk(ROW_FILE, 40, 3)]),
+        ])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "vulnerable")], coverage=cov))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["coverage_gap"] is True
+
+    def test_detected_on_complete_coverage_has_no_gap(self):
+        row = evaluate.score_case(_case_row(**_scenario("detected_vulnerability")))
+        assert row["coverage_gap"] is False
+
+    @pytest.mark.parametrize("over", [
+        {"complete": False}, {"hunks_leftover": 1}, {"hunks_leftover": 2},
+        {"sections_failed": 1},
+    ])
+    def test_detected_gap_triggers(self, over):
+        cov = _coverage([_target_section()], **over)
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "vulnerable")], coverage=cov))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["coverage_gap"] is True
+
+    @pytest.mark.parametrize("status", ["failed", "skipped", "pending", None])
+    def test_any_non_completed_target_section_is_missing_review(self, status):
+        cov = _coverage([
+            _target_section(status),
+            _section("done", [_hunk(ROW_FILE, 200, 4)]),
+        ])
+        assert _label(findings=[_f("authz", "safe")], coverage=cov) == "missing_review"
+
+    @pytest.mark.parametrize("findings,label", [
+        ([_f("authz", "possible"), _f("authz", "insufficient_evidence"),
+          _f("authz", "safe")], "possible_vulnerability"),
+        ([_f("authz", "insufficient_evidence"), _f("authz", "safe")], "explicit_safe"),
+    ])
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_non_vulnerable_verdict_precedence_in_coverage_modes(
+            self, mode, findings, label):
+        cov = _coverage([_target_section()])
+        assert _label(mode=mode, findings=findings, coverage=cov) == label
+
+    def test_failed_non_target_section_reports_gap_on_a_detected_row(self):
+        cov = _coverage(
+            [_target_section(), _section("far", [_hunk(ROW_FILE, 200, 4)], "failed")],
+            complete=True, hunks_leftover=0)
+        assert cov["sections_failed"] == 1
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "vulnerable")], coverage=cov))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["coverage_gap"] is True
+
+    @pytest.mark.parametrize("mode", COVERAGE_MODES + ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("verdict", ["possible", "insufficient_evidence", "safe"])
+    def test_coverage_gap_is_false_for_non_detected_labels(self, mode, verdict):
+        cov = _coverage([_target_section()], hunks_leftover=3, complete=False)
+        kwargs = {} if mode in ("llm-only", "sast-only") else {"coverage": cov}
+        row = evaluate.score_case(_case_row(
+            mode=mode, findings=[_f("authz", verdict)], **kwargs))
+        assert row["coverage_gap"] is False
+
+    @pytest.mark.parametrize("label", [
+        "missing_review", "no_candidate", "scan_failure"])
+    def test_coverage_gap_is_false_for_unreviewed_labels(self, label):
+        row = evaluate.score_case(_case_row(**_scenario(label)))
+        assert row["coverage_gap"] is False
+
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_coverage_gap_is_false_for_findings_only_detections(self, mode):
+        row = evaluate.score_case(_case_row(
+            mode=mode, findings=[_f("authz", "vulnerable")]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["coverage_gap"] is False
+
+    @pytest.mark.parametrize("locations", [None, []])
+    def test_safe_rows_without_vulnerable_locations_target_the_row_file(self, locations):
+        cov = _coverage([
+            _target_section(),
+            _section("far", [_hunk(ROW_FILE, 200, 4)], "failed"),
+            _section("unrelated", [_hunk("app/other.py")], "failed"),
+        ])
+        row = evaluate.score_case(_case_row(
+            expected="safe", findings=[_f("authz", "safe")], coverage=cov,
+            locations=locations))
+        assert sorted(row["target_sections"]) == ["far", "s-target"]
+        assert row["case_label"] == "missing_review"
+        assert row["outcome"] == "EXCLUDED"
+
+    @pytest.mark.parametrize("locations", [None, []])
+    def test_safe_rows_without_locations_are_explicit_safe_when_row_file_reviewed(
+            self, locations):
+        cov = _coverage([
+            _target_section(),
+            _section("unrelated", [_hunk("app/other.py")], "failed"),
+        ])
+        row = evaluate.score_case(_case_row(
+            expected="safe", findings=[_f("authz", "safe")], coverage=cov,
+            locations=locations))
+        assert row["case_label"] == "explicit_safe"
+        assert row["outcome"] == "TN"
+
+    @pytest.mark.parametrize("locations", [None, []])
+    def test_safe_rows_without_locations_are_no_candidate_when_row_file_untouched(
+            self, locations):
+        cov = _coverage([_section("other", [_hunk("app/other.py")])])
+        assert _label(expected="safe", findings=[_f("authz", "safe")],
+                      coverage=cov, locations=locations) == "no_candidate"
+
+    @pytest.mark.parametrize("verdict", ["possible", "insufficient_evidence", "safe"])
+    def test_failed_target_section_outranks_non_vulnerable_findings(self, verdict):
+        cov = _failed_target_coverage()
+        assert _label(findings=[_f("authz", verdict)], coverage=cov) == "missing_review"
+
+    def test_failed_section_outside_the_target_is_not_missing_review(self):
+        cov = _coverage([
+            _target_section(),
+            _section("far", [_hunk(ROW_FILE, 200, 4)], "failed"),
+        ])
+        row = evaluate.score_case(_case_row(findings=[_f("authz", "safe")], coverage=cov))
+        assert row["case_label"] == "explicit_safe"
+        assert row["target_sections"] == ["s-target"]
+
+    def test_failed_section_in_an_unrelated_file_is_not_missing_review(self):
+        cov = _coverage([
+            _target_section(),
+            _section("unrelated", [_hunk("app/other.py")], "failed"),
+        ])
+        assert _label(findings=[_f("authz", "safe")], coverage=cov) == "explicit_safe"
+
+    def test_other_category_findings_are_not_relevant(self):
+        cov = _coverage([_target_section()])
+        assert _label(findings=[_f("sqli", "vulnerable")], coverage=cov) == "explicit_safe"
+
+    def test_target_sections_are_those_overlapping_a_location(self):
+        near = _section("near", [_hunk(ROW_FILE, 12, 2)])
+        far = _section("far", [_hunk(ROW_FILE, 300, 2)])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], coverage=_coverage([near, far])))
+        assert row["target_sections"] == ["near"]
+
+    def test_file_level_fallback_when_no_section_overlaps_any_location(self):
+        a = _section("a", [_hunk(ROW_FILE, 100, 2)])
+        b = _section("b", [_hunk(ROW_FILE, 300, 2)], "failed")
+        c = _section("c", [_hunk("app/other.py", 12, 2)])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], coverage=_coverage([a, b, c])))
+        assert sorted(row["target_sections"]) == ["a", "b"]
+        assert row["case_label"] == "missing_review"
+
+    def test_fallback_covers_location_files_other_than_the_row_file(self):
+        loc = {"file": "app/models.py", "old_range": None, "new_range": [1, 3]}
+        a = _section("a", [_hunk("app/models.py", 50, 2)])
+        b = _section("b", [_hunk(ROW_FILE, 50, 2)])
+        c = _section("c", [_hunk("app/other.py", 50, 2)])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], locations=[loc],
+            coverage=_coverage([a, b, c])))
+        assert sorted(row["target_sections"]) == ["a", "b"]
+
+    def test_every_location_is_checked_for_overlap(self):
+        second = {"file": ROW_FILE, "old_range": None, "new_range": [300, 305]}
+        p = _section("p", [_hunk(ROW_FILE, 100, 2)])
+        q = _section("q", [_hunk(ROW_FILE, 301, 2)], "failed")
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], locations=[LOCATION, second],
+            coverage=_coverage([p, q])))
+        assert row["target_sections"] == ["q"]
+        assert row["case_label"] == "missing_review"
+
+    def test_no_file_fallback_when_any_location_overlaps_a_section(self):
+        elsewhere = {"file": "app/models.py", "old_range": None, "new_range": [1, 3]}
+        m = _section("m", [_hunk("app/models.py", 50, 2)], "failed")
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], locations=[LOCATION, elsewhere],
+            coverage=_coverage([_target_section(), m])))
+        assert row["target_sections"] == ["s-target"]
+        assert row["case_label"] == "explicit_safe"
+
+    def test_location_file_other_than_the_row_file_can_make_a_candidate(self):
+        loc = {"file": "app/models.py", "old_range": None, "new_range": [1, 3]}
+        only = _section("only", [_hunk("app/models.py", 50, 2)])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], locations=[loc],
+            coverage=_coverage([only])))
+        assert row["case_label"] == "explicit_safe"
+        assert row["target_sections"] == ["only"]
+
+    def test_old_side_range_alone_selects_the_overlapping_section(self):
+        loc = {"file": ROW_FILE, "old_range": [100, 104], "new_range": None}
+        by_old = _section("by-old", [_hunk(ROW_FILE, 500, 5, old_start=100)])
+        far = _section("far", [_hunk(ROW_FILE, 300, 5)])
+        row = evaluate.score_case(_case_row(
+            findings=[_f("authz", "safe")], locations=[loc],
+            coverage=_coverage([by_old, far])))
+        assert row["target_sections"] == ["by-old"]
+
+
+class TestFindingsOnlyLabels:
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("findings,label", [
+        ([], "no_candidate"),
+        ([_f("sqli", "vulnerable")], "no_candidate"),
+        ([_f("authz", "vulnerable")], "detected_vulnerability"),
+        ([_f("authz", "possible"), _f("authz", "safe")], "possible_vulnerability"),
+        ([_f("authz", "insufficient_evidence")], "insufficient_evidence"),
+        ([_f("authz", "safe")], "explicit_safe"),
+    ])
+    def test_label_mapping(self, mode, findings, label):
+        row = evaluate.score_case(_case_row(findings=findings, mode=mode))
+        assert row["case_label"] == label
+        assert "coverage" not in row
+
+    def test_no_relevant_finding_on_safe_case_is_never_a_true_negative(self):
+        row = evaluate.score_case(_case_row(expected="safe", findings=[], mode="sast-only"))
+        assert row["outcome"] == "UNCREDITED"
+
+    def test_no_relevant_finding_on_vulnerable_case_is_a_miss(self):
+        row = evaluate.score_case(_case_row(expected="vulnerable", findings=[], mode="llm-only"))
+        assert row["outcome"] == "FN"
+
+
+class TestOutcomeTable:
+    @pytest.mark.parametrize("label,vulnerable_outcome,safe_outcome", [
+        ("detected_vulnerability", "TP", "FP"),
+        ("possible_vulnerability", "FN", "UNCREDITED"),
+        ("insufficient_evidence", "FN", "UNCREDITED"),
+        ("explicit_safe", "FN", "TN"),
+        ("no_candidate", "FN", "UNCREDITED"),
+        ("missing_review", "FN", "EXCLUDED"),
+        ("scan_failure", "FN", "EXCLUDED"),
+    ])
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_outcome_by_label_and_expectation(
+            self, label, vulnerable_outcome, safe_outcome, mode):
+        vuln = evaluate.score_case(_case_row(
+            expected="vulnerable", mode=mode, **_scenario(label)))
+        safe = evaluate.score_case(_case_row(
+            expected="safe", mode=mode, **_scenario(label)))
+        assert vuln["outcome"] == vulnerable_outcome
+        assert vuln["outcome_grounded"] == vulnerable_outcome
+        assert safe["outcome"] == safe_outcome
+        assert safe["outcome_grounded"] == safe_outcome
+
+    @pytest.mark.parametrize("expected,plain,grounded", [
+        ("vulnerable", "TP", "FN"), ("safe", "FP", "UNCREDITED"),
+    ])
+    def test_ungrounded_vulnerable_is_downgraded_to_possible_in_grounded_label(
+            self, expected, plain, grounded):
+        row = evaluate.score_case(_case_row(
+            expected=expected, coverage=_coverage([_target_section()]),
+            findings=[_f("authz", "vulnerable", valid=False)]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+        assert row["outcome"] == plain
+        assert row["outcome_grounded"] == grounded
+
+    def test_grounded_label_stays_detected_with_one_valid_vulnerable_finding(self):
+        row = evaluate.score_case(_case_row(
+            coverage=_coverage([_target_section()]),
+            findings=[_f("authz", "vulnerable"), _f("authz", "vulnerable", valid=False)]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "detected_vulnerability"
+        assert row["outcome_grounded"] == "TP"
+
+    def test_grounded_label_prefers_a_valid_possible_over_an_invalid_vulnerable(self):
+        row = evaluate.score_case(_case_row(
+            coverage=_coverage([_target_section()]),
+            findings=[_f("authz", "vulnerable", valid=False), _f("authz", "possible")]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+
+    def test_grounded_downgrade_applies_in_findings_only_modes(self):
+        row = evaluate.score_case(_case_row(
+            mode="llm-only", findings=[_f("authz", "vulnerable", valid=False)]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+
+
+@pytest.fixture
+def stored(monkeypatch):
+    """Serve a row to is_done without touching the filesystem."""
+    def put(row):
+        monkeypatch.setattr(evaluate, "load_result", lambda path: row)
+    return put
+
+
+class TestCoverageRowErrors:
+    def test_infra_marker_findings_are_ignored_for_coverage_rows(self, stored):
+        row = evaluate.score_case(_case_row(
+            expected="safe", coverage=_coverage([_target_section()]),
+            findings=[_infra_finding("authz:1"), _f("authz", "safe")]))
+        assert row["outcome"] != "ERROR"
+        assert row["case_label"] == "explicit_safe"
+        assert row["infra_failures"] == 0
+        assert row["infra_failure_ids"] == []
+        assert evaluate.summarize([row])["errors"] == 0
+        stored(row)
+        assert evaluate.is_done(Path("row.json")) is True
+
+    def test_infra_marker_findings_still_error_findings_only_rows(self):
+        row = evaluate.score_case(_case_row(
+            mode="llm-only", findings=[_infra_finding("authz:1")]))
+        assert row["outcome"] == "ERROR"
+        assert row["infra_failures"] == 1
+
+    def test_row_error_keeps_the_error_path_for_coverage_rows(self):
+        row = evaluate.score_case(_case_row(
+            coverage=_coverage([_target_section()]), error="harness exploded"))
+        assert row["outcome"] == "ERROR"
+        assert row["error"] == "harness exploded"
+        assert row["case_label"] == "scan_failure"
+        assert row["case_label_grounded"] == "scan_failure"
+
+    def test_mark_error_sets_both_labels_to_scan_failure(self):
+        marked = evaluate.mark_error(_case_row(coverage=None), "boom")
+        assert marked["case_label"] == "scan_failure"
+        assert marked["case_label_grounded"] == "scan_failure"
+        assert marked["outcome"] == "ERROR"
+
+    def test_scan_failure_and_missing_review_rows_are_not_errors_in_summary(self):
+        rows = [
+            evaluate.score_case(_case_row("a", "safe", **_scenario("scan_failure"))),
+            evaluate.score_case(_case_row("b", "safe", **_scenario("missing_review"))),
+        ]
+        summary = evaluate.summarize(rows)
+        assert summary["errors"] == 0
+        assert summary["error_cases"] == []
+        assert summary["overall"]["errors"] == 0
+
+    def test_is_done_is_false_for_scan_failure_rows(self, stored):
+        stored(evaluate.score_case(_case_row(**_scenario("scan_failure"))))
+        assert evaluate.is_done(Path("row.json")) is False
+
+    @pytest.mark.parametrize("label", [
+        "explicit_safe", "missing_review", "no_candidate",
+        "possible_vulnerability", "insufficient_evidence",
+        "detected_vulnerability"])
+    def test_is_done_is_true_for_scored_coverage_rows(self, stored, label):
+        stored(evaluate.score_case(_case_row(**_scenario(label))))
+        assert evaluate.is_done(Path("row.json")) is True
+
+
+def _legacy_row():
+    return evaluate.score_case({
+        "id": "old", "category": "authz", "split": "dev", "expected": "safe",
+        "findings": [_f("authz", "safe")], "latency_seconds": 1.0, "est_tokens": 10})
+
+
+class TestSummaryContract:
+    @staticmethod
+    def _mixed_rows():
+        specs = [
+            ("v1", "vulnerable", "detected_vulnerability"),
+            ("v2", "vulnerable", "explicit_safe"),
+            ("v3", "vulnerable", "missing_review"),
+            ("v4", "vulnerable", "possible_vulnerability"),
+            ("v5", "vulnerable", "insufficient_evidence"),
+            ("s1", "safe", "detected_vulnerability"),
+            ("s2", "safe", "explicit_safe"),
+            ("s3", "safe", "possible_vulnerability"),
+            ("s4", "safe", "insufficient_evidence"),
+            ("s5", "safe", "no_candidate"),
+            ("s6", "safe", "missing_review"),
+            ("s7", "safe", "scan_failure"),
+        ]
+        rows = [evaluate.score_case(_case_row(cid, exp, **_scenario(label)))
+                for cid, exp, label in specs]
+        rows.append(evaluate.score_case(_case_row(
+            "e1", "safe", coverage=_coverage([_target_section()]),
+            error="harness exploded")))
+        return rows
+
+    def test_metrics_denominators_exclude_excluded_safe_rows(self):
+        overall = evaluate.summarize(self._mixed_rows())["overall"]
+        assert (overall["cases"], overall["scored"], overall["errors"]) == (13, 12, 1)
+        assert (overall["tp"], overall["fp"], overall["fn"], overall["tn"]) == (1, 1, 4, 1)
+        assert overall["vulnerable_scored"] == 5
+        assert overall["safe_scored"] == 5
+        assert overall["abstentions"] == 4
+        assert overall["possible_on_safe"] == 1
+        assert overall["excluded_on_safe"] == 2
+        assert overall["false_positive_rate_on_safe"] == 0.2
+        assert overall["accuracy"] == 0.2
+        assert overall["precision"] == 0.5
+        assert overall["recall"] == 0.2
+
+    def test_metrics_are_none_when_every_safe_row_is_excluded(self):
+        rows = [
+            evaluate.score_case(_case_row("a", "safe", **_scenario("scan_failure"))),
+            evaluate.score_case(_case_row("b", "safe", **_scenario("missing_review"))),
+        ]
+        overall = evaluate.summarize(rows)["overall"]
+        assert overall["safe_scored"] == 0
+        assert overall["excluded_on_safe"] == 2
+        assert overall["accuracy"] is None
+        assert overall["false_positive_rate_on_safe"] is None
+
+    def test_per_category_and_per_split_use_the_new_metrics(self):
+        summary = evaluate.summarize(self._mixed_rows())
+        assert summary["per_split"]["dev"]["excluded_on_safe"] == 2
+        assert summary["per_split"]["dev"]["abstentions"] == 4
+        assert summary["per_category"]["authz"]["safe_scored"] == 5
+
+    def test_grounded_only_uses_the_grounded_outcome(self):
+        cov = _coverage([_target_section()])
+        rows = [
+            evaluate.score_case(_case_row(
+                "v", "vulnerable", coverage=cov,
+                findings=[_f("authz", "vulnerable", valid=False)])),
+            evaluate.score_case(_case_row(
+                "s", "safe", coverage=cov,
+                findings=[_f("authz", "vulnerable", valid=False)])),
+        ]
+        summary = evaluate.summarize(rows)
+        assert (summary["overall"]["tp"], summary["overall"]["fp"]) == (1, 1)
+        grounded = summary["grounded_only"]["overall"]
+        assert (grounded["tp"], grounded["fp"], grounded["fn"]) == (0, 0, 1)
+
+    def test_grounded_only_metrics_use_the_grounded_label(self):
+        cov = _coverage([_target_section()])
+        rows = [
+            evaluate.score_case(_case_row(
+                "s", "safe", coverage=cov,
+                findings=[_f("authz", "vulnerable", valid=False)])),
+            evaluate.score_case(_case_row(
+                "m", "safe", coverage=_failed_target_coverage(),
+                findings=[_f("authz", "safe")])),
+        ]
+        summary = evaluate.summarize(rows)
+        plain = summary["overall"]
+        grounded = summary["grounded_only"]["overall"]
+        assert (plain["abstentions"], plain["possible_on_safe"]) == (0, 0)
+        assert (grounded["abstentions"], grounded["possible_on_safe"]) == (1, 1)
+        assert plain["excluded_on_safe"] == grounded["excluded_on_safe"] == 1
+        assert (plain["safe_scored"], grounded["safe_scored"]) == (1, 1)
+
+    def test_case_labels_count_each_label_and_legacy_rows(self):
+        rows = [
+            evaluate.score_case(_case_row("a", "safe", **_scenario("explicit_safe"))),
+            evaluate.score_case(_case_row("b", "safe", **_scenario("explicit_safe"))),
+            evaluate.score_case(_case_row("c", "safe", **_scenario("no_candidate"))),
+            _legacy_row(),
+        ]
+        summary = evaluate.summarize(rows)
+        assert summary["case_labels"] == {
+            "explicit_safe": 2, "no_candidate": 1, "legacy": 1}
+        assert summary["legacy_rows"] == 1
+
+    def test_error_rows_count_under_the_label_they_carry(self):
+        coverage_error = evaluate.score_case(_case_row(
+            "e", "safe", coverage=_coverage([_target_section()]), error="boom"))
+        legacy_error = evaluate.score_case({
+            "id": "old-e", "category": "authz", "split": "dev", "expected": "safe",
+            "findings": [], "error": "boom"})
+        summary = evaluate.summarize([coverage_error, legacy_error])
+        assert summary["case_labels"] == {"scan_failure": 1, "legacy": 1}
+        assert summary["coverage"]["rows"] == 0
+        assert summary["coverage"]["sections_scheduled"] == 0
+
+    def test_coverage_rows_include_dict_coverage_with_no_completed_section(self):
+        row = evaluate.score_case(_case_row(
+            "a", "safe", coverage=_coverage([_target_section("failed")])))
+        cov = evaluate.summarize([row])["coverage"]
+        assert cov["rows"] == 1
+        assert cov["sections_scheduled"] == 1
+        assert cov["sections_completed"] == 0
+
+    def test_detected_with_gap_counts_detections_regardless_of_expectation(self):
+        gappy = _coverage([_target_section()], hunks_leftover=2)
+        rows = [
+            evaluate.score_case(_case_row(
+                "tp", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")])),
+            evaluate.score_case(_case_row(
+                "fp", "safe", coverage=gappy, findings=[_f("authz", "vulnerable")])),
+            evaluate.score_case(_case_row(
+                "ungrounded", "safe", coverage=gappy,
+                findings=[_f("authz", "vulnerable", valid=False)])),
+            evaluate.score_case(_case_row(
+                "tn", "safe", coverage=gappy, findings=[_f("authz", "safe")])),
+            evaluate.score_case(_case_row(
+                "clean", "safe", **_scenario("detected_vulnerability"))),
+        ]
+        assert evaluate.summarize(rows)["coverage"]["detected_with_gap"] == 3
+
+    def test_legacy_rows_count_in_outcome_metrics_but_not_label_metrics(self):
+        safe = evaluate.score_case({
+            "id": "ls", "category": "authz", "split": "dev", "expected": "safe",
+            "findings": [_f("authz", "possible")], "latency_seconds": 1.0,
+            "est_tokens": 10})
+        vuln = evaluate.score_case({
+            "id": "lv", "category": "authz", "split": "dev", "expected": "vulnerable",
+            "findings": [_f("authz", "vulnerable")], "latency_seconds": 1.0,
+            "est_tokens": 10})
+        assert safe["case_label"] is None
+        overall = evaluate.summarize([safe, vuln])["overall"]
+        assert (overall["safe_scored"], overall["vulnerable_scored"]) == (1, 1)
+        assert overall["excluded_on_safe"] == 0
+        assert overall["abstentions"] == 0
+        assert overall["possible_on_safe"] == 0
+
+    def test_row_with_mode_and_coverage_but_no_pin_is_legacy(self):
+        raw = _case_row(
+            expected="vulnerable", coverage=_coverage([_target_section()]),
+            findings=[_f("authz", "vulnerable")])
+        del raw["pin"]
+        row = evaluate.score_case(raw)
+        assert row["legacy"] is True
+        assert row["case_label"] is None
+        assert row["outcome"] == "TP"
+
+    def test_row_with_pin_but_no_mode_is_not_legacy(self):
+        raw = _case_row(expected="safe", findings=[_f("authz", "safe")])
+        del raw["mode"]
+        row = evaluate.score_case(raw)
+        assert not row.get("legacy")
+        assert row["case_label"] == "explicit_safe"
+
+    def test_legacy_rows_keep_legacy_marker_and_scoring(self):
+        row = _legacy_row()
+        assert row["legacy"] is True
+        assert row["case_label"] is None
+        assert row["outcome"] == "TN"
+        summary = evaluate.summarize([row])
+        assert summary["legacy_rows"] == 1
+        assert summary["case_labels"] == {"legacy": 1}
+        assert summary["overall"]["accuracy"] == 1.0
+        assert summary["coverage"]["rows"] == 0
+
+    def test_existing_summary_keys_are_kept(self):
+        summary = evaluate.summarize(self._mixed_rows())
+        for key in ("overall", "per_category", "per_split", "graph_states",
+                    "grounded_only", "scored", "errors", "error_rate",
+                    "error_cases", "off_category_alarm_rate",
+                    "off_category_alarms", "evidence_grounding_rate",
+                    "possible_rate", "insufficient_evidence_rate",
+                    "median_latency_seconds", "median_est_tokens_per_pr",
+                    "case_labels", "legacy_rows", "coverage"):
+            assert key in summary
+
+    def test_coverage_summary_aggregates_coverage_dicts(self):
+        full = _coverage(
+            [_target_section(), _section("x", [_hunk(ROW_FILE, 40, 3)])],
+            sections_coalesced=1, hunks_total=4, hunks_reviewed=4)
+        gappy = _coverage(
+            [_target_section("failed"), _section("y", [_hunk(ROW_FILE, 60, 3)])],
+            planner="llm", investigator_status="failed", hunks_total=6,
+            hunks_reviewed=3, hunks_leftover=2, invalid_refs=["h9", "h8"])
+        rows = [
+            evaluate.score_case(_case_row(
+                "a", "vulnerable", coverage=full, findings=[_f("authz", "vulnerable")])),
+            evaluate.score_case(_case_row(
+                "b", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")])),
+            evaluate.score_case(_case_row(
+                "c", "safe", **_scenario("scan_failure"))),
+            evaluate.score_case(_case_row(
+                "d", "safe", mode="llm-only", findings=[_f("authz", "safe")])),
+        ]
+        cov = evaluate.summarize(rows)["coverage"]
+        assert cov["rows"] == 2
+        assert cov["complete"] == 1
+        assert cov["complete_rate"] == 0.5
+        assert cov["sections_scheduled"] == 4
+        assert cov["sections_completed"] == 3
+        assert cov["sections_failed"] == 1
+        assert cov["sections_coalesced"] == 1
+        assert cov["hunks_total"] == 10
+        assert cov["hunks_reviewed"] == 7
+        assert cov["hunks_leftover"] == 2
+        assert cov["invalid_refs"] == 2
+        assert cov["planners"] == {"deterministic": 1, "llm": 1}
+        assert cov["investigator_status"] == {"ok": 1, "failed": 1}
+        assert cov["detected_with_gap"] == 1
+
+    def test_complete_rate_is_rounded_to_three_places(self):
+        rows = [
+            evaluate.score_case(_case_row(
+                cid, "safe", findings=[_f("authz", "safe")],
+                coverage=_coverage(
+                    [_target_section("completed" if cid == "a" else "failed")])))
+            for cid in ("a", "b", "c")
+        ]
+        cov = evaluate.summarize(rows)["coverage"]
+        assert (cov["complete"], cov["rows"]) == (1, 3)
+        assert cov["complete_rate"] == 0.333
+
+    def test_detected_with_gap_excludes_error_rows(self):
+        gappy = _coverage([_target_section()], hunks_leftover=2)
+        detected = evaluate.score_case(_case_row(
+            "d", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")]))
+        errored = copy.deepcopy(detected)
+        errored["id"] = "e"
+        errored["error"] = "boom"
+        assert detected["coverage_gap"] is True
+        assert evaluate.coverage_summary([detected, errored])["detected_with_gap"] == 1
+
+    def test_error_rescore_clears_stale_target_sections_and_gap(self):
+        gappy = _coverage([_target_section()], hunks_leftover=2)
+        row = evaluate.score_case(_case_row(
+            "d", "vulnerable", coverage=gappy, findings=[_f("authz", "vulnerable")]))
+        assert row["coverage_gap"] is True
+        assert row["target_sections"] != []
+        row["error"] = "boom"
+        row = evaluate.score_case(row)
+        assert row["target_sections"] == []
+        assert row["coverage_gap"] is False
+        assert row["case_label"] == "scan_failure"
+
+    def test_fresh_error_row_carries_target_sections_and_boolean_gap(self):
+        row = evaluate.score_case(_case_row(
+            "e", "safe", coverage=_coverage([_target_section()]), error="boom"))
+        assert row["target_sections"] == []
+        assert row["coverage_gap"] is False
