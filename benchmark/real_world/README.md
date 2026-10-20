@@ -67,9 +67,8 @@ construction without network access.
 - **Synthetic vulnerable PRs.** A revert is not a PR a developer wrote.
 - **Memorisation.** CVE-2018-25088 is old enough that the model may have seen
   it in training.
-- **Endpoint detection.** The authorization agent only reviews endpoints
-  whose route decorator appears in a changed hunk, so some authorization
-  fixes never reach it.
+- **Coverage.** Only the `lgtm` and `lgtm-no-sast` records carry coverage;
+  `sast-only` and `llm-only` records have none.
 - **No security policy.** These projects have no `security-policy.md`; the
   evaluation runs each authorization case with and without a short policy
   written from the project's public documentation.
@@ -85,9 +84,14 @@ PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes lgtm --resume 
 `evaluate_real.py` reuses the scoring of `benchmark/evaluate.py`. It is built
 for short foreground chunks (`--resume` skips units whose result JSON exists
 and is not an error, re-runs error results, `--budget` stops starting new cases
-after N seconds) and builds a document index only when an agent can actually
-run. Each output root holds a `run.json` manifest; `--resume` refuses to
-continue a root produced with a different model or reasoning setting.
+after N seconds) and builds a document index for lgtm and lgtm-no-sast
+units. Every record carries `pin` (the run pin: LGTM checkout, model, flags,
+and base/PR SHAs) and `file`. The lgtm and lgtm-no-sast records also carry
+`coverage`, which is `null` when the review reports none, and
+`coverage_summary`, which holds the scalar coverage counts and
+`exclusions_total`. Each output root holds a `run.json` manifest that carries
+`pin`; `--resume` refuses to continue a root produced with a different model
+or reasoning setting.
 `--gpu-model qwen3.8-27b` selects the GPU tunnel model with thinking disabled
 and cannot be combined with `--model`. Results go to
 `benchmark/results/real_world/` (git-ignored); curated runs are in

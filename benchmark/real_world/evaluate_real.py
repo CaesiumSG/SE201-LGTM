@@ -4,7 +4,7 @@
 Reuses ``benchmark/evaluate.py`` for scoring and summaries (imported, not
 copied), so the numbers are computed exactly as for the synthetic Shoply
 benchmark. For every (case, variant, mode) it checks out the case's base
-branch in the cached clone, indexes it when an agent will actually run, runs
+branch in the cached clone, indexes it for the modes that use the index, runs
 ``ReviewPipeline`` and writes one result JSON.
 
 The run is meant to be done in short foreground chunks: ``--resume`` skips
@@ -18,11 +18,9 @@ Variants:
   ``security-policy.md`` (``fetch.py --policies``); authz cases, and only for
   the modes that retrieve documents (lgtm, lgtm-no-sast).
 
-Index skipping: a mode that runs no agent for a case cannot use the index, so
-it is not built. The test uses the pipeline's own functions: lgtm needs an
-index when there is >= 1 detected endpoint or Semgrep finding in the diff;
-lgtm-no-sast when there is >= 1 detected endpoint or heuristic SQL sink.
-``index_skipped`` and ``index_skip_reason`` are recorded in every result.
+Index skipping: lgtm and lgtm-no-sast always build the index and run the authz
+scan; coverage and pin are recorded. ``index_skipped`` and
+``index_skip_reason`` are recorded in every result.
 
 Usage (Windows needs UTF-8 mode; see docs/real-world-eval.md):
     PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes sast-only
@@ -63,11 +61,11 @@ def _load(name: str, path: Path):
 evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 fetch = _load("lgtm_rw_fetch", HERE / "fetch.py")
 
-from lgtm.agents.authz_reviewer import extract_changed_endpoints  # noqa: E402
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
+from lgtm.review.provenance import run_pin  # noqa: E402
 
 MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
 DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
@@ -153,25 +151,11 @@ def expected_ids(cases, mode: str, variant: str) -> set[str]:
 # ----------------------------------------------------------------------
 # Agent work and indexing
 # ----------------------------------------------------------------------
-def count_agent_items(mode: str, diffs, sast_in_diff: list) -> dict:
-    """What would an agent have to review? Uses the pipeline's own detectors.
-
-    ``sast_in_diff`` is ``ReviewPipeline._run_sast``'s in-diff findings (only
-    consulted for ``lgtm``); ``lgtm-no-sast`` uses the pipeline's heuristic
-    SQL-sink detector instead of Semgrep.
-    """
-    endpoints = extract_changed_endpoints(diffs)
-    if mode == "lgtm":
-        sinks, sink_kind = len(sast_in_diff), "Semgrep findings in the diff"
-    else:
-        sinks = len(ReviewPipeline._heuristic_sql_findings(diffs))
-        sink_kind = "heuristic SQL sinks"
-    return {
-        "endpoint_ids": [e.endpoint_id for e in endpoints],
-        "sink_count": sinks,
-        "sink_kind": sink_kind,
-        "agent_items": len(endpoints) + sinks,
-    }
+def coverage_summary(coverage: dict | None) -> dict | None:
+    if coverage is None:
+        return None
+    scalars = {k: v for k, v in coverage.items() if not isinstance(v, (list, dict))}
+    return {**scalars, "exclusions_total": len(coverage["exclusions"])}
 
 
 def git_out(clone: Path, *args: str) -> str:
@@ -228,7 +212,7 @@ def diff_stats(diffs) -> dict:
 
 
 def error_result(case: dict, mode: str, variant: str, exc: Exception,
-                 review=None) -> dict:
+                 review=None, pin: dict | None = None) -> dict:
     """A crash is recorded as an error result and is not scored."""
     base = {
         "id": case["id"], "category": case["category"], "split": "real_world",
@@ -237,6 +221,7 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
+        "file": case["file"], "pin": pin,
         **evaluate.graph_fields(review),
     }
     return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
@@ -259,26 +244,19 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
 
     extra: dict = {
         "project": fetch.project_of(case), "mode": mode, "variant": variant,
+        "file": case["file"],
         **diff_stats(diffs),
-        "endpoints_detected": [e.endpoint_id for e in extract_changed_endpoints(diffs)],
         "index_seconds": None, "index_chunks": None, "index_reused": None,
         "index_skipped": True, "index_skip_reason": "mode does not use the index",
     }
 
     if mode in DOC_MODES:
-        sast = pipeline._run_sast(diffs, base_b, pr_b)[0] if mode == "lgtm" else []
-        work = count_agent_items(mode, diffs, sast)
-        if work["agent_items"] == 0:
-            extra["index_skip_reason"] = (
-                f"no agent can run: 0 detected endpoints and 0 {work['sink_kind']}"
-            )
-        else:
-            idx_dir = output / ".index" / f"{cid}{suffix}"
-            info = ensure_index(clone, base_b, idx_dir, cfg)
-            cfg.chroma_persist_dir = str(idx_dir)  # same object the pipeline holds
-            extra.update(index_skipped=False, index_skip_reason="",
-                         index_seconds=info["seconds"],
-                         index_chunks=info["chunks"], index_reused=info["reused"])
+        idx_dir = output / ".index" / f"{cid}{suffix}"
+        info = ensure_index(clone, base_b, idx_dir, cfg)
+        cfg.chroma_persist_dir = str(idx_dir)  # same object the pipeline holds
+        extra.update(index_skipped=False, index_skip_reason="",
+                     index_seconds=info["seconds"],
+                     index_chunks=info["chunks"], index_reused=info["reused"])
     if index_only:
         print(f"    index: skipped={extra['index_skipped']} "
               f"{extra['index_skip_reason'] or ''} "
@@ -290,12 +268,17 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     result = pipeline.run(base_b, pr_b, output_dir=None)
     latency = time.monotonic() - started
 
+    graph = evaluate.graph_fields(result)
+    pin = run_pin(cfg, REPO_ROOT, {"base": graph["base_sha"], "pr": graph["pr_sha"]})
+    extra["pin"] = pin
     try:
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        if extra["index_skipped"] and mode in DOC_MODES and findings:
-            raise RuntimeError("index was skipped but an agent produced findings")
         grounded = [f for f in findings if f.get("evidence_valid")]
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
+        if mode in DOC_MODES:
+            coverage = getattr(result.meta, "coverage", None)
+            extra["coverage"] = coverage
+            extra["coverage_summary"] = coverage_summary(coverage)
         return evaluate.score_case({
             "id": cid, "category": case["category"], "split": "real_world",
             "expected": case["expected_verdict"], "n_findings": len(findings),
@@ -304,10 +287,11 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),
             "est_tokens": evaluate.estimate_tokens(findings, {}),
-            "findings": findings, **extra, **evaluate.graph_fields(result),
+            "findings": findings, **extra, **graph,
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
-        return error_result(case, mode, variant, exc, review=result)
+        kept = {k: extra[k] for k in ("coverage", "coverage_summary") if k in extra}
+        return {**error_result(case, mode, variant, exc, review=result, pin=pin), **kept}
 
 
 # ----------------------------------------------------------------------
@@ -439,7 +423,8 @@ def main(argv: list[str] | None = None) -> int:
         evaluate.write_run_manifest(
             Path(args.output),
             {"model": config.ollama_model, "ollama_base_url": config.ollama_base_url,
-             "reasoning": config.reasoning, "mode": None, "modes": list(args.modes)},
+             "reasoning": config.reasoning, "mode": None, "modes": list(args.modes),
+             "pin": run_pin(config, REPO_ROOT, {})},
             args.resume, parser)
     started = time.monotonic()
     touched: set[tuple[str, str]] = set()
@@ -460,7 +445,9 @@ def main(argv: list[str] | None = None) -> int:
             print("\ninterrupted", file=sys.stderr)
             return 3
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
-            result = error_result(case, mode, variant, exc)
+            result = error_result(
+                case, mode, variant, exc,
+                pin=run_pin(config, REPO_ROOT, {}))
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
