@@ -191,7 +191,7 @@ def run(cmd: list[str], cwd: Path) -> str:
 def build_case_repo(tmp: Path, patch_path: Path) -> None:
     """Create a git repo with the base app and the patch applied on ``pr``."""
     shutil.copytree(BENCH / "app", tmp / "app")
-    for doc in ("security-policy.md", "api-spec.md", "README.md"):
+    for doc in ("security-policy.md", "api-spec.md"):
         shutil.copy(BENCH / doc, tmp / doc)
     run(["git", "init", "-q", "-b", "main"], tmp)
     run(["git", "config", "user.email", "bench@lgtm.local"], tmp)

@@ -495,3 +495,11 @@ class TestInjectionSummaryUnknownState:
         assert summary["comparisons"][0]["injected_graph"] == {
             "graph_state": None, "graph_index_seconds": None,
             "base_sha": "", "pr_sha": ""}
+
+
+def test_case_repo_indexes_only_the_project_policy_documents(tmp_path):
+    ev.build_case_repo(tmp_path, BENCH / "cases" / "authz" / "case_07_vulnerable.patch")
+
+    docs = sorted(p.name for p in tmp_path.rglob("*.md"))
+
+    assert docs == ["api-spec.md", "security-policy.md"]
