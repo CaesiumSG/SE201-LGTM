@@ -753,3 +753,33 @@ def test_review_modules_import_in_a_fresh_interpreter(module):
         capture_output=True, text=True, env=env, timeout=120,
     )
     assert result.returncode == 0, result.stderr
+
+def test_build_llm_passes_timeout_and_output_cap(monkeypatch):
+    """Regression: llm_timeout existed in config but never reached the client,
+    so a runaway generation blocked a benchmark run for over an hour."""
+    import langchain_ollama
+
+    from lgtm.agents.base import build_llm
+    from lgtm.config import LGTMConfig
+
+    captured = {}
+
+    class FakeChatOllama:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(langchain_ollama, "ChatOllama", FakeChatOllama)
+    config = LGTMConfig(ollama_model="m", llm_timeout=42, llm_max_output_tokens=99)
+    build_llm(config)
+
+    assert captured["client_kwargs"] == {"timeout": 42}
+    assert captured["num_predict"] == 99
+
+
+def test_real_chat_ollama_accepts_our_kwargs():
+    """The installed langchain-ollama must accept the kwargs build_llm passes."""
+    from lgtm.agents.base import build_llm
+    from lgtm.config import LGTMConfig
+
+    llm = build_llm(LGTMConfig(ollama_model="m"))  # no network: construction only
+    assert llm.num_predict == 2048
