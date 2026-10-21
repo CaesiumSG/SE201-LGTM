@@ -499,11 +499,11 @@ PAIRS = {
 }
 LABELLED_FILE = {
     7: "app/routes/users.py", 8: "app/auth.py", 9: "app/routes/orders.py",
-    10: "app/auth/__init__.py", 11: "app/routes/users.py",
+    10: "app/auth/api_keys.py", 11: "app/routes/users.py",
     12: "app/ownership.py", 13: "app/routes/admin.py",
 }
 EXPECTED_SIDES = {
-    10: {("app/auth.py", "old"), ("app/auth/__init__.py", "new")},
+    10: {("app/auth.py", "old"), ("app/auth/api_keys.py", "new")},
     11: {("app/routes/users.py", "new")},
     12: {("app/auth.py", "old"), ("app/ownership.py", "new")},
     13: {("app/routes/admin.py", "new")},

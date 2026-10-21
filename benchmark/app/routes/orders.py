@@ -2,7 +2,7 @@
 
 Access rules (see security-policy.md §3 and api-spec.md):
 - A user may create orders for themselves and view ONLY their own orders.
-- Managers and admins may view any order; only admins may delete orders.
+- Managers and admins may list all orders; only admins may delete orders.
 - All database queries MUST use bound parameters (security-policy.md §5).
 """
 

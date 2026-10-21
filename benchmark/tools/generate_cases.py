@@ -191,7 +191,7 @@ CASES.append(Case(
 @orders_bp.route("/sorted", methods=["GET"])
 @require_role("manager")
 def sorted_orders():
-    """List orders sorted by an arbitrary column."""
+    """List orders sorted by the requested column."""
     sort_by = request.args.get("sort_by", "created_at")
     session = get_session()
     rows = session.execute(
@@ -218,7 +218,7 @@ ALLOWED_SORT_COLUMNS = {"created_at", "total", "status", "id"}
 @orders_bp.route("/sorted", methods=["GET"])
 @require_role("manager")
 def sorted_orders():
-    """List orders sorted by an allowlisted column."""
+    """List orders sorted by the requested column."""
     sort_by = request.args.get("sort_by", "created_at")
     if sort_by not in ALLOWED_SORT_COLUMNS:
         return jsonify({"error": "invalid sort column"}), 400
@@ -733,7 +733,7 @@ CASES.append(Case(
 @users_bp.route("/filter", methods=["GET"])
 @require_role("manager")
 def filter_users():
-    """Filter users by arbitrary field=value query parameters."""
+    """Filter users by field=value query parameters."""
     clauses = []
     for field, value in request.args.items():
         clauses.append(f"{field} = '{value}'")
@@ -765,7 +765,7 @@ ALLOWED_FILTER_FIELDS = {"username", "role", "email"}
 @users_bp.route("/filter", methods=["GET"])
 @require_role("manager")
 def filter_users():
-    """Filter users by allowlisted field=value query parameters."""
+    """Filter users by field=value query parameters."""
     clauses = []
     params = {}
     for field, value in request.args.items():
@@ -1249,16 +1249,177 @@ CASES.append(Case(
     description="my_orders keeps the owner filter and adds a status filter.",
 ))
 
-# --- Pair 10: auth module moved into a package, scope check dropped ---------
-AUTH_MODULE = (BENCH / "app" / "auth.py").read_text(encoding="utf-8")
+# --- Pair 10: auth module split into a package, scope check dropped ---------
+# Every module must stay under git's 50% rename-similarity threshold: plain
+# `git diff` has to report app/auth.py as deleted, not renamed.
+AUTH_PACKAGE_INIT = '''"""Authentication and authorization helpers for Shoply.
+
+Every protected endpoint MUST use these decorators (see
+security-policy.md). Token auth uses an opaque bearer token stored against
+the user; API-key auth is for machine integrations and is scope-checked.
+"""
+
+from app.auth.api_keys import get_api_key, require_api_key_scope
+from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role
+from app.auth.tokens import (
+    get_current_user,
+    hash_password,
+    issue_token,
+    require_auth,
+)
+
+__all__ = [
+    "ROLE_RANK",
+    "get_api_key",
+    "get_current_user",
+    "hash_password",
+    "is_owner_or_admin",
+    "issue_token",
+    "require_api_key_scope",
+    "require_auth",
+    "require_role",
+]
+'''
+AUTH_TOKENS_MODULE = '''"""Bearer-token sessions and password hashing."""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import secrets
+
+from flask import g, jsonify, request
+
+from app.models import User, get_session
+
+# In-memory token store: token -> user_id (reset on restart; fine for demo)
+_TOKENS: dict[str, int] = {}
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def issue_token(user: User) -> str:
+    token = secrets.token_hex(32)
+    _TOKENS[token] = user.id
+    return token
+
+
+def get_current_user() -> User | None:
+    """Resolve the user from the Authorization: Bearer <token> header."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    token = header[len("Bearer "):].strip()
+    user_id = _TOKENS.get(token)
+    if user_id is None:
+        return None
+    return get_session().get(User, user_id)
+
+
+def require_auth(fn):
+    """Reject the request unless a valid user token is presented."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if user is None:
+            return jsonify({"error": "authentication required"}), 401
+        g.current_user = user
+        return fn(*args, **kwargs)
+
+    return wrapper
+'''
+AUTH_ROLES_MODULE = '''"""Role gates and per-object ownership checks."""
+
+from __future__ import annotations
+
+import functools
+
+from flask import g, jsonify
+
+from app.auth.tokens import get_current_user
+from app.models import User
+
+ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}
+
+
+def require_role(minimum_role: str):
+    """Require at least the given role (user < manager < admin)."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = get_current_user()
+            if user is None:
+                return jsonify({"error": "authentication required"}), 401
+            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):
+                return jsonify({"error": "insufficient role"}), 403
+            g.current_user = user
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def is_owner_or_admin(user: User, owner_id: int) -> bool:
+    """Ownership check used for per-object access (orders, profiles)."""
+    return user.id == owner_id or user.role == "admin"
+'''
+AUTH_API_KEYS_MODULE = '''"""API-key authentication for machine integrations."""
+
+from __future__ import annotations
+
+import functools
+
+from flask import g, jsonify, request
+
+from app.models import ApiKey, get_session
+
+
+def get_api_key() -> ApiKey | None:
+    """Resolve an API key from the X-Api-Key header."""
+    raw = request.headers.get("X-Api-Key", "")
+    if not raw:
+        return None
+    session = get_session()
+    return session.query(ApiKey).filter(ApiKey.key == raw).first()
+
+
+def require_api_key_scope(required_scope: str):
+    """Require an API key carrying exactly the given scope."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = get_api_key()
+            if key is None:
+                return jsonify({"error": "valid API key required"}), 401
+            if key.scope != required_scope:
+                return jsonify({"error": "API key lacks required scope"}), 403
+            g.api_key = key
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+'''
+AUTH_PACKAGE = {
+    "app/auth/__init__.py": AUTH_PACKAGE_INIT,
+    "app/auth/tokens.py": AUTH_TOKENS_MODULE,
+    "app/auth/roles.py": AUTH_ROLES_MODULE,
+    "app/auth/api_keys.py": AUTH_API_KEYS_MODULE,
+}
 SCOPE_CHECK = (
     "            if key.scope != required_scope:\n"
     '                return jsonify({"error": "API key lacks required scope"}), 403\n'
 )
-SCOPE_MARKERS = ["def require_api_key_scope", "g.api_key = key"]
+SCOPE_MARKERS = ["def require_api_key_scope", "g.api_key = key", "return decorator"]
 SCOPE_LOCATIONS = [
-    {"file": "app/auth.py", "old_markers": SCOPE_MARKERS + ["return decorator"]},
-    {"file": "app/auth/__init__.py", "new_markers": SCOPE_MARKERS},
+    {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
+    {"file": "app/auth/api_keys.py", "new_markers": SCOPE_MARKERS},
 ]
 
 CASES.append(Case(
@@ -1266,15 +1427,15 @@ CASES.append(Case(
     category="authz",
     expected_verdict="vulnerable",
     cwe="CWE-862",
-    file="app/auth/__init__.py",
+    file="app/auth/api_keys.py",
     delete_files=["app/auth.py"],
-    new_files={"app/auth/__init__.py": AUTH_MODULE},
+    new_files=AUTH_PACKAGE,
     replacements=[(SCOPE_CHECK, "")],
-    vuln_markers=SCOPE_MARKERS,
+    vuln_markers=SCOPE_MARKERS[:2],
     location_markers=SCOPE_LOCATIONS,
     diff_shape="deleted_file",
-    description="auth module moved into a package with the API-key scope "
-                "check removed from require_api_key_scope.",
+    description="auth module split into an app/auth package whose "
+                "require_api_key_scope drops the API-key scope check.",
 ))
 
 CASES.append(Case(
@@ -1282,12 +1443,13 @@ CASES.append(Case(
     category="authz",
     expected_verdict="safe",
     cwe="CWE-862",
-    file="app/auth/__init__.py",
+    file="app/auth/api_keys.py",
     delete_files=["app/auth.py"],
-    new_files={"app/auth/__init__.py": AUTH_MODULE},
+    new_files=AUTH_PACKAGE,
     location_markers=SCOPE_LOCATIONS,
     diff_shape="deleted_file",
-    description="auth module moved into a package without changes.",
+    description="auth module split into an app/auth package with identical "
+                "semantics.",
 ))
 
 # --- Pair 11: oversized patch with the export endpoint last -----------------
@@ -1301,7 +1463,7 @@ def report_{n:03d}():
     session = get_session()
     return jsonify({{"section": {n}, "users": session.query(User).count()}})
 '''
-    for n in range(1, 91)
+    for n in range(1, 151)
 )
 
 EXPORT_HEAD = '''
@@ -1632,6 +1794,9 @@ def marker_range(case_id: str, side: list[tuple[int, str]],
     numbers: list[int] = []
     for marker in markers:
         matched = [number for number, text in side if marker in text]
+        # A repeated later marker keeps only matches at or after the first marker.
+        if numbers and len(matched) > 1:
+            matched = [number for number in matched if number >= min(numbers)]
         if not matched:
             raise RuntimeError(f"{case_id}: location marker not found: {marker}")
         numbers.extend(matched)

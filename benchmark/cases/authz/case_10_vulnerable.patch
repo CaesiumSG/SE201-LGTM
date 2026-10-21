@@ -115,16 +115,127 @@ index 0800ec5..0000000
 -    return user.id == owner_id or user.role == "admin"
 diff --git a/app/auth/__init__.py b/app/auth/__init__.py
 new file mode 100644
-index 0000000..95c71d6
+index 0000000..557898e
 --- /dev/null
 +++ b/app/auth/__init__.py
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,27 @@
 +"""Authentication and authorization helpers for Shoply.
 +
 +Every protected endpoint MUST use these decorators (see
 +security-policy.md). Token auth uses an opaque bearer token stored against
 +the user; API-key auth is for machine integrations and is scope-checked.
 +"""
++
++from app.auth.api_keys import get_api_key, require_api_key_scope
++from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role
++from app.auth.tokens import (
++    get_current_user,
++    hash_password,
++    issue_token,
++    require_auth,
++)
++
++__all__ = [
++    "ROLE_RANK",
++    "get_api_key",
++    "get_current_user",
++    "hash_password",
++    "is_owner_or_admin",
++    "issue_token",
++    "require_api_key_scope",
++    "require_auth",
++    "require_role",
++]
+diff --git a/app/auth/api_keys.py b/app/auth/api_keys.py
+new file mode 100644
+index 0000000..635f80a
+--- /dev/null
++++ b/app/auth/api_keys.py
+@@ -0,0 +1,35 @@
++"""API-key authentication for machine integrations."""
++
++from __future__ import annotations
++
++import functools
++
++from flask import g, jsonify, request
++
++from app.models import ApiKey, get_session
++
++
++def get_api_key() -> ApiKey | None:
++    """Resolve an API key from the X-Api-Key header."""
++    raw = request.headers.get("X-Api-Key", "")
++    if not raw:
++        return None
++    session = get_session()
++    return session.query(ApiKey).filter(ApiKey.key == raw).first()
++
++
++def require_api_key_scope(required_scope: str):
++    """Require an API key carrying exactly the given scope."""
++
++    def decorator(fn):
++        @functools.wraps(fn)
++        def wrapper(*args, **kwargs):
++            key = get_api_key()
++            if key is None:
++                return jsonify({"error": "valid API key required"}), 401
++            g.api_key = key
++            return fn(*args, **kwargs)
++
++        return wrapper
++
++    return decorator
+diff --git a/app/auth/roles.py b/app/auth/roles.py
+new file mode 100644
+index 0000000..90565ce
+--- /dev/null
++++ b/app/auth/roles.py
+@@ -0,0 +1,36 @@
++"""Role gates and per-object ownership checks."""
++
++from __future__ import annotations
++
++import functools
++
++from flask import g, jsonify
++
++from app.auth.tokens import get_current_user
++from app.models import User
++
++ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}
++
++
++def require_role(minimum_role: str):
++    """Require at least the given role (user < manager < admin)."""
++
++    def decorator(fn):
++        @functools.wraps(fn)
++        def wrapper(*args, **kwargs):
++            user = get_current_user()
++            if user is None:
++                return jsonify({"error": "authentication required"}), 401
++            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):
++                return jsonify({"error": "insufficient role"}), 403
++            g.current_user = user
++            return fn(*args, **kwargs)
++
++        return wrapper
++
++    return decorator
++
++
++def is_owner_or_admin(user: User, owner_id: int) -> bool:
++    """Ownership check used for per-object access (orders, profiles)."""
++    return user.id == owner_id or user.role == "admin"
+diff --git a/app/auth/tokens.py b/app/auth/tokens.py
+new file mode 100644
+index 0000000..3cd0785
+--- /dev/null
++++ b/app/auth/tokens.py
+@@ -0,0 +1,50 @@
++"""Bearer-token sessions and password hashing."""
 +
 +from __future__ import annotations
 +
@@ -134,12 +245,10 @@ index 0000000..95c71d6
 +
 +from flask import g, jsonify, request
 +
-+from app.models import ApiKey, User, get_session
++from app.models import User, get_session
 +
 +# In-memory token store: token -> user_id (reset on restart; fine for demo)
 +_TOKENS: dict[str, int] = {}
-+
-+ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}
 +
 +
 +def hash_password(password: str) -> str:
@@ -164,15 +273,6 @@ index 0000000..95c71d6
 +    return get_session().get(User, user_id)
 +
 +
-+def get_api_key() -> ApiKey | None:
-+    """Resolve an API key from the X-Api-Key header."""
-+    raw = request.headers.get("X-Api-Key", "")
-+    if not raw:
-+        return None
-+    session = get_session()
-+    return session.query(ApiKey).filter(ApiKey.key == raw).first()
-+
-+
 +def require_auth(fn):
 +    """Reject the request unless a valid user token is presented."""
 +
@@ -185,44 +285,3 @@ index 0000000..95c71d6
 +        return fn(*args, **kwargs)
 +
 +    return wrapper
-+
-+
-+def require_role(minimum_role: str):
-+    """Require at least the given role (user < manager < admin)."""
-+
-+    def decorator(fn):
-+        @functools.wraps(fn)
-+        def wrapper(*args, **kwargs):
-+            user = get_current_user()
-+            if user is None:
-+                return jsonify({"error": "authentication required"}), 401
-+            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):
-+                return jsonify({"error": "insufficient role"}), 403
-+            g.current_user = user
-+            return fn(*args, **kwargs)
-+
-+        return wrapper
-+
-+    return decorator
-+
-+
-+def require_api_key_scope(required_scope: str):
-+    """Require an API key carrying exactly the given scope."""
-+
-+    def decorator(fn):
-+        @functools.wraps(fn)
-+        def wrapper(*args, **kwargs):
-+            key = get_api_key()
-+            if key is None:
-+                return jsonify({"error": "valid API key required"}), 401
-+            g.api_key = key
-+            return fn(*args, **kwargs)
-+
-+        return wrapper
-+
-+    return decorator
-+
-+
-+def is_owner_or_admin(user: User, owner_id: int) -> bool:
-+    """Ownership check used for per-object access (orders, profiles)."""
-+    return user.id == owner_id or user.role == "admin"
