@@ -15,11 +15,11 @@ which mirrors the fields of `benchmark/labels.json` plus the provenance.
 | Project | Advisory | CWE | Category | Fix commit(s) |
 |---|---|---|---|---|
 | pyload/pyload | GHSA-pwh4-6r3m-j2rf (CVE-2025-55156) | CWE-89 | sqli | `134edcd` |
-| blue-yonder/postgraas_server | GHSA-vghm-8cjp-hjw6 (CVE-2018-25088) | CWE-89 | sqli | `7cd8d01` |
+| blue-yonder/postgraas_server | GHSA-vghm-8cjp-hjw6 (CVE-2018-25088) | CWE-89 | sqli | `7cd8d01`, `ed2e895` |
 | alerta/alerta | GHSA-8prr-286p-4w7j (CVE-2026-34400) | CWE-89 | sqli | `fdd52cd` |
 | aegra/aegra | GHSA-m98r-6667-4wq7 (CVE-2026-44504) | CWE-639 | authz | `e1b2042` |
 | langflow-ai/langflow | GHSA-rf6x-r45m-xv3w (CVE-2026-33053) | CWE-639 | authz | `fdc1b3b` |
-| BerriAI/litellm | GHSA-wpfp-gwwc-vwq6 (CVE-2026-47102) | CWE-863 | authz | `e6f18ce`, `128d32d` |
+| BerriAI/litellm | GHSA-wpfp-gwwc-vwq6 (CVE-2026-47102) | CWE-863 | authz | `e6f18ce`, `128d32d`, `bdc7265` |
 
 Case ids are `<project>_<sqli|authz>_<vulnerable|safe>`, and `split` is
 `real_world` so results can sit beside the synthetic `dev` / `eval` splits.
@@ -31,16 +31,28 @@ Nothing is written by hand; `fetch.py` derives every PR from the fix commit.
 - **Safe case** (`construction: fix-commit`): the real history. Base = the
   parent of the fix, PR = the fix commit. This asks whether LGTM raises a
   false alarm on a genuine security fix.
-- **Vulnerable case** (`construction: synthetic-revert`): base = the fix
-  commit, PR = a commit on top of it that restores only the **non-test source
-  files** the fix touched to their pre-fix content. This is the same code a
-  maintainer would have reviewed before the fix, presented as a PR.
-- **Two-commit fixes** (litellm): the pre-fix state is the first parent of
-  the first commit, and the fix is the last commit.
+- **Vulnerable case** (`construction: synthetic-revert`): two synthetic
+  commits on top of the pre-fix commit. The base commit has the fix's tree
+  with every other file the fix touched (tests, docs, ...) at its pre-fix
+  content, so it holds the fixed `touched_files` and none of the fix's test
+  changes. The PR commit has the pre-fix tree, so the PR diff is exactly the
+  reverse of the fix's changes to `touched_files` and neither tree contains
+  the tests the fix added.
+- **Multi-commit fixes** (postgraas, litellm): `fix_commits` is a linear
+  chain; the pre-fix state is the parent of the first commit, and the fix is
+  the last commit.
 
-The synthetic-revert commit uses a fixed identity and date, so its SHA is the
-same on every machine and is recorded as `pr_ref`. `fetch.py` rebuilds it and
-fails if the SHA differs.
+The synthetic commits use a fixed identity and date and are never signed, so
+their SHAs are the same on every machine and are recorded as `base_ref` and
+`pr_ref`. `fetch.py` rebuilds them and fails if a SHA differs;
+`fetch.py --record-refs` writes the built SHAs into `cases.json`.
+
+`vulnerable_locations` (same shape as in `benchmark/labels.json`) lists the
+files, and where known the PR-side line ranges, that scoring treats as the
+target when the flawed code spans more than `file`. `known_issues` lists
+other real vulnerabilities present in the case's PR tree, each with its id,
+file, inclusive PR-side `lines`, category, CWE and description; it is empty
+when there are none.
 
 ## Reproducing the cases
 

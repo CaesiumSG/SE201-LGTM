@@ -26,7 +26,7 @@ REQUIRED = {
     "id", "category", "split", "origin", "expected_verdict", "cwe", "file",
     "vulnerable_lines", "description", "repo_url", "ghsa", "cve",
     "fix_commits", "base_ref", "pr_ref", "construction", "touched_files",
-    "notes",
+    "notes", "known_issues",
 }
 CWES = {"sqli": {"CWE-89"}, "authz": {"CWE-639", "CWE-862", "CWE-863"}}
 
@@ -69,7 +69,34 @@ class TestCasesJson:
                 assert c["pr_ref"] == last and c["base_ref"] not in c["fix_commits"]
             else:
                 assert c["expected_verdict"] == "vulnerable", c["id"]
-                assert c["base_ref"] == last and c["pr_ref"] not in c["fix_commits"]
+                assert c["base_ref"] not in c["fix_commits"], c["id"]
+                assert c["pr_ref"] not in c["fix_commits"], c["id"]
+
+    def test_vulnerable_locations_shape(self):
+        for c in CASES:
+            locations = c.get("vulnerable_locations", [])
+            for loc in locations:
+                assert list(loc) == ["file", "old_range", "new_range"], c["id"]
+                assert loc["file"] in c["touched_files"], c["id"]
+                for side in ("old_range", "new_range"):
+                    r = loc[side]
+                    assert r is None or (len(r) == 2 and 1 <= r[0] <= r[1]), c["id"]
+            if locations:
+                assert c["file"] in {loc["file"] for loc in locations}, c["id"]
+
+    def test_known_issues_shape(self):
+        for c in CASES:
+            assert isinstance(c["known_issues"], list), c["id"]
+            for issue in c["known_issues"]:
+                assert list(issue) == ["id", "file", "lines", "category", "cwe",
+                                       "description"], c["id"]
+                start, end = issue["lines"]
+                assert 1 <= start <= end, c["id"]
+                assert issue["category"] in ("sqli", "authz", "other"), c["id"]
+                assert re.fullmatch(r"CWE-\d+", issue["cwe"]), c["id"]
+                assert issue["description"], c["id"]
+        with_issues = {c["id"] for c in CASES if c["known_issues"]}
+        assert {"aegra_authz_safe", "alerta_sqli_safe"} <= with_issues
 
     def test_vulnerable_lines_only_on_vulnerable_cases(self):
         for c in CASES:
@@ -122,7 +149,7 @@ IDENT = {
 
 @pytest.fixture()
 def local_project(tmp_path):
-    """pre-fix commit, then a fix that edits a.py, adds c.py, edits a test."""
+    """pre-fix commit, then a fix that edits a.py, adds c.py, edits and adds tests."""
     repo = tmp_path / "proj"
     repo.mkdir()
     g = lambda *a, **kw: fetch.git(repo, *a, env=IDENT, **kw)  # noqa: E731
@@ -137,7 +164,8 @@ def local_project(tmp_path):
         return g("rev-parse", "HEAD").strip()
 
     pre = commit({"a.py": "v1\n", "b.py": "keep\n", "tests/test_a.py": "t1\n"}, "pre")
-    fix = commit({"a.py": "v2\n", "c.py": "new\n", "tests/test_a.py": "t2\n"}, "fix")
+    fix = commit({"a.py": "v2\n", "c.py": "new\n", "tests/test_a.py": "t2\n",
+                  "tests/test_c.py": "names the missing check\n"}, "fix")
     return repo, pre, fix
 
 
@@ -158,24 +186,52 @@ class TestPrepareCase:
         assert fetch.git(repo, "rev-parse", "rw/x_safe/base").strip() == pre
         assert fetch.git(repo, "rev-parse", "rw/x_safe/pr").strip() == fix
 
-    def test_vulnerable_case_restores_only_touched_source_files(self, local_project):
+    def test_vulnerable_base_has_fixed_source_and_pre_fix_tests(self, local_project):
+        repo, pre, fix = local_project
+        base, _pr = fetch.prepare_case(
+            _case("x_vuln", "synthetic-revert", None, None, fix), repo
+        )
+        show = lambda path: fetch.git(repo, "show", f"{base}:{path}")  # noqa: E731
+        assert show("a.py") == "v2\n"
+        assert show("c.py") == "new\n"
+        assert show("b.py") == "keep\n"
+        assert show("tests/test_a.py") == "t1\n"
+        assert fetch.git(repo, "ls-tree", "--name-only", base, "tests/test_c.py").strip() == ""
+        assert fetch.git(repo, "rev-parse", f"{base}^").strip() == pre
+        assert fetch.git(repo, "rev-parse", "rw/x_vuln/base").strip() == base
+
+    def test_vulnerable_pr_is_the_pre_fix_tree(self, local_project):
         repo, pre, fix = local_project
         base, pr = fetch.prepare_case(
-            _case("x_vuln", "synthetic-revert", fix, None, fix), repo
+            _case("x_vuln", "synthetic-revert", None, None, fix), repo
         )
-        assert base == fix
-        show = lambda path: fetch.git(repo, "show", f"{pr}:{path}")  # noqa: E731
-        assert show("a.py") == "v1\n"                 # restored to pre-fix
-        assert show("b.py") == "keep\n"               # untouched
-        assert show("tests/test_a.py") == "t2\n"      # tests are not reverted
-        assert fetch.git(repo, "ls-tree", "--name-only", pr, "c.py").strip() == ""
-        assert fetch.git(repo, "rev-parse", f"{pr}^").strip() == fix
+        tree = lambda ref: fetch.git(repo, "rev-parse", f"{ref}^{{tree}}").strip()  # noqa: E731
+        assert tree(pr) == tree(pre)
+        assert fetch.git(repo, "rev-parse", f"{pr}^").strip() == base
+        assert fetch.git(repo, "diff", "--name-only", base, pr).splitlines() == ["a.py", "c.py"]
 
     def test_synthetic_commit_sha_is_reproducible(self, local_project):
         repo, _pre, fix = local_project
-        case = _case("x_vuln", "synthetic-revert", fix, None, fix)
+        case = _case("x_vuln", "synthetic-revert", None, None, fix)
         first = fetch.prepare_case(case, repo)
         assert fetch.prepare_case(case, repo) == first
+        case["base_ref"], case["pr_ref"] = first
+        assert fetch.prepare_case(case, repo) == first
+
+    def test_recorded_ref_mismatch_fails_loudly(self, local_project):
+        repo, _pre, fix = local_project
+        case = _case("x_vuln", "synthetic-revert", None, "0" * 40, fix)
+        with pytest.raises(fetch.FetchError, match="built pr_ref"):
+            fetch.prepare_case(case, repo)
+        fetch.prepare_case(case, repo, check_refs=False)
+
+    def test_synthetic_commits_ignore_signing_config(self, local_project):
+        repo, _pre, fix = local_project
+        fetch.git(repo, "config", "commit.gpgsign", "true")
+        fetch.git(repo, "config", "gpg.program", "lgtm-no-such-gpg")
+        case = _case("x_vuln", "synthetic-revert", None, None, fix)
+        base, pr = fetch.prepare_case(case, repo)
+        fetch.prepare_policy(case, repo, base, pr, "p\n")
 
     def test_touched_files_mismatch_fails_loudly(self, local_project):
         repo, pre, fix = local_project
@@ -186,7 +242,7 @@ class TestPrepareCase:
 
     def test_policy_variant_adds_only_the_policy_file(self, local_project):
         repo, pre, fix = local_project
-        case = _case("x_vuln", "synthetic-revert", fix, None, fix)
+        case = _case("x_vuln", "synthetic-revert", None, None, fix)
         base, pr = fetch.prepare_case(case, repo)
         bp, pp = fetch.prepare_policy(case, repo, base, pr, "# policy\nrule\n")
         show = lambda ref, path: fetch.git(repo, "show", f"{ref}:{path}")  # noqa: E731
@@ -200,7 +256,7 @@ class TestPrepareCase:
 
     def test_policy_shas_are_reproducible(self, local_project):
         repo, _pre, fix = local_project
-        case = _case("x_vuln", "synthetic-revert", fix, None, fix)
+        case = _case("x_vuln", "synthetic-revert", None, None, fix)
         base, pr = fetch.prepare_case(case, repo)
         first = fetch.prepare_policy(case, repo, base, pr, "p\n")
         assert fetch.prepare_policy(case, repo, base, pr, "p\n") == first
@@ -240,3 +296,4 @@ class TestPrepareCase:
         bogus = "0" * 40
         with pytest.raises(fetch.FetchError, match="missing"):
             fetch.prepare_case(_case("x", "fix-commit", pre, bogus, bogus), repo)
+
