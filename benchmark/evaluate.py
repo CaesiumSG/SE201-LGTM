@@ -75,6 +75,7 @@ def result_is_error(result: dict) -> bool:
         result.get("predicted") == "error"
         or result.get("outcome") == ERROR
         or bool(result.get("error"))
+        or bool(result.get("sast_error"))
         or (result.get("infra_failures") or 0) > 0
         or bool(result_infra_ids(result))
     )
@@ -105,6 +106,14 @@ def graph_fields(review=None) -> dict:
     }
 
 
+def sast_fields(review=None) -> dict:
+    meta = getattr(review, "meta", None)
+    return {
+        "sast_error": getattr(meta, "sast_error", None),
+        "semgrep_findings_total": getattr(meta, "semgrep_findings_total", None),
+    }
+
+
 def case_fields(case: dict) -> dict:
     return {k: case[k] for k in CASE_FIELDS if k in case}
 
@@ -129,6 +138,7 @@ def error_record(case: dict, mode: str, pin: dict, review=None) -> dict:
         **case_fields(case),
         **coverage_fields(mode, review),
         **graph_fields(review),
+        **sast_fields(review),
     }
 
 
@@ -318,8 +328,13 @@ def _target_sections(row: dict, sections: list[dict]) -> list[dict]:
     ]
     if overlapping:
         return overlapping
-    files = {loc["file"] for loc in locations} | {row.get("file")}
+    files = _target_files(row)
     return [s for s in sections if any(h["file"] in files for h in s["hunks"])]
+
+
+def _target_files(row: dict) -> set[str]:
+    locations = row.get("vulnerable_locations") or []
+    return {loc["file"] for loc in locations} | {row.get("file")}
 
 
 def _scan_failed(cov: dict) -> bool:
@@ -342,6 +357,14 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
         return "scan_failure", "scan_failure", [], False
     targets = _target_sections(row, cov["sections"])
     target_ids = [s["section_id"] for s in targets]
+    if row["category"] != "authz":
+        files = _target_files(row)
+        return (
+            _findings_label(_relevant_verdicts(row, files=files)),
+            _findings_label(_relevant_verdicts(row, grounded=True, files=files)),
+            target_ids,
+            False,
+        )
     if _scan_failed(cov):
         return "scan_failure", "scan_failure", target_ids, False
     if not targets:
@@ -368,7 +391,9 @@ def score_case(result: dict) -> dict:
         result["legacy"] = True
     if result_is_error(result):
         message = result.get("error") or (
-            "infra failure: " + ", ".join(ids) if ids else "unknown error")
+            "infra failure: " + ", ".join(ids) if ids
+            else "SAST failed: " + result["sast_error"] if result.get("sast_error")
+            else "unknown error")
         mark_error(result, message)
         if legacy:
             result.update(case_label=None, case_label_grounded=None)
@@ -441,6 +466,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             **case_fields(case),
             **coverage_fields(config.mode, result),
             **review_fields,
+            **sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
         return score_case(mark_error(

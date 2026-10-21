@@ -34,6 +34,7 @@ class ReviewMetadata:
     duration_seconds: float = 0.0
     semgrep_findings_total: int = 0
     semgrep_findings_in_diff: int = 0
+    sast_error: str | None = None
     graph_state: str | None = None
     graph_index_seconds: float | None = None
     base_sha: str = ""
@@ -88,6 +89,7 @@ class ReportBuilder:
                 ),
                 "semgrep_findings_total": self.meta.semgrep_findings_total,
                 "semgrep_findings_in_diff": self.meta.semgrep_findings_in_diff,
+                "sast_error": self.meta.sast_error,
             },
             "findings": [
                 f.model_dump(exclude={"raw_response"}) for f in self.findings
@@ -142,6 +144,8 @@ class ReportBuilder:
             f"- Semgrep: {self.meta.semgrep_findings_in_diff} finding(s) in diff "
             f"(of {self.meta.semgrep_findings_total} total)."
         )
+        if self.meta.sast_error:
+            add(f"- Semgrep failed: {self.meta.sast_error}")
         add("")
 
         # Per-finding sections

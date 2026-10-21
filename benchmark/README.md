@@ -42,9 +42,10 @@ Authorization pairs 07–14 (vulnerable case; safe control):
 - `authz_09` (CWE-639, dev, `decorator_outside_hunk`): `my_orders` filters by
   status instead of owner; safe: the owner filter stays and a status filter is
   added.
-- `authz_10` (CWE-862, eval, `deleted_file`): `app/auth.py` moves into
-  `app/auth/__init__.py` with the API-key scope check removed; safe: the move
-  is unchanged.
+- `authz_10` (CWE-862, eval, `deleted_file`): `app/auth.py` is deleted and
+  split into an `app/auth/` package (`tokens`, `roles`, `api_keys`) whose
+  `require_api_key_scope` drops the API-key scope check; safe: the same split
+  with identical semantics.
 - `authz_11` (CWE-639, eval, `oversized_diff`): per-user export endpoint with
   no ownership check, appended after generated admin report routes; safe: the
   endpoint is guarded by `is_owner_or_admin`.
@@ -135,6 +136,9 @@ and `docs/evaluation-log.md`.
   `error_rate`, `error_cases`) and excluded from every other metric;
   `scored` is the number of cases the metrics cover. `--rescore` applies
   the same classification to saved results.
+- `sast_error` per case JSON holds the Semgrep failure message in `lgtm` and
+  `sast-only` runs, and is `null` otherwise. A row with a `sast_error` is an
+  error; `semgrep_findings_total` records the Semgrep finding count.
 - Graph health per case JSON: `graph_state` (see
   [Configuration](../README.md#codegraph)), `graph_index_seconds`, `base_sha`,
   `pr_sha`.
@@ -152,8 +156,8 @@ refreshed patches + `labels.json`.
 
 ### Case labels
 
-`lgtm` and `lgtm-no-sast` rows carry a `case_label` from the first matching
-rule:
+`lgtm` and `lgtm-no-sast` rows of `authz` cases carry a `case_label` from
+the first matching rule:
 
 1. `scan_failure`: no coverage block, no section scheduled and the
    investigator reported an error, or scheduled sections and none completed.
@@ -166,6 +170,12 @@ rule:
 
 A finding is relevant when its category is the case category or is empty,
 `sast`, or missing.
+
+`lgtm` and `lgtm-no-sast` rows of other categories are `scan_failure` without
+a coverage block. Otherwise they are labelled from the relevant findings in the
+target files (see [Target sections](#target-sections)), and section status does
+not apply: `no_candidate` when there is none; otherwise rules 3, 5, 6 and 7
+apply in that order. Their `coverage_gap` is `false`.
 
 `llm-only` and `sast-only` rows have no coverage block. Their label is
 `no_candidate` when no finding is relevant; otherwise rules 3, 5, 6 and 7

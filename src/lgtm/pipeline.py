@@ -152,8 +152,11 @@ class ReviewPipeline:
 
         semgrep_total = 0
         semgrep_in_diff: list[SemgrepFinding] = []
+        sast_error: str | None = None
         if mode in ("lgtm", "sast-only"):
-            semgrep_in_diff, semgrep_total = self._run_sast(diffs, base_rev, pr_rev)
+            semgrep_in_diff, semgrep_total, sast_error = self._run_sast(
+                diffs, base_rev, pr_rev
+            )
 
         meta = ReviewMetadata(
             repo=str(self.repo),
@@ -163,6 +166,7 @@ class ReviewPipeline:
             model=self.config.ollama_model if mode != "sast-only" else "none",
             semgrep_findings_total=semgrep_total,
             semgrep_findings_in_diff=len(semgrep_in_diff),
+            sast_error=sast_error,
             base_sha=base_rev if shas is not None else "",
             pr_sha=pr_rev if shas is not None else "",
         )
@@ -335,7 +339,7 @@ class ReviewPipeline:
     # ------------------------------------------------------------------
     def _run_sast(
         self, diffs: list[FileDiff], base: str, pr: str
-    ) -> tuple[list[SemgrepFinding], int]:
+    ) -> tuple[list[SemgrepFinding], int, str | None]:
         """Run semgrep on the PR version of the changed python files.
 
         The repo's working tree may be on any branch, so the changed files
@@ -348,7 +352,7 @@ class ReviewPipeline:
 
         changed_files = [d.path for d in diffs if d.path.endswith(".py")]
         if not changed_files:
-            return [], 0
+            return [], 0, None
         semgrep_config = self.config.semgrep_config
         if semgrep_config == "auto":
             # Bundled CWE-89 rules work offline; "auto" needs registry access.
@@ -375,9 +379,9 @@ class ReviewPipeline:
                 )
         except SemgrepError as exc:
             logger.error("Semgrep failed, continuing without SAST: %s", exc)
-            return [], 0
+            return [], 0, str(exc)
         in_diff = filter_to_diff(all_findings, diffs)
-        return in_diff, len(all_findings)
+        return in_diff, len(all_findings), None
 
     def _pr_source(self, pr: str, path: str) -> str:
         """PR-version file content for static analysis (parsed, never run)."""

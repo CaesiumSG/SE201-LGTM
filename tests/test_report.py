@@ -127,6 +127,7 @@ class TestJsonReport:
         assert "endpoints_reviewed" not in payload["stats"]
         assert payload["stats"]["semgrep_findings_total"] == 5
         assert payload["stats"]["semgrep_findings_in_diff"] == 2
+        assert payload["stats"]["sast_error"] is None
 
 
 class TestMarkdownReport:
@@ -149,6 +150,13 @@ class TestMarkdownReport:
         md = ReportBuilder(sample_findings(), meta()).build_markdown()
         assert "Semgrep: 2 finding(s) in diff (of 5 total)" in md
         assert "endpoint(s) reviewed for authorization" not in md
+
+    def test_semgrep_failure_is_reported_only_when_present(self):
+        assert "Semgrep failed" not in ReportBuilder([], meta()).build_markdown()
+        failed = meta()
+        failed.sast_error = "semgrep exited 2"
+        md = ReportBuilder([], failed).build_markdown()
+        assert "- Semgrep failed: semgrep exited 2" in md
 
     def test_supplied_coverage_adds_no_markdown_text(self):
         coverage = {"sections_total": 3, "sections_reviewed": 2}

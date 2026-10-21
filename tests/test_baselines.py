@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +17,7 @@ from lgtm.agents.plain_reviewer import DEFAULT_CWE
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import parse_unified_diff
 from lgtm.pipeline import ReviewPipeline
+from lgtm.reporting.report_builder import ReviewMetadata
 from lgtm.review.provenance import run_pin as real_run_pin
 
 _spec = importlib.util.spec_from_file_location(
@@ -1639,6 +1641,120 @@ class TestCoverageRowErrors:
         assert row["coverage"]["sections_failed"] > 0
         stored(row)
         assert evaluate.is_done(Path("row.json")) is False
+
+
+class TestNonAuthzCoverageRows:
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    @pytest.mark.parametrize("cov", [
+        _coverage([_target_section("failed")], sections_completed=0),
+        _coverage([], investigator_error="boom", investigator_status="failed"),
+    ], ids=["sections-failed", "investigator-error"])
+    def test_failed_authz_review_does_not_make_a_sqli_row_a_scan_failure(self, mode, cov):
+        row = evaluate.score_case(_case_row(
+            mode=mode, category="sqli", findings=[_f("sqli", "vulnerable")], coverage=cov))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["outcome"] == "TP"
+
+    def test_failed_target_section_is_not_missing_review_for_sqli(self):
+        row = evaluate.score_case(_case_row(
+            category="sqli", expected="safe", findings=[_f("sqli", "safe")],
+            coverage=_failed_target_coverage()))
+        assert row["case_label"] == "explicit_safe"
+        assert row["target_sections"] == ["s-target"]
+        assert row["coverage_gap"] is False
+
+    def test_sqli_detection_without_a_target_section_is_detected(self):
+        cov = _coverage([_section("other", [_hunk("app/other.py")])])
+        row = evaluate.score_case(_case_row(
+            category="sqli", findings=[dict(_f("sast", "vulnerable"), file=ROW_FILE)],
+            coverage=cov))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["target_sections"] == []
+
+    def test_sqli_row_without_relevant_findings_is_no_candidate(self):
+        row = evaluate.score_case(_case_row(
+            category="sqli", findings=[_f("authz", "vulnerable")],
+            coverage=_coverage([_target_section()])))
+        assert row["case_label"] == "no_candidate"
+
+    def test_sqli_finding_outside_the_target_files_is_not_relevant(self):
+        elsewhere = dict(_f("sqli", "vulnerable"), file="app/other.py")
+        row = evaluate.score_case(_case_row(
+            category="sqli", findings=[elsewhere],
+            coverage=_coverage([_target_section()])))
+        assert row["case_label"] == "no_candidate"
+
+    def test_sqli_finding_in_a_vulnerable_location_file_is_relevant(self):
+        location = {"file": "app/db.py", "old_range": None, "new_range": [1, 3]}
+        row = evaluate.score_case(_case_row(
+            category="sqli", locations=[location],
+            findings=[dict(_f("sqli", "possible"), file="app/db.py")],
+            coverage=_coverage([_target_section()])))
+        assert row["case_label"] == "possible_vulnerability"
+
+    def test_sqli_grounded_label_downgrades_an_ungrounded_detection(self):
+        row = evaluate.score_case(_case_row(
+            category="sqli", findings=[_f("sqli", "vulnerable", valid=False)],
+            coverage=_coverage([_target_section()])))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+
+    def test_sqli_row_without_coverage_is_a_scan_failure(self):
+        row = evaluate.score_case(_case_row(
+            category="sqli", findings=[_f("sqli", "vulnerable")], coverage=None))
+        assert row["case_label"] == "scan_failure"
+
+
+class TestSastErrorRows:
+    @pytest.mark.parametrize("mode", ["lgtm", "sast-only"])
+    def test_row_with_a_sast_error_is_an_error(self, mode):
+        coverage = {"coverage": _coverage([_target_section()])} if mode == "lgtm" else {}
+        row = evaluate.score_case(_case_row(
+            mode=mode, category="sqli", findings=[_f("sqli", "safe")],
+            sast_error="semgrep timed out after 60s", **coverage))
+        assert evaluate.result_is_error(row)
+        assert row["outcome"] == "ERROR"
+        assert row["error"] == "SAST failed: semgrep timed out after 60s"
+        assert row["case_label"] == "scan_failure"
+
+    def test_sast_error_rows_are_excluded_from_metrics_and_rerun(self, stored):
+        failed = evaluate.score_case(_case_row(
+            "a", category="sqli", findings=[_f("sqli", "vulnerable")],
+            coverage=_coverage([_target_section()]), sast_error="boom"))
+        ok = evaluate.score_case(_case_row(
+            "b", category="sqli", findings=[_f("sqli", "vulnerable")],
+            coverage=_coverage([_target_section()]), sast_error=None))
+        summary = evaluate.summarize([failed, ok])
+        assert summary["errors"] == 1
+        assert summary["error_cases"] == [{"id": "a", "error": "SAST failed: boom"}]
+        assert summary["scored"] == 1
+        stored(failed)
+        assert evaluate.is_done(Path("row.json")) is False
+
+    def test_rows_without_the_field_rescore_as_before(self):
+        row = _case_row(category="sqli", findings=[_f("sqli", "vulnerable")],
+                        coverage=_coverage([_target_section()]))
+        assert "sast_error" not in row
+        assert evaluate.score_case(row)["case_label"] == "detected_vulnerability"
+
+    def test_sast_fields_read_the_review_metadata(self):
+        review = SimpleNamespace(meta=ReviewMetadata(
+            sast_error="semgrep exited 2", semgrep_findings_total=0))
+        assert evaluate.sast_fields(review) == {
+            "sast_error": "semgrep exited 2", "semgrep_findings_total": 0}
+
+    @pytest.mark.parametrize("review", [None, SimpleNamespace(meta=SimpleNamespace())])
+    def test_sast_fields_default_for_missing_metadata(self, review):
+        assert evaluate.sast_fields(review) == {
+            "sast_error": None, "semgrep_findings_total": None}
+
+    def test_error_record_carries_the_sast_fields(self):
+        review = SimpleNamespace(meta=ReviewMetadata(
+            sast_error="semgrep exited 2", semgrep_findings_total=0))
+        case = {"id": "c", "category": "sqli", "expected_verdict": "vulnerable"}
+        rec = evaluate.error_record(case, "sast-only", {}, review)
+        assert rec["sast_error"] == "semgrep exited 2"
+        assert rec["semgrep_findings_total"] == 0
 
 
 def _legacy_row():

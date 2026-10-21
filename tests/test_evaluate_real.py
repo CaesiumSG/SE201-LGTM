@@ -410,6 +410,21 @@ class TestGraphMetadataOnRecords:
         assert (rec["graph_state"], rec["graph_index_seconds"],
                 rec["base_sha"], rec["pr_sha"]) == (None, None, "", "")
 
+    def test_semgrep_failure_makes_the_record_an_error_with_sast_fields(
+            self, tmp_path, monkeypatch):
+        meta = self._full_meta()
+        meta.sast_error = "semgrep exited 2"
+        meta.semgrep_findings_total = 0
+        rec = self._run(monkeypatch, tmp_path, self._review(meta))
+        assert rec["outcome"] == "ERROR"
+        assert rec["error"] == "SAST failed: semgrep exited 2"
+        assert (rec["sast_error"], rec["semgrep_findings_total"]) == ("semgrep exited 2", 0)
+
+    def test_meta_lacking_sast_fields_records_nulls(self, tmp_path, monkeypatch):
+        rec = self._run(monkeypatch, tmp_path, self._review(self._full_meta()))
+        assert rec["outcome"] != "ERROR"
+        assert (rec["sast_error"], rec["semgrep_findings_total"]) == (None, None)
+
     def test_infra_failure_record_keeps_available_metadata(
             self, tmp_path, monkeypatch):
         result = self._review(self._full_meta(), "LLM call failed: x",

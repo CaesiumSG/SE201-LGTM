@@ -17,7 +17,7 @@ from lgtm.config import LGTMConfig
 from lgtm.graph import session as session_module
 from lgtm.graph import snapshot as snapshot_module
 from lgtm.pipeline import ReviewPipeline
-from lgtm.sast.semgrep_runner import SemgrepFinding
+from lgtm.sast.semgrep_runner import SemgrepError, SemgrepFinding
 from lgtm.validation.evidence import EvidenceValidator
 from tests.graph_fakes import FakeRunner, failure
 
@@ -1196,6 +1196,39 @@ class TestSectionPipeline:
         assert result.meta.semgrep_findings_in_diff == 0
         assert len(llm.user_prompts["section"]) == 1
         assert [(f.category, f.file) for f in result.findings] == [("authz", "svc.py")]
+
+    @pytest.mark.parametrize("mode", ["lgtm", "sast-only"])
+    def test_semgrep_failure_is_recorded_on_the_review_metadata(
+        self, tmp_path, install_graph, monkeypatch, mode
+    ):
+        def failing_run(*args, **kwargs):
+            raise SemgrepError("semgrep timed out after 60s")
+
+        monkeypatch.setattr("lgtm.pipeline.run_semgrep", failing_run)
+        repo = _build_repo(
+            tmp_path / "plain", {"svc.py": "VALUE = 1\n"}, {"svc.py": "VALUE = 2\n"}
+        )
+        install_graph()
+
+        result = _review(repo, RoutedLLM(), mode=mode, output_dir=tmp_path / "out")
+
+        assert result.meta.sast_error == "semgrep timed out after 60s"
+        assert result.meta.semgrep_findings_total == 0
+        report = json.loads(result.json_path.read_text(encoding="utf-8"))
+        assert report["stats"]["sast_error"] == "semgrep timed out after 60s"
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast", "sast-only"])
+    def test_sast_error_is_none_without_a_semgrep_failure(
+        self, tmp_path, install_graph, no_semgrep, mode
+    ):
+        repo = _build_repo(
+            tmp_path / "plain", {"svc.py": "VALUE = 1\n"}, {"svc.py": "VALUE = 2\n"}
+        )
+        install_graph()
+
+        result = _review(repo, RoutedLLM(), mode=mode)
+
+        assert result.meta.sast_error is None
 
     def test_deleted_file_reaches_the_scan_stage_but_not_sast(
         self, tmp_path, install_graph, no_semgrep
