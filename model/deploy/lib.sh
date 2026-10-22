@@ -145,3 +145,24 @@ wait_finished() {
   echo >&2
   final_state "$id"
 }
+
+# Kev-4B: own job record, endpoint directory, and local port; qwen3.8 state is never read or written.
+: "${KEV_LOCAL_PORT:=8008}"
+KEV_JOBS="$STATE_DIR/kev-jobs"
+
+record_kev_job() { printf '%s %s %s\n' "$(date +%FT%T)" "$1" "$2" >> "$KEV_JOBS"; }
+
+last_kev_job() {
+  [[ -f "$KEV_JOBS" ]] || return 0
+  awk '{ id = $2 } END { print id }' "$KEV_JOBS"
+}
+
+# Newest Kev endpoint file whose job is still running.
+live_kev_endpoint() {
+  remote "cd ~/$REMOTE_ROOT/run/kev 2>/dev/null || exit 0
+    for f in \$(ls -t *.env 2>/dev/null); do
+      id=\${f%.env}
+      [[ \"\$(squeue -h -j \$id -o %T 2>/dev/null)\" == RUNNING ]] && { echo \$id; break; }
+    done
+    exit 0" | tr -d '\r'
+}

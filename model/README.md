@@ -181,6 +181,35 @@ python benchmark/evaluate.py --gpu-cluster
 not start the server or tunnel. `--model` and `--ollama-url` override these
 defaults, including when the tunnel uses a different local port.
 
+## Kev-4B (System One judge)
+
+`jaredpalmer/kev-4b` is served by its own job and commands; they never read
+or cancel the qwen3.8 job, state, or port. The server (`python -m kev.serve`)
+binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
+`http://127.0.0.1:8008` (`KEV_LOCAL_PORT`), request path `/v1/systemone`.
+
+| Task | Command |
+|---|---|
+| Install the server and download the weights (login node, once) | `model/deploy/kev-provision.sh` |
+| Start (or reattach to) the server and tunnel to it | `model/deploy/kev-up.sh [HH:MM:SS]` |
+| Reopen the tunnel | `model/deploy/kev-connect.sh [jobid]` |
+| Watch | `model/deploy/kev-status.sh`, `model/deploy/kev-logs.sh [-f] [jobid]` |
+| Stop | `model/deploy/kev-down.sh [jobid]` |
+
+- **Job:** `jobs/kev-serve.sbatch` (`kev-serve`, one RTX 3090) writes
+  `~/llm-serve/run/kev/<jobid>.env` (`NODE`, `PORT`) once the server answers;
+  logs are `~/llm-serve/logs/kev-serve-<jobid>.out`; recorded jobs are in
+  `model/.state/kev-jobs`.
+- **Prerequisites:** `uv` on the login node. Weights and the uv cache go to
+  `$SCRATCH_DIR/kev-hf` and `$SCRATCH_DIR/kev-uv-cache`.
+- **Auth:** the job starts the server without auth. `KEV_API_KEY` is read
+  by clients only and is not passed to the server; clients send it as a
+  bearer token only for a server started with auth outside these scripts.
+- **Point LGTM at it:** with the tunnel open, the judge endpoint is
+  `http://127.0.0.1:8008`. Check it with
+  `curl http://127.0.0.1:8008/v1/models`. Change `KEV_LOCAL_PORT` in `.env`
+  if 8008 is taken, and set the matching judge endpoint in LGTM.
+
 ## Cluster facts (verified 2026-10-13)
 
 | | |
