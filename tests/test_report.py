@@ -258,3 +258,153 @@ class TestJsonEvidenceKeys:
         assert payload["findings"][0]["pr_graph_ok"] is None
         assert payload["review"]["base_sha"] == BASE_SHA
         assert payload["review"]["pr_sha"] == PR_SHA
+
+
+JUDGE_VERDICTS = ["vulnerable", "possible", "safe", "insufficient_evidence"]
+CONFIDENCE_SHOWN = r"0\.73|73\s?%"
+
+
+def judged_finding(finding_id: str, verdict: str, severity: str = "", confidence: float = 0.73) -> AgentFinding:
+    return AgentFinding(
+        finding_id=finding_id, verdict=verdict, severity=severity,
+        provenance_confidence=confidence, judged=True, cwe_id="CWE-639",
+        explanation=f"Claim for {finding_id}.", category="authz", agent="authz_reviewer",
+        file="routes/orders.py", line=55, evidence_valid=True,
+    )
+
+
+def not_judged_finding(finding_id: str = "nj-1") -> AgentFinding:
+    return AgentFinding(
+        finding_id=finding_id, cwe_id="CWE-639", explanation="Unjudged claim text.",
+        category="authz", agent="authz_reviewer", file="routes/unjudged.py", line=7,
+        evidence=[EvidenceItem(type="code", file="routes/unjudged.py", lines=[7, 9], content="return jsonify(order)", snapshot="pr")],
+        evidence_valid=False, evidence_issues=["cited line range is outside the file"],
+    )
+
+
+class TestJudgeResultRendering:
+    @pytest.mark.parametrize(("verdict", "severity"), [("vulnerable", "critical"), ("possible", "medium")])
+    def test_markdown_shows_verdict_confidence_and_severity(self, verdict, severity):
+        md = ReportBuilder([judged_finding("j1", verdict, severity)], meta()).build_markdown().lower()
+        assert verdict in md
+        assert re.search(CONFIDENCE_SHOWN, md)
+        assert severity in md
+
+    @pytest.mark.parametrize(("confidence", "shown"), [(0.0, "0%"), (0.05, "5%"), (0.73, "73%"), (1.0, "100%")])
+    def test_markdown_shows_the_findings_own_confidence(self, confidence, shown):
+        md = ReportBuilder([judged_finding("j1", "possible", "low", confidence)], meta()).build_markdown()
+        finding_section = " ".join(re.split(r"^### ", md, flags=re.MULTILINE)[1:])
+        assert re.search(rf"(?<![\d.]){re.escape(shown)}", finding_section)
+
+    @pytest.mark.parametrize("verdict", ["safe", "insufficient_evidence"])
+    def test_markdown_shows_no_severity_without_one(self, verdict):
+        md = ReportBuilder([judged_finding("j1", verdict)], meta()).build_markdown().lower()
+        assert verdict in md
+        assert re.search(CONFIDENCE_SHOWN, md)
+        assert "severity" not in md
+        assert not re.search(r"\b(critical|high|medium|low)\b", md)
+
+    @pytest.mark.parametrize(("verdict", "severity"), [("vulnerable", "critical"), ("possible", "medium"), ("safe", "")])
+    def test_json_carries_verdict_confidence_and_severity(self, verdict, severity):
+        payload = ReportBuilder([judged_finding("j1", verdict, severity)], meta()).build_json()
+        finding = payload["findings"][0]
+        assert finding["verdict"] == verdict
+        assert finding["provenance_confidence"] == 0.73
+        assert (finding["severity"] or "") == severity
+
+
+class TestNotJudgedRendering:
+    def test_markdown_marks_not_judged_with_claim_citations_and_grounding(self):
+        md = ReportBuilder([not_judged_finding()], meta()).build_markdown()
+        assert re.search(r"not[\s_-]judged", md, re.IGNORECASE)
+        assert "Unjudged claim text." in md
+        assert re.search(r"\[pr [^\]]+\]\s*`routes/unjudged\.py`:7-9", md)
+        assert "cited line range is outside the file" in md
+
+    def test_markdown_shows_no_verdict_severity_or_confidence_for_not_judged(self):
+        md = ReportBuilder([not_judged_finding()], meta()).build_markdown().lower()
+        for verdict in JUDGE_VERDICTS:
+            assert verdict not in md
+        assert "severity" not in md
+        assert not re.search(r"\b(critical|high|medium|low)\b", md)
+        assert not re.search(r"confidence\W{0,6}\d", md)
+
+    def test_json_marks_not_judged_without_fabricated_judge_outputs(self):
+        finding = ReportBuilder([not_judged_finding()], meta()).build_json()["findings"][0]
+        assert finding["judged"] is False
+        assert finding["verdict"] in ("", None)
+        assert finding["severity"] in ("", None)
+        assert finding["provenance_confidence"] is None
+        assert finding["explanation"] == "Unjudged claim text."
+        assert finding["evidence"][0]["file"] == "routes/unjudged.py"
+        assert finding["evidence_issues"] == ["cited line range is outside the file"]
+
+
+def mixed_findings() -> list[AgentFinding]:
+    return [
+        judged_finding("s1", "safe"),
+        not_judged_finding("nj-1"),
+        judged_finding("v1", "vulnerable", "high"),
+        judged_finding("p1", "possible", "low"),
+        not_judged_finding("nj-2"),
+    ]
+
+
+class TestMixedJudgedAndNotJudged:
+    def test_json_counts_each_verdict_and_not_judged_separately_and_sum_to_total(self):
+        stats = ReportBuilder(mixed_findings(), meta()).build_json()["stats"]
+        assert stats["total_findings"] == 5
+        assert stats["by_verdict"].get("vulnerable") == 1
+        assert stats["by_verdict"].get("possible") == 1
+        assert stats["by_verdict"].get("safe") == 1
+        assert stats["not_judged"] == 2
+        verdict_total = sum(stats["by_verdict"].get(v, 0) for v in JUDGE_VERDICTS)
+        assert verdict_total + stats["not_judged"] == stats["total_findings"]
+
+    def test_json_lists_every_candidate_with_judged_ones_ordered_by_final_verdict(self):
+        findings = ReportBuilder(mixed_findings(), meta()).build_json()["findings"]
+        assert {f["finding_id"] for f in findings} == {"s1", "nj-1", "v1", "p1", "nj-2"}
+        judged_order = [f["verdict"] for f in findings if f["judged"]]
+        assert judged_order == ["vulnerable", "possible", "safe"]
+
+    def test_markdown_lists_every_candidate_and_counts_not_judged_apart(self):
+        md = ReportBuilder(mixed_findings(), meta()).build_markdown()
+        for finding_id in ("s1", "nj-1", "v1", "p1", "nj-2"):
+            assert f"`{finding_id}`" in md
+        assert re.search(r"not[\s_-]judged\W+2\b", md, re.IGNORECASE)
+        for verdict in ("vulnerable", "possible", "safe"):
+            assert re.search(rf"{verdict}\W+1\b", md)
+
+
+class TestAgentErrors:
+    @pytest.mark.parametrize("source", ["sec-2", "semgrep.rule:app.py:7"])
+    def test_markdown_lists_error_naming_section_or_hit(self, source):
+        m = meta()
+        m.agent_errors = [{"source": source, "message": "answer could not be parsed after retries"}]
+        md = ReportBuilder([judged_finding("v1", "vulnerable", "high")], m).build_markdown()
+        assert source in md
+        assert "answer could not be parsed after retries" in md
+        assert "`v1`" in md
+
+    def test_json_lists_error_outside_findings_and_does_not_count_it(self):
+        m = meta()
+        m.agent_errors = [{"source": "sec-2", "message": "answer could not be parsed after retries"}]
+        payload = ReportBuilder([judged_finding("v1", "vulnerable", "high")], m).build_json()
+        outside_findings = json.dumps({k: v for k, v in payload.items() if k != "findings"})
+        assert "sec-2" in outside_findings
+        assert "answer could not be parsed after retries" in outside_findings
+        assert payload["stats"]["total_findings"] == 1
+        assert [f["finding_id"] for f in payload["findings"]] == ["v1"]
+        assert sum(payload["stats"]["by_verdict"].values()) == 1
+
+    def test_error_free_review_reports_no_agent_errors(self):
+        builder = ReportBuilder([judged_finding("v1", "vulnerable", "high")], meta())
+        assert "agent errors" not in builder.build_markdown().lower()
+        assert not builder.build_json()["review"].get("agent_errors")
+
+    def test_review_with_errors_and_no_findings_is_not_reported_as_a_clean_pass(self):
+        m = meta()
+        m.agent_errors = [{"source": "sec-2", "message": "answer could not be parsed after retries"}]
+        md = ReportBuilder([], m).build_markdown()
+        assert "sec-2" in md
+        assert "passed all configured checks" not in md

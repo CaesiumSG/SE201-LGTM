@@ -71,10 +71,12 @@ class ReportBuilder:
                 "base_sha": self.meta.base_sha,
                 "pr_sha": self.meta.pr_sha,
                 "coverage": self.meta.coverage,
+                "agent_errors": self.meta.agent_errors,
             },
             "stats": {
                 "total_findings": len(self.findings),
-                "by_verdict": dict(Counter(f.verdict for f in self.findings)),
+                "by_verdict": dict(Counter(f.verdict for f in self.findings if f.verdict)),
+                "not_judged": sum(1 for f in self.findings if not f.verdict),
                 "by_cwe": dict(Counter(f.cwe_id for f in self.findings if f.cwe_id)),
                 "by_category": dict(
                     Counter(f.category for f in self.findings if f.category)
@@ -120,6 +122,8 @@ class ReportBuilder:
             if verdict_counts.get(verdict):
                 emoji = VERDICT_EMOJI.get(verdict, "")
                 add(f"| {emoji} {verdict} | {verdict_counts[verdict]} |")
+        if verdict_counts.get(""):
+            add(f"| not judged | {verdict_counts['']} |")
         add("")
         if cwe_counts:
             add("| CWE | Count |")
@@ -146,16 +150,32 @@ class ReportBuilder:
             add(f"- Semgrep failed: {self.meta.sast_error}")
         add("")
 
+        if self.meta.agent_errors:
+            add("## Agent Errors")
+            add("")
+            for err in self.meta.agent_errors:
+                add(f"- `{err.get('source', 'unknown')}`: {err.get('message', '')}")
+            add("")
+
         # Per-finding sections
         add("## Findings")
         add("")
         if not self.findings:
-            add("_No findings. The PR passed all configured checks._")
+            if self.meta.agent_errors:
+                add("_No findings reported; some sections or hits failed (see Agent Errors)._")
+            else:
+                add("_No findings. The PR passed all configured checks._")
         for i, f in enumerate(self.findings, 1):
             emoji = VERDICT_EMOJI.get(f.verdict, "")
-            add(f"### {i}. {emoji} [{f.verdict.upper()}] {f.cwe_id or 'uncategorized'} — `{f.file}:{f.line}`")
+            label = f.verdict.upper() if f.verdict else "NOT JUDGED"
+            add(f"### {i}. {emoji} [{label}] {f.cwe_id or 'uncategorized'} — `{f.file}:{f.line}`")
             add("")
             add(f"- **Finding ID:** `{f.finding_id}`")
+            if f.verdict:
+                if f.severity:
+                    add(f"- **Severity:** {f.severity}")
+                if f.provenance_confidence is not None:
+                    add(f"- **Provenance confidence:** {f.provenance_confidence:.0%}")
             add(f"- **Agent:** {f.agent} | **Category:** {f.category or 'n/a'}")
             grounding = (
                 "✅ grounded"
