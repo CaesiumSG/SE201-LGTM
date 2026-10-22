@@ -503,7 +503,22 @@ def coverage_summary(results: list[dict]) -> dict:
     }
 
 
+JUDGED_MODES = ("lgtm", "lgtm-no-sast")
+
+
+def not_judged_count(row: dict) -> int:
+    """Candidates the judge did not rule on, for rows of the judged modes only."""
+    if row.get("mode") not in JUDGED_MODES:
+        return 0
+    return sum(1 for f in row.get("findings", []) if f.get("judged") is False)
+
+
 def summarize(results: list[dict]) -> dict:
+    not_judged_cases = [
+        {"id": r["id"], "not_judged": n} for r in results if (n := not_judged_count(r))
+    ]
+    results = [r for r in results if not not_judged_count(r)]
+
     def metrics(
         rows: list[dict], key: str = "outcome", label_key: str = "case_label"
     ) -> dict:
@@ -628,6 +643,7 @@ def summarize(results: list[dict]) -> dict:
         "case_labels": dict(case_labels),
         "legacy_rows": case_labels.get("legacy", 0),
         "coverage": coverage_summary(results),
+        "not_judged_cases": not_judged_cases,
     }
 
 

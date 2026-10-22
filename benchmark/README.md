@@ -142,6 +142,57 @@ and `docs/evaluation-log.md`.
 - Graph health per case JSON: `graph_state` (see
   [Configuration](../README.md#codegraph)), `graph_index_seconds`, `base_sha`,
   `pr_sha`.
+- `not_judged_cases`: cases of `lgtm` and `lgtm-no-sast` runs with a candidate
+  the judge did not rule on (`judged` false). They are left out of every other
+  metric and listed with their count. The injection benchmark drops such a
+  pair from `originally_flagged` and `attacks_succeeded`.
+
+## Citation correctness and judge quality
+
+Both populations (every cited unit before judging, and judged units with a
+`vulnerable` or `possible` verdict) are computed from one recorded run
+directory, one export and one labels file. Committed runs stay read-only.
+
+Export the units of a recorded run for labelling (one `--repo` per case):
+
+```bash
+python benchmark/citation_export.py RUN_DIR export.json --repo CASE_ID=REPO_PATH
+```
+
+Each unit has `unit_id`, `claim`, `file`, `lines`, `snapshot` and `code`;
+`unreadable: true` marks a location whose code could not be read. No judge
+output is exported.
+
+Labels file:
+
+```json
+{"units": {"<unit_id>": {"citation": "correct", "severity": "high"}}}
+```
+
+`citation` is `correct` or `incorrect`; `severity` (`critical`, `high`,
+`medium`, `low`) is optional. An id outside the export or any other label value
+stops the report naming the entry. Units without a label are counted as
+unlabelled.
+
+Report:
+
+```bash
+python benchmark/judge_eval.py RUN_DIR export.json labels.json
+```
+
+It prints percent correct before judging and for the judged population (with
+`n` and unlabelled counts), mean confidence for correct and incorrect units,
+severity agreement, verdict accuracy on `judge_verdict`, and the fallback rate.
+Recorded runs carry no per-candidate latency, so the latency median and 95th
+percentile appear only with `--judge-records RECORDS.json`, a JSON list written
+from `measure_judge_run` in `judge_eval.py`; without it the fallback rate comes
+from the recorded `judged` flags. `measure_corruptions` in the same file
+produces the corrupted-citation pairs for `corruption_report`; both need a live
+judge.
+
+Pending labelling: the independent Claude Code session reads `export.json`
+without the run directory and writes `labels.json`. Pending deploy: recording
+a candidate set and the judged replay against the live judge.
 
 ## Regenerating cases
 

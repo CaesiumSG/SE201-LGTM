@@ -66,12 +66,13 @@ class TestPlainReviewer:
     def test_parses_one_finding_per_category(self):
         findings = PlainLLMReviewer._parse(ASSESSMENTS)
         assert [f.category for f in findings] == ["sqli", "authz"]
-        assert not any(f.verdict for f in findings)
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
         assert findings[0].line == 6 and findings[0].agent == "plain_llm"
 
     def test_category_inferred_from_cwe(self):
         raw = json.dumps({"assessments": [{"verdict": "vulnerable", "cwe_id": "CWE-89"}]})
         assert PlainLLMReviewer._parse(raw)[0].category == "sqli"
+        assert PlainLLMReviewer._parse(raw)[0].verdict == "vulnerable"
 
     def test_prompt_asks_for_the_verdict_the_parser_reads(self):
         prompt = registry.entry("plain_reviewer.system_prompt")
@@ -82,7 +83,7 @@ class TestPlainReviewer:
     def test_unparsable_output_degrades(self):
         findings = PlainLLMReviewer._parse("I think it is fine.")
         assert len(findings) == 1
-        assert not findings[0].verdict
+        assert findings[0].verdict == "insufficient_evidence"
 
     def test_llm_only_pipeline_uses_no_sast_rag_or_tools(self, git_repo):
         llm = _NoToolsLLM(ASSESSMENTS)
@@ -93,7 +94,8 @@ class TestPlainReviewer:
         prompt = llm.messages[1].content
         assert "find_user" in prompt  # the diff is the only context
         sqli = [f for f in result.findings if f.category == "sqli"][0]
-        assert not sqli.verdict
+        assert sqli.verdict == "vulnerable"
+        assert sqli.judged is False
         assert sqli.evidence_valid is True  # snippet is in the PR's added lines
 
 
@@ -1079,7 +1081,7 @@ class TestPlainReviewerResilience:
         assert len(findings) == 2
         assert llm.calls == 2
         assert [f.category for f in findings] == ["sqli", "authz"]
-        assert not any(f.verdict for f in findings)
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
 
     def test_failure_after_retries_reports_llm_call_failed(self, sleeps):
         llm = _ScriptedPlainLLM([RuntimeError("down")] * 4)
@@ -1088,7 +1090,7 @@ class TestPlainReviewerResilience:
         assert all(f.explanation.startswith("LLM call failed") for f in findings)
         assert llm.calls == 4
         assert sleeps == [2.0, 4.0, 8.0]
-        assert not any(f.verdict for f in findings)
+        assert all(f.verdict == "insufficient_evidence" for f in findings)
         assert {f.category: f.cwe_id for f in findings} == DEFAULT_CWE
 
     def test_unparsable_answer_is_reasked(self):
@@ -1096,7 +1098,7 @@ class TestPlainReviewerResilience:
         findings = self._review(llm)
         assert llm.calls == 2
         assert [f.category for f in findings] == ["sqli", "authz"]
-        assert not any(f.verdict for f in findings)
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
         assert all(f.finding_id != "plain:unparsable" for f in findings)
 
     def test_gives_up_after_three_reasks(self):
@@ -1104,7 +1106,7 @@ class TestPlainReviewerResilience:
         findings = self._review(llm)
         assert llm.calls == 4
         assert [f.finding_id for f in findings] == ["plain:unparsable"]
-        assert not findings[0].verdict
+        assert findings[0].verdict == "insufficient_evidence"
 
 
 def test_llm_only_baseline_leaves_graph_fields_empty(git_repo):

@@ -78,6 +78,7 @@ class AgentFinding(BaseModel):
     semgrep_message: str = ""
     # Result fields: left unset by agents, written by validation.
     verdict: str = ""
+    judge_verdict: str = ""  # the judge's answer before the PR-grounding cap
     severity: str = ""
     provenance_confidence: float | None = None
     judged: bool = False

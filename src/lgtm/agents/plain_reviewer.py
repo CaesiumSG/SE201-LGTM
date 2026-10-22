@@ -28,6 +28,7 @@ from lgtm.diff.git_diff import FileDiff
 logger = logging.getLogger(__name__)
 
 DEFAULT_CWE = {"sqli": "CWE-89", "authz": "CWE-862"}
+VERDICTS = ("vulnerable", "possible", "safe", "insufficient_evidence")
 
 
 def _category_for(item: dict) -> str:
@@ -75,6 +76,7 @@ class PlainLLMReviewer:
                     cwe_id=cwe,
                     category=cat,
                     agent="plain_llm",
+                    verdict="insufficient_evidence",
                     explanation=registry.render("plain_reviewer.failed_explanation", error=exc),
                 )
                 for cat, cwe in DEFAULT_CWE.items()
@@ -111,6 +113,8 @@ class PlainLLMReviewer:
             finding.raw_response = raw[:2000]
             finding.category = category
             finding.agent = "plain_llm"
+            verdict = str(item.get("verdict", "")).strip().lower()
+            finding.verdict = verdict if verdict in VERDICTS else "insufficient_evidence"
             finding.file = str(item.get("file") or "")
             try:
                 finding.line = int(item.get("line") or 0)
@@ -124,6 +128,7 @@ class PlainLLMReviewer:
                 AgentFinding(
                     finding_id="plain:unparsable",
                     agent="plain_llm",
+                    verdict="insufficient_evidence",
                     explanation=registry.entry("plain_reviewer.unparsable_explanation"),
                     raw_response=raw[:2000],
                 )

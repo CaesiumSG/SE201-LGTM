@@ -121,6 +121,7 @@ def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError(f"provenance confidence outside 0 to 1: {confidence!r}")
 
+    finding.judge_verdict = verdict
     ungrounded = not any(item.grounded_in_pr is True for item in finding.evidence)
     if verdict == "vulnerable" and finding.pr_graph_ok is False and ungrounded:
         verdict = "possible"
@@ -182,6 +183,7 @@ def judge_candidates(
     judge = judge or http_judge(config)
     for finding in findings:
         finding.verdict = ""
+        finding.judge_verdict = ""
         finding.severity = ""
         finding.provenance_confidence = None
         finding.judged = False

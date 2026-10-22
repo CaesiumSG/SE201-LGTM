@@ -240,6 +240,7 @@ class TestPrGroundingCap:
         apply_judge_answer(finding, self.ANSWER)
 
         assert finding.verdict == "possible"
+        assert finding.judge_verdict == "vulnerable"
         assert finding.judged is True
 
     def test_capped_candidate_keeps_the_judge_severity_and_confidence(self):
@@ -266,6 +267,7 @@ class TestPrGroundingCap:
         apply_judge_answer(finding, self.ANSWER)
 
         assert finding.verdict == "vulnerable"
+        assert finding.judge_verdict == "vulnerable"
 
     def test_healthy_graph_never_caps(self):
         finding = _candidate(pr_graph_ok=True, evidence=[_item(grounded=False)])
@@ -273,6 +275,23 @@ class TestPrGroundingCap:
         apply_judge_answer(finding, self.ANSWER)
 
         assert finding.verdict == "vulnerable"
+        assert finding.judge_verdict == "vulnerable"
+
+    @pytest.mark.parametrize("verdict", sorted(VERDICTS))
+    def test_judge_verdict_keeps_the_judge_answer_for_every_verdict(self, verdict):
+        finding = _candidate(pr_graph_ok=False, evidence=[_item(grounded=False)])
+
+        apply_judge_answer(finding, {**self.ANSWER, "verdict": verdict})
+
+        assert finding.judge_verdict == verdict
+
+    def test_invalid_answer_leaves_judge_verdict_empty(self):
+        finding = _candidate()
+
+        with pytest.raises(ValueError):
+            apply_judge_answer(finding, {**self.ANSWER, "provenance_confidence": 1.5})
+
+        assert not finding.judge_verdict
 
     @pytest.mark.parametrize("verdict", ["possible", "safe", "insufficient_evidence"])
     def test_cap_never_changes_a_verdict_other_than_vulnerable(self, verdict):
@@ -348,6 +367,7 @@ def _judge_via_config(endpoint_url) -> AgentFinding:
 def _assert_not_judged(finding):
     assert finding.judged is False
     assert not finding.verdict
+    assert not finding.judge_verdict
     assert not finding.severity
     assert not finding.provenance_confidence
 
