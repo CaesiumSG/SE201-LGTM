@@ -43,8 +43,8 @@ class _FakeKev(BaseHTTPRequestHandler):
         choice, level, probability = answer
         body = json.dumps({"answers": {
             "verdict": {"choice": choice},
-            "severity": {"mean_level": level},
-            "provenance_confidence": {"probability": probability},
+            "severity": {"score": level},
+            "provenance_confidence": {"noul": probability},
         }}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

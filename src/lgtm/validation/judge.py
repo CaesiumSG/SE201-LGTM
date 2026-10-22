@@ -134,13 +134,13 @@ def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None
 def _parse_kev_reply(reply: Any) -> dict[str, Any]:
     """The one place that reads Kev answer fields."""
     answers = reply["answers"]
-    level = answers[QUESTION_SEVERITY]["mean_level"]
+    level = answers[QUESTION_SEVERITY]["score"]
     if not 0 <= level <= len(SEVERITIES) - 1:
         raise ValueError(f"severity level outside the scale: {level!r}")
     return {
         "verdict": answers[QUESTION_VERDICT]["choice"],
         "severity": SEVERITIES[round(level)],
-        "provenance_confidence": answers[QUESTION_CONFIDENCE]["probability"],
+        "provenance_confidence": answers[QUESTION_CONFIDENCE]["noul"],
     }
 
 

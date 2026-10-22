@@ -12,5 +12,7 @@ remote "set -e
   [ -d repo ] || git clone https://github.com/jaredpalmer/kev.git repo
   cd repo
   uv sync --extra serve
-  uv run --extra serve python -c 'from huggingface_hub import snapshot_download; print(snapshot_download(\"jaredpalmer/kev-4b\", revision=\"v1.0\"))'"
+  uv run --extra serve python -c 'from huggingface_hub import snapshot_download; print(snapshot_download(\"jaredpalmer/kev-4b\", revision=\"v1.0\"))'
+  # kev.serve loads the adapter's base model at start-up; fetch it here so the GPU job does not.
+  uv run --extra serve python -c 'import json, pathlib; from huggingface_hub import snapshot_download; d = pathlib.Path(snapshot_download(\"jaredpalmer/kev-4b\", revision=\"v1.0\")); base = json.loads((d / \"adapter_config.json\").read_text())[\"base_model_name_or_path\"]; rev = json.loads((d / \"training_config.json\").read_text())[\"base_revision\"]; print(snapshot_download(base, revision=rev))'"
 echo "Kev-4B provisioned"

@@ -1766,13 +1766,13 @@ def _kev_reply(request: dict, verdict: str, severity: str, confidence: float, om
     for qid, question in request["questions"].items():
         if question["type"] == "noul":
             if not omit_confidence:
-                answers[qid] = {"probability": confidence}
+                answers[qid] = {"noul": confidence}
         elif set(question["criteria"]) == KEV_VERDICTS:
             answers[qid] = _choice_answer(question, verdict)
         elif question["type"] == "score":
             levels = list(question["criteria"])
             level = float(levels.index(severity)) if severity in levels else 9.0
-            answers[qid] = {"mean_level": level}
+            answers[qid] = {"score": level}
         else:
             answers[qid] = _choice_answer(question, severity)
     payload = {

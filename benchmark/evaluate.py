@@ -77,6 +77,7 @@ def result_is_error(result: dict) -> bool:
         or bool(result.get("error"))
         or bool(result.get("sast_error"))
         or (result.get("infra_failures") or 0) > 0
+        or (result.get("triage_errors") or 0) > 0
         or bool(result_infra_ids(result))
     )
 
@@ -111,6 +112,10 @@ def sast_fields(review=None) -> dict:
     return {
         "sast_error": getattr(meta, "sast_error", None),
         "semgrep_findings_total": getattr(meta, "semgrep_findings_total", None),
+        # SAST triage failures leave no finding, so coverage cannot surface them.
+        "triage_errors": sum(
+            1 for e in getattr(meta, "agent_errors", None) or [] if e.get("stage") == "sast_triage"
+        ),
     }
 
 
@@ -393,6 +398,7 @@ def score_case(result: dict) -> dict:
         message = result.get("error") or (
             "infra failure: " + ", ".join(ids) if ids
             else "SAST failed: " + result["sast_error"] if result.get("sast_error")
+            else f"SAST triage failed for {result['triage_errors']} hit(s)" if result.get("triage_errors")
             else "unknown error")
         mark_error(result, message)
         if legacy:

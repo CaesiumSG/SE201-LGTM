@@ -305,8 +305,8 @@ class TestPrGroundingCap:
 KEV_REPLY = {
     "answers": {
         "verdict": {"choice": "vulnerable"},
-        "severity": {"mean_level": 2.0},
-        "provenance_confidence": {"probability": 0.9},
+        "severity": {"score": 2.0},
+        "provenance_confidence": {"noul": 0.9},
     }
 }
 OVER_BOUND_PADDING = "x" * 20_000_000

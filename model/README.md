@@ -195,11 +195,15 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
 | Reopen the tunnel | `model/deploy/kev-connect.sh [jobid]` |
 | Watch | `model/deploy/kev-status.sh`, `model/deploy/kev-logs.sh [-f] [jobid]` |
 | Stop | `model/deploy/kev-down.sh [jobid]` |
+| Serve qwen3.8 and Kev-4B together on one A40 (prints the job id) | `model/deploy/judged-up.sh [HH:MM:SS]`, then `connect.sh <jobid>` and `kev-connect.sh <jobid>`; stop with `down.sh <jobid>` |
 
 - **Job:** `jobs/kev-serve.sbatch` (`kev-serve`, one RTX 3090) writes
   `~/llm-serve/run/kev/<jobid>.env` (`NODE`, `PORT`) once the server answers;
   logs are `~/llm-serve/logs/kev-serve-<jobid>.out`; recorded jobs are in
   `model/.state/kev-jobs`.
+- **Combined job:** `jobs/judged-serve.sbatch` (`judged-serve`, one 48 GB A40)
+  starts Kev-4B first, then Ollama with `DEFAULT_MODEL`, and writes both
+  endpoint files; measured at about 17.5 GB for qwen3.8:27b plus Kev-4B in bf16.
 - **Prerequisites:** `uv` on the login node. Weights and the uv cache go to
   `$SCRATCH_DIR/kev-hf` and `$SCRATCH_DIR/kev-uv-cache`.
 - **Auth:** the job starts the server without auth. `KEV_API_KEY` is read

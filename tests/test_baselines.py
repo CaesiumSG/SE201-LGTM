@@ -1723,6 +1723,21 @@ class TestSastErrorRows:
         assert row["error"] == "SAST failed: semgrep timed out after 60s"
         assert row["case_label"] == "scan_failure"
 
+    def test_row_with_a_failed_sast_triage_is_an_error_not_a_miss(self):
+        row = evaluate.score_case(_case_row(
+            mode="lgtm", category="sqli", findings=[],
+            coverage=_coverage([_target_section()]), triage_errors=1))
+        assert evaluate.result_is_error(row)
+        assert row["outcome"] == "ERROR"
+        assert row["error"] == "SAST triage failed for 1 hit(s)"
+
+    def test_triage_errors_count_only_sast_triage_agent_errors(self):
+        meta = SimpleNamespace(agent_errors=[
+            {"source": "r:app.py:3", "message": "x", "stage": "sast_triage"},
+            {"source": "s1", "message": "y"},
+        ])
+        assert evaluate.sast_fields(SimpleNamespace(meta=meta))["triage_errors"] == 1
+
     def test_sast_error_rows_are_excluded_from_metrics_and_rerun(self, stored):
         failed = evaluate.score_case(_case_row(
             "a", category="sqli", findings=[_f("sqli", "vulnerable")],
@@ -1747,12 +1762,12 @@ class TestSastErrorRows:
         review = SimpleNamespace(meta=ReviewMetadata(
             sast_error="semgrep exited 2", semgrep_findings_total=0))
         assert evaluate.sast_fields(review) == {
-            "sast_error": "semgrep exited 2", "semgrep_findings_total": 0}
+            "sast_error": "semgrep exited 2", "semgrep_findings_total": 0, "triage_errors": 0}
 
     @pytest.mark.parametrize("review", [None, SimpleNamespace(meta=SimpleNamespace())])
     def test_sast_fields_default_for_missing_metadata(self, review):
         assert evaluate.sast_fields(review) == {
-            "sast_error": None, "semgrep_findings_total": None}
+            "sast_error": None, "semgrep_findings_total": None, "triage_errors": 0}
 
     def test_error_record_carries_the_sast_fields(self):
         review = SimpleNamespace(meta=ReviewMetadata(

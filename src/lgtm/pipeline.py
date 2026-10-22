@@ -220,7 +220,7 @@ class ReviewPipeline:
                     continue
                 finding.pr_graph_ok = toolbox.snapshot_ok("pr")
                 findings.append(finding)
-            meta.agent_errors.extend(triage_agent.errors)
+            meta.agent_errors.extend({**e, "stage": "sast_triage"} for e in triage_agent.errors)
 
             # ---- Stage 3: authorization review -----------------------
             section_stage = self._review_sections(
