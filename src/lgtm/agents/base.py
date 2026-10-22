@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from lgtm.agents import registry
 from lgtm.config import LGTMConfig
 
 logger = logging.getLogger(__name__)
@@ -203,15 +204,11 @@ def extract_json_object(text: str) -> dict | None:
     return None
 
 
-_TOOL_OUTPUT_PREFIXES = ("[CODEGRAPH ", "[READ ", "[GREP ", "ERROR:")
-_TOOL_OUTPUT_MARKERS = ("status=unavailable", "tool call budget exhausted")
-
-
 def _is_tool_output(content: str) -> bool:
     """Tool envelopes and failure text are not code evidence."""
     text = content.lstrip()
-    return text.startswith(_TOOL_OUTPUT_PREFIXES) or any(
-        marker in text for marker in _TOOL_OUTPUT_MARKERS
+    return text.startswith(tuple(registry.entry("shared.tool_output_prefixes"))) or any(
+        marker in text for marker in registry.entry("shared.tool_output_markers")
     )
 
 
@@ -230,7 +227,7 @@ def parse_agent_output(
             finding_id=finding_id,
             verdict="insufficient_evidence",
             cwe_id=default_cwe,
-            explanation="Agent did not produce parsable structured output.",
+            explanation=registry.entry("shared.unparsable_explanation"),
             raw_response=text[:2000],
         )
 
@@ -350,16 +347,6 @@ def parse_text_tool_calls(
 
 _sleep = time.sleep
 
-FORCED_FINAL_MESSAGE = (
-    "You have used all available analysis steps. Produce your final "
-    "JSON verdict NOW based on the evidence gathered so far. "
-    "Respond with ONLY the JSON object."
-)
-REASK_MESSAGE = (
-    "Your last answer was not a valid JSON object. Reply with ONLY the "
-    "JSON verdict object, with no prose and no tool calls."
-)
-
 
 def message_text(response) -> str:
     return response.content if isinstance(response.content, str) else str(response.content)
@@ -392,10 +379,10 @@ def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
 
 def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None:
     if not isinstance(name, str) or name not in tool_map:
-        available = ", ".join(sorted(tool_map)) or "none"
-        details = f"unknown tool; available tools: {available}"
+        available = ", ".join(sorted(tool_map)) or registry.entry("shared.no_tools_available")
+        details = registry.render("shared.unknown_tool", available=available)
     elif not isinstance(args, dict):
-        details = "arguments must be a JSON object"
+        details = registry.entry("shared.arguments_not_object")
     else:
         schema = getattr(tool_map[name], "args_schema", None)
         if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
@@ -404,16 +391,13 @@ def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None
             schema.model_validate(args)
         except ValidationError as exc:
             details = "; ".join(
-                f"{'.'.join(str(p) for p in e['loc']) or 'arguments'}: {e['msg']}"
+                f"{'.'.join(str(p) for p in e['loc']) or registry.entry('shared.arguments_location')}: {e['msg']}"
                 for e in exc.errors()
             )
         else:
             return None
     details = details[:300].rstrip(". ")
-    return (
-        f"ERROR: invalid input for tool '{name}': {details}. "
-        "Fix the arguments and call the tool again."
-    )
+    return registry.render("shared.invalid_tool_input", name=name, details=details)
 
 
 def request_valid_answer(
@@ -430,7 +414,7 @@ def request_valid_answer(
     while not is_valid(content) and reasks < cap:
         reasks += 1
         logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
-        messages.append(HumanMessage(content=REASK_MESSAGE))
+        messages.append(HumanMessage(content=registry.entry("shared.reask")))
         response = invoke_with_retry(llm, messages, config)
         messages.append(response)
         content = message_text(response)
@@ -487,12 +471,7 @@ def run_tool_loop(
                     tool_names = ", ".join(t.name for t in tools)
                     messages.append(
                         HumanMessage(
-                            content=(
-                                "Before giving a verdict, verify your reasoning "
-                                "against the repository: call at least one tool "
-                                f"({tool_names}), e.g. read the auth decorators or "
-                                "the function you are judging. Then give your final JSON."
-                            )
+                            content=registry.render("shared.verify_with_tools", tool_names=tool_names)
                         )
                     )
                     continue
@@ -517,14 +496,18 @@ def run_tool_loop(
                     result = tool_map[name].invoke(args)
                 except Exception as exc:  # noqa: BLE001 - surface to the model
                     logger.warning("Tool %s raised: %s", name, exc)
-                    result = f"ERROR: tool failed: {exc}"
+                    result = registry.render("shared.tool_failed", error=exc)
             if text_calls:
                 # No native tool_call to attach a ToolMessage to: return the
                 # result as a user turn instead.
                 messages.append(
                     HumanMessage(
-                        content=f"Result of {name}({json.dumps(args, default=str)}):\n{result}\n\n"
-                        "Call another tool, or give your final JSON verdict."
+                        content=registry.render(
+                            "shared.text_call_result",
+                            name=name,
+                            args=json.dumps(args, default=str),
+                            result=result,
+                        )
                     )
                 )
             else:
@@ -536,7 +519,7 @@ def run_tool_loop(
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
-    messages.append(HumanMessage(content=FORCED_FINAL_MESSAGE))
+    messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
     return request_valid_answer(llm, messages, message_text(response), config, is_json_object)

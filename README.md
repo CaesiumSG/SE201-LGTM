@@ -48,7 +48,7 @@ a suggested fix.
 
 ## Setup
 
-Requirements: Python 3.10+, git, and for the full pipeline
+Requirements: Python 3.13+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
 
 Optional: Node.js and the `codegraph` CLI on `PATH` enable the

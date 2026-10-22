@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from langchain_core.tools import tool
 
+from lgtm.agents import registry
 from lgtm.agents.base import SNAPSHOT_LABELS
 from lgtm.config import GRAPH_OUTPUT_CHARS_CEILING, LGTMConfig
 from lgtm.rag.retriever import PolicyRetriever
@@ -41,23 +42,13 @@ _DRIVE = re.compile(r"[A-Za-z]:")
 _SEPARATORS = re.compile(r"[\\/]")
 _GIT_ENV_NAMES = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG")
 
-_ESCAPE = "ERROR: path must be repository-relative and remain inside the repository."
-_UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base, pr."
-_LEGACY_UNKNOWN_LABEL = "ERROR: unknown snapshot '{value}'. Allowed values: base."
-_LEGACY_PR = "ERROR: snapshot 'pr' is not available in this run. Allowed values: base."
-_NOT_PRESENT = "ERROR: file '{path}' not present in {label} snapshot @{sha}."
-_CANNOT_READ = "ERROR: cannot read {label} snapshot."
-_REJECTED_PATTERN = "ERROR: invalid regex: pattern is not a valid extended regular expression."
-_MULTILINE_PATTERN = "ERROR: invalid regex: pattern must be a single line without NUL bytes."
-_EMPTY_QUERY = "ERROR: query must not be empty."
-_MISSING_BINARY_WARNING = (
-    "CodeGraph binary not found; investigate_* tools are disabled and agents "
-    "will use read_file, grep_repo and search_policy."
-)
-_LATCH_WARNING = (
-    "CodeGraph unavailable for {label} snapshot ({reason}); "
-    "further graph calls for it are skipped"
-)
+
+def _registered_tool(name: str):
+    def decorate(fn):
+        fn.__doc__ = registry.entry(f"tools.description.{name}")
+        return tool(fn)
+
+    return decorate
 
 
 def relative_path(value: str) -> str | None:
@@ -183,10 +174,7 @@ class AgentToolbox:
         self.calls_used += 1
         return True
 
-    BUDGET_MESSAGE = (
-        "ERROR: tool call budget exhausted. You must now produce your final "
-        "JSON answer using the evidence gathered so far."
-    )
+    BUDGET_MESSAGE = registry.entry("tools.budget_exhausted")
 
     # ------------------------------------------------------------------
     # Snapshots and Git
@@ -194,12 +182,12 @@ class AgentToolbox:
     def _label_error(self, label: str) -> str | None:
         if self.shas is None:
             if label == "pr":
-                return _LEGACY_PR
+                return registry.entry("tools.pr_unavailable")
             if label != "base":
-                return _LEGACY_UNKNOWN_LABEL.format(value=label)
+                return registry.render("tools.unknown_snapshot_base_only", value=label)
             return None
         if label not in SNAPSHOT_LABELS:
-            return _UNKNOWN_LABEL.format(value=label)
+            return registry.render("tools.unknown_snapshot", value=label)
         return None
 
     def _snapshot_sha(self, label: str) -> str | None:
@@ -239,18 +227,18 @@ class AgentToolbox:
             return error
         rel = relative_path(path)
         if rel is None:
-            return _ESCAPE
+            return registry.entry("tools.path_escape")
         label = snapshot
         sha = self._snapshot_sha(label)
         if sha is None:
-            return _CANNOT_READ.format(label=label)
+            return registry.render("tools.cannot_read_snapshot", label=label)
         done = read_committed_blob(self.repo, sha, rel, self.config.git_timeout)
         if done is None:
-            return _CANNOT_READ.format(label=label)
+            return registry.render("tools.cannot_read_snapshot", label=label)
         if done.returncode != 0:
             if self._commit_exists(sha):
-                return _NOT_PRESENT.format(path=rel, label=label, sha=sha)
-            return _CANNOT_READ.format(label=label)
+                return registry.render("tools.file_not_present", path=rel, label=label, sha=sha)
+            return registry.render("tools.cannot_read_snapshot", label=label)
 
         from lgtm.graph.format import render_read
 
@@ -258,7 +246,7 @@ class AgentToolbox:
         total = len(lines)
         start = start_line if start_line and start_line > 0 else 1
         if start > total:
-            return f"ERROR: start_line {start} is beyond end of file ({total} lines)."
+            return registry.render("tools.start_line_beyond_end", start=start, total=total)
         end = min(total, end_line) if end_line and end_line > 0 else total
         if end < start:
             end = total
@@ -277,27 +265,27 @@ class AgentToolbox:
         if file_glob:
             glob = relative_path(file_glob)
             if glob is None:
-                return _ESCAPE
+                return registry.entry("tools.path_escape")
         if "\x00" in pattern or "\n" in pattern:
-            return _MULTILINE_PATTERN
+            return registry.entry("tools.regex_multiline")
         try:
             re.compile(pattern)
         except re.error as exc:
-            return f"ERROR: invalid regex: {exc}"
+            return registry.render("tools.regex_error", error=exc)
         label = snapshot
         sha = self._snapshot_sha(label)
         if sha is None:
-            return _CANNOT_READ.format(label=label)
+            return registry.render("tools.cannot_read_snapshot", label=label)
         args = ["grep", "-n", "-E", "--max-count", "10", "-e", pattern, sha]
         if glob is not None:
             args += ["--", glob]
         done = self._git(args)
         if done is None:
-            return _CANNOT_READ.format(label=label)
+            return registry.render("tools.cannot_read_snapshot", label=label)
         if done.returncode not in (0, 1):
             if self._commit_exists(sha):
-                return _REJECTED_PATTERN
-            return _CANNOT_READ.format(label=label)
+                return registry.entry("tools.regex_rejected")
+            return registry.render("tools.cannot_read_snapshot", label=label)
 
         from lgtm.graph.format import render_grep
 
@@ -308,21 +296,18 @@ class AgentToolbox:
                 line = line[len(prefix):]
             results.append(line)
             if len(results) >= MAX_GREP_RESULTS:
-                results.append(f"... (truncated at {MAX_GREP_RESULTS} matches)")
+                results.append(registry.render("tools.grep_truncated", limit=MAX_GREP_RESULTS))
                 break
-        body = "\n".join(results) or "No matches found."
+        body = "\n".join(results) or registry.entry("tools.grep_no_matches")
         return render_grep(label, sha, pattern, body, MAX_OUTPUT_CHARS)
 
     def search_policy_impl(self, query: str) -> str:
         if self.retriever is None:
-            return (
-                "ERROR: documentation index is not available. "
-                "Base your judgment on code evidence only."
-            )
+            return registry.entry("tools.policy_index_unavailable")
         try:
             return self.retriever.format_results(query)[:MAX_OUTPUT_CHARS]
         except FileNotFoundError as exc:
-            return f"ERROR: {exc}"
+            return registry.render("tools.policy_error", error=exc)
 
     def _investigate(self, label: str, query: str) -> str:
         if not self.charge(f"investigate_{label}_code", {"query": query}):
@@ -333,7 +318,7 @@ class AgentToolbox:
         try:
             cleaned = sanitize_query(query)
         except ValueError:
-            return _EMPTY_QUERY
+            return registry.entry("tools.empty_query")
         sha = self.shas[label]
         cap = min(self.config.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)
 
@@ -407,13 +392,20 @@ class AgentToolbox:
         if reason is None:
             return
         self._latch_warned.add(label)
-        logger.warning(_LATCH_WARNING.format(label=label, reason=reason))
+        logger.warning(
+            "CodeGraph unavailable for %s snapshot (%s); further graph calls for it are skipped",
+            label,
+            reason,
+        )
 
     def _warn_missing_binary(self) -> None:
         if self._missing_binary_warned:
             return
         self._missing_binary_warned = True
-        logger.warning(_MISSING_BINARY_WARNING)
+        logger.warning(
+            "CodeGraph binary not found; investigate_* tools are disabled and agents "
+            "will use read_file, grep_repo and search_policy."
+        )
 
     # ------------------------------------------------------------------
     # LangChain tool objects
@@ -421,14 +413,8 @@ class AgentToolbox:
     def build_tools(self, graph: bool = True) -> list:
         toolbox = self
 
-        @tool
+        @_registered_tool("read_file")
         def read_file(path: str, start_line: int = 0, end_line: int = 0, snapshot: str = "base") -> str:
-            """Read the exact lines of a file from a committed snapshot of the
-            repository: "base" (default) or "pr". Use it to see and quote
-            precise lines, including code that investigate_* located or only
-            partly showed. Use start_line/end_line
-            (1-based, inclusive) to read a specific range; pass 0 for both to
-            read from the beginning. Returns numbered lines."""
             args = {"path": path, "start_line": start_line, "end_line": end_line, "snapshot": snapshot}
             if not toolbox.charge("read_file", args):
                 return toolbox.BUDGET_MESSAGE
@@ -436,43 +422,25 @@ class AgentToolbox:
                 path, start_line or None, end_line or None, snapshot
             )
 
-        @tool
+        @_registered_tool("grep_repo")
         def grep_repo(pattern: str, file_glob: str = "", snapshot: str = "base") -> str:
-            """Search a committed snapshot of the repository ("base" default or
-            "pr") for a literal string or regular expression. Use it to confirm a
-            known location or find literal text. Optionally restrict to files
-            matching file_glob (e.g. '*.py'). Returns matches as
-            'file:line:content' (limited count)."""
             args = {"pattern": pattern, "file_glob": file_glob, "snapshot": snapshot}
             if not toolbox.charge("grep_repo", args):
                 return toolbox.BUDGET_MESSAGE
             return toolbox.grep_repo_impl(pattern, file_glob or None, snapshot)
 
-        @tool
+        @_registered_tool("search_policy")
         def search_policy(query: str) -> str:
-            """Search the project's documentation (security policy, API spec,
-            README) for rules relevant to a natural-language query. Returns
-            the most relevant excerpts with their source file and lines."""
             if not toolbox.charge("search_policy", {"query": query}):
                 return toolbox.BUDGET_MESSAGE
             return toolbox.search_policy_impl(query)
 
-        @tool
+        @_registered_tool("investigate_base_code")
         def investigate_base_code(query: str) -> str:
-            """Explore the base snapshot (code before the PR) to discover what is
-            involved: related definitions, callers and call paths. Query the
-            CodeGraph index with a natural-language question or symbol and file
-            names; returns source fragments that can be partial or truncated,
-            so use read_file for the exact lines you will cite."""
             return toolbox._investigate("base", query)
 
-        @tool
+        @_registered_tool("investigate_pr_code")
         def investigate_pr_code(query: str) -> str:
-            """Explore the PR snapshot (the changed code) to discover what is
-            involved: related definitions, callers and call paths. Query the
-            CodeGraph index with a natural-language question or symbol and file
-            names; returns source fragments that can be partial or truncated,
-            so use read_file for the exact lines you will cite."""
             return toolbox._investigate("pr", query)
 
         tools = [read_file, grep_repo, search_policy]

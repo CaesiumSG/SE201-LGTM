@@ -21,7 +21,7 @@ The pipeline works as follows:
 
 ### Tech Stack
 
-- **Language**: Python 3.10+
+- **Language**: Python 3.13+
 - **LLM**: Qwen (via Ollama) — use `langchain-ollama` for integration. Default model: `qwen2.5:7b` (configurable).
 - **Agent Framework**: LangChain for agent orchestration and tool calling.
 - **SAST**: Semgrep CE (Community Edition), invoked via CLI subprocess.

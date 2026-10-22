@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from lgtm.agents import registry
 from lgtm.config import LGTMConfig
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,13 @@ class RetrievedChunk:
     score: float  # similarity in [0, 1], higher is more relevant
 
     def format(self) -> str:
-        return (
-            f"[{self.source}:{self.start_line}-{self.end_line}] "
-            f"(relevance {self.score:.2f})\n{self.content}"
+        return registry.render(
+            "retriever.chunk_header",
+            source=self.source,
+            start_line=self.start_line,
+            end_line=self.end_line,
+            score=self.score,
+            content=self.content,
         )
 
 
@@ -42,8 +47,7 @@ class PolicyRetriever:
             persist_dir = self.config.chroma_dir_for(self.repo)
             if not persist_dir.exists():
                 raise FileNotFoundError(
-                    f"No RAG index found at {persist_dir}. "
-                    "Run `lgtm index --repo <path>` first."
+                    registry.render("retriever.index_missing", persist_dir=persist_dir)
                 )
             client = chromadb.PersistentClient(path=str(persist_dir))
             self._collections[name] = client.get_collection(name)
@@ -96,5 +100,5 @@ class PolicyRetriever:
         """Retrieve and render doc results as a string for agent prompts."""
         chunks = self.retrieve(query, top_k)
         if not chunks:
-            return "No relevant documentation found for this query."
-        return "\n\n---\n\n".join(c.format() for c in chunks)
+            return registry.entry("retriever.no_results")
+        return registry.entry("retriever.chunk_separator").join(c.format() for c in chunks)
