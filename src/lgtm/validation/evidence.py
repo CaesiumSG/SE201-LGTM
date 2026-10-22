@@ -284,6 +284,25 @@ class EvidenceValidator:
             item.content, self._diff_added[item.file]
         )
 
+    def read_cited_code(self, item: EvidenceItem) -> str:
+        """Code at the cited location; empty when it cannot be read."""
+        if not item.file:
+            return ""
+        lines: list[str] | None = None
+        if self._shas is None:
+            lines = self._read_base_file(self._resolve_path(item.file))
+        else:
+            for label in [item.snapshot] if item.snapshot else ["pr", "base"]:
+                if label in self._shas:
+                    lines = self._snapshot_lines(label, item.file)
+                if lines is not None:
+                    break
+        if lines is None:
+            return ""
+        if item.lines is not None and _is_ordered_positive_range(item.lines):
+            lines = lines[item.lines[0] - 1 : item.lines[1]]
+        return "\n".join(lines)
+
     def validate(self, finding: AgentFinding) -> AgentFinding:
         """Validate one finding in place and return it."""
         issues: list[str] = []
@@ -291,7 +310,12 @@ class EvidenceValidator:
             if item.type == "policy":
                 issues.extend(self._validate_policy_item(item))
             else:
-                issues.extend(self._validate_code_item(item))
+                item_issues = self._validate_code_item(item)
+                item.grounded_in_pr = self._grounds_pr(item, item_issues)
+                issues.extend(item_issues)
+
+        if finding.verdict in ("vulnerable", "safe") and not finding.evidence:
+            issues.append(f"verdict {finding.verdict} provided without any evidence")
 
         finding.evidence_issues = issues
         finding.evidence_valid = not issues

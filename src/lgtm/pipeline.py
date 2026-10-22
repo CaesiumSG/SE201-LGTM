@@ -4,7 +4,7 @@ Stages:
 1. Context building — git diff, semgrep scan, RAG retriever.
 2. SAST triage — LLM agent triages each semgrep finding in the diff.
 3. Authorization review — the investigator groups changed hunks into sections and an LLM agent reviews each one.
-4. Evidence validation — every citation is checked against the repo.
+4. Evidence validation — every citation is checked against the repo, then the judge rules on each candidate.
 5. Reporting — JSON + Markdown.
 
 Supports four modes for benchmarking:
@@ -52,6 +52,7 @@ from lgtm.sast.semgrep_runner import (
     run_semgrep,
 )
 from lgtm.validation.evidence import EvidenceValidator
+from lgtm.validation.judge import JudgeCall, judge_candidates
 
 if TYPE_CHECKING:
     from lgtm.graph.session import GraphSession
@@ -88,10 +89,17 @@ class _SectionStage:
 
 
 class ReviewPipeline:
-    def __init__(self, repo: str | Path, config: LGTMConfig | None = None, llm=None):
+    def __init__(
+        self,
+        repo: str | Path,
+        config: LGTMConfig | None = None,
+        llm=None,
+        judge: JudgeCall | None = None,
+    ):
         self.repo = Path(repo).resolve()
         self.config = config or LGTMConfig()
         self._llm = llm  # injectable for tests
+        self._judge = judge  # request -> answer mapping; defaults to the HTTP client
 
     # ------------------------------------------------------------------
     def run(
@@ -235,6 +243,10 @@ class ReviewPipeline:
             shas={"base": base_rev, "pr": pr_rev} if shas is not None else None,
         )
         findings = validator.validate_all(findings)
+        if mode in ("lgtm", "lgtm-no-sast"):
+            findings = judge_candidates(
+                findings, validator.read_cited_code, self.config, self._judge
+            )
         if section_stage is not None:
             meta.coverage = build_coverage(
                 section_stage.plan,

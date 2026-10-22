@@ -701,3 +701,47 @@ class TestPrGraphStateDoesNotChangeACandidate:
         finding = _check(_validator(snap), *items, pr_graph_ok=False)
         assert finding.evidence_valid is False
         assert len(finding.evidence_issues) == 1
+
+
+# --- judge-validation: per-item PR grounding (AC-1-4) -------------------------
+
+
+class TestPerItemPrGrounding:
+    def test_grounding_is_unset_until_validated(self):
+        assert _item("added.py", [1, 3], "return token", "pr").grounded_in_pr is None
+
+    @pytest.mark.parametrize("kind", KINDS)
+    def test_a_candidate_has_a_grounded_item_exactly_when_the_kind_grounds_it(self, snap, kind):
+        items, grounds_pr = _evidence_kinds()[kind]
+
+        finding = _check(_validator(snap), *items)
+
+        assert any(i.grounded_in_pr is True for i in finding.evidence) is grounds_pr
+
+    def test_each_item_records_its_own_grounding_next_to_the_valid_flag_and_issues(self, snap):
+        finding = _check(
+            _validator(snap),
+            _item("added.py", [1, 3], "return token", "pr"),
+            _item("deleted.py", [1, 2], "def removed():", "base"),
+            _item("ghost.py", [1, 1], "x", "pr"),
+        )
+
+        assert [i.grounded_in_pr for i in finding.evidence] == [True, False, False]
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues == ["cited file does not exist at pr snapshot"]
+
+    def test_policy_item_is_never_grounded_in_the_pr(self, snap):
+        finding = _check(
+            _validator(snap),
+            EvidenceItem(type="policy", source="policy.md", content="bound parameters"),
+        )
+
+        assert finding.evidence_valid is True
+        assert finding.evidence[0].grounded_in_pr is not True
+
+    def test_grounding_is_recorded_regardless_of_pr_graph_state(self, snap):
+        down = _check(_validator(snap), _item("added.py", [1, 3], "return token", "pr"), pr_graph_ok=False)
+        up = _check(_validator(snap), _item("added.py", [1, 3], "return token", "pr"), pr_graph_ok=True)
+
+        assert down.evidence[0].grounded_in_pr is True
+        assert up.evidence[0].grounded_in_pr is True

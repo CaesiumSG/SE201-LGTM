@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.diff.git_diff import get_pr_diff
 from lgtm.validation.evidence import EvidenceValidator
@@ -119,6 +121,40 @@ class TestEvidenceValidator:
         validator.validate(finding)
         assert finding.evidence_valid is not None
         assert not finding.verdict
+
+    @pytest.mark.parametrize("verdict", ["vulnerable", "safe"])
+    def test_plain_reviewer_strong_verdict_without_evidence_is_flagged(self, git_repo, verdict):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(verdict=verdict, evidence=[])
+        validator.validate(finding)
+        assert finding.evidence_valid is False
+        assert finding.evidence_issues
+
+    def test_each_cited_item_records_whether_it_is_grounded_in_the_pr(self, git_repo):
+        diffs = get_pr_diff(git_repo, "main", "pr")
+        validator = EvidenceValidator(git_repo, "main", diffs)
+        finding = make_finding(
+            evidence=[
+                EvidenceItem(
+                    type="code",
+                    file="app.py",
+                    content="cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")",
+                ),
+                EvidenceItem(
+                    type="code",
+                    file="app.py",
+                    lines=[2, 2],
+                    content='cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))',
+                ),
+                EvidenceItem(type="code", file="ghost.py", content="x"),
+            ]
+        )
+
+        validator.validate(finding)
+
+        assert [i.grounded_in_pr for i in finding.evidence] == [True, False, False]
+        assert finding.evidence_valid is False
+        assert any("ghost.py" in i for i in finding.evidence_issues)
 
     def test_validate_all(self, git_repo):
         validator = EvidenceValidator(git_repo, "main")

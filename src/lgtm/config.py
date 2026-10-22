@@ -30,6 +30,11 @@ class LGTMConfig:
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
 
+    # Judge (Kev-4B, base URL; the client appends /v1/systemone)
+    judge_endpoint: str = "http://127.0.0.1:8008"
+    judge_model: str = "jaredpalmer/kev-4b"
+    judge_timeout: float = 60.0  # seconds per judge call
+
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules
     semgrep_timeout: int = 300  # seconds for the whole semgrep run
@@ -89,6 +94,10 @@ class LGTMConfig:
         for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if not self.judge_model:
+            raise ValueError("judge_model must not be empty")
+        if self.judge_timeout <= 0:
+            raise ValueError("judge_timeout must be positive")
         if self.graph_max_output_chars < 1024:
             raise ValueError("graph_max_output_chars must be at least 1024")
         self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)

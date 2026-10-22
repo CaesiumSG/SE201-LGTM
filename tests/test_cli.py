@@ -1,9 +1,26 @@
+import json
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
 from lgtm.cli import main
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model
+from tests.test_graph_pipeline import (  # noqa: F401 - fixtures
+    CLAIM_AUTHZ_A,
+    CLAIM_AUTHZ_B,
+    CLAIM_TRIAGE,
+    KEV_MODEL,
+    Reply,
+    _kev_reply,
+    _two_agent_llm,
+    healthy_stack,
+    install_graph,
+    isolated_git_config,
+    repo,
+    semgrep,
+    start_kev,
+)
 
 
 @pytest.mark.parametrize("options,model,url", [
@@ -138,3 +155,136 @@ def test_reasoning_off_without_gpu_model(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert pipeline.call_args.args[1].reasoning is False
+
+
+# --- judge-validation: judge settings (AC-4-1, AC-4-4) ------------------------
+
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _judge_endpoint(config):
+    from urllib.parse import urlparse
+
+    return urlparse(config.judge_endpoint)
+
+
+def test_default_judge_endpoint_is_loopback_on_the_kev_port_distinct_from_qwen():
+    config = LGTMConfig()
+
+    endpoint = _judge_endpoint(config)
+
+    assert endpoint.hostname in LOOPBACK_HOSTS
+    assert endpoint.port == 8008
+    assert endpoint.port != _port(config.ollama_base_url)
+    assert endpoint.port != _port(GPU_MODELS["qwen3.8-27b"].base_url)
+
+
+def test_default_judge_timeout_and_model_are_set():
+    config = LGTMConfig()
+
+    assert config.judge_timeout > 0
+    assert config.judge_model
+
+
+def _port(url):
+    from urllib.parse import urlparse
+
+    return urlparse(url).port
+
+
+@pytest.mark.parametrize("options", [
+    [],
+    ["--gpu-cluster"],
+    ["--gpu-model", "qwen3.8-27b"],
+    ["--ollama-url", "http://127.0.0.1:12000"],
+])
+def test_qwen_selection_leaves_the_judge_settings_at_their_defaults(tmp_path, monkeypatch, options):
+    pipeline = _mock_pipeline(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "review", "--repo", str(tmp_path), "--base", "main", "--pr", "feature", *options,
+    ])
+
+    assert result.exit_code == 0, result.output
+    config = pipeline.call_args.args[1]
+    defaults = LGTMConfig()
+    assert config.judge_endpoint == defaults.judge_endpoint
+    assert config.judge_model == defaults.judge_model
+    assert config.judge_timeout == defaults.judge_timeout
+
+
+def test_gpu_models_registry_and_apply_gpu_model_are_unchanged_for_qwen():
+    assert set(GPU_MODELS) == {"qwen3.8-27b"}
+    config = LGTMConfig()
+    judge = (config.judge_endpoint, config.judge_model, config.judge_timeout)
+
+    apply_gpu_model(config, "qwen3.8-27b")
+
+    assert (config.ollama_model, config.ollama_base_url, config.reasoning) == (
+        "qwen3.8:27b", "http://127.0.0.1:11435", False,
+    )
+    assert (config.judge_endpoint, config.judge_model, config.judge_timeout) == judge
+
+
+# --- judge-validation: judge settings from the command line (Connectivity: AC-4-3) ----
+
+def _review_cli(repo, tmp_path, monkeypatch, *options, config=None):
+    monkeypatch.setattr("lgtm.pipeline.build_llm", lambda config: _two_agent_llm())
+    args = [
+        "review", "--repo", str(repo), "--base", "main", "--pr", "pr",
+        "--output", str(tmp_path / "out"),
+    ]
+    if config is not None:
+        config_file = tmp_path / "lgtm.json"
+        config_file.write_text(json.dumps(config), encoding="utf-8")
+        args += ["--config-file", str(config_file)]
+    return CliRunner().invoke(main, [*args, *options])
+
+
+@pytest.mark.usefixtures("healthy_stack")
+class TestJudgeCliOverrides:
+    @pytest.mark.parametrize("config_file_points_elsewhere", [False, True], ids=["cli-only", "over-config-file"])
+    def test_judge_endpoint_option_sets_where_requests_go(
+        self, repo, tmp_path, monkeypatch, start_kev, config_file_points_elsewhere
+    ):
+        target = start_kev(lambda r: _kev_reply(r, "possible", "medium", 0.5))
+        elsewhere = start_kev()
+        config = {"judge_endpoint": elsewhere.url} if config_file_points_elsewhere else None
+
+        result = _review_cli(
+            repo, tmp_path, monkeypatch, "--judge-endpoint", target.url, "--judge-model", KEV_MODEL,
+            config=config,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert len(target.requests) == 3
+        assert all(claim in "".join(r.body["state"] for r in target.requests)
+                   for claim in (CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B))
+        assert elsewhere.requests == []
+
+    def test_judge_model_option_sets_the_model_sent_to_the_judge(
+        self, repo, tmp_path, monkeypatch, start_kev
+    ):
+        kev = start_kev(lambda r: _kev_reply(r, "possible", "medium", 0.5))
+
+        result = _review_cli(
+            repo, tmp_path, monkeypatch, "--judge-model", "cli-model",
+            config={"judge_endpoint": kev.url, "judge_model": "file-model"},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert kev.requests
+        assert {r.body["model"] for r in kev.requests} == {"cli-model"}
+
+    def test_judge_timeout_option_bounds_the_wait_for_the_judge(
+        self, repo, tmp_path, monkeypatch, start_kev
+    ):
+        kev = start_kev(lambda r: Reply(mode="stall"))
+
+        result = _review_cli(
+            repo, tmp_path, monkeypatch, "--judge-timeout", "0.3",
+            config={"judge_endpoint": kev.url, "judge_model": KEV_MODEL, "judge_timeout": 30.0},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert kev.open_stalls == 3  # the review finished while the server still held every call
