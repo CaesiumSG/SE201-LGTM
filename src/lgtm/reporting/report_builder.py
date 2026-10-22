@@ -41,16 +41,14 @@ class ReviewMetadata:
     pr_sha: str = ""
     extra: dict = field(default_factory=dict)
     coverage: dict | None = None
+    agent_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 class ReportBuilder:
     def __init__(self, findings: list[AgentFinding], meta: ReviewMetadata):
         self.findings = sorted(
             findings,
-            key=lambda f: (
-                VERDICT_ORDER.index(f.verdict) if f.verdict in VERDICT_ORDER else 99,
-                -f.confidence,
-            ),
+            key=lambda f: VERDICT_ORDER.index(f.verdict) if f.verdict in VERDICT_ORDER else 99,
         )
         self.meta = meta
 
@@ -159,7 +157,6 @@ class ReportBuilder:
             add("")
             add(f"- **Finding ID:** `{f.finding_id}`")
             add(f"- **Agent:** {f.agent} | **Category:** {f.category or 'n/a'}")
-            add(f"- **Confidence:** {f.confidence:.2f}")
             grounding = (
                 "✅ grounded"
                 if f.evidence_valid

@@ -261,7 +261,7 @@ class TestToolFailureEvidenceDropped:
             {"source": "policy.md", "type": "bogus", "content": "p"},
         )
         assert [(e.type, e.lines) for e in evidence] == [("code", [4, 4]), ("policy", None)]
-        assert parse_agent_output("no json at all", "f").verdict == "insufficient_evidence"
+        assert not parse_agent_output("no json at all", "f").verdict
 
 
 UNCHANGED = (
@@ -288,10 +288,6 @@ SHIFTED_PR = (
 DELETED = "def removed():\n    return 'gone'\n"
 ADDED = "def brand_new(request):\n    token = request.args['token']\n    return token\n"
 
-CAP_MARKER = (
-    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
-    "for this finding and no cited evidence validated against the PR snapshot or the diff.]"
-)
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -349,9 +345,9 @@ def _item(file, lines, content, snapshot, **extra) -> EvidenceItem:
     )
 
 
-def _check(validator, *items, verdict="possible", pr_graph_ok=None, explanation="Because."):
+def _check(validator, *items, pr_graph_ok=None, explanation="Because."):
     finding = AgentFinding(
-        finding_id="f", verdict=verdict, confidence=0.7, explanation=explanation,
+        finding_id="f", explanation=explanation,
         evidence=list(items), pr_graph_ok=pr_graph_ok,
     )
     return validator.validate_all([finding])[0]
@@ -669,50 +665,39 @@ def _evidence_kinds():
 KINDS = list(_evidence_kinds())
 
 
-class TestPrGroundingCap:
+class TestPrGraphStateDoesNotChangeACandidate:
     @pytest.mark.parametrize("kind", KINDS)
     @pytest.mark.parametrize("pr_graph_ok", [True, False, None])
-    @pytest.mark.parametrize(
-        "verdict", ["vulnerable", "safe", "possible", "insufficient_evidence"]
-    )
-    def test_downgrade_only_when_graph_down_vulnerable_and_no_pr_or_diff_evidence(
-        self, snap, verdict, pr_graph_ok, kind
+    def test_validation_leaves_the_candidate_unjudged_and_its_text_unchanged(
+        self, snap, pr_graph_ok, kind
     ):
-        items, exempt = _evidence_kinds()[kind]
-        uncapped = _check(_validator(snap), *_evidence_kinds()[kind][0], verdict=verdict)
+        items, _ = _evidence_kinds()[kind]
+        baseline = _check(_validator(snap), *items)
         finding = _check(
-            _validator(snap), *items,
-            verdict=verdict, pr_graph_ok=pr_graph_ok, explanation="Original explanation.",
+            _validator(snap), *items, pr_graph_ok=pr_graph_ok, explanation="Original explanation.",
         )
-        should_cap = pr_graph_ok is False and verdict == "vulnerable" and not exempt
-        assert finding.confidence == 0.7
-        assert finding.evidence_valid == uncapped.evidence_valid
-        assert finding.evidence_issues == uncapped.evidence_issues
-        if should_cap:
-            assert finding.verdict == "possible"
-            assert finding.explanation == "Original explanation.\n\n" + CAP_MARKER
-        else:
-            assert finding.verdict == verdict
-            assert finding.explanation == "Original explanation."
+        assert not finding.verdict
+        assert "confidence" not in finding.model_dump()
+        assert finding.evidence_valid == baseline.evidence_valid
+        assert finding.evidence_issues == baseline.evidence_issues
+        assert finding.explanation == "Original explanation."
 
-    def test_valid_pr_item_exempts_while_other_items_issues_are_still_reported(self, snap):
+    def test_other_items_issues_are_still_reported_next_to_a_valid_pr_item(self, snap):
         items, _ = _evidence_kinds()["valid-pr-plus-invalid-other"]
-        finding = _check(_validator(snap), *items, verdict="vulnerable", pr_graph_ok=False)
-        assert finding.verdict == "vulnerable"
+        finding = _check(_validator(snap), *items, pr_graph_ok=False)
         assert finding.evidence_valid is False
         assert finding.evidence_issues == ["cited file does not exist at base snapshot"]
 
-    def test_marker_is_appended_once_across_repeated_validation(self, snap):
+    def test_repeated_validation_leaves_the_explanation_unchanged(self, snap):
         items, _ = _evidence_kinds()["valid-base"]
         validator = _validator(snap)
-        finding = _check(validator, *items, verdict="vulnerable", pr_graph_ok=False)
+        finding = _check(validator, *items, pr_graph_ok=False, explanation="Original explanation.")
         validator.validate_all([finding])
-        assert finding.verdict == "possible"
-        assert finding.explanation.count(CAP_MARKER) == 1
+        assert finding.explanation == "Original explanation."
+        assert not finding.verdict
 
-    def test_cap_keeps_invalid_evidence_flags(self, snap):
+    def test_invalid_evidence_flags_are_kept_when_the_graph_is_down(self, snap):
         items, _ = _evidence_kinds()["invalid-pr"]
-        finding = _check(_validator(snap), *items, verdict="vulnerable", pr_graph_ok=False)
-        assert finding.verdict == "possible"
+        finding = _check(_validator(snap), *items, pr_graph_ok=False)
         assert finding.evidence_valid is False
         assert len(finding.evidence_issues) == 1

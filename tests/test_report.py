@@ -17,7 +17,6 @@ def sample_findings() -> list[AgentFinding]:
         AgentFinding(
             finding_id="safe-1",
             verdict="safe",
-            confidence=0.8,
             cwe_id="CWE-89",
             explanation="Parameterized query.",
             category="sqli",
@@ -29,7 +28,6 @@ def sample_findings() -> list[AgentFinding]:
         AgentFinding(
             finding_id="vuln-1",
             verdict="vulnerable",
-            confidence=0.95,
             cwe_id="CWE-639",
             explanation="Missing ownership check.",
             suggested_fix="Call is_owner_or_admin before returning the order.",
@@ -46,7 +44,6 @@ def sample_findings() -> list[AgentFinding]:
         AgentFinding(
             finding_id="halluc-1",
             verdict="possible",
-            confidence=0.4,
             cwe_id="CWE-89",
             explanation="Maybe.",
             category="sqli",
@@ -193,7 +190,7 @@ def labelled_meta() -> ReviewMetadata:
 
 def finding_with(*evidence: EvidenceItem) -> AgentFinding:
     return AgentFinding(
-        finding_id="f1", verdict="possible", confidence=0.5, category="authz", agent="authz_reviewer",
+        finding_id="f1", category="authz", agent="authz_reviewer",
         file="routes.py", line=3, evidence=list(evidence), evidence_valid=True,
     )
 

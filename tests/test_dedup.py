@@ -18,7 +18,7 @@ def ev(lines, snapshot=None, file=FILE, content="code", type="code", source=None
     )
 
 
-def finding(fid, *, line=0, evidence=(), file=FILE, cwe="CWE-639", verdict="possible", **kw):
+def finding(fid, *, line=0, evidence=(), file=FILE, cwe="CWE-639", verdict="", **kw):
     return AgentFinding(
         finding_id=fid, file=file, line=line, cwe_id=cwe, verdict=verdict,
         evidence=list(evidence), **kw,
@@ -38,30 +38,18 @@ def test_findings_on_the_same_line_with_same_cwe_merge_into_one():
     assert ids(merged) == ["a"]
 
 
-def test_merged_finding_takes_verdict_confidence_and_text_from_the_strongest_finding():
-    first = finding(
-        "a", line=10, verdict="insufficient_evidence", confidence=0.9,
-        explanation="short", suggested_fix="a much longer suggested fix",
-    )
+def test_merged_finding_keeps_the_first_id_takes_member_text_and_carries_no_verdict_or_confidence():
+    first = finding("a", line=10, explanation="short", suggested_fix="a much longer suggested fix")
     second = finding(
-        "b", line=10, verdict="vulnerable", confidence=0.4,
-        explanation="a considerably longer explanation", suggested_fix="fix",
+        "b", line=10, explanation="a considerably longer explanation", suggested_fix="fix"
     )
-    third = finding("c", line=10, verdict="possible", confidence=0.6)
+    third = finding("c", line=10)
     (merged,) = dedup_findings([first, second, third])
     assert merged.finding_id == "a"
-    assert merged.verdict == "vulnerable"
-    assert merged.confidence == 0.4
-    assert merged.explanation == "a considerably longer explanation"
-    assert merged.suggested_fix == "fix"
-
-
-def test_possible_beats_insufficient_evidence():
-    (merged,) = dedup_findings([
-        finding("a", line=3, verdict="insufficient_evidence"),
-        finding("b", line=3, verdict="possible"),
-    ])
-    assert merged.verdict == "possible"
+    assert not merged.verdict
+    assert "confidence" not in merged.model_dump()
+    assert merged.explanation == "short"
+    assert merged.suggested_fix == "a much longer suggested fix"
 
 
 def test_merged_evidence_is_the_union_without_duplicates():
@@ -100,9 +88,8 @@ def test_evidence_identical_in_type_file_lines_source_and_content_is_collapsed()
 
 
 def test_merging_does_not_modify_the_input_findings():
-    a = finding("a", line=10, evidence=[ev([10, 12], content="x")], confidence=0.2)
-    b = finding("b", line=10, evidence=[ev([10, 13], content="y")], verdict="vulnerable",
-                confidence=0.9, explanation="longer text")
+    a = finding("a", line=10, evidence=[ev([10, 12], content="x")])
+    b = finding("b", line=10, evidence=[ev([10, 13], content="y")], explanation="longer text")
     before = [f.model_dump() for f in (a, b)]
     dedup_findings([a, b])
     assert [f.model_dump() for f in (a, b)] == before
@@ -206,20 +193,19 @@ def test_empty_cwe_does_not_merge():
 
 
 def test_non_overlapping_lines_do_not_merge_and_pass_through_unchanged():
-    a = finding("a", line=10, confidence=0.3, explanation="x")
-    b = finding("b", line=90, confidence=0.7, explanation="y")
+    a = finding("a", line=10, explanation="x")
+    b = finding("b", line=90, explanation="y")
     result = dedup_findings([a, b])
     assert result == [a, b]
 
 
 def test_merging_is_transitive_through_a_bridging_finding():
-    a = finding("a", line=0, evidence=[ev([10, 12])], verdict="insufficient_evidence")
-    c = finding("c", line=0, evidence=[ev([20, 25])], verdict="possible", confidence=0.8)
-    bridge = finding("b", line=0, evidence=[ev([12, 20])], verdict="vulnerable", confidence=0.2)
+    a = finding("a", line=0, evidence=[ev([10, 12])])
+    c = finding("c", line=0, evidence=[ev([20, 25])])
+    bridge = finding("b", line=0, evidence=[ev([12, 20])])
     (merged,) = dedup_findings([a, c, bridge])
     assert merged.finding_id == "a"
-    assert merged.verdict == "vulnerable"
-    assert merged.confidence == 0.2
+    assert not merged.verdict
 
 
 def test_output_keeps_first_occurrence_order():
@@ -239,34 +225,33 @@ def test_safe_findings_pass_through_unchanged_and_unmerged():
 
 def test_safe_finding_is_not_merged_with_an_overlapping_vulnerable_one():
     safe = finding("s", line=10, verdict="safe")
-    vuln = finding("v", line=10, verdict="vulnerable")
+    vuln = finding("v", line=10)
     result = dedup_findings([safe, vuln])
     assert ids(result) == ["s", "v"]
-    assert result[0].verdict == "safe" and result[1].verdict == "vulnerable"
+    assert result[0].verdict == "safe" and not result[1].verdict
 
 
 def test_safe_findings_keep_their_position_among_merged_ones():
     first = finding("a", line=10)
     safe = finding("s", line=10, verdict="safe")
-    dup = finding("b", line=10, verdict="vulnerable")
+    dup = finding("b", line=10)
     result = dedup_findings([first, safe, dup])
     assert ids(result) == ["a", "s"]
-    assert result[0].verdict == "vulnerable"
+    assert not result[0].verdict
 
 
 def _stamped_pair(first_stamp, second_stamp):
-    first = finding("a", line=10, verdict="possible", pr_graph_ok=first_stamp)
-    second = finding("b", line=10, verdict="vulnerable", pr_graph_ok=second_stamp)
+    first = finding("a", line=10, pr_graph_ok=first_stamp)
+    second = finding("b", line=10, pr_graph_ok=second_stamp)
     return first, second
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["possible-first", "vulnerable-first"])
-def test_merged_vulnerable_finding_keeps_pr_graph_down_stamp_whatever_the_section_order(reverse):
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-stamped-up", "second-stamped-up"])
+def test_merged_finding_keeps_pr_graph_down_stamp_whatever_the_section_order(reverse):
     pair = list(_stamped_pair(True, False))
     if reverse:
         pair.reverse()
     (merged,) = dedup_findings(pair)
-    assert merged.verdict == "vulnerable"
     assert merged.pr_graph_ok is False
 
 
@@ -276,8 +261,8 @@ def test_merged_findings_with_the_same_pr_graph_stamp_keep_it(stamp):
     assert merged.pr_graph_ok is stamp
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["possible-first", "vulnerable-first"])
-def test_ungrounded_vulnerable_finding_merged_after_pr_graph_went_down_is_capped(
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-stamped-up", "second-stamped-up"])
+def test_merged_candidate_stays_unjudged_after_validation_when_pr_graph_went_down(
     git_repo, reverse
 ):
     pair = list(_stamped_pair(True, False))
@@ -285,20 +270,20 @@ def test_ungrounded_vulnerable_finding_merged_after_pr_graph_went_down_is_capped
         pair.reverse()
     (merged,) = dedup_findings(pair)
     EvidenceValidator(git_repo, "main").validate(merged)
-    assert merged.verdict == "possible"
-    assert PR_GROUNDING_CAP_MARKER in merged.explanation
+    assert not merged.verdict
+    assert PR_GROUNDING_CAP_MARKER not in merged.explanation
 
 
-def test_merged_vulnerable_finding_grounded_in_pr_code_is_not_capped(git_repo):
+def test_merged_candidate_grounded_in_pr_code_stays_unjudged_and_unmarked(git_repo):
     snippet = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
     grounded = EvidenceItem(type="code", file="app.py", content=snippet)
-    first = finding("a", line=10, file="app.py", verdict="possible", pr_graph_ok=True)
+    first = finding("a", line=10, file="app.py", pr_graph_ok=True)
     second = finding(
-        "b", line=10, file="app.py", verdict="vulnerable", pr_graph_ok=False,
+        "b", line=10, file="app.py", pr_graph_ok=False,
         evidence=[grounded],
     )
     (merged,) = dedup_findings([first, second])
     diffs = get_pr_diff(git_repo, "main", "pr")
     EvidenceValidator(git_repo, "main", diffs).validate(merged)
-    assert merged.verdict == "vulnerable"
+    assert not merged.verdict
     assert PR_GROUNDING_CAP_MARKER not in merged.explanation

@@ -16,9 +16,7 @@ from lgtm.config import LGTMConfig
 
 logger = logging.getLogger(__name__)
 
-Verdict = Literal["vulnerable", "safe", "possible", "insufficient_evidence"]
-
-VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
+PARSE_RETRIES = 3
 
 SNAPSHOT_LABELS = ("base", "pr")
 
@@ -36,6 +34,7 @@ class EvidenceItem(BaseModel):
     content: str = ""
     snapshot: Literal["base", "pr"] | None = None
     snapshot_conflict: bool = False
+    grounded_in_pr: bool | None = None
     raw_snapshot: Any = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
@@ -70,12 +69,18 @@ class EvidenceItem(BaseModel):
 
 class AgentFinding(BaseModel):
     finding_id: str
-    verdict: str = "insufficient_evidence"
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     cwe_id: str = ""
     explanation: str = ""
     evidence: list[EvidenceItem] = Field(default_factory=list)
     suggested_fix: str = ""
+    semgrep_rule_id: str = ""
+    semgrep_severity: str = ""
+    semgrep_message: str = ""
+    # Result fields: left unset by agents, written by validation.
+    verdict: str = ""
+    severity: str = ""
+    provenance_confidence: float | None = None
+    judged: bool = False
     # Filled in by the pipeline / validator:
     category: str = ""  # "sqli" | "authz"
     agent: str = ""  # which agent produced this
@@ -87,18 +92,6 @@ class AgentFinding(BaseModel):
     # Set by the pipeline from graph session health; never read from model JSON.
     pr_graph_ok: bool | None = None
     raw_response: str = ""
-
-    def normalized(self) -> "AgentFinding":
-        """Clamp verdict/confidence into the allowed ranges."""
-        if self.verdict not in VALID_VERDICTS:
-            logger.warning(
-                "Invalid verdict %r for %s; downgrading to insufficient_evidence",
-                self.verdict,
-                self.finding_id,
-            )
-            self.verdict = "insufficient_evidence"
-        self.confidence = min(1.0, max(0.0, self.confidence))
-        return self
 
 
 def repair_json(candidate: str) -> str:
@@ -217,15 +210,15 @@ def parse_agent_output(
 ) -> AgentFinding:
     """Parse an agent's final response into an AgentFinding.
 
-    Falls back to ``insufficient_evidence`` when the output is unparsable,
-    so a malformed LLM response never crashes the pipeline.
+    The model's verdict and confidence are ignored. Unparsable output yields
+    a placeholder candidate, so a malformed LLM response never crashes the
+    pipeline.
     """
     data = extract_json_object(text)
     if data is None:
         logger.warning("Agent output for %s contained no JSON", finding_id)
         return AgentFinding(
             finding_id=finding_id,
-            verdict="insufficient_evidence",
             cwe_id=default_cwe,
             explanation=registry.entry("shared.unparsable_explanation"),
             raw_response=text[:2000],
@@ -263,23 +256,26 @@ def parse_agent_output(
         except ValidationError:
             continue
 
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    confidence = min(1.0, max(0.0, confidence))
-
-    finding = AgentFinding(
+    return AgentFinding(
         finding_id=str(data.get("finding_id") or finding_id),
-        verdict=str(data.get("verdict", "insufficient_evidence")).strip().lower(),
-        confidence=confidence,
         cwe_id=str(data.get("cwe_id", default_cwe) or default_cwe),
         explanation=str(data.get("explanation", "")),
         evidence=evidence,
         suggested_fix=str(data.get("suggested_fix", "") or ""),
         raw_response=text[:2000],
     )
-    return finding.normalized()
+
+
+def answer_until_parsed(ask: Callable[[], str], parse: Callable[[str], Any | None]) -> Any | None:
+    """Run ``ask`` until ``parse`` accepts its answer, retrying PARSE_RETRIES times.
+
+    Exceptions from ``ask`` propagate unretried; None means every answer failed to parse.
+    """
+    for _ in range(PARSE_RETRIES + 1):
+        result = parse(ask())
+        if result is not None:
+            return result
+    return None
 
 
 def build_llm(config: LGTMConfig):

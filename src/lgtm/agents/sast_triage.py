@@ -10,7 +10,14 @@ from __future__ import annotations
 import logging
 
 from lgtm.agents import prompt_parts, registry
-from lgtm.agents.base import AgentFinding, build_llm, parse_agent_output, run_tool_loop
+from lgtm.agents.base import (
+    AgentFinding,
+    answer_until_parsed,
+    build_llm,
+    extract_json_object,
+    parse_agent_output,
+    run_tool_loop,
+)
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
@@ -29,14 +36,15 @@ class SASTTriageAgent:
         self.config = config or LGTMConfig()
         self.toolbox = toolbox
         self.llm = llm or build_llm(self.config)
+        self.errors: list[dict[str, str]] = []
 
     def triage(
         self,
         finding: SemgrepFinding,
         file_diff: FileDiff | None,
         facts: str = "",
-    ) -> AgentFinding:
-        """Triage one Semgrep finding; returns a structured AgentFinding."""
+    ) -> AgentFinding | None:
+        """Return the candidate for one Semgrep hit, or None after recording an error."""
         self.toolbox.reset_budget()
         tools = self.toolbox.build_tools(graph=False)
         guidance = prompt_parts.tool_guidance(self.toolbox, graph=False)
@@ -76,23 +84,32 @@ class SASTTriageAgent:
             max_tool_calls=guidance.max_tool_calls,
         )
 
+        def parse(raw: str) -> AgentFinding | None:
+            if extract_json_object(raw) is None:
+                return None
+            return parse_agent_output(raw, finding.finding_id, default_cwe="CWE-89")
+
         logger.info("SAST triage: %s", finding.finding_id)
         try:
-            raw = run_tool_loop(self.llm, tools, system, user, self.config)
+            result = answer_until_parsed(
+                lambda: run_tool_loop(self.llm, tools, system, user, self.config), parse
+            )
         except Exception as exc:  # noqa: BLE001 - LLM/network failures must not kill the run
             logger.error("SAST triage agent failed for %s: %s", finding.finding_id, exc)
-            result = AgentFinding(
-                finding_id=finding.finding_id,
-                verdict="insufficient_evidence",
-                cwe_id="CWE-89",
-                explanation=registry.render("sast_triage.failed_explanation", error=exc),
-            )
+            message = registry.render("sast_triage.failed_explanation", error=exc)
+            result = None
         else:
-            result = parse_agent_output(raw, finding.finding_id, default_cwe="CWE-89")
+            message = registry.entry("shared.unparsable_explanation")
+        if result is None:
+            self.errors.append({"source": finding.finding_id, "message": message})
+            return None
 
         result.category = "sqli"
         result.agent = "sast_triage"
         result.file = finding.path
         result.line = finding.start_line
+        result.semgrep_rule_id = finding.rule_id
+        result.semgrep_severity = finding.severity
+        result.semgrep_message = finding.message
         result.tool_calls_used = self.toolbox.calls_used
         return result

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lgtm.agents.authz_reviewer import AuthzReviewerAgent, failed_finding_id
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.base import AgentFinding, build_llm
 from lgtm.agents.investigator import run_investigator
 from lgtm.analysis.facts import sql_sink_facts
@@ -84,6 +84,7 @@ class _SectionStage:
     investigator_error: str | None
     investigator_input: InvestigatorInput
     investigator_tool_calls: int
+    errors: list[dict[str, str]]
 
 
 class ReviewPipeline:
@@ -207,14 +208,18 @@ class ReviewPipeline:
                 if self.config.static_facts:
                     facts = sql_sink_facts(self._pr_source(pr_rev, sf.path), sf.start_line)
                 finding = triage_agent.triage(sf, fd, facts)
+                if finding is None:
+                    continue
                 finding.pr_graph_ok = toolbox.snapshot_ok("pr")
                 findings.append(finding)
+            meta.agent_errors.extend(triage_agent.errors)
 
             # ---- Stage 3: authorization review -----------------------
             section_stage = self._review_sections(
                 llm_scan_diffs, semgrep_in_diff, toolbox, llm
             )
             findings.extend(section_stage.findings)
+            meta.agent_errors.extend(section_stage.errors)
             meta.graph_state = toolbox.graph_state()
             meta.graph_index_seconds = round(session.init_seconds, 2)
 
@@ -285,7 +290,6 @@ class ReviewPipeline:
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
         results: dict[str, SectionResult] = {}
         section_findings: list[AgentFinding] = []
-        failed_findings: list[AgentFinding] = []
         for section in plan.sections:
             scoped = replace(
                 section,
@@ -296,37 +300,28 @@ class ReviewPipeline:
                 for sf in semgrep_in_diff
                 if sf.path in scoped.files
             )
+            seen_errors = len(authz_agent.errors)
             reviewed = authz_agent.review_section(scoped, notes)
             for finding in reviewed:
                 finding.pr_graph_ok = toolbox.snapshot_ok("pr")
-            failed_id = failed_finding_id(section.section_id)
-            results[section.section_id] = self._section_result(reviewed, failed_id)
-            for finding in reviewed:
-                if finding.verdict == "safe":
-                    continue
-                if finding.finding_id == failed_id:
-                    failed_findings.append(finding)
-                else:
-                    section_findings.append(finding)
+            error = authz_agent.errors[seen_errors:]
+            results[section.section_id] = SectionResult(
+                status="failed" if error else "completed",
+                verdicts=[f.verdict for f in reviewed],
+                finding_ids=[f.finding_id for f in reviewed],
+                error=error[0]["message"] if error else None,
+            )
+            section_findings.extend(f for f in reviewed if f.verdict != "safe")
 
         return _SectionStage(
-            findings=[*dedup_findings(section_findings), *failed_findings],
+            findings=dedup_findings(section_findings),
+            errors=authz_agent.errors,
             plan=plan,
             results=results,
             investigator_status=investigator_status,
             investigator_error=investigator_error,
             investigator_input=investigator_input,
             investigator_tool_calls=investigator_tool_calls,
-        )
-
-    @staticmethod
-    def _section_result(findings: list[AgentFinding], failed_id: str) -> SectionResult:
-        failure = next((f for f in findings if f.finding_id == failed_id), None)
-        return SectionResult(
-            status="failed" if failure else "completed",
-            verdicts=[f.verdict for f in findings],
-            finding_ids=[f.finding_id for f in findings],
-            error=failure.explanation if failure else None,
         )
 
     @staticmethod
@@ -402,13 +397,11 @@ class ReviewPipeline:
     @staticmethod
     def _sast_finding_to_agent_finding(sf: SemgrepFinding) -> AgentFinding:
         """sast-only baseline: report semgrep findings directly."""
-        severity_conf = {"ERROR": 0.8, "WARNING": 0.5, "INFO": 0.3}
         from lgtm.agents.base import EvidenceItem
 
         return AgentFinding(
             finding_id=sf.finding_id,
             verdict="vulnerable",
-            confidence=severity_conf.get(sf.severity.upper(), 0.5),
             cwe_id=sf.cwe[0] if sf.cwe else "",
             explanation=sf.message,
             evidence=[

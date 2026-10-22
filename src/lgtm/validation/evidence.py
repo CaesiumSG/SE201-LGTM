@@ -285,32 +285,16 @@ class EvidenceValidator:
         )
 
     def validate(self, finding: AgentFinding) -> AgentFinding:
-        """Validate one finding in place and return it.
-
-        The PR-graph cap runs here, after validation, so it applies once per
-        finding however the caller reaches this method.
-        """
+        """Validate one finding in place and return it."""
         issues: list[str] = []
-        grounded = False
         for item in finding.evidence:
             if item.type == "policy":
-                item_issues = self._validate_policy_item(item)
+                issues.extend(self._validate_policy_item(item))
             else:
-                item_issues = self._validate_code_item(item)
-                grounded = grounded or self._grounds_pr(item, item_issues)
-            issues.extend(item_issues)
-
-        strong_verdict = finding.verdict in ("vulnerable", "safe")
-        if strong_verdict and not finding.evidence:
-            issues.append(
-                f"verdict '{finding.verdict}' provided without any evidence"
-            )
+                issues.extend(self._validate_code_item(item))
 
         finding.evidence_issues = issues
         finding.evidence_valid = not issues
-        if finding.pr_graph_ok is False and finding.verdict == "vulnerable" and not grounded:
-            finding.verdict = "possible"
-            finding.explanation = f"{finding.explanation}\n\n{PR_GROUNDING_CAP_MARKER}"
         if issues:
             logger.info(
                 "Evidence issues for %s: %s", finding.finding_id, "; ".join(issues)

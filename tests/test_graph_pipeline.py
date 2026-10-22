@@ -838,7 +838,7 @@ def _pr_evidence(snapshot="pr", content=PR_SQL_LINE):
 
 
 class TestCapIntegration:
-    def test_vulnerable_section_findings_downgrade_when_pr_graph_is_down_and_nothing_grounds_them(
+    def test_section_candidates_stay_unjudged_and_unmarked_when_pr_graph_is_down_and_nothing_grounds_them(
         self, repo, install_graph, semgrep
     ):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
@@ -864,12 +864,11 @@ class TestCapIntegration:
         assert set(by_file) == set(FILES)
         for finding in by_file.values():
             assert finding.pr_graph_ok is False
-            assert finding.verdict == "possible"
-            assert finding.explanation.endswith("\n\n" + CAP_MARKER)
-            assert finding.explanation.count(CAP_MARKER) == 1
-            assert finding.confidence == 0.9
+            assert not finding.verdict
+            assert CAP_MARKER not in finding.explanation
+            assert "confidence" not in finding.model_dump()
 
-    def test_vulnerable_triage_finding_stays_uncapped_when_the_pr_graph_goes_down_in_a_later_section(
+    def test_triage_candidate_keeps_its_up_stamp_when_the_pr_graph_goes_down_in_a_later_section(
         self, repo, install_graph, semgrep
     ):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
@@ -886,11 +885,11 @@ class TestCapIntegration:
 
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
         assert triage.pr_graph_ok is True
-        assert triage.verdict == "vulnerable"
+        assert not triage.verdict
         assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "degraded:pr:timeout"
 
-    def test_vulnerable_triage_finding_is_capped_when_the_graph_binary_is_missing(
+    def test_triage_candidate_is_stamped_down_and_stays_unjudged_when_the_graph_binary_is_missing(
         self, repo, install_graph, semgrep
     ):
         install_graph(FakeRunner(available=False))
@@ -900,12 +899,11 @@ class TestCapIntegration:
 
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
         assert triage.pr_graph_ok is False
-        assert triage.verdict == "possible"
-        assert triage.explanation.endswith("\n\n" + CAP_MARKER)
-        assert triage.explanation.count(CAP_MARKER) == 1
+        assert not triage.verdict
+        assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "unavailable:missing"
 
-    def test_vulnerable_authz_findings_downgrade_too(self, repo_with_endpoints, install_graph, semgrep):
+    def test_authz_candidates_stay_unjudged_when_pr_graph_is_down(self, repo_with_endpoints, install_graph, semgrep):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
         llm = ScriptedLLM([
             *_triage_then_plan(),
@@ -918,10 +916,10 @@ class TestCapIntegration:
 
         authz = [f for f in result.findings if f.category == "authz"]
         assert len(authz) == 2
-        assert all(f.verdict == "possible" and f.pr_graph_ok is False for f in authz)
-        assert all(f.explanation.endswith(CAP_MARKER) for f in authz)
+        assert all(not f.verdict and f.pr_graph_ok is False for f in authz)
+        assert all(CAP_MARKER not in f.explanation for f in authz)
 
-    def test_pr_labelled_evidence_validates_against_frozen_pr_commit_and_exempts_cap(
+    def test_pr_labelled_evidence_validates_against_frozen_pr_commit(
         self, repo, install_graph, semgrep
     ):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
@@ -944,7 +942,7 @@ class TestCapIntegration:
         assert first.pr_graph_ok is False
         assert first.evidence_issues == []
         assert first.evidence_valid is True
-        assert first.verdict == "vulnerable"
+        assert not first.verdict
         assert CAP_MARKER not in first.explanation
 
     def test_healthy_graph_never_caps(self, repo, install_graph, semgrep):
@@ -956,7 +954,7 @@ class TestCapIntegration:
         first = next(f for f in result.findings if f.file == "a.py")
         assert first.pr_graph_ok is True
         assert first.evidence_valid is False
-        assert first.verdict == "vulnerable"
+        assert not first.verdict
         assert CAP_MARKER not in first.explanation
 
     def test_labelled_evidence_ignores_dirty_working_tree(
@@ -1318,7 +1316,7 @@ class TestSectionPipeline:
             _assert_hunks_reviewed(result, llm, path)
         assert llm.order.index("investigator") < llm.order.index("section")
 
-    def test_safe_findings_never_appear_in_the_report(
+    def test_model_emitted_verdicts_never_reach_the_report(
         self, repo, install_graph, no_semgrep, tmp_path
     ):
         install_graph()
@@ -1336,10 +1334,11 @@ class TestSectionPipeline:
 
         result = _review(repo, RoutedLLM(section=section), output_dir=tmp_path / "out")
 
-        assert [(f.file, f.verdict) for f in result.findings] == [("a.py", "vulnerable")]
+        assert result.findings
+        assert all(not f.verdict for f in result.findings)
         report = json.loads(result.json_path.read_text(encoding="utf-8"))
-        assert [f["verdict"] for f in report["findings"]] == ["vulnerable"]
-        assert "safe" not in report["stats"]["by_verdict"]
+        assert all(not f["verdict"] for f in report["findings"])
+        assert all("confidence" not in f for f in report["findings"])
 
     def test_overlapping_findings_with_the_same_cwe_merge_and_other_cwes_stay_separate(
         self, repo, install_graph, no_semgrep
@@ -1349,32 +1348,30 @@ class TestSectionPipeline:
         second = {"type": "code", "file": "a.py", "lines": [4, 4], "content": PR_SQL_LINE}
         adjacent = {"type": "code", "file": "a.py", "lines": [5, 5], "content": PR_SQL_LINE}
         only_a = _findings(
-            _section_finding(verdict="possible", confidence=0.5, evidence=[first], line=3),
-            _section_finding(verdict="vulnerable", confidence=0.8, evidence=[second], line=4),
-            _section_finding(verdict="possible", confidence=0.3, evidence=[adjacent], line=5),
-            _section_finding(cwe_id="CWE-862", verdict="possible", confidence=0.4, line=4),
+            _section_finding(evidence=[first], line=3),
+            _section_finding(evidence=[second], line=4),
+            _section_finding(evidence=[adjacent], line=5),
+            _section_finding(cwe_id="CWE-862", line=4),
         )
         llm = RoutedLLM(section=lambda p: only_a if _prompt_file(p) == "a.py" else _findings())
 
         result = _review(repo, llm)
 
         assert sorted(f.cwe_id for f in result.findings) == ["CWE-639", "CWE-639", "CWE-862"]
-        by_cwe = {f.cwe_id: f for f in result.findings if f.confidence != 0.3}
-        merged = by_cwe["CWE-639"]
-        assert merged.verdict == "vulnerable"
-        assert merged.confidence == 0.8
+        cwe_639 = [f for f in result.findings if f.cwe_id == "CWE-639"]
+        merged = next(f for f in cwe_639 if len(f.evidence) == 2)
         assert {tuple(e.lines) for e in merged.evidence} == {(3, 4), (4, 4)}
-        assert by_cwe["CWE-862"].verdict == "possible"
-        separate = [f for f in result.findings if f.confidence == 0.3]
+        assert not merged.verdict
+        separate = [f for f in cwe_639 if f is not merged]
         assert [tuple(e.lines) for f in separate for e in f.evidence] == [(5, 5)]
 
-    def test_a_failed_section_finding_is_never_merged_into_an_overlapping_cwe_862_finding(
+    def test_a_failed_section_is_recorded_as_an_error_and_never_merged_into_an_overlapping_cwe_862_candidate(
         self, repo, install_graph, no_semgrep
     ):
         install_graph()
         overlapping = _section_finding(
-            cwe_id="CWE-862", verdict="possible", confidence=0.5, file="b.py", line=1,
-            evidence=[{"type": "code", "file": "b.py", "lines": [1, 40], "content": "x"}],
+            cwe_id="CWE-862", file="a.py", line=1,
+            evidence=[{"type": "code", "file": "a.py", "lines": [1, 40], "content": "x"}],
         )
 
         def section(prompt: str):
@@ -1388,12 +1385,13 @@ class TestSectionPipeline:
         result = _review(repo, RoutedLLM(section=section), llm_retries=0, max_answer_reasks=0)
 
         authz = [f for f in result.findings if f.category == "authz"]
-        assert sorted(f.verdict for f in authz) == ["insufficient_evidence", "possible"]
-        failed = next(f for f in authz if f.verdict == "insufficient_evidence")
-        assert "Section review failed" in failed.explanation and failed.file == "b.py"
+        assert [(f.file, f.cwe_id) for f in authz] == [("a.py", "CWE-862")]
+        [error] = result.meta.agent_errors
+        b_row = next(r for r in result.meta.coverage["sections"] if r["files"] == ["b.py"])
+        assert error["source"] == b_row["section_id"] and error["message"]
         assert result.meta.coverage["sections_failed"] == 1
 
-    def test_findings_reach_the_validator_deduplicated_and_without_safe_ones(
+    def test_findings_reach_the_validator_deduplicated(
         self, repo, install_graph, no_semgrep, monkeypatch
     ):
         install_graph()
@@ -1407,9 +1405,8 @@ class TestSectionPipeline:
         monkeypatch.setattr("lgtm.pipeline.EvidenceValidator", SpyValidator)
         span = {"type": "code", "file": "a.py", "lines": [3, 4], "content": "x"}
         only_a = _findings(
-            _section_finding(verdict="safe", file="a.py", line=3),
-            _section_finding(verdict="possible", confidence=0.4, line=3, evidence=[span]),
-            _section_finding(verdict="vulnerable", confidence=0.8, line=4, evidence=[span]),
+            _section_finding(line=3, evidence=[span]),
+            _section_finding(line=4, evidence=[span]),
         )
         llm = RoutedLLM(section=lambda p: only_a if _prompt_file(p) == "a.py" else _findings())
 
@@ -1417,10 +1414,9 @@ class TestSectionPipeline:
 
         assert len(received) == 1
         authz = [f for f in received[0] if f.category == "authz"]
-        assert [(f.file, f.verdict) for f in authz] == [("a.py", "vulnerable")]
-        assert [(f.file, f.verdict) for f in result.findings if f.category == "authz"] == [
-            ("a.py", "vulnerable")
-        ]
+        assert [f.file for f in authz] == ["a.py"]
+        assert [f.file for f in result.findings if f.category == "authz"] == ["a.py"]
+        assert not authz[0].verdict
 
     @pytest.mark.parametrize(
         "path",
@@ -1453,26 +1449,25 @@ class TestSectionPipeline:
         assert not any("HOSTILE_SYMBOL" in p for p in prompts)
 
     @pytest.mark.parametrize(
-        ("reply", "reason"),
+        ("reply", "reason", "attempts_on_b"),
         [
-            pytest.param(RuntimeError("model down"), "model down", id="section-raises"),
-            pytest.param("The change looks fine to me.", "no parsable findings", id="unparsable-reply"),
+            pytest.param(RuntimeError("model down"), "model down", 1, id="section-raises"),
+            pytest.param("The change looks fine to me.", "", 4, id="unparsable-reply"),
         ],
     )
-    def test_a_failed_section_surfaces_as_an_insufficient_evidence_finding_and_the_rest_still_run(
-        self, repo, install_graph, no_semgrep, reply, reason
+    def test_a_failed_section_is_recorded_as_an_agent_error_and_the_rest_still_run(
+        self, repo, install_graph, no_semgrep, reply, reason, attempts_on_b
     ):
         install_graph()
         llm = RoutedLLM(section=lambda p: reply if _prompt_file(p) == "b.py" else _findings())
 
         result = _review(repo, llm, llm_retries=0, max_answer_reasks=0)
 
-        failed = [f for f in result.findings if f.category == "authz"]
-        assert len(failed) == 1
-        assert failed[0].verdict == "insufficient_evidence"
-        assert failed[0].file == "b.py"
-        assert reason in failed[0].explanation
-        assert re.search(r"b\.py lines \d+-\d+", failed[0].explanation)
+        assert [f for f in result.findings if f.category == "authz"] == []
+        [error] = result.meta.agent_errors
+        b_row = next(r for r in result.meta.coverage["sections"] if r["files"] == ["b.py"])
+        assert error["source"] == b_row["section_id"]
+        assert reason in error["message"]
         coverage = result.meta.coverage
         by_file = {tuple(s["files"]): s for s in coverage["sections"]}
         assert by_file[("b.py",)]["status"] == "failed"
@@ -1481,7 +1476,25 @@ class TestSectionPipeline:
         assert coverage["sections_failed"] == 1
         assert coverage["hunks_reviewed"] == coverage["hunks_total"] - 1
         assert coverage["complete"] is False
-        assert len(llm.user_prompts["section"]) == 4
+        assert len(llm.user_prompts["section"]) == 3 + attempts_on_b
+
+    def test_a_triage_answer_that_never_parses_is_recorded_for_its_hit_and_other_hits_are_still_triaged(
+        self, repo, install_graph, semgrep
+    ):
+        install_graph()
+        unparsable = "The change looks fine to me."
+        llm = ScriptedLLM([
+            *[_msg(unparsable) for _ in range(4)],
+            *[_msg(_final()) for _ in FILES[1:]],
+            _msg(_no_sections()),
+        ])
+
+        result = _review(repo, llm, llm_retries=0, max_answer_reasks=0)
+
+        [error] = result.meta.agent_errors
+        assert error["source"] == "fake.sqli:a.py:5" and error["message"]
+        assert sum(_route(m) == "triage" for m in llm.seen) == 4 + len(FILES) - 1
+        assert not [f for f in result.findings if f.file == "a.py" and f.category == "sqli"]
 
     def test_semgrep_notes_reach_only_the_sections_that_contain_the_flagged_file(
         self, repo, install_graph, semgrep

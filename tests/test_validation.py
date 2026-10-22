@@ -8,7 +8,7 @@ from lgtm.validation.evidence import EvidenceValidator
 
 
 def make_finding(**kwargs) -> AgentFinding:
-    defaults = {"finding_id": "f1", "verdict": "vulnerable", "confidence": 0.9}
+    defaults = {"finding_id": "f1"}
     defaults.update(kwargs)
     return AgentFinding(**defaults)
 
@@ -113,22 +113,16 @@ class TestEvidenceValidator:
         validator.validate(finding)
         assert finding.evidence_valid is False
 
-    def test_strong_verdict_without_evidence_flagged(self, git_repo):
+    def test_candidate_without_evidence_is_validated_and_stays_unjudged(self, git_repo):
         validator = EvidenceValidator(git_repo, "main")
-        finding = make_finding(verdict="vulnerable", evidence=[])
+        finding = make_finding(evidence=[])
         validator.validate(finding)
-        assert finding.evidence_valid is False
-        assert any("without any evidence" in i for i in finding.evidence_issues)
-
-    def test_weak_verdict_without_evidence_ok(self, git_repo):
-        validator = EvidenceValidator(git_repo, "main")
-        finding = make_finding(verdict="insufficient_evidence", evidence=[])
-        validator.validate(finding)
-        assert finding.evidence_valid is True
+        assert finding.evidence_valid is not None
+        assert not finding.verdict
 
     def test_validate_all(self, git_repo):
         validator = EvidenceValidator(git_repo, "main")
-        findings = [make_finding(verdict="possible"), make_finding(verdict="possible")]
+        findings = [make_finding(), make_finding()]
         out = validator.validate_all(findings)
         assert len(out) == 2
         assert all(f.evidence_valid is not None for f in out)
@@ -245,7 +239,6 @@ class TestFrozenShaValidatorKeepsLegacyForUnlabelled:
     def test_labelled_working_tree_file_is_rejected(self, git_repo):
         (git_repo / "notes.md").write_text("untracked scratch note\n", encoding="utf-8")
         finding = make_finding(
-            verdict="possible",
             evidence=[
                 EvidenceItem(
                     type="code", file="notes.md", lines=[1, 1],
@@ -264,7 +257,6 @@ class TestFrozenShaValidatorKeepsLegacyForUnlabelled:
         validator.validate(unlabelled)
         assert unlabelled.evidence_valid is True
         labelled = make_finding(
-            verdict="possible",
             evidence=[EvidenceItem(type="code", file="app.py", lines=[2, 30], content=content, snapshot="base")],
         )
         validator.validate(labelled)

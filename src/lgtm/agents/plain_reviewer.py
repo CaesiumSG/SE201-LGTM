@@ -72,7 +72,6 @@ class PlainLLMReviewer:
             return [
                 AgentFinding(
                     finding_id=f"plain:{cat}",
-                    verdict="insufficient_evidence",
                     cwe_id=cwe,
                     category=cat,
                     agent="plain_llm",
@@ -124,7 +123,6 @@ class PlainLLMReviewer:
             findings.append(
                 AgentFinding(
                     finding_id="plain:unparsable",
-                    verdict="insufficient_evidence",
                     agent="plain_llm",
                     explanation=registry.entry("plain_reviewer.unparsable_explanation"),
                     raw_response=raw[:2000],

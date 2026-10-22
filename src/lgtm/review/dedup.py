@@ -6,8 +6,6 @@ from collections.abc import Iterable
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
 
-_VERDICT_RANK = {"vulnerable": 3, "possible": 2, "insufficient_evidence": 1}
-
 _Span = tuple[str, int, int]
 
 
@@ -96,7 +94,6 @@ def _merge(group: list[AgentFinding]) -> AgentFinding:
     if len(group) == 1:
         return group[0]
 
-    lead = max(group, key=lambda f: _VERDICT_RANK.get(f.verdict, 0))
     evidence: list[EvidenceItem] = []
     seen: set[tuple] = set()
     for finding in group:
@@ -108,10 +105,6 @@ def _merge(group: list[AgentFinding]) -> AgentFinding:
 
     return group[0].model_copy(
         update={
-            "verdict": lead.verdict,
-            "confidence": lead.confidence,
-            "explanation": lead.explanation,
-            "suggested_fix": lead.suggested_fix,
             "pr_graph_ok": _merged_pr_graph_ok(group),
             "evidence": evidence,
         }
