@@ -24,6 +24,7 @@ class LGTMConfig:
     llm_backoff_seconds: tuple[float, ...] = (2.0, 4.0, 8.0)
     max_invalid_tool_inputs: int = 3
     max_answer_reasks: int = 3
+    llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
 
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules

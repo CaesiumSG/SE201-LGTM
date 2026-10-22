@@ -110,7 +110,9 @@ one command (`lgtm review`). Figure 1 shows the components as built:
 
 **Figure 1:** LGTM architecture as implemented. Solid arrows are the data
 flow of one review; dashed arrows are on-demand lookups the agents may
-make through the read-only tools.
+make through the read-only tools. Compared with the proposal's diagram
+(`docs/original_architecture.drawio`), the only additions are the
+`search_code` tool and source code in the RAG index.
 
 | Stage | Component | Status |
 |---|---|---|
@@ -364,6 +366,22 @@ this model by default (§5).
 7. **Grow the benchmark**: more OWASP-derived and real-world cases, so one
    flipped verdict no longer moves F1 by about 0.05.
 
+## 8. Challenges, lessons, and what we do going forward
+
+| # | What we faced | What we tried and decided | What we'll do going forward |
+|---|---|---|---|
+| 1 | Our first headline result said LGTM was *worse* than the bare LLM. It took us a day to realise the scorer was crediting the wrong agent and our "LLM-only" baseline secretly had RAG and tools | We rebuilt the baseline to match the proposal, fixed the scorer, and re-ran everything. The conclusion flipped to 0.94 vs 0.75 | We now review metrics code as carefully as product code, and check every baseline against its written definition before trusting a number |
+| 2 | We found Semgrep had been scanning whatever branch was checked out, not the PR's files. Nothing crashed, so we only caught it by reading results by hand | We decided to always materialise the PR's files into a temp directory before scanning, and pinned it with a test | Whenever we read from a repo we now ask "which version?" explicitly |
+| 3 | We were proud of F1 1.00 on dev until we read the individual findings: the authz agent was flagging 22 of 24 SQLi endpoints that were already protected | We added an off-category alarm metric and a grounded-only F1 so this can't hide again | We'll attack the alarms next, trying input scoping or a second-pass verifier, tuned on dev only |
+| 4 | We caught ourselves about to "fix" prompts until the eval cases passed | We agreed on a strict rule: tune on dev only, fix only genuine bugs, report eval once. Two of our three prompt tweaks then turned out to be harmful on dev | We keep the protocol for every change, including the model comparison running now |
+| 5 | We expected the agent to use its tools. Our 7B model never did. When we forced it, it called every tool every time for 6.6× the latency and no gain | We decided to rely on pre-retrieved context (RAG in the prompt) rather than tool use for a small model | We're testing ≤14B models that do call tools, and we measure tool use instead of assuming it |
+| 6 | One verdict flipped because a file path inside a Semgrep rule ID changed. Temperature 0 had given us false confidence | We made rule IDs path-free and stopped reading anything into single-case changes | We'll grow the eval set and report variance, since one flip is ±0.05 F1 today |
+| 7 | When we finally tested on real CVEs, F1 fell from 0.94 to 0.44, and 7 of 12 cases never even reached an agent | We traced every miss to a cause: our detector only fires on decorators inside the diff, and the agent only sees one file | We'll let the agent run when no endpoint is detected and give it the relevant callees. We learned our own benchmark encoded our own assumptions |
+| 8 | Brian's red-teaming showed a code comment could talk the agent out of 3/3 SQLi detections. Labelling the diff "untrusted" did nothing | We tried stripping comments before the LLM sees the code and detecting reviewer-directed text; attack success went from 100% to 0% | We'll cover attacks that don't rely on comments next, and keep mitigations structural rather than instructional |
+| 9 | Compute kept getting in the way: 5 tokens/s on a laptop GPU, 4-minute indexes, and one benchmark run that hung for 76 minutes because our configured timeout never reached the Ollama client | We wired the timeout and an output cap, Jin Rae built a GPU-cluster model server, and we run benchmarks from a frozen copy of the tree | We bound every model call and treat each benchmark run as an experiment with provenance |
+| 10 | The moment we left our own toy app, real repos broke things: non-UTF-8 files, git-quoted paths, a ChromaDB batch limit, CRLF and a Semgrep lookup bug on Windows | We fixed each one with a regression test | Hsu will run a field trial on ~10 ordinary open-source PRs, because that's where the engineering bugs are |
+| 11 | AI wrote most of our pipeline in a day, and its two worst mistakes (rows 1 and 2) sailed through unit tests that shared the same assumptions | We moved to one PR per piece of work, every reported number copied from a committed run file, and an AI-use log by area | We use the speed, but keep humans on the claims, the baselines and the metrics |
+
 ## Appendix A. AI use disclosure log
 
 AI used to build the project, collated by area of work. The LLM that LGTM
@@ -386,11 +404,5 @@ through a pull request reviewed by a team member before reaching `main`.
 | 9 | 17–18 Oct | Larger model on the GPU cluster | Claude Code | `--gpu-model` registry, error accounting and `--resume`, LLM retries, tool-input validation and re-asks, 32k-context deployment settings, `qwen3.8:27b` as the default, first draft of `gpu-model-eval.md` | Unit tests (315 passing); model placement checked with Ollama's `/api/ps`; every number in the write-up generated from committed `summary.json` and `run-stats.json` files |
 
 Decisions made by the team without AI: project scope, the choice of CVEs,
-the dev/eval protocol, and which results to report.
-
-**What we learned:** the AI-generated pipeline worked end to end on day
-one; the subtle problems were in the *evaluation* (a scorer that credited
-the wrong agent, a baseline that didn't match the proposal), and unit tests
-didn't catch them because they encoded the same assumptions. Metrics code
-needs the same review as product code, and every reported number should be
-traceable to a run file.
+the dev/eval protocol, and which results to report. What we learned from
+working this way is row 11 of §8.

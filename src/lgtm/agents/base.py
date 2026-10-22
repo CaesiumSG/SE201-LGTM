@@ -238,6 +238,10 @@ def build_llm(config: LGTMConfig):
         base_url=config.ollama_base_url,
         temperature=config.llm_temperature,
         keep_alive="24h",
+        # Bound each call (timeout) and the output length (num_predict): a
+        # runaway generation with no stop token blocked a benchmark run for
+        # over an hour before either existed.
+        num_predict=config.llm_max_output_tokens,
         client_kwargs={"timeout": config.llm_timeout},
         **kwargs,
     )
