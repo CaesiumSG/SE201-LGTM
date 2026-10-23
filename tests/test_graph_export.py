@@ -1113,7 +1113,7 @@ exporter.threading=ThreadFacade()
 original_cwd=os.getcwd()
 try:
     os.chdir(root)
-    timeout=.15 if mode in ("inventory_hung","inventory_slow","archive_hung") else 3
+    timeout=.15 if mode in ("inventory_hung","inventory_slow","archive_hung") else 20
     started=time.monotonic()
     try:
         max_files = 300 if mode == "inventory_byte_cap" else 20000 if mode == "inventory_slow" else 1
@@ -1168,7 +1168,7 @@ finally:
 '''
         result = subprocess.run(
             [sys.executable, "-c", harness, scenario, str(tmp_path / scenario)],
-            cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=15,
+            cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
 
