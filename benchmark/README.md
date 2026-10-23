@@ -206,6 +206,36 @@ without the run directory and writes `labels.json`. Pending deploy: recording
 a candidate set and the judged replay and perturbation run against the live
 judge.
 
+## Kev validation benchmark
+
+`benchmark/kev_support/` runs 45 authored findings through evidence validation and the Kev judge in
+each request format (`current`, `short_claim`, `code_first`, `code_only`). It starts no LGTM agent and
+imports no agent module other than the `lgtm.agents.base` types.
+
+- Fixtures (`fixtures.py`): 30 wrong findings, six in each kind (`safe_twin`, `unrelated_code`,
+  `missing_check`, `sqli_no_sql`, `wrong_cwe`), and 15 correct controls, citing two small case
+  repositories that the runner builds as temporary git repositories.
+- A finding whose evidence fails validation is listed under `evidence_failures`, counted as
+  `evidence_invalid`, and never sent to the judge.
+- Each finding and format gets two plain judge calls and one permute call
+  (`/v1/systemone/permute`, one `supported` question, six option orders). The first plain call is the
+  verdict. A differing second plain call makes the request `unstable`; a permute verdict differing from
+  the first makes it `order_sensitive`. A failed first call counts as an `errors` entry and the finding
+  is not evaluated; a failed repeat or permute call counts as one `errors` entry for that finding and
+  format and keeps the first verdict. The runner exits non-zero when any call failed or nothing was
+  evaluated, after writing `report.json`.
+
+```bash
+# From the repository root (install LGTM first: pip install -e .)
+python benchmark/kev_support/runner.py --out runs/kev-support [--work-dir DIR]
+```
+
+The judge endpoint, model and timeout come from `LGTMConfig`. `--out` receives `report.json`; nothing
+else is written outside `--out` and the work directory. Per request format the report holds, per kind,
+`rejected`, `errors`, `evidence_invalid` and `evaluated` (the denominator of the rejected share); for
+controls `kept`, `errors`, `evidence_invalid` and `evaluated`; and the `unstable` and `order_sensitive`
+counts with their case IDs.
+
 ## Regenerating cases
 
 ```bash
