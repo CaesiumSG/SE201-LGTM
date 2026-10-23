@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -282,3 +283,72 @@ def test_replay_report_gives_kev_answers_over_judged_candidates_and_none_before_
             before_kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, 0)
     for key in ("citation_support", "confidence_agreement", "supported_agreement", "not_judged_by_reason"):
         assert key in after_report
+
+
+def test_replay_of_one_recorded_run_gives_the_same_kev_summary_in_evaluate_evaluate_real_and_judge_eval(
+    tmp_path, monkeypatch, fake_kev
+):
+    case = _case_repo(tmp_path)
+    frozen_dir = tmp_path / "frozen"
+    _write_run(frozen_dir, case, [_frozen_finding(claim) for claim in SCRIPT])
+    spec = importlib.util.spec_from_file_location("e2e_evaluate_real", BENCH / "real_world" / "evaluate_real.py")
+    evaluate_real = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = evaluate_real
+    spec.loader.exec_module(evaluate_real)
+    evaluate = evaluate_real.evaluate
+
+    candidates = [AgentFinding.model_validate(f) for f in _frozen_findings(frozen_dir)]
+
+    class Pipeline:
+        def __init__(self, repo, config):
+            self.config, self._judge = config, http_judge(config)
+
+        def run(self, base, pr, output_dir=None):
+            judge_candidates(candidates, lambda item: item.content, self.config, self._judge)
+            meta = SimpleNamespace(
+                semgrep_findings_in_diff=0, base_sha=case["base_sha"], pr_sha=case["pr_sha"]
+            )
+            return SimpleNamespace(findings=candidates, meta=meta)
+
+    monkeypatch.setattr(evaluate_real, "get_pr_diff", lambda *a, **k: [])
+    monkeypatch.setattr(evaluate_real, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+    monkeypatch.setattr(evaluate_real, "ReviewPipeline", Pipeline)
+    unit = {"id": CASE_ID, "category": "sqli", "expected_verdict": "vulnerable",
+            "repo_url": "https://github.com/o/p", "file": "app.py"}
+    config = LGTMConfig(judge_endpoint=fake_kev, judge_timeout=5)
+
+    record = evaluate_real.run_unit(unit, "own", "lgtm", tmp_path, tmp_path, config)
+
+    run_dir, real_dir = tmp_path / "run", tmp_path / "real"
+    for directory in (run_dir, real_dir):
+        directory.mkdir()
+        (directory / f"{CASE_ID}.json").write_text(json.dumps(record, default=str), encoding="utf-8")
+    saved_row = json.loads((run_dir / f"{CASE_ID}.json").read_text(encoding="utf-8"))
+    saved = {f["explanation"]: f for f in saved_row["findings"]}
+    for claim, answer in SCRIPT.items():
+        if answer is None:
+            assert saved[claim].get("kev_verdict") is None and saved[claim].get("input_tokens") is None
+            continue
+        assert saved[claim]["kev_verdict"] == ("real" if answer[0] else "not_real")
+        assert saved[claim]["kev_severity"] == ("high" if answer[0] else "low")
+        assert saved[claim]["input_tokens"] == (9000 if claim == "claim supported" else 500)
+
+    export = tmp_path / "export.json"
+    _export(run_dir, case, export)
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps({"units": {}}), encoding="utf-8")
+
+    bench_kev = evaluate.summarize([saved_row])["kev"]
+    real_kev = evaluate_real.write_dir_summary(real_dir, "lgtm", "own", {CASE_ID}, "m")["summary"]["kev"]
+    done = _cli("judge_eval.py", run_dir, export, labels)
+
+    assert done.returncode == 0, done.stderr
+    eval_kev = json.loads(done.stdout)["kev"]
+    expected = {
+        "judged": 3, "verdicts": {"real": 2, "not_real": 1}, "severities": {"high": 2, "low": 1},
+        "not_judged": {"judge-failed": 1}, "requests_over_8192_input_tokens": 1,
+    }
+    for kev in (bench_kev, real_kev, eval_kev):
+        assert {k: kev[k] for k in expected} == expected
+        # the fake judge answers 0.9 and 0.6 for the supported claims and 1 - 0.8 for the unsupported one
+        assert kev["provenance_confidence_mean"] == pytest.approx((0.9 + 0.2 + 0.6) / 3)

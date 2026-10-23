@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from lgtm.cli import main
 from lgtm.sast.semgrep_runner import SemgrepFinding
+from lgtm.validation.judge import SEVERITY_LEVELS
 from tests.test_graph_pipeline import (  # noqa: F401 - fixtures and scripted-agent helpers
     CLAIM_AUTHZ_A,
     CLAIM_AUTHZ_B,
@@ -255,3 +256,56 @@ def test_review_report_and_exit_code_do_not_change_with_kev_verdict_and_severity
     assert {c: v[:2] for c, v in outcomes[0][1].items()} == {
         c: (supported, True) for c, (supported, _) in KEV_ANSWERS.items()
     }
+
+
+@pytest.mark.usefixtures("one_semgrep_hit")
+def test_saved_candidates_of_a_judged_review_carry_the_kev_verdict_and_severity_that_the_report_leaves_out(
+    repo, tmp_path, monkeypatch, start_kev, judge_eval
+):
+    from lgtm.config import LGTMConfig
+    from lgtm.pipeline import ReviewPipeline
+
+    evaluate_real = _load("e2e_evaluate_real", BENCHMARK / "real_world" / "evaluate_real.py")
+
+    class RealPipelineOnTheFixtureRepo(ReviewPipeline):
+        def __init__(self, clone, config):
+            super().__init__(repo, config)
+
+        def run(self, base, pr, output_dir=None):
+            return super().run("main", "pr", output_dir)
+
+    monkeypatch.setattr(evaluate_real, "ReviewPipeline", RealPipelineOnTheFixtureRepo)
+    monkeypatch.setattr(evaluate_real, "get_pr_diff", lambda *a, **k: [])
+    monkeypatch.setattr(evaluate_real, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+    monkeypatch.setattr("lgtm.pipeline.build_llm", lambda cfg: _two_agent_llm())
+    unit = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
+            "repo_url": "https://github.com/o/p", "file": "a.py"}
+    verdicts = []
+    for variant in (0, 1):
+        kev = start_kev(_answer_by_claim(variant))
+        workdir = tmp_path / f"variant{variant}"
+        workdir.mkdir()
+        config = LGTMConfig(judge_endpoint=kev.url, judge_model=KEV_MODEL, judge_timeout=2)
+
+        record = evaluate_real.run_unit(unit, "own", "lgtm", workdir, workdir, config)
+
+        path = workdir / "x.json"
+        path.write_text(json.dumps(record, default=str), encoding="utf-8")
+        saved = json.loads(path.read_text(encoding="utf-8"))["findings"]
+        assert len(saved) == len(KEV_ANSWERS) == len(kev.requests)
+        for row in saved:
+            assert row["judged"] is True
+            assert row["kev_verdict"]
+            assert row["kev_severity"] == SEVERITY_LEVELS[-1 if variant else 0]
+            assert isinstance(row["input_tokens"], int) and row["input_tokens"] > 0
+        verdicts.append({row["kev_verdict"] for row in saved})
+
+    assert verdicts[0] != verdicts[1]
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
