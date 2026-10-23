@@ -204,6 +204,27 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
 - **Combined job:** `jobs/judged-serve.sbatch` (`judged-serve`, one 48 GB A40)
   starts Kev-4B first, then Ollama with `DEFAULT_MODEL`, and writes both
   endpoint files; measured at about 17.5 GB for qwen3.8:27b plus Kev-4B in bf16.
+- **Benchmark command:** `model/deploy/judged-bench.sh --export EXPORT --labels LABELS --run-dir RUNDIR --out OUTDIR [--results-dir DIR] [--wait-seconds N]`,
+  run from the repo root with `PYTHON` naming the interpreter (default `python`).
+  It submits one `judged-serve` job through `judged-up.sh`, waits for both
+  endpoint files, opens the qwen3.8 and Kev-4B tunnels, then runs in order:
+  1. `benchmark/kev_support/runner.py --out OUTDIR/kev-bench-<timestamp>`
+  2. `benchmark/judge_eval.py RUNDIR EXPORT LABELS --live`
+  3. `benchmark/evaluate.py`
+  4. `benchmark/real_world/evaluate_real.py`
+
+  `--export` and `--labels` are the judge eval inputs, and `--run-dir` is the
+  recorded reviewer run the export came from; `--out` is the base
+  directory for the standalone benchmark report; `--wait-seconds` bounds the
+  wait for readiness (default 1800, `0` checks once). With `--results-dir DIR`,
+  steps 3 and 4 get `--output DIR --resume`. Judged-mode units whose judged
+  candidates carry no Kev answer are reviewed again; sast-only and llm-only
+  units are reused. Without it they run their normal reviewer path. DIR must be
+  gitignored or outside the repo; its top level holds the `evaluate.py` case
+  files and its subdirectories hold the `evaluate_real.py` modes. The job is
+  cancelled on success, on a failing step (the step is named and the exit code
+  is non-zero), on an interrupt, and when the job is not ready within the wait.
+  If submission fails, nothing is cancelled and no step runs.
 - **Prerequisites:** `uv` on the login node. Weights and the uv cache go to
   `$SCRATCH_DIR/kev-hf` and `$SCRATCH_DIR/kev-uv-cache`.
 - **Auth:** the job starts the server without auth. `KEV_API_KEY` is read

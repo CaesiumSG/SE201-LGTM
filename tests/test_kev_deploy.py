@@ -14,6 +14,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 MODEL = REPO / "model"
 BASH = shutil.which("bash")
+REAL_SLEEP = Path(shutil.which("sleep") or "sleep").as_posix()
 
 KEV_COMMANDS = ["provision", "up", "connect", "status", "logs", "down"]
 KEV_JOB = "kev-serve.sbatch"
@@ -188,6 +189,9 @@ wait_finished() {
 SSH_STUB = r"""#!/usr/bin/env bash
 a="$*"; a=${a//$'\n'/ }
 echo "$a" >> "$STUB_LOG"
+if [[ "$a" == *" -L "* && -n "${STUB_TUNNEL_ALIVE:-}" && "$a" != *" -L ${STUB_DEAD_PORT:-none}:"* ]]; then
+  exec "$REAL_SLEEP" 8 >/dev/null 2>&1
+fi
 [ -t 0 ] || cat >/dev/null
 case "$a" in
   *scancel*) ;;
@@ -195,10 +199,25 @@ case "$a" in
   *ssh-keyscan*) echo "n1 ssh-ed25519 AAAA" ;;
   *"ls -t"*) if [[ "$a" != *kev* && -n "${STUB_LIVE:-}" ]]; then echo "$STUB_LIVE"; fi ;;
   *"%T %r"*) echo "RUNNING None" ;;
-  *"squeue -h -j"*) printf '%s\n' "${STUB_JOB_STATE-RUNNING}" ;;
+  *"squeue -h -j"*)
+    if [[ -n "${STUB_STATE_SEQ:-}" ]]; then
+      n=$(cat "$STUB_STATE_SEQ.n" 2>/dev/null || echo 0)
+      echo $((n + 1)) > "$STUB_STATE_SEQ.n"
+      mapfile -t seq < "$STUB_STATE_SEQ"
+      ((n < ${#seq[@]})) || n=$((${#seq[@]} - 1))
+      printf '%s\n' "${seq[$n]}"
+    else
+      printf '%s\n' "${STUB_JOB_STATE-RUNNING}"
+    fi ;;
   *sacct*) echo COMPLETED ;;
   *"cat ~/"*run/*) printf 'NODE=n1\nPORT=5555\nMODEL=m\n' ;;
 esac
+exit 0
+"""
+
+SLEEP_STUB = r"""#!/usr/bin/env bash
+[[ -z "${FAKE_SLEEP_INT:-}" ]] || kill -INT "$PPID"
+[[ -z "${STUB_SLEEP_SECS:-}" ]] || exec "$REAL_SLEEP" "$STUB_SLEEP_SECS"
 exit 0
 """
 
@@ -236,7 +255,7 @@ class Sandbox:
         (self.model / ".env").write_text(ENV_FILE)
         self.bin.mkdir()
         (self.bin / "ssh").write_bytes(SSH_STUB.encode())
-        (self.bin / "sleep").write_bytes(b"#!/usr/bin/env bash\nexit 0\n")
+        (self.bin / "sleep").write_bytes(SLEEP_STUB.encode())
         for p in (*self.bin.iterdir(), *(self.model / "deploy").glob("*.sh")):
             p.chmod(0o755)
         self.log.write_text("")
@@ -252,6 +271,7 @@ class Sandbox:
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "STUB_LOG": self.log.as_posix(),
             "STUB_JOB_ID": STUB_JOB_ID,
+            "REAL_SLEEP": REAL_SLEEP,
             **env,
         }
         return subprocess.run(
@@ -480,3 +500,261 @@ def test_qwen_commands_issue_the_same_calls_and_port_as_base(tmp_path, script, a
     assert cur.calls() == base.calls()
     if script in ("up.sh", "connect.sh"):
         assert [c for c in tunnels(cur.calls()) if f"-L {QWEN_PORT}:127.0.0.1:5555" in c]
+
+
+# AC-4-1 .. AC-4-7: model/deploy/judged-bench.sh
+
+WRAPPER = "judged-bench.sh"
+STEP_SCRIPTS = {
+    "kev-bench": "runner.py",
+    "judge-eval": "judge_eval.py",
+    "evaluate": "evaluate.py",
+    "evaluate-real": "evaluate_real.py",
+}
+STEP_ORDER = list(STEP_SCRIPTS)
+RESUME_STEPS = ["evaluate.py", "evaluate_real.py"]
+
+FAKE_PY = r"""#!/usr/bin/env bash
+script=$(basename "$1"); shift
+{ printf 'PY\t%s' "$script"; printf '\t%s' "$@"; echo; } >> "$STUB_LOG"
+if [[ "${FAKE_INTERRUPT:-}" == "$script" ]]; then kill -INT "$PPID"; exit 130; fi
+if [[ "${FAKE_FAIL:-}" == "$script" ]]; then echo "simulated failure" >&2; exit 3; fi
+exit 0
+"""
+
+SSH_FAILING_SBATCH = """#!/usr/bin/env bash
+if [[ "$*" == *sbatch* ]]; then echo "$*" >> "$STUB_LOG"; echo "sbatch: error" >&2; exit 1; fi
+exec "$(dirname "$0")/ssh-real" "$@"
+"""
+
+
+class Bench:
+    def __init__(self, sb: Sandbox, root: Path):
+        self.sb = sb
+        self.out = root / "bench-out"
+        self.export = root / "export.json"
+        self.labels = root / "labels.json"
+        self.results = root / "results"
+        self.run_dir = root / "run"
+        self.run_dir.mkdir()
+        self.export.write_text("{}")
+        self.labels.write_text("{}")
+        (sb.bin / "fakepy").write_bytes(FAKE_PY.encode())
+        (sb.bin / "fakepy").chmod(0o755)
+
+    def fail_submission(self) -> None:
+        ssh = self.sb.bin / "ssh"
+        (self.sb.bin / "ssh-real").write_bytes(ssh.read_bytes())
+        ssh.write_bytes(SSH_FAILING_SBATCH.encode())
+        for p in (ssh, self.sb.bin / "ssh-real"):
+            p.chmod(0o755)
+
+    def run(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
+        return self.sb.run(
+            WRAPPER,
+            "--run-dir", self.run_dir.as_posix(),
+            "--export", self.export.as_posix(),
+            "--labels", self.labels.as_posix(),
+            "--out", self.out.as_posix(),
+            "--wait-seconds", "30",
+            *extra,
+            PYTHON=(self.sb.bin / "fakepy").as_posix(),
+            **{"STUB_TUNNEL_ALIVE": "1", **env},
+        )
+
+    def py_steps(self) -> list[tuple[str, list[str]]]:
+        found = []
+        for line in self.sb.calls():
+            if line.startswith("PY\t"):
+                _, script, *args = line.split("\t")
+                found.append((script, args))
+        return found
+
+    def scancels(self) -> list[int]:
+        return [i for i, c in enumerate(self.sb.calls()) if "scancel" in c]
+
+
+@pytest.fixture
+def bench(sb: Sandbox, tmp_path: Path) -> Bench:
+    return Bench(sb, tmp_path)
+
+
+def option(args: list[str], flag: str) -> str:
+    return args[args.index(flag) + 1]
+
+
+def inside(path: str, root: Path) -> bool:
+    p, r = path.replace("\\", "/").rstrip("/"), root.as_posix().rstrip("/")
+    return p == r or p.startswith(r + "/")
+
+
+def failed_steps(result: subprocess.CompletedProcess) -> set[str]:
+    lines = [l for l in (result.stdout + result.stderr).splitlines() if "fail" in l.lower()]
+    return {s for s in STEP_ORDER if any(re.search(rf"(?<![\w-]){s}(?![\w-])", l) for l in lines)}
+
+
+def test_wrapper_script_exists_beside_the_other_deploy_scripts():
+    assert (MODEL / "deploy" / WRAPPER).is_file()
+
+
+def test_wrapper_runs_all_steps_in_order_on_one_judged_job_and_cancels_it_once_after_the_last(bench):
+    ok(bench.run())
+    calls = bench.sb.calls()
+    submits = sbatch_calls(calls)
+    assert len(submits) == 1 and "judged-serve" in submits[0]
+    assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
+    cancels = bench.scancels()
+    assert len(cancels) == 1 and STUB_JOB_ID in calls[cancels[0]]
+    last_step = max(i for i, c in enumerate(calls) if c.startswith("PY\t"))
+    assert cancels[0] > last_step
+
+
+def test_kev_bench_step_receives_its_own_new_output_directory(bench):
+    ok(bench.run())
+    _, args = bench.py_steps()[0]
+    target = option(args, "--out")
+    assert inside(target, bench.out) and not Path(target).exists()
+
+
+def test_judge_eval_step_receives_run_dir_export_labels_and_live_flag(bench):
+    ok(bench.run("--results-dir", bench.results.as_posix()))
+    args = dict(bench.py_steps())["judge_eval.py"]
+    positional = [a.replace("\\", "/") for a in args if not a.startswith("--")]
+    assert positional == [bench.run_dir.as_posix(), bench.export.as_posix(), bench.labels.as_posix()]
+    assert "--live" in args
+    assert "--results-dir" not in args
+
+
+@pytest.mark.parametrize("step", STEP_ORDER)
+def test_failing_step_cancels_the_job_exits_non_zero_and_names_the_step(bench, step):
+    result = bench.run(FAKE_FAIL=STEP_SCRIPTS[step])
+    assert result.returncode != 0
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+    assert failed_steps(result) == {step}, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("step", STEP_ORDER)
+def test_interrupt_during_any_step_cancels_the_job_before_exit_and_stops_later_steps(bench, step):
+    result = bench.run(FAKE_INTERRUPT=STEP_SCRIPTS[step])
+    assert result.returncode != 0
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+    ran = [s for s, _ in bench.py_steps()]
+    assert ran == list(STEP_SCRIPTS.values())[: STEP_ORDER.index(step) + 1]
+
+
+@pytest.mark.parametrize("state", ["PENDING", ""])
+def test_job_that_never_becomes_ready_is_cancelled_without_running_any_step(bench, state):
+    result = bench.sb.run(
+        WRAPPER,
+        "--run-dir", bench.run_dir.as_posix(),
+        "--export", bench.export.as_posix(),
+        "--labels", bench.labels.as_posix(),
+        "--out", bench.out.as_posix(),
+        "--wait-seconds", "0",
+        PYTHON=(bench.sb.bin / "fakepy").as_posix(),
+        STUB_JOB_STATE=state,
+    )
+    assert result.returncode != 0
+    assert bench.py_steps() == []
+    assert len(sbatch_calls(bench.sb.calls())) == 1
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+    assert not bench.out.exists()
+
+
+def test_failed_submission_issues_no_cancel_runs_no_step_and_exits_non_zero(bench):
+    bench.fail_submission()
+    result = bench.run()
+    assert result.returncode != 0
+    assert len(sbatch_calls(bench.sb.calls())) == 1, "one submission must be attempted"
+    assert bench.scancels() == []
+    assert bench.py_steps() == []
+
+
+def test_results_directory_is_reused_by_both_evaluate_steps_only(bench):
+    bench.results.mkdir()
+    ok(bench.run("--results-dir", bench.results.as_posix()))
+    steps = bench.py_steps()
+    assert [s for s, _ in steps] == list(STEP_SCRIPTS.values())
+    for script, args in steps:
+        if script in RESUME_STEPS:
+            assert "--resume" in args
+            assert inside(option(args, "--output"), bench.results)
+        else:
+            assert "--resume" not in args
+
+
+def test_without_results_directory_evaluate_steps_run_their_normal_reviewer_path(bench):
+    ok(bench.run())
+    for script, args in bench.py_steps():
+        assert "--resume" not in args, script
+
+
+# AC-4-7
+
+def test_readme_documents_the_wrapper_arguments_steps_and_cancel_behaviour():
+    readme = (MODEL / "README.md").read_text(encoding="utf-8")
+    for needle in (WRAPPER, "--results-dir", "--run-dir", "--export", "--labels", "--out", "--wait-seconds",
+                   "runner.py", "judge_eval.py", "evaluate.py", "evaluate_real.py"):
+        assert needle in readme, needle
+    assert re.search(r"cancel", readme, re.I)
+
+
+# AC-4-4 readiness wait
+
+def test_job_becoming_ready_after_pending_polls_runs_all_steps_and_cancels_once(bench, tmp_path):
+    seq = tmp_path / "states"
+    seq.write_text("PENDING\nPENDING\nRUNNING\n")
+    ok(bench.run(STUB_STATE_SEQ=seq.as_posix()))
+    assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
+    assert len(bench.scancels()) == 1
+
+
+def test_job_still_pending_past_the_wait_is_cancelled_once_without_steps(bench):
+    result = bench.run("--wait-seconds", "1", STUB_JOB_STATE="PENDING")
+    assert result.returncode != 0
+    assert bench.py_steps() == []
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+
+
+# AC-4-3 interrupt before the steps
+
+@pytest.mark.parametrize("state", ["PENDING", "RUNNING"], ids=["during-readiness-wait", "during-tunnel-setup"])
+def test_interrupt_before_the_steps_cancels_the_job_and_runs_no_step(bench, state):
+    result = bench.run(STUB_JOB_STATE=state, FAKE_SLEEP_INT="1")
+    assert result.returncode != 0
+    assert bench.py_steps() == []
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+
+
+# Tunnel liveness
+
+@pytest.mark.parametrize("dead_port", [QWEN_PORT, KEV_PORT])
+def test_tunnel_that_exits_cancels_the_job_and_runs_no_step(bench, dead_port):
+    result = bench.run(STUB_DEAD_PORT=dead_port, STUB_SLEEP_SECS="1")
+    assert result.returncode != 0
+    assert "tunnel" in (result.stdout + result.stderr).lower()
+    assert bench.py_steps() == []
+    assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
+
+
+# Input validation before submission
+
+@pytest.mark.parametrize("missing", ["export", "labels", "run_dir"])
+def test_missing_input_path_fails_before_any_submission(bench, missing):
+    path = getattr(bench, missing)
+    path.rmdir() if path.is_dir() else path.unlink()
+    result = bench.run()
+    assert result.returncode != 0
+    assert str(path.name) in (result.stdout + result.stderr)
+    assert sbatch_calls(bench.sb.calls()) == []
+    assert bench.scancels() == []
+    assert bench.py_steps() == []
+
+
+# AC-4-6 results directory documentation
+
+def test_readme_states_where_the_results_directory_may_live_and_how_it_is_laid_out():
+    readme = (MODEL / "README.md").read_text(encoding="utf-8")
+    section = readme[readme.index(WRAPPER):].split("\n- **Prerequisites", 1)[0]
+    assert re.search(r"gitignore", section, re.I) and re.search(r"outside the repo", section, re.I)
+    assert re.search(r"top level", section, re.I) and re.search(r"subdirector", section, re.I)
