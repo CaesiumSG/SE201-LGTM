@@ -95,7 +95,7 @@ In `lgtm` mode, the model functions as a triage agent trying to determine if Sem
 
 ## 4. Implemented Mitigations
 
-All mitigations are implemented behind configuration flags that default to `False` to maintain reproducibility of existing benchmark numbers.
+All mitigations sit behind configuration flags. They were first shipped off by default so the checkpoint numbers stayed reproducible; since 23 Oct they are **on by default in the `lgtm` and `lgtm-no-sast` modes** (section 7). The `llm-only` baseline always sees the raw diff, as the proposal defines Baseline B, and `sast-only` never prompts a model. `--no-strip-comments` and `--no-detect-prompt-injection` switch them off.
 
 ### 4.1 Mitigation 1: Comment and Docstring Stripping (`--strip-comments`)
 - **Location**: `src/lgtm/diff/sanitizer.py` & `src/lgtm/pipeline.py`.
