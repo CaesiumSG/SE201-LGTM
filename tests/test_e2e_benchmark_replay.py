@@ -46,11 +46,14 @@ class _FakeKev(BaseHTTPRequestHandler):
         for qid, question in request["questions"].items():
             if question["type"] == "noul":
                 answers[qid] = {"noul": confidence if supported else 1 - confidence}
+            elif qid == "supported":
+                answers[qid] = {"choice": "yes" if supported else "no", "confidence": confidence}
+            elif qid == "verdict":
+                answers[qid] = {"choice": "real" if supported else "not_real", "confidence": confidence}
             else:
-                want = "y" if supported else "n"
-                label = next(n for n in question["criteria"] if n.lower().startswith(want))
-                answers[qid] = {"choice": label, "confidence": confidence}
-        body = json.dumps({"answers": answers}).encode()
+                answers[qid] = {"choice": "high" if supported else "low", "confidence": confidence}
+        tokens = 9000 if request["state"].startswith("Claim: claim supported\n") else 500
+        body = json.dumps({"answers": answers, "usage": {"input_tokens": tokens}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -227,7 +230,55 @@ def test_replay_states_a_support_drop_for_each_of_the_three_perturbations(
     for name, row in report.items():
         assert (row["n"], row["skipped"], row["support_rate_drop"]) == (1, 0, 1.0), name
         assert row["confidence_drop"] > 0, name
+        assert row["verdict_shift"] == {"real->not_real": 1}, name
 
 
 def _frozen_findings(run_dir: Path) -> list[dict]:
     return json.loads((run_dir / f"{CASE_ID}.json").read_text(encoding="utf-8"))["findings"]
+
+
+def test_replay_report_gives_kev_answers_over_judged_candidates_and_none_before_judging(
+    tmp_path, fake_kev
+):
+    case = _case_repo(tmp_path)
+    frozen_dir = tmp_path / "frozen"
+    _write_run(frozen_dir, case, [_frozen_finding(claim) for claim in SCRIPT])
+
+    candidates = [AgentFinding.model_validate(f) for f in _frozen_findings(frozen_dir)]
+    config = LGTMConfig(judge_endpoint=fake_kev, judge_timeout=5)
+    inner, tokens = http_judge(config), {}
+
+    def judge(request):
+        reply = inner(request)
+        tokens[request["state"].splitlines()[0]] = reply["input_tokens"]
+        return reply
+
+    judge_candidates(candidates, lambda item: item.content, config, judge)
+    judged_dir = tmp_path / "judged"
+    _write_run(judged_dir, case, [
+        {**c.model_dump(exclude={"raw_response"}), "kev_verdict": c.kev_verdict,
+         "kev_severity": c.kev_severity, "input_tokens": tokens.get(f"Claim: {c.explanation}")}
+        for c in candidates
+    ])
+    export = tmp_path / "export.json"
+    _export(frozen_dir, case, export)
+    _export(judged_dir, case, tmp_path / "judged_export.json")
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps({"units": {}}), encoding="utf-8")
+
+    before = _cli("judge_eval.py", frozen_dir, export, labels)
+    after = _cli("judge_eval.py", judged_dir, export, labels)
+
+    assert before.returncode == 0 and after.returncode == 0, before.stderr + after.stderr
+    before_report, after_report = json.loads(before.stdout), json.loads(after.stdout)
+    kev = after_report["kev"]
+    assert kev["judged"] == 3
+    assert kev["verdicts"] == {"real": 2, "not_real": 1}
+    assert kev["severities"] == {"high": 2, "low": 1}
+    assert kev["not_judged"] == {"judge-failed": 1}
+    assert kev["requests_over_8192_input_tokens"] == 1
+    before_kev = before_report.get("kev", {})
+    assert (before_kev.get("judged", 0), before_kev.get("verdicts", {}), before_kev.get("severities", {}),
+            before_kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, 0)
+    for key in ("citation_support", "confidence_agreement", "supported_agreement", "not_judged_by_reason"):
+        assert key in after_report

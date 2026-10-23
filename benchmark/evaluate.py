@@ -43,6 +43,7 @@ from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.coverage import location_overlaps  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
+from lgtm.validation.judge import http_judge  # noqa: E402
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
@@ -159,6 +160,11 @@ def is_done(path: Path) -> bool:
     data = load_result(path)
     if data is None or result_is_error(data) or data.get("case_label") == "scan_failure":
         return False
+    if is_judged_row(data) and any(
+        f.get("judged") and not f.get("unsupported_reason") and f.get("kev_verdict") is None
+        for f in data.get("findings") or []
+    ):
+        return False
     coverage = data.get("coverage") if has_coverage(data) else {}
     return (
         (coverage.get("sections_failed") or 0) == 0
@@ -223,6 +229,64 @@ def build_case_repo(tmp: Path, patch_path: Path) -> None:
 def is_judged_row(row: dict) -> bool:
     """Judged-mode rows score on ``supported``; baselines and legacy rows on ``verdict``."""
     return "pin" in row and row.get("mode", "lgtm") in JUDGED_MODES
+
+
+def _claim_key(claim: str) -> str:
+    return (claim.splitlines() or [""])[0]
+
+
+def record_input_tokens(pipeline, config) -> dict[str, list]:
+    """Wrap the pipeline's judge; the returned map holds each reply's input_tokens per claim, in call order."""
+    tokens: dict[str, list] = {}
+    judge = getattr(pipeline, "_judge", None) or http_judge(config)
+
+    def call(request: dict):
+        reply = judge(request)
+        claim = _claim_key(request["state"].splitlines()[0].removeprefix("Claim: "))
+        tokens.setdefault(claim, []).append(reply.get("input_tokens"))
+        return reply
+
+    pipeline._judge = call
+    return tokens
+
+
+def with_kev_fields(
+    dumped: list[dict], findings: list, judged: bool, tokens: dict[str, list] | None = None
+) -> list[dict]:
+    """Add the Kev answers, which model_dump leaves out, to the dumped findings of a judged mode."""
+    if not judged:
+        return dumped
+    tokens = {claim: list(values) for claim, values in (tokens or {}).items()}
+    out = []
+    for d, f in zip(dumped, findings):
+        kev_verdict = getattr(f, "kev_verdict", None)
+        row = {**d, "kev_verdict": kev_verdict, "kev_severity": getattr(f, "kev_severity", None)}
+        queue = tokens.get(_claim_key(getattr(f, "explanation", "")))
+        if kev_verdict and queue:
+            row["input_tokens"] = queue.pop(0)
+        out.append(row)
+    return out
+
+
+KEV_INPUT_TOKEN_LIMIT = 8192
+
+
+def kev_metrics(findings: list[dict]) -> dict:
+    """Metrics over the judged candidates that carry a Kev answer; the rest are counted by reason."""
+    answered = [f for f in findings if f.get("judged") and f.get("kev_verdict")]
+    confidences = [
+        f["provenance_confidence"] for f in answered if f.get("provenance_confidence") is not None
+    ]
+    return {
+        "judged": len(answered),
+        "verdicts": dict(Counter(f["kev_verdict"] for f in answered)),
+        "severities": dict(Counter(f.get("kev_severity") or "unknown" for f in answered)),
+        "provenance_confidence_mean": statistics.fmean(confidences) if confidences else None,
+        "not_judged": dict(Counter(
+            f.get("not_judged_reason") or "unknown" for f in findings if f.get("judged") is False)),
+        f"requests_over_{KEV_INPUT_TOKEN_LIMIT}_input_tokens": sum(
+            1 for f in answered if (f.get("input_tokens") or 0) > KEV_INPUT_TOKEN_LIMIT),
+    }
 
 
 def finding_verdict(f: dict, judged: bool) -> str | None:
@@ -441,6 +505,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
         if config.mode != "sast-only":
             index_repo_docs(tmp, config)
         pipeline = ReviewPipeline(tmp, config)
+        tokens = record_input_tokens(pipeline, config) if config.mode in JUDGED_MODES else None
         result = pipeline.run("main", "pr", output_dir=None)
     latency = time.monotonic() - started
 
@@ -450,8 +515,10 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
         {"base": review_fields["base_sha"], "pr": review_fields["pr_sha"]},
     )
     try:
-        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
         judged = config.mode in JUDGED_MODES
+        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+        est_tokens = estimate_tokens(findings, {})
+        findings = with_kev_fields(findings, result.findings, judged, tokens)
         grounded = [f for f in findings if f.get("supported")]
         return score_case({
             "id": case["id"],
@@ -463,7 +530,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
-            "est_tokens": estimate_tokens(findings, {}),
+            "est_tokens": est_tokens,
             "findings": findings,
             "mode": config.mode,
             "pin": pin,
@@ -518,6 +585,9 @@ def not_judged_count(row: dict) -> int:
 
 
 def summarize(results: list[dict]) -> dict:
+    kev = kev_metrics([
+        f for r in results if r.get("mode") in JUDGED_MODES for f in r.get("findings", [])
+    ])
     not_judged_cases = [
         {"id": r["id"], "not_judged": n} for r in results if (n := not_judged_count(r))
     ]
@@ -649,6 +719,7 @@ def summarize(results: list[dict]) -> dict:
         "legacy_rows": case_labels.get("legacy", 0),
         "coverage": coverage_summary(results),
         "not_judged_cases": not_judged_cases,
+        "kev": kev,
     }
 
 

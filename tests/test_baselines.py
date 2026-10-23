@@ -105,7 +105,8 @@ def _f(category, verdict):
 
 def _s(category, supported):
     return {"category": category, "supported": supported, "judged": True,
-            "provenance_confidence": 0.9}
+            "provenance_confidence": 0.9,
+            "kev_verdict": "real" if supported else "not_real", "kev_severity": "medium"}
 
 
 class TestCaseScoring:
@@ -1168,8 +1169,9 @@ def _as_judged(finding):
     if "verdict" not in finding:
         return finding
     judged = {k: v for k, v in finding.items() if k != "verdict"}
-    return {**judged, "supported": finding["verdict"] == "vulnerable",
-            "judged": True, "provenance_confidence": 0.9}
+    supported = finding["verdict"] == "vulnerable"
+    return {**judged, "supported": supported, "judged": True, "provenance_confidence": 0.9,
+            "kev_verdict": "real" if supported else "not_real", "kev_severity": "medium"}
 
 
 def _case_row(cid="c", expected="vulnerable", findings=(), coverage="absent",

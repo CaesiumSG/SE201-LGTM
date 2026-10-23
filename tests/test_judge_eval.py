@@ -57,6 +57,17 @@ def _labels(**units):
     return {"units": {unit_id: {"supports": label} for unit_id, label in units.items()}}
 
 
+def _reply(supported=True, confidence=0.8, verdict=None, severity=None, input_tokens=1000):
+    """Flat mapping http_judge returns, answering all four questions."""
+    return {
+        "supported": "yes" if supported else "no",
+        "verdict": verdict or ("real" if supported else "not_real"),
+        "severity": severity or ("high" if supported else "low"),
+        "provenance_confidence": confidence,
+        "input_tokens": input_tokens,
+    }
+
+
 class TestCitationSupport:
     UNITS = ["u1", "u2", "u3", "u4", "u5"]
 
@@ -335,8 +346,7 @@ class TestSupportPerturbations:
         claim = request["state"].splitlines()[0].removeprefix("Claim: ")
         expected = self.CLAIMS.get(claim)
         supported = expected is not None and f"CODE_OF_{expected}" in request["state"]
-        return {"supported": "yes" if supported else "no",
-                "provenance_confidence": 0.9 if supported else 0.2}
+        return _reply(supported, 0.9 if supported else 0.2)
 
     @staticmethod
     def _unrelated(finding):
@@ -371,9 +381,53 @@ class TestSupportPerturbations:
             assert row["support_rate_drop"] == pytest.approx(2 / 3), name
             assert row["confidence_drop"] == pytest.approx((0.9 + 0.9 + 0.2) / 3 - 0.2), name
 
+    def test_report_states_per_perturbation_how_the_kev_verdict_moved(self, je):
+        report = je.perturbation_report(self._measure(je, self._candidates()))
+
+        for name, row in report.items():
+            assert row["verdict_shift"] == {"real->not_real": 2, "not_real->not_real": 1}, name
+
+    def test_verdict_the_judge_keeps_shows_no_shift_to_not_real(self, je):
+        def credulous(request):
+            return _reply(True, 0.9)
+
+        report = je.perturbation_report(self._measure(je, self._candidates(), judge=credulous))
+
+        for name, row in report.items():
+            assert row["verdict_shift"] == {"real->real": 3}, name
+
+    def test_every_perturbed_request_cites_code_that_resolves_and_only_support_is_changed(self, je):
+        known = {"a.py", "b.py", "c.py"}
+
+        def read_code(item):
+            return f"CODE_OF_{item.file}" if item.file in known and 1 <= item.lines[0] <= item.lines[-1] <= 5 else ""
+
+        states = []
+
+        def judge(request):
+            states.append(request["state"])
+            return _reply(True, 0.9)
+
+        measured = je.measure_perturbations(
+            self._candidates(), read_code, LGTMConfig(), judge,
+            unrelated_code=self._unrelated, safe_twin_code=self._safe_twin,
+        )
+
+        assert {r["perturbation"] for r in measured["records"]} == {
+            "unrelated_code", "mutated_claim", "safe_twin_code"}
+        assert len(states) == 3 + 9
+        for state in states:
+            lines = state.splitlines()
+            unresolved = [
+                line for i, line in enumerate(lines)
+                if line.startswith("Cited item:")
+                and (i + 1 == len(lines) or lines[i + 1].startswith("Cited item:"))
+            ]
+            assert unresolved == [], state
+
     def test_perturbation_the_judge_still_supports_shows_no_drop(self, je):
         def credulous(request):
-            return {"supported": "yes", "provenance_confidence": 0.9}
+            return _reply(True, 0.9)
 
         report = je.perturbation_report(self._measure(je, self._candidates(), judge=credulous))
 
@@ -455,7 +509,7 @@ def _candidate(fid):
     )
 
 
-GOOD = {"supported": "yes", "provenance_confidence": 0.8}
+GOOD = _reply()
 
 
 def _scripted_judge(clock, script):
@@ -1082,3 +1136,352 @@ class TestRunDirectoryToReport:
         assert result["not_judged_by_reason"] == {"judge-failed": 1}
         assert (result["case_accuracy"]["n"], result["case_accuracy"]["excluded"]) == (0, 1)
         assert "severity_agreement" not in result
+
+
+def _kev(verdict="real", severity="high", confidence=0.8, tokens=1000, supported=True, **extra):
+    return {
+        **_finding(supported=supported), "kev_verdict": verdict, "kev_severity": severity,
+        "provenance_confidence": confidence, "input_tokens": tokens, **extra,
+    }
+
+
+def _kev_rows(ev, mode="lgtm"):
+    return [
+        ev.score_case(_row("a", "vulnerable", [_kev(), _kev("not_real", "low", 0.4, 100, False)], mode)),
+        ev.score_case(_row("c", "safe", [_kev("not_real", "low", 0.2, 500, False)], mode)),
+    ]
+
+
+def _without_kev(rows):
+    drop = {"kev_verdict", "kev_severity", "input_tokens"}
+    return [{**r, "findings": [{k: v for k, v in f.items() if k not in drop} for f in r["findings"]]}
+            for r in rows]
+
+
+class TestKevMetricsInSyntheticSummary:
+    def test_summary_reports_verdict_severity_and_provenance_over_judged_candidates(self, ev):
+        kev = ev.summarize(_kev_rows(ev))["kev"]
+
+        assert kev["judged"] == 3
+        assert kev["verdicts"] == {"real": 1, "not_real": 2}
+        assert kev["severities"] == {"high": 1, "low": 2}
+        assert kev["provenance_confidence_mean"] == pytest.approx((0.8 + 0.4 + 0.2) / 3)
+
+    def test_not_judged_candidates_are_left_out_of_kev_metrics_and_counted_under_their_reason(self, ev):
+        rows = _kev_rows(ev) + [
+            ev.score_case(_row("d", "vulnerable", [
+                _kev("real", "critical", 0.9, 700),
+                {**_not_judged(), "not_judged_reason": "request-too-large"},
+                _not_judged(),
+            ]))
+        ]
+
+        kev = ev.summarize(rows)["kev"]
+
+        assert kev["judged"] == 4
+        assert kev["verdicts"] == {"real": 2, "not_real": 2}
+        assert kev["severities"] == {"high": 1, "low": 2, "critical": 1}
+        assert kev["not_judged"] == {"request-too-large": 1, "judge-failed": 1}
+
+    def test_summary_counts_requests_over_8192_input_tokens_and_skips_unreported_usage(self, ev):
+        rows = [ev.score_case(_row("a", "vulnerable", [
+            _kev(tokens=8192), _kev(tokens=8193), _kev(tokens=50_000), _kev(tokens=None),
+        ]))]
+
+        kev = ev.summarize(rows)["kev"]
+
+        assert kev["requests_over_8192_input_tokens"] == 2
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_runs_without_a_judge_carry_no_kev_metrics(self, ev, mode):
+        rows = [
+            ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode)),
+            ev.score_case(_row("c", "safe", [_finding(judged=False, verdict="safe")], mode)),
+        ]
+
+        summary = ev.summarize(rows)
+
+        kev = summary.get("kev", {})
+        assert (kev.get("judged", 0), kev.get("verdicts", {}), kev.get("severities", {}),
+                kev.get("not_judged", {}), kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, {}, 0)
+        assert (summary["overall"]["tp"], summary["overall"]["tn"], summary["overall"]["scored"]) == (1, 1, 2)
+
+    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    def test_existing_scores_and_gating_equal_those_of_the_same_run_without_kev_answers(self, ev, mode):
+        with_kev = _kev_rows(ev, mode)
+        with_kev[0]["findings"][0]["kev_verdict"] = "not_real"  # supported stays true: gating reads supported
+
+        rescored = [ev.score_case(dict(r)) for r in with_kev]
+        plain = [ev.score_case(dict(r)) for r in _without_kev(with_kev)]
+
+        for a, b in zip(rescored, plain):
+            for key in ("predicted", "outcome", "correct", "predicted_grounded", "outcome_grounded",
+                        "case_label", "case_label_grounded"):
+                assert a[key] == b[key], key
+        left = {k: v for k, v in ev.summarize(rescored).items() if k != "kev"}
+        right = {k: v for k, v in ev.summarize(plain).items() if k != "kev"}
+        assert left == right
+
+
+class TestKevFieldsInSavedResults:
+    CASE = {"id": "x", "category": "sqli", "expected_verdict": "vulnerable", "patch_file": "none.patch"}
+
+    @staticmethod
+    def _candidate(fid, **kwargs):
+        return AgentFinding(
+            finding_id=fid, cwe_id="CWE-89", explanation=f"claim {fid}", category="sqli", agent="authz",
+            file="app.py", line=1, pr_graph_ok=True, **kwargs,
+        )
+
+    def _evaluate(self, ev, monkeypatch, mode, findings):
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": findings, "meta": meta})()
+
+        monkeypatch.setattr(ev, "build_case_repo", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "index_repo_docs", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "ReviewPipeline", Pipeline)
+        return ev.evaluate_case(self.CASE, LGTMConfig(mode=mode))
+
+    def test_judged_candidate_records_kev_verdict_and_severity_and_not_judged_candidate_records_none(
+        self, ev, monkeypatch
+    ):
+        findings = [
+            self._candidate("ok", judged=True, supported=True, provenance_confidence=0.7,
+                            kev_verdict="real", kev_severity="critical"),
+            self._candidate("down", judged=False, not_judged_reason="judge-failed"),
+        ]
+
+        saved = {f["finding_id"]: f for f in self._evaluate(ev, monkeypatch, "lgtm", findings)["findings"]}
+
+        assert (saved["ok"]["kev_verdict"], saved["ok"]["kev_severity"]) == ("real", "critical")
+        assert saved["ok"]["provenance_confidence"] == 0.7
+        assert (saved["down"].get("kev_verdict"), saved["down"].get("kev_severity")) == (None, None)
+        assert (saved["down"]["judged"], saved["down"]["not_judged_reason"]) == (False, "judge-failed")
+
+    def test_saved_judged_candidates_record_the_input_tokens_of_their_judge_reply(self, ev, monkeypatch):
+        replies = iter([
+            {"valid": True, "input_tokens": 1000},
+            {"valid": True, "input_tokens": 9000},
+            {"valid": False, "input_tokens": 555},
+            {"valid": True, "input_tokens": 300},
+        ])
+        candidates = [
+            self._candidate("a1").model_copy(update={"explanation": "claim a"}),
+            self._candidate("a2").model_copy(update={"explanation": "claim a"}),
+            self._candidate("b"),
+            self._candidate("c"),
+        ]
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                self._judge = lambda request: next(replies)
+
+            def run(self, base, pr, output_dir=None):
+                judged = []
+                for f in candidates:
+                    reply = self._judge({"state": f"Claim: {f.explanation}\nCited item: app.py"})
+                    update = (
+                        {"judged": True, "supported": True, "kev_verdict": "real", "kev_severity": "high"}
+                        if reply["valid"] else {"judged": False, "not_judged_reason": "judge-failed"}
+                    )
+                    judged.append(f.model_copy(update=update))
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": judged, "meta": meta})()
+
+        monkeypatch.setattr(ev, "build_case_repo", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "index_repo_docs", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "ReviewPipeline", Pipeline)
+
+        saved = {f["finding_id"]: f for f in ev.evaluate_case(self.CASE, LGTMConfig(mode="lgtm"))["findings"]}
+
+        assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_modes_without_a_judge_save_no_kev_fields(self, ev, monkeypatch, mode):
+        saved = self._evaluate(ev, monkeypatch, mode, [self._candidate("a", verdict="vulnerable")])
+
+        for f in saved["findings"]:
+            assert [f.get(k) for k in ("kev_verdict", "kev_severity", "input_tokens")] == [None, None, None]
+
+
+class TestKevResume:
+    @staticmethod
+    def _done(ev, tmp_path, findings, mode="lgtm"):
+        path = tmp_path / "a.json"
+        path.write_text(json.dumps(ev.score_case(_row("a", "vulnerable", findings, mode))), encoding="utf-8")
+        return path
+
+    def test_judged_unit_without_kev_fields_is_judged_again_on_resume(self, ev, tmp_path):
+        assert ev.is_done(self._done(ev, tmp_path, [_finding()])) is False
+
+    def test_judged_unit_with_kev_fields_is_kept_on_resume(self, ev, tmp_path):
+        assert ev.is_done(self._done(ev, tmp_path, [_kev()])) is True
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_modes_without_a_judge_are_kept_on_resume(self, ev, tmp_path, mode):
+        done = self._done(ev, tmp_path, [_finding(judged=False, verdict="vulnerable")], mode)
+
+        assert ev.is_done(done) is True
+
+
+class TestKevInJudgeEvalReport:
+    KEV = {
+        "claim real": {"kev_verdict": "real", "kev_severity": "high", "input_tokens": 9000,
+                       "provenance_confidence": 0.9},
+        "claim not real": {"kev_verdict": "not_real", "kev_severity": "low", "input_tokens": 400,
+                           "provenance_confidence": 0.3, "supported": False},
+    }
+    NOT_JUDGED = {"judged": False, "supported": None, "provenance_confidence": None,
+                  "not_judged_reason": "judge-failed"}
+
+    @staticmethod
+    def _run(ce, root: Path, findings):
+        root.mkdir()
+        case = _case_repo(root)
+        evidence = [EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot="pr")]
+        recorded = [{**_recorded_finding(fid, claim, evidence), **fields} for fid, claim, fields in findings]
+        run_dir = root / "run"
+        _record_run(run_dir, "case_a", case, recorded)
+        record_path = run_dir / "case_a.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record.update(mode="lgtm", category="authz", expected="vulnerable")
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        export_path, labels_path = root / "export.json", root / "labels.json"
+        ce.export_run(run_dir, {"case_a": case["repo"]}, export_path)
+        labels_path.write_text(json.dumps({"units": {}}), encoding="utf-8")
+        units = {u["claim"]: u["unit_id"] for u in json.loads(export_path.read_text(encoding="utf-8"))["units"]}
+        return run_dir, export_path, labels_path, units
+
+    def _findings(self):
+        return [("F0", "claim real", self.KEV["claim real"]),
+                ("F1", "claim not real", self.KEV["claim not real"]),
+                ("F2", "claim down", self.NOT_JUDGED)]
+
+    def test_report_gives_each_judged_candidate_its_verdict_severity_and_provenance(self, ce, je, tmp_path):
+        run_dir, export, labels, units = self._run(ce, tmp_path / "a", self._findings())
+
+        kev = je.report(run_dir, export, labels)["kev"]
+
+        by_unit = {c["unit_id"]: c for c in kev["candidates"]}
+        real, not_real = by_unit[units["claim real"]], by_unit[units["claim not real"]]
+        assert (real["kev_verdict"], real["kev_severity"], real["provenance_confidence"]) == ("real", "high", 0.9)
+        assert (not_real["kev_verdict"], not_real["kev_severity"]) == ("not_real", "low")
+
+    def test_report_summarizes_judged_candidates_only_and_counts_not_judged_by_reason(self, ce, je, tmp_path):
+        run_dir, export, labels, units = self._run(ce, tmp_path / "a", self._findings())
+
+        kev = je.report(run_dir, export, labels)["kev"]
+
+        assert kev["judged"] == 2
+        assert kev["verdicts"] == {"real": 1, "not_real": 1}
+        assert kev["severities"] == {"high": 1, "low": 1}
+        assert kev["provenance_confidence_mean"] == pytest.approx(0.6)
+        assert kev["not_judged"] == {"judge-failed": 1}
+        assert kev["requests_over_8192_input_tokens"] == 1
+        assert not any(c["unit_id"] == units["claim down"] and c.get("kev_verdict") for c in kev["candidates"])
+
+    def test_existing_report_measures_equal_those_of_the_same_run_without_kev_answers(self, ce, je, tmp_path):
+        with_kev = self._run(ce, tmp_path / "a", self._findings())
+        plain_findings = [
+            (fid, claim, {k: v for k, v in fields.items() if not k.startswith("kev_") and k != "input_tokens"})
+            for fid, claim, fields in self._findings()
+        ]
+        plain = self._run(ce, tmp_path / "b", plain_findings)
+
+        left = je.report(*with_kev[:3])
+        right = je.report(*plain[:3])
+
+        assert {k: v for k, v in left.items() if k != "kev"} == {k: v for k, v in right.items() if k != "kev"}
+
+
+def _hand_run(root: Path, findings: list[dict], units: list[dict] | None = None):
+    """Run dir, export and labels files written without a git repo."""
+    run_dir = root / "run"
+    run_dir.mkdir(parents=True)
+    record = {"id": "case_a", "mode": "lgtm", "category": "authz", "expected": "vulnerable", "findings": findings}
+    (run_dir / "case_a.json").write_text(json.dumps(record), encoding="utf-8")
+    if units is None:
+        units = [{"unit_id": f"case_a/{fi}.{ei}", "code": "x", "unreadable": False}
+                 for fi, f in enumerate(findings) for ei, _ in enumerate(f["evidence"])]
+    export, labels = root / "export.json", root / "labels.json"
+    export.write_text(json.dumps({"units": units}), encoding="utf-8")
+    labels.write_text(json.dumps({"units": {}}), encoding="utf-8")
+    return run_dir, export, labels
+
+
+def _evidence(n: int) -> list[EvidenceItem]:
+    return [EvidenceItem(file="app.py", lines=[i + 1, i + 2], content="c", snapshot="pr") for i in range(n)]
+
+
+class TestKevInJudgeEvalReportCountsCandidatesOnce:
+    def test_finding_citing_several_code_items_counts_once_in_kev_metrics_and_agrees_with_not_judged_by_reason(
+        self, je, tmp_path
+    ):
+        judged = {
+            **_recorded_finding("A", "claim a", _evidence(3)),
+            "kev_verdict": "real", "kev_severity": "high", "input_tokens": 9000,
+            "provenance_confidence": 0.9,
+        }
+        down = {
+            **_recorded_finding("B", "claim b", _evidence(2)),
+            "judged": False, "supported": None, "provenance_confidence": None,
+            "not_judged_reason": "judge-failed",
+        }
+        run_dir, export, labels = _hand_run(tmp_path, [judged, down])
+
+        result = je.report(run_dir, export, labels)
+        kev = result["kev"]
+
+        assert kev["judged"] == 1
+        assert kev["verdicts"] == {"real": 1}
+        assert kev["severities"] == {"high": 1}
+        assert kev["requests_over_8192_input_tokens"] == 1
+        assert kev["not_judged"] == {"judge-failed": 1}
+        assert kev["not_judged"] == result["not_judged_by_reason"]
+        assert len(kev["candidates"]) == 1
+
+
+class TestLiveRejudgeSkipsUnreadableUnits:
+    @pytest.mark.parametrize("unit_fields, lines", [
+        ({"code": "", "unreadable": True, "lines": [2, 3]}, [2, 3]),
+        ({"code": "", "unreadable": True, "lines": None}, None),
+    ])
+    def test_unit_whose_code_cannot_be_read_is_not_sent_to_the_judge_and_is_counted_not_judged(
+        self, je, tmp_path, unit_fields, lines
+    ):
+        readable = {**_recorded_finding("R", "claim readable", _evidence(1)), "supported": None}
+        unreadable_evidence = [EvidenceItem(file="gone.py", lines=lines, content="c", snapshot="pr")]
+        unreadable = {**_recorded_finding("U", "claim unreadable", unreadable_evidence), "supported": None}
+        base = {"file": "app.py", "snapshot": "pr"}
+        units = [
+            {**base, "unit_id": "case_a/0.0", "lines": [1, 2], "code": "line1\nline2"},
+            {**base, "unit_id": "case_a/1.0", "file": "gone.py", **unit_fields},
+        ]
+        run_dir, export, labels = _hand_run(tmp_path, [readable, unreadable], units)
+        requests: list[dict] = []
+
+        def judge(request):
+            requests.append(request)
+            return _reply()
+
+        records = je.rejudge(run_dir, export, LGTMConfig(), judge)
+
+        assert len(requests) == 1
+        assert "claim unreadable" not in json.dumps(requests)
+        by_id = {f["finding_id"]: f for f in records[0]["findings"]}
+        assert by_id["R"]["judged"] is True
+        assert by_id["U"]["judged"] is False
+        assert not by_id["U"].get("kev_verdict")
+
+        for n, record in enumerate(records):
+            (tmp_path / "live").mkdir(exist_ok=True)
+            (tmp_path / "live" / f"{n}.json").write_text(json.dumps(record), encoding="utf-8")
+        kev = je.report(tmp_path / "live", export, labels)["kev"]
+
+        assert kev["judged"] == 1
+        assert sum(kev["not_judged"].values()) == 1

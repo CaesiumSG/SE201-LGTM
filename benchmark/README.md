@@ -367,3 +367,24 @@ excludes the output directory, so files written there do not count as changes.
 4. A case is skipped when its result is not an error, its `case_label` is not
    `scan_failure`, and its `coverage` (when present) has no failed section and
    an `investigator_status` other than `failed`; other cases are run again.
+   A judged-mode case whose judged candidates lack `kev_verdict` (a candidate
+   with `unsupported_reason` is exempt) is run again.
+
+### Kev answers
+
+Rows of the `lgtm` and `lgtm-no-sast` modes record `kev_verdict` and `kev_severity` on each
+finding, `null` for a candidate that was not judged. The `kev` summary key counts, over judged
+candidates with a Kev answer, `judged`, `verdicts`, `severities` and `provenance_confidence_mean`;
+`not_judged` counts the other candidates per reason, and `requests_over_8192_input_tokens` counts
+findings whose `input_tokens` exceeds 8192. Gating and the other summary keys read `supported`
+only. `input_tokens` is read from a finding when present and skipped when absent.
+
+`judge_eval.py` reports the same `kev` metrics plus `candidates`, one entry per judged unit with
+`kev_verdict`, `kev_severity` and `provenance_confidence`. `perturbation_report` adds
+`verdict_shift` per perturbation, counts of `<original verdict>-><perturbed verdict>`.
+`--live` judges the run's candidates again at the configured judge endpoint, reading code from
+the export, and reports on those answers:
+
+```bash
+python benchmark/judge_eval.py RUN_DIR export.json labels.json --live
+```

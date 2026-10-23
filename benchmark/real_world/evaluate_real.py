@@ -242,6 +242,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     diffs = [d for d in get_pr_diff(clone, base_b, pr_b, cfg.git_timeout)
              if d.status != "deleted"]
     pipeline = ReviewPipeline(clone, cfg)
+    tokens = evaluate.record_input_tokens(pipeline, cfg) if mode in evaluate.JUDGED_MODES else None
 
     extra: dict = {
         "project": fetch.project_of(case), "mode": mode, "variant": variant,
@@ -273,8 +274,10 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     pin = run_pin(cfg, REPO_ROOT, {"base": graph["base_sha"], "pr": graph["pr_sha"]})
     extra["pin"] = pin
     try:
-        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
         judged = mode in evaluate.JUDGED_MODES
+        findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+        est_tokens = evaluate.estimate_tokens(findings, {})
+        findings = evaluate.with_kev_fields(findings, result.findings, judged, tokens)
         grounded = [f for f in findings if f.get("supported")]
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
         if mode in DOC_MODES:
@@ -288,7 +291,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),
-            "est_tokens": evaluate.estimate_tokens(findings, {}),
+            "est_tokens": est_tokens,
             "findings": findings, **extra, **graph, **evaluate.sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata

@@ -14,6 +14,7 @@ import statistics
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -34,12 +35,13 @@ citation_export = _load("lgtm_bench_citation_export", BENCH / "citation_export.p
 
 from lgtm.agents.base import AgentFinding, EvidenceItem  # noqa: E402
 from lgtm.config import LGTMConfig  # noqa: E402
-from lgtm.validation.judge import JudgeCall, judge_candidates  # noqa: E402
+from lgtm.validation.judge import JudgeCall, http_judge, judge_candidates  # noqa: E402
 
 LABELS = ("yes", "no")
 PERTURBATIONS = ("unrelated_code", "mutated_claim", "safe_twin_code")
 MUTATED_CLAIM = "The code writes the request body to a debug log and returns a fixed 200 response."
 UNRELATED_LINES = 40
+REASON_CODE_UNREADABLE = "code-unreadable"
 
 
 def _mean(values: list[float]) -> float | None:
@@ -187,6 +189,8 @@ def measure_perturbations(
                 "known_unsupported": True,
                 "original_supported": original.supported,
                 "original_confidence": original.provenance_confidence,
+                "original_verdict": original.kev_verdict,
+                "verdict": variant.kev_verdict,
                 "judged": variant.judged,
                 "supported": variant.supported,
                 "confidence": variant.provenance_confidence,
@@ -205,6 +209,7 @@ def perturbation_report(measured: dict) -> dict:
             "skipped": measured["skipped"][name],
             "support_rate_drop": drop("original_supported", "supported"),
             "confidence_drop": drop("original_confidence", "confidence"),
+            "verdict_shift": dict(Counter(f"{r['original_verdict']}->{r['verdict']}" for r in kept)),
         }
     return report
 
@@ -323,9 +328,14 @@ def run_outcomes(run_dir: Path) -> list[dict]:
     return [
         {
             "unit_id": uid,
+            "mode": record.get("mode"),
             "judged": bool(finding.get("judged")),
             "supported": finding.get("supported"),
             "provenance_confidence": finding.get("provenance_confidence"),
+            "kev_verdict": finding.get("kev_verdict"),
+            "kev_severity": finding.get("kev_severity"),
+            "input_tokens": finding.get("input_tokens"),
+            "not_judged_reason": finding.get("not_judged_reason"),
         }
         for record in citation_export.read_records(run_dir)
         for uid, finding, _item in citation_export.code_items(record)
@@ -358,7 +368,71 @@ def report(
             [f for r in records if r.get("mode") in evaluate.JUDGED_MODES for f in r["findings"]]
         ),
         "run": run_measures(judge_records, modes.pop() if len(modes) == 1 else "mixed"),
+        "kev": kev_report(records),
     }
+
+
+def kev_report(records: list[dict]) -> dict:
+    """Kev metrics with one entry per judged-mode finding, whatever number of code items it cites."""
+    findings = [
+        f for r in records if r.get("mode") in evaluate.JUDGED_MODES for f in r["findings"]
+    ]
+    candidates = []
+    for r in records:
+        if r.get("mode") not in evaluate.JUDGED_MODES:
+            continue
+        for fi, f in enumerate(r["findings"]):
+            if f.get("judged") and f.get("kev_verdict"):
+                first = next((ei for ei, e in enumerate(f.get("evidence") or []) if e.get("type", "code") == "code"), 0)
+                candidates.append({
+                    "unit_id": citation_export.unit_id(r["id"], fi, first),
+                    **{k: f.get(k) for k in ("kev_verdict", "kev_severity", "provenance_confidence")},
+                })
+    return {**evaluate.kev_metrics(findings), "candidates": candidates}
+
+
+def rejudge(run_dir: Path, export_path: Path, config: LGTMConfig, judge: JudgeCall | None = None) -> list[dict]:
+    """Records of a run with each judged-mode candidate judged again, reading code from the export."""
+    units = json.loads(Path(export_path).read_text(encoding="utf-8"))["units"]
+    judge = judge or http_judge(config)
+    records = citation_export.read_records(Path(run_dir))
+    for record in records:
+        if record.get("mode") not in evaluate.JUDGED_MODES:
+            continue
+        codes = {
+            (u["file"], tuple(u["lines"] or ()), u["snapshot"]): u["code"]
+            for u in units if u["unit_id"].startswith(f"{record['id']}/")
+        }
+
+        def read_code(item: EvidenceItem) -> str:
+            return codes.get((item.file, tuple(item.lines or ()), item.snapshot), "")
+
+        for i, finding in enumerate(record["findings"]):
+            candidate = AgentFinding.model_validate(finding)
+            if any(e.type == "code" and not read_code(e) for e in candidate.evidence):
+                record["findings"][i] = {
+                    **finding, "supported": None, "judged": False, "provenance_confidence": None,
+                    "not_judged_reason": REASON_CODE_UNREADABLE, "unsupported_reason": "",
+                    "kev_verdict": None, "kev_severity": None, "input_tokens": None,
+                }
+                continue
+            replies: list = []
+
+            def recording(request: dict) -> dict:
+                replies.append(judge(request))
+                return replies[-1]
+
+            judge_candidates([candidate], read_code, config, recording)
+            answered = candidate.model_dump(
+                include={"supported", "judged", "provenance_confidence", "not_judged_reason", "unsupported_reason"}
+            )
+            record["findings"][i] = {
+                **finding, **answered,
+                "kev_verdict": candidate.kev_verdict,
+                "kev_severity": candidate.kev_severity,
+                "input_tokens": replies[-1].get("input_tokens") if replies else None,
+            }
+    return records
 
 
 def main() -> None:
@@ -368,8 +442,16 @@ def main() -> None:
     parser.add_argument("labels", type=Path)
     parser.add_argument("--judge-records", type=Path, default=None,
                         help="JSON list from measure_judge_run; adds judge latency")
+    parser.add_argument("--live", action="store_true",
+                        help="judge the run's candidates again with the live judge endpoint, then report")
     args = parser.parse_args()
-    print(json.dumps(report(args.run_dir, args.export, args.labels, args.judge_records), indent=2))
+    if not args.live:
+        print(json.dumps(report(args.run_dir, args.export, args.labels, args.judge_records), indent=2))
+        return
+    with tempfile.TemporaryDirectory(prefix="lgtm-judge-live-") as tmp:
+        for n, record in enumerate(rejudge(args.run_dir, args.export, LGTMConfig())):
+            (Path(tmp) / f"{n}.json").write_text(json.dumps(record), encoding="utf-8")
+        print(json.dumps(report(Path(tmp), args.export, args.labels, args.judge_records), indent=2))
 
 
 if __name__ == "__main__":

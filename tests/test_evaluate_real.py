@@ -770,3 +770,172 @@ class TestAuthzScanRecords:
                                       "extract_changed" + "_endpoints"])
     def test_endpoint_gating_helpers_are_gone(self, name):
         assert not hasattr(er, name)
+
+
+class TestKevFieldsAndMetrics:
+    """Real-world producer: Kev answers per judged candidate and summary metrics over them."""
+
+    CASE = {"id": "x", "category": "sqli", "expected_verdict": "vulnerable",
+            "repo_url": "https://github.com/o/p", "file": "src/app/routes.py"}
+
+    @staticmethod
+    def _candidate(fid, **kwargs):
+        from lgtm.agents.base import AgentFinding
+
+        return AgentFinding(
+            finding_id=fid, cwe_id="CWE-89", explanation=f"claim {fid}", category="sqli",
+            agent="authz", file="a.py", line=1, pr_graph_ok=True, **kwargs,
+        )
+
+    def _run(self, monkeypatch, tmp_path, mode, findings):
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": findings, "meta": meta})()
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        return er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+
+    @staticmethod
+    def _row(cid, findings, mode="lgtm"):
+        base = TestResultsAndSummary._result(cid, "vulnerable", "TP", category="sqli")
+        return {**base, "mode": mode, "pin": {}, "findings": findings}
+
+    @staticmethod
+    def _kev(verdict="real", severity="high", confidence=0.8, tokens=1000, **extra):
+        return {"finding_id": "f", "category": "sqli", "verdict": "", "judged": True, "supported": True,
+                "kev_verdict": verdict, "kev_severity": severity, "provenance_confidence": confidence,
+                "input_tokens": tokens, **extra}
+
+    @staticmethod
+    def _summary(tmp_path, name, rows, mode="lgtm"):
+        out = tmp_path / name
+        out.mkdir()
+        for row in rows:
+            (out / f"{row['id']}.json").write_text(json.dumps(row), encoding="utf-8")
+        return er.write_dir_summary(out, mode, "own", {r["id"] for r in rows}, "m")["summary"]
+
+    def test_saved_record_gives_judged_candidate_kev_verdict_severity_and_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        findings = [
+            self._candidate("ok", judged=True, supported=True, provenance_confidence=0.7,
+                            kev_verdict="not_real", kev_severity="low"),
+            self._candidate("down", judged=False, not_judged_reason="judge-failed"),
+        ]
+
+        saved = {f["finding_id"]: f for f in self._run(monkeypatch, tmp_path, "lgtm", findings)["findings"]}
+
+        assert (saved["ok"]["kev_verdict"], saved["ok"]["kev_severity"]) == ("not_real", "low")
+        assert saved["ok"]["provenance_confidence"] == 0.7
+        assert (saved["down"].get("kev_verdict"), saved["down"].get("kev_severity")) == (None, None)
+        assert (saved["down"]["judged"], saved["down"]["not_judged_reason"]) == (False, "judge-failed")
+
+    def test_saved_judged_candidates_record_the_input_tokens_of_their_judge_reply(self, tmp_path, monkeypatch):
+        replies = iter([
+            {"valid": True, "input_tokens": 1000},
+            {"valid": True, "input_tokens": 9000},
+            {"valid": False, "input_tokens": 555},
+            {"valid": True, "input_tokens": 300},
+        ])
+        candidates = [
+            self._candidate("a1").model_copy(update={"explanation": "claim a"}),
+            self._candidate("a2").model_copy(update={"explanation": "claim a"}),
+            self._candidate("b"),
+            self._candidate("c"),
+        ]
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                self._judge = lambda request: next(replies)
+
+            def run(self, base, pr, output_dir=None):
+                judged = []
+                for f in candidates:
+                    reply = self._judge({"state": f"Claim: {f.explanation}\nCited item: a.py"})
+                    update = (
+                        {"judged": True, "supported": True, "kev_verdict": "real", "kev_severity": "high"}
+                        if reply["valid"] else {"judged": False, "not_judged_reason": "judge-failed"}
+                    )
+                    judged.append(f.model_copy(update=update))
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": judged, "meta": meta})()
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+
+        record = er.run_unit(self.CASE, "own", "lgtm", tmp_path, tmp_path, er.LGTMConfig())
+
+        saved = {f["finding_id"]: f for f in record["findings"]}
+        assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_modes_without_a_judge_save_no_kev_fields(self, tmp_path, monkeypatch, mode):
+        record = self._run(monkeypatch, tmp_path, mode, [self._candidate("a", verdict="vulnerable")])
+
+        for f in record["findings"]:
+            assert [f.get(k) for k in ("kev_verdict", "kev_severity", "input_tokens")] == [None, None, None]
+
+    def test_summary_reports_kev_metrics_over_judged_candidates_and_counts_not_judged_by_reason(self, tmp_path):
+        down = {"finding_id": "d", "category": "sqli", "verdict": "", "judged": False, "supported": None,
+                "not_judged_reason": "judge-failed"}
+        rows = [
+            self._row("a", [self._kev(), self._kev("not_real", "low", 0.2, 9000)]),
+            self._row("b", [self._kev("real", "critical", 0.5, 8192), down]),
+        ]
+
+        kev = self._summary(tmp_path, "lgtm", rows)["kev"]
+
+        assert kev["judged"] == 3
+        assert kev["verdicts"] == {"real": 2, "not_real": 1}
+        assert kev["severities"] == {"high": 1, "low": 1, "critical": 1}
+        assert kev["provenance_confidence_mean"] == pytest.approx(0.5)
+        assert kev["not_judged"] == {"judge-failed": 1}
+        assert kev["requests_over_8192_input_tokens"] == 1
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_summary_of_modes_without_a_judge_has_no_kev_metrics(self, tmp_path, mode):
+        row = self._row("a", [{"finding_id": "f", "category": "sqli", "verdict": "vulnerable",
+                               "judged": False}], mode)
+
+        summary = self._summary(tmp_path, mode, [row], mode)
+
+        kev = summary.get("kev", {})
+        assert (kev.get("judged", 0), kev.get("verdicts", {}), kev.get("severities", {}),
+                kev.get("not_judged", {}), kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, {}, 0)
+        assert summary["overall"]["tp"] == 1
+
+    def test_existing_summary_fields_equal_those_of_the_same_run_without_kev_answers(self, tmp_path):
+        with_kev = [self._row("a", [self._kev("not_real", "low")]),
+                    self._row("b", [self._kev(tokens=20_000)])]
+        bare = {"kev_verdict", "kev_severity", "input_tokens"}
+        plain = [{**r, "findings": [{k: v for k, v in f.items() if k not in bare} for f in r["findings"]]}
+                 for r in with_kev]
+
+        left = self._summary(tmp_path, "with", with_kev)
+        right = self._summary(tmp_path, "plain", plain)
+
+        assert {k: v for k, v in left.items() if k != "kev"} == {k: v for k, v in right.items() if k != "kev"}
+
+    def test_resume_judges_again_a_judged_unit_without_kev_fields_and_keeps_one_with_them(self, tmp_path):
+        cases = er.fetch.load_cases()[:3]
+        units = list(er.work_units(cases, ["lgtm"], ["own"]))
+        out = er.out_dir_for(tmp_path, "lgtm", "own")
+        out.mkdir(parents=True)
+        old = {"finding_id": "f", "category": "sqli", "verdict": "", "judged": True, "supported": True}
+        rows = {
+            cases[0]["id"]: self._row(cases[0]["id"], [old]),
+            cases[1]["id"]: self._row(cases[1]["id"], [self._kev()]),
+        }
+        for cid, row in rows.items():
+            (out / f"{cid}.json").write_text(json.dumps(row), encoding="utf-8")
+
+        pending = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+
+        assert pending == [cases[0]["id"], cases[2]["id"]]
