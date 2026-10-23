@@ -208,33 +208,49 @@ judge.
 
 ## Kev validation benchmark
 
-`benchmark/kev_support/` runs 45 authored findings through evidence validation and the Kev judge in
-each request format (`current`, `short_claim`, `code_first`, `code_only`). It starts no LGTM agent and
-imports no agent module other than the `lgtm.agents.base` types.
+`benchmark/kev_support/` sends authored cases through evidence validation and the production Kev judge
+request in two arms, `few_shot` and `zero_shot`. It starts no LGTM agent.
 
-- Fixtures (`fixtures.py`): 30 wrong findings, six in each kind (`safe_twin`, `unrelated_code`,
-  `missing_check`, `sqli_no_sql`, `wrong_cwe`), and 15 correct controls, citing two small case
-  repositories that the runner builds as temporary git repositories.
-- A finding whose evidence fails validation is listed under `evidence_failures`, counted as
-  `evidence_invalid`, and never sent to the judge.
-- Each finding and format gets two plain judge calls and one permute call
-  (`/v1/systemone/permute`, one `supported` question, six option orders). The first plain call is the
-  verdict. A differing second plain call makes the request `unstable`; a permute verdict differing from
-  the first makes it `order_sensitive`. A failed first call counts as an `errors` entry and the finding
-  is not evaluated; a failed repeat or permute call counts as one `errors` entry for that finding and
-  format and keeps the first verdict. The runner exits non-zero when any call failed or nothing was
-  evaluated, after writing `report.json`.
+- Cases (`fixtures.py`): 10 cases in each of `safe_twin`, `unrelated_code`, `missing_check`,
+  `sqli_no_sql`, `wrong_cwe`, `live_shaped` and `real_elsewhere`, and 20 `control` cases, citing two
+  small case repositories that the runner builds as temporary git repositories. Each case states
+  `verdict` (`real` or `not_real`), `severity` (a judge severity level, `None` when not real) and
+  `provenance` (`supported` or `unsupported`). Only `control` cases have verdict `real` and provenance
+  `supported`; every other kind, including `real_elsewhere`, has verdict `not_real` (judged against the
+  cited code), severity `None` and provenance `unsupported`.
+- A case whose evidence fails validation is listed under `evidence_failures`, gets status
+  `evidence_invalid` in both arms, and is never sent to the judge.
+- Each case and arm gets one judge call (`/v1/systemone`) answering the `supported`, `verdict` and
+  `severity` questions, then one permute call per question (`/v1/systemone/permute`, six option orders).
+  A request over the size limit has status `too_large`; a failed judge call has status `error`. A failed
+  permute call is recorded for that question and keeps the case `answered`.
 
 ```bash
 # From the repository root (install LGTM first: pip install -e .)
-python benchmark/kev_support/runner.py --out runs/kev-support [--work-dir DIR]
+python benchmark/kev_support/runner.py --out DIR [--work-dir DIR]
 ```
 
 The judge endpoint, model and timeout come from `LGTMConfig`. `--out` receives `report.json`; nothing
-else is written outside `--out` and the work directory. Per request format the report holds, per kind,
-`rejected`, `errors`, `evidence_invalid` and `evaluated` (the denominator of the rejected share); for
-controls `kept`, `errors`, `evidence_invalid` and `evaluated`; and the `unstable` and `order_sensitive`
-counts with their case IDs.
+else is written outside `--out` and the work directory.
+
+- `report["cases"]` holds, per case and arm, `status` (`answered`, `error`, `too_large` or
+  `evidence_invalid`), `reason`, the `supported`, `verdict` and `severity` answers, their option
+  `scores`, `noul`, `input_tokens` and a `permute` entry per question with `runs`, `argmax_stable`,
+  `spread`, `order_sensitive` and `plain_unstable`.
+- `report["cells"][arm][kind]` holds `cases`, `evaluated`, `errors`, `too_large`, `evidence_invalid`,
+  `permute_errors`, and `verdict` and `provenance` rates, each with `count`, `n` and a 95% Wilson
+  `wilson` interval; the rows sum to the 90 cases. `report["subrows"][arm]["wrong_cwe_other_flaw"]` has the
+  same shape for the `wrong_cwe` cases tagged `other_flaw`, whose cited code contains a different real
+  flaw; those cases also count in `cells[arm]["wrong_cwe"]`. A verdict is correct when it equals the ground-truth verdict; provenance is
+  correct when `noul >= 0.5` matches the ground-truth `supported`.
+- `report["severity"][arm]` holds `n`, `mae` in levels, and `exact` and `within_one` rates over cases
+  whose ground-truth verdict is `real`.
+- `report["input_tokens"][arm]["requests_over_8192_input_tokens"]` counts answered requests that reported more than 8192
+  input tokens.
+- A permute run is `order_sensitive` when its choices differ or `argmax_stable` is false;
+  `plain_unstable` is true when the plain answer differs from unanimous permute choices.
+- The runner exits 0 only when no case is in `error`, no permute call failed, and at least one case was
+  evaluated; otherwise it exits 1, after writing `report.json`.
 
 ## Regenerating cases
 
