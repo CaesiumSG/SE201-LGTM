@@ -81,6 +81,8 @@ class AgentFinding(BaseModel):
     severity: str = ""
     supported: bool | None = None
     provenance_confidence: float | None = None
+    kev_verdict: str | None = Field(default=None, exclude=True)
+    kev_severity: str | None = Field(default=None, exclude=True)
     judged: bool = False
     not_judged_reason: str = ""
     unsupported_reason: str = ""

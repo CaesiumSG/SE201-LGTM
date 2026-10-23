@@ -16,6 +16,7 @@ from typing import Any
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.config import LGTMConfig
 from lgtm.validation.cwe_criteria import CWE_CRITERIA
+from lgtm.validation.judge_examples import EXAMPLES
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,20 @@ SUPPORT_ANSWERS = {
 }
 QUESTION_SUPPORT = "supported"
 QUESTION_CONFIDENCE = "provenance_confidence"
+QUESTION_VERDICT = "verdict"
+QUESTION_SEVERITY = "severity"
+
+VERDICT_ANSWERS = {
+    "real": "The cited code contains a real vulnerability of the claimed kind.",
+    "not_real": "The cited code does not contain a real vulnerability of the claimed kind.",
+}
+SEVERITY_LEVELS = ("low", "medium", "high", "critical")
+SEVERITY_DESCRIPTIONS = {
+    "low": "Limited impact, hard to exploit or exposing little.",
+    "medium": "Moderate impact or needs specific conditions to exploit.",
+    "high": "Serious impact, exploitable with little effort.",
+    "critical": "Severe impact, exploitable by anyone with no prerequisites.",
+}
 
 JudgeCall = Callable[[dict], Mapping[str, Any]]
 
@@ -70,18 +85,32 @@ def _neutral_questions(subject: str) -> dict[str, dict]:
     }
 
 
-def _questions() -> dict[str, dict]:
-    return {
+def _questions(few_shot: bool) -> dict[str, dict]:
+    questions = {
         QUESTION_SUPPORT: {
             "type": "choice",
             "instructions": "Does the cited code support the claimed security flaw?",
             "criteria": SUPPORT_ANSWERS,
+        },
+        QUESTION_VERDICT: {
+            "type": "choice",
+            "instructions": "Is the claimed security flaw a real vulnerability in the cited code?",
+            "criteria": VERDICT_ANSWERS,
+        },
+        QUESTION_SEVERITY: {
+            "type": "choice",
+            "instructions": "If the claimed flaw is real, how severe is it?",
+            "criteria": {level: SEVERITY_DESCRIPTIONS[level] for level in SEVERITY_LEVELS},
         },
         QUESTION_CONFIDENCE: {
             "type": "noul",
             "instructions": "Does the cited code actually support the claim and its citations?",
         },
     }
+    if few_shot:
+        for qid, question in questions.items():
+            question["instructions"] += "\n\n" + EXAMPLES[qid]
+    return questions
 
 
 def _location(item: EvidenceItem) -> str:
@@ -100,9 +129,12 @@ def build_judge_request(
     model: str,
     max_chars: int,
     request_format: str = "current",
+    few_shot: bool = True,
 ) -> dict:
-    """Judge request for one candidate; raises RequestTooLarge when the state exceeds ``max_chars``
-    and ValueError for an unknown ``request_format``."""
+    """Judge request for one candidate; raises RequestTooLarge when the state plus every question's
+    instructions exceed ``max_chars`` and ValueError for an unknown ``request_format``.
+
+    ``few_shot`` adds worked examples to the instructions of the current format's questions."""
     _check_format(request_format)
     head = [
         f"Claim: {finding.explanation}",
@@ -131,7 +163,7 @@ def build_judge_request(
 
     if request_format == "current":
         parts = head + cited
-        questions = _questions()
+        questions = _questions(few_shot)
     elif request_format == "code_only":
         parts = cited
         questions = _neutral_questions("a security flaw")
@@ -146,8 +178,9 @@ def build_judge_request(
         parts = cited + weakness + [claim]
         questions = _neutral_questions("the weakness named under Weakness")
     state = "\n".join(parts)
-    if len(state) > max_chars:
-        raise RequestTooLarge(f"judge request is {len(state)} characters, bound {max_chars}")
+    size = len(state) + sum(len(q.get("instructions", "")) for q in questions.values())
+    if size > max_chars:
+        raise RequestTooLarge(f"judge request is {size} characters, bound {max_chars}")
     return {"model": model, "state": state, "questions": questions}
 
 
@@ -159,19 +192,34 @@ def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None
         raise ValueError(f"unknown support answer: {supported!r}")
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError(f"provenance confidence outside 0 to 1: {confidence!r}")
+    verdict = answer.get(QUESTION_VERDICT)
+    severity = answer.get(QUESTION_SEVERITY)
+    if not isinstance(verdict, str) or not verdict:
+        raise ValueError(f"missing verdict answer: {verdict!r}")
+    if not isinstance(severity, str) or not severity:
+        raise ValueError(f"missing severity answer: {severity!r}")
 
     finding.supported = supported == "yes"
     finding.provenance_confidence = confidence
+    finding.kev_verdict = verdict
+    finding.kev_severity = severity
     finding.judged = True
 
 
-def _parse_kev_reply(reply: Any) -> dict[str, Any]:
-    """The one place that reads Kev answer fields."""
-    answers = reply["answers"]
-    return {
-        QUESTION_SUPPORT: answers[QUESTION_SUPPORT]["choice"],
-        QUESTION_CONFIDENCE: answers[QUESTION_CONFIDENCE]["noul"],
-    }
+def parse_kev_reply(reply: Any) -> dict[str, Any]:
+    """The one place that reads Kev answer fields; raises ValueError when an answer is missing."""
+    try:
+        answers = reply["answers"]
+        parsed = {
+            QUESTION_SUPPORT: answers[QUESTION_SUPPORT]["choice"],
+            QUESTION_VERDICT: answers[QUESTION_VERDICT]["choice"],
+            QUESTION_SEVERITY: answers[QUESTION_SEVERITY]["choice"],
+            QUESTION_CONFIDENCE: answers[QUESTION_CONFIDENCE]["noul"],
+        }
+        parsed["input_tokens"] = (reply.get("usage") or {}).get("input_tokens")
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"judge reply lacks an answer: {exc!r}") from exc
+    return parsed
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -198,7 +246,7 @@ def http_judge(config: LGTMConfig) -> JudgeCall:
             body = response.read(JUDGE_REPLY_MAX_BYTES + 1)
         if len(body) > JUDGE_REPLY_MAX_BYTES:
             raise ValueError("judge reply exceeds the size limit")
-        return _parse_kev_reply(json.loads(body))
+        return parse_kev_reply(json.loads(body))
 
     return call
 
@@ -210,6 +258,7 @@ def judge_candidates(
     judge: JudgeCall | None = None,
     *,
     request_format: str = "current",
+    few_shot: bool = True,
 ) -> list[AgentFinding]:
     """Judge each candidate in place; a failed call leaves only that candidate not judged.
 
@@ -219,6 +268,8 @@ def judge_candidates(
     for finding in findings:
         finding.supported = None
         finding.provenance_confidence = None
+        finding.kev_verdict = None
+        finding.kev_severity = None
         finding.judged = False
         finding.not_judged_reason = ""
         finding.unsupported_reason = ""
@@ -234,6 +285,7 @@ def judge_candidates(
                 model=config.judge_model,
                 max_chars=JUDGE_STATE_MAX_CHARS,
                 request_format=request_format,
+                few_shot=few_shot,
             )
             apply_judge_answer(finding, judge(request))
         except RequestTooLarge as exc:

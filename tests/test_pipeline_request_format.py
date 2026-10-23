@@ -97,3 +97,17 @@ def test_production_pipeline_passes_an_explicit_eligible_request_format_to_the_j
     assert "request_format" in kwargs
     assert kwargs["request_format"] in PRODUCTION_ELIGIBLE
     assert kwargs["request_format"] in REQUEST_FORMATS
+
+
+@pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+def test_production_pipeline_judges_with_the_few_shot_request(monkeypatch, mode):
+    calls = []
+
+    def judge_spy(findings, read_code, config, judge=None, **kwargs):
+        calls.append(kwargs)
+        return findings
+
+    _run_review(monkeypatch, mode, judge_spy)
+
+    assert len(calls) == 1
+    assert calls[0].get("few_shot", True) is True

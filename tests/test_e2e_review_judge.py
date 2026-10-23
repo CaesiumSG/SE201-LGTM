@@ -21,11 +21,11 @@ from tests.test_graph_pipeline import (  # noqa: F401 - fixtures and scripted-ag
     KEV_ANSWERS,
     KEV_MODEL,
     REQUEST_BOUND,
+    Reply,
     ScriptedLLM,
     _closed_loopback_port,
     _final,
     _findings,
-    _kev_reply,
     _base_evidence,
     _msg,
     _no_sections,
@@ -37,6 +37,7 @@ from tests.test_graph_pipeline import (  # noqa: F401 - fixtures and scripted-ag
     repo,
     start_kev,
 )
+from tests.test_judge import QUESTION_IDS, _kev_payload
 
 UNPARSABLE = "The change looks fine to me."
 CLAIM_DROPPED = "DROPPED_CLAIM_SENTINEL"
@@ -84,6 +85,20 @@ def _review_cli(repo, tmp_path, monkeypatch, llm, endpoint, **config):
     return done, report, markdown
 
 
+def _kev_reply(request: dict, supported: bool, confidence: float, variant: int = 0) -> Reply:
+    return Reply(200, json.dumps(_kev_payload(
+        request, supported=supported, confidence=confidence, variant=variant
+    )).encode())
+
+
+def _answer_by_claim(variant: int = 0):
+    def respond(request: dict) -> Reply:
+        claim = next(c for c in KEV_ANSWERS if c in request["state"])
+        return _kev_reply(request, *KEV_ANSWERS[claim], variant=variant)
+
+    return respond
+
+
 def _by_claim(report: dict, claims) -> dict:
     return {c: f for f in report["findings"] for c in claims if c in f["explanation"]}
 
@@ -92,7 +107,7 @@ def _by_claim(report: dict, claims) -> dict:
 def test_review_reports_candidates_from_both_agents_with_the_support_answer_and_their_own_severity(
     repo, tmp_path, monkeypatch, start_kev
 ):
-    kev = start_kev()
+    kev = start_kev(_answer_by_claim())
 
     done, report, markdown = _review_cli(repo, tmp_path, monkeypatch, _two_agent_llm(), kev.url)
 
@@ -187,7 +202,7 @@ def test_review_drops_unresolvable_references_without_an_agent_error_or_exit_cod
 def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benchmark_counts_it_per_reason(
     repo, tmp_path, monkeypatch, start_kev, judge_eval
 ):
-    kev = start_kev()
+    kev = start_kev(_answer_by_claim())
     oversize_claim = CLAIM_AUTHZ_A + CLAIM_OVERSIZE_PAD * (REQUEST_BOUND // len(CLAIM_OVERSIZE_PAD) + 100)
 
     done, report, markdown = _review_cli(
@@ -208,3 +223,35 @@ def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benc
     assert not any(CLAIM_OVERSIZE_PAD in json.dumps(r.body) for r in kev.requests)
 
     assert judge_eval.not_judged_by_reason(report["findings"]) == {"request-too-large": 1}
+
+
+@pytest.mark.usefixtures("one_semgrep_hit")
+def test_review_report_and_exit_code_do_not_change_with_kev_verdict_and_severity(
+    repo, tmp_path, monkeypatch, start_kev
+):
+    outcomes = []
+    for variant in (0, 1):
+        kev = start_kev(_answer_by_claim(variant))
+        workdir = tmp_path / f"variant{variant}"
+        workdir.mkdir()
+
+        done, report, markdown = _review_cli(repo, workdir, monkeypatch, _two_agent_llm(), kev.url)
+
+        assert len(kev.requests) == 3
+        assert all(set(r.body["questions"]) == QUESTION_IDS for r in kev.requests)
+        found = _by_claim(report, KEV_ANSWERS)
+        assert set(found) == set(KEV_ANSWERS)
+        for f in found.values():
+            assert not {"kev_verdict", "kev_severity", "input_tokens"} & set(f)
+        outcomes.append((
+            done.exit_code,
+            {c: (f["supported"], f["judged"], f["provenance_confidence"], f.get("severity")) for c, f in found.items()},
+            {c: set(f) for c, f in found.items()},
+            sorted(re.findall(r"\*\*Provenance confidence:\*\* (\d+)%", markdown)),
+        ))
+
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0][0] == 1
+    assert {c: v[:2] for c, v in outcomes[0][1].items()} == {
+        c: (supported, True) for c, (supported, _) in KEV_ANSWERS.items()
+    }

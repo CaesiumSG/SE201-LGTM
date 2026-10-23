@@ -9,9 +9,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
+import lgtm.validation.judge as judge_module
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.config import LGTMConfig
-from lgtm.validation.judge import apply_judge_answer, build_judge_request, judge_candidates
+from lgtm.validation.judge import (
+    RequestTooLarge,
+    apply_judge_answer,
+    build_judge_request,
+    judge_candidates,
+)
 
 MAX_CHARS = 200_000
 BOUND_CHARS = 28_000
@@ -52,8 +58,34 @@ def _labels(criteria) -> set[str]:
     return set(criteria)
 
 
-def _answer(supported="yes", confidence=0.5) -> dict:
-    return {"supported": supported, "provenance_confidence": confidence}
+QUESTION_IDS = {"supported", "verdict", "severity", "provenance_confidence"}
+INPUT_TOKENS = 4321
+
+
+def _severity_levels() -> tuple:
+    return tuple(getattr(judge_module, "SEVERITY_LEVELS", ("medium", "high")))
+
+
+def _choice_labels(qid: str) -> list:
+    """Option labels the production request offers for a question; empty when it has none."""
+    try:
+        criteria = build_judge_request(
+            _candidate(), lambda item: "", model="m", max_chars=MAX_CHARS
+        )["questions"][qid].get("criteria") or []
+    except Exception:  # noqa: BLE001 - request without the question; callers fall back to defaults
+        return []
+    return list(criteria)
+
+
+def _answer(supported="yes", confidence=0.5, verdict=None, severity=None) -> dict:
+    labels = _choice_labels("verdict")
+    return {
+        "supported": supported,
+        "verdict": verdict if verdict is not None else (labels[0] if labels else "yes"),
+        "severity": severity if severity is not None else _severity_levels()[0],
+        "provenance_confidence": confidence,
+        "input_tokens": INPUT_TOKENS,
+    }
 
 
 class TestRemovedFields:
@@ -64,17 +96,14 @@ class TestRemovedFields:
 
 
 class TestJudgeRequestContent:
-    def test_request_names_the_model_and_asks_one_support_question_and_one_confidence_question(self):
+    def test_request_names_the_model_and_keeps_the_yes_no_support_question_and_the_noul_confidence_question(self):
         request = _build(_candidate())
 
         assert request["model"] == "kev-test"
-        questions = list(request["questions"].values())
-        support = [
-            q for q in questions
-            if q["type"] == "choice" and sorted(label.lower()[0] for label in q["criteria"]) == ["n", "y"]
-        ]
-        confidence = [q for q in questions if q["type"] == "noul"]
-        assert (len(questions), len(support), len(confidence)) == (2, 1, 1)
+        questions = request["questions"]
+        assert questions["supported"]["type"] == "choice"
+        assert sorted(label.lower()[0] for label in questions["supported"]["criteria"]) == ["n", "y"]
+        assert questions["provenance_confidence"]["type"] == "noul"
 
     def test_state_carries_claim_cwe_and_rationale(self):
         state = _state(_candidate(cwe_id="CWE-639"))
@@ -183,7 +212,7 @@ class TestApplyJudgeAnswer:
     def test_candidate_severity_is_unchanged_by_the_answer(self, answer, severity):
         finding = _candidate(severity=severity)
 
-        apply_judge_answer(finding, {**_answer(answer, 0.9), "severity": "critical"})
+        apply_judge_answer(finding, {**_answer(answer, 0.9), "severity": _severity_levels()[-1]})
 
         assert finding.severity == severity
 
@@ -230,15 +259,41 @@ class TestApplyJudgeAnswer:
         assert finding.severity == "medium"
 
 
-def _reply_for(request: dict, choice="yes", noul=0.9) -> bytes:
+def _kev_answers(request: dict, supported=True, confidence=0.9, variant=0) -> dict:
+    """Kev answers for every question of ``request``, shaped by each question's type.
+
+    ``variant`` 0 picks the first option or lowest level, 1 the last option or highest level."""
     answers = {}
     for qid, question in request["questions"].items():
-        if question["type"] == "noul":
-            answers[qid] = {"noul": noul}
+        kind = question["type"]
+        if kind == "noul":
+            value = confidence if qid == "provenance_confidence" else 0.2 + 0.6 * variant
+            answers[qid] = {"type": "noul", "noul": value}
+        elif kind == "score":
+            answers[qid] = {"type": "score", "score": 0.5 + variant, "legend": list(question["criteria"]),
+                            "probabilities": {}, "confidence": 0.5}
         else:
-            label = next((n for n in question["criteria"] if n.lower().startswith(choice[0])), choice)
-            answers[qid] = {"choice": label, "confidence": noul}
-    return json.dumps({"answers": answers}).encode()
+            labels = list(question["criteria"])
+            if qid == "supported":
+                label = next((n for n in labels if n.lower().startswith("y" if supported else "n")), labels[0])
+            else:
+                label = labels[-1 if variant else 0]
+            answers[qid] = {"type": "choice", "choice": label, "confidence": 0.8,
+                            "probabilities": {n: (0.9 if n == label else 0.1) for n in labels}}
+    return answers
+
+
+def _kev_payload(request: dict, *, input_tokens=INPUT_TOKENS, **kwargs) -> dict:
+    return {
+        "model": request["model"],
+        "answers": _kev_answers(request, **kwargs),
+        "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        "latency_ms": 1,
+    }
+
+
+def _reply_for(request: dict, choice="yes", noul=0.9) -> bytes:
+    return json.dumps(_kev_payload(request, supported=choice.startswith("y"), confidence=noul)).encode()
 
 
 KEV_REPLY = _reply_for
@@ -541,7 +596,7 @@ class TestRequestBound:
     def test_request_within_the_bound_is_sent_whole_without_truncation(self):
         candidate = _candidate()
         judge = _recording_judge()
-        code = "HEAD_SENTINEL " + "y" * 20_000 + " TAIL_SENTINEL"
+        code = "HEAD_SENTINEL " + "y" * 12_000 + " TAIL_SENTINEL"
 
         _judge([candidate], read_code=lambda item: code, judge=judge)
 
@@ -663,7 +718,7 @@ class TestSeverityComesFromTheCandidate:
     def test_authz_candidate_without_severity_gets_none_from_the_judge(self):
         candidate = _candidate(severity="")
 
-        _judge([candidate], judge=lambda request: {**_answer("yes", 0.9), "severity": "critical"})
+        _judge([candidate], judge=lambda request: {**_answer("yes", 0.9), "severity": _severity_levels()[-1]})
 
         assert not candidate.severity
 
@@ -692,34 +747,26 @@ def _questions_text(request) -> str:
 
 
 class TestRequestFormatSelection:
-    def test_omitting_the_format_builds_the_base_commit_request(self):
+    def test_omitting_the_format_builds_the_base_commit_state_and_support_question(self):
         request = _build(_candidate())
 
-        assert request == {
-            "model": "kev-test",
-            "state": (
-                "Claim: RATIONALE_SENTINEL query is built from user input\n"
-                "CWE: CWE-89\n"
-                "Category: sqli\n"
-                "Location: app.py:10\n"
-                "Cited item: app.py:10-12 at pr snapshot\n"
-                "CODE_AT_LOCATION"
-            ),
-            "questions": {
-                "supported": {
-                    "type": "choice",
-                    "instructions": "Does the cited code support the claimed security flaw?",
-                    "criteria": {
-                        "yes": "The cited code supports the claimed security flaw.",
-                        "no": "The cited code does not support the claimed security flaw.",
-                    },
-                },
-                "provenance_confidence": {
-                    "type": "noul",
-                    "instructions": "Does the cited code actually support the claim and its citations?",
-                },
-            },
+        assert request["model"] == "kev-test"
+        assert request["state"] == (
+            "Claim: RATIONALE_SENTINEL query is built from user input\n"
+            "CWE: CWE-89\n"
+            "Category: sqli\n"
+            "Location: app.py:10\n"
+            "Cited item: app.py:10-12 at pr snapshot\n"
+            "CODE_AT_LOCATION"
+        )
+        supported = request["questions"]["supported"]
+        assert supported["type"] == "choice"
+        assert supported["criteria"] == {
+            "yes": "The cited code supports the claimed security flaw.",
+            "no": "The cited code does not support the claimed security flaw.",
         }
+        assert "Does the cited code support the claimed security flaw?" in supported["instructions"]
+        assert request["questions"]["provenance_confidence"]["type"] == "noul"
 
     def test_current_format_by_name_equals_the_default_request(self):
         assert _request(_candidate(), "current") == _build(_candidate())
@@ -732,10 +779,9 @@ class TestRequestFormatSelection:
 
     @pytest.mark.parametrize("request_format", NON_CURRENT)
     def test_every_format_keeps_the_question_ids_and_answer_labels_read_from_replies(self, request_format):
-        current = _request(_candidate(), "current")["questions"]
         other = _request(_candidate(), request_format)["questions"]
 
-        assert set(other) == set(current)
+        assert {"supported", "provenance_confidence"} <= set(other)
         assert other["supported"]["type"] == "choice"
         assert set(other["supported"]["criteria"]) == {"yes", "no"}
         assert other["provenance_confidence"]["type"] == "noul"
@@ -892,3 +938,352 @@ class TestJudgingInEachFormat:
         assert all(name in str(excinfo.value) for name in FORMATS)
         assert judge.requests == []
         assert candidate.judged is False
+
+
+def _instructions(request) -> dict:
+    return {qid: q.get("instructions", "") for qid, q in request["questions"].items()}
+
+
+def _size(request) -> int:
+    return len(request["state"]) + sum(len(text) for text in _instructions(request).values())
+
+
+def _arms(finding=None, read_code=lambda item: "CODE_AT_LOCATION"):
+    finding = finding or _candidate()
+    return tuple(
+        build_judge_request(finding, read_code, model="kev-test", max_chars=MAX_CHARS, few_shot=few_shot)
+        for few_shot in (True, False)
+    )
+
+
+def _examples_text(few: dict, zero: dict, qid: str) -> str:
+    zero_text = zero["questions"][qid]["instructions"].strip()
+    return few["questions"][qid]["instructions"].replace(zero_text, "", 1)
+
+
+def _live_shaped(citations: int) -> tuple[AgentFinding, dict]:
+    code = {
+        f"f{i}.py": "\n".join(f"    value_{i}_{n} = lookup(request.args['k{n}'])  # line" for n in range(30))
+        for i in range(citations)
+    }
+    finding = _candidate(
+        explanation="The handler concatenates request input into a query:\n" + code["f0.py"][:600],
+        evidence=[_item(file=name, lines=(1, 30), grounded=True) for name in code],
+    )
+    return finding, code
+
+
+class TestProductionRequestAsksAllQuestions:
+    def test_request_asks_supported_verdict_severity_and_provenance_confidence(self):
+        request = _build(_candidate())
+
+        assert set(request["questions"]) == QUESTION_IDS
+
+    def test_request_is_json_and_every_question_has_instructions_and_a_kev_accepted_shape(self):
+        request = json.loads(json.dumps(_build(_candidate())))
+
+        assert isinstance(request["state"], str) and request["state"]
+        for qid, question in request["questions"].items():
+            assert question["type"] in {"choice", "noul", "score"}, qid
+            assert question["instructions"].strip(), qid
+            if question["type"] == "choice":
+                assert 2 <= len(question["criteria"]) <= 255, qid
+                assert all(isinstance(d, str) and d for d in question["criteria"].values()), qid
+            if question["type"] == "score":
+                assert 1 <= len(question["criteria"]) <= 255, qid
+
+    def test_severity_question_offers_the_severity_levels_lowest_to_highest(self):
+        levels = judge_module.SEVERITY_LEVELS
+        severity = _build(_candidate())["questions"]["severity"]
+
+        assert len(levels) >= 2 and all(isinstance(level, str) for level in levels)
+        assert list(severity["criteria"]) == list(levels)
+
+    def test_verdict_question_offers_at_least_two_answers_or_is_a_noul(self):
+        verdict = _build(_candidate())["questions"]["verdict"]
+
+        assert verdict["type"] == "noul" or len(verdict["criteria"]) >= 2
+
+    def test_state_is_the_same_whatever_the_questions(self):
+        few, zero = _arms()
+
+        assert few["state"] == zero["state"] == _build(_candidate())["state"]
+
+
+class TestFewShotExamples:
+    @pytest.mark.parametrize("qid", sorted(QUESTION_IDS))
+    def test_each_question_carries_examples_beyond_its_zero_shot_instructions(self, qid):
+        few, zero = _arms()
+
+        assert zero["questions"][qid]["instructions"].strip() in few["questions"][qid]["instructions"]
+        assert _examples_text(few, zero, qid).strip()
+
+    @pytest.mark.parametrize("qid", sorted(QUESTION_IDS))
+    def test_each_question_holds_only_its_own_examples(self, qid):
+        few, zero = _arms()
+        own = {ln.strip() for ln in _examples_text(few, zero, qid).splitlines() if ln.strip()}
+        others = {
+            ln.strip()
+            for other in QUESTION_IDS - {qid}
+            for ln in _examples_text(few, zero, other).splitlines()
+            if ln.strip()
+        }
+
+        assert own and not (own & others)
+
+    @pytest.mark.parametrize("qid", ["supported", "verdict"])
+    def test_choice_question_examples_show_a_correct_and_an_incorrect_answer(self, qid):
+        few, zero = _arms()
+        question = few["questions"][qid]
+        if question["type"] != "choice":
+            pytest.skip("question is not a choice question")
+        shown = _examples_text(few, zero, qid).lower()
+
+        assert sum(label.lower() in shown for label in question["criteria"]) >= 2
+
+    def test_severity_examples_show_more_than_one_level(self):
+        few, zero = _arms()
+        shown = _examples_text(few, zero, "severity").lower()
+
+        assert sum(level.lower() in shown for level in judge_module.SEVERITY_LEVELS) >= 2
+
+    def test_provenance_examples_show_at_least_a_supporting_and_an_unsupporting_case(self):
+        few, zero = _arms()
+        lines = [ln for ln in _examples_text(few, zero, "provenance_confidence").splitlines() if ln.strip()]
+
+        assert len(lines) >= 2
+
+    def test_few_shot_is_the_default(self):
+        assert _build(_candidate()) == _arms()[0]
+
+
+class TestZeroShotDiffersOnlyByExamples:
+    def test_both_arms_ask_the_same_questions_with_the_same_types_and_options(self):
+        few, zero = _arms()
+
+        assert few["model"] == zero["model"]
+        assert set(few["questions"]) == set(zero["questions"]) == QUESTION_IDS
+        for qid in QUESTION_IDS:
+            assert {k: v for k, v in few["questions"][qid].items() if k != "instructions"} == {
+                k: v for k, v in zero["questions"][qid].items() if k != "instructions"
+            }
+
+    def test_every_zero_shot_instruction_is_contained_in_the_few_shot_one_and_the_few_shot_request_is_larger(self):
+        few, zero = _arms()
+
+        assert _size(few) > _size(zero)
+        for qid in QUESTION_IDS:
+            zero_text = zero["questions"][qid]["instructions"].strip()
+            assert zero_text
+            assert zero_text in few["questions"][qid]["instructions"]
+
+    def test_zero_shot_request_is_deterministic(self):
+        assert _arms()[1] == _arms()[1]
+
+
+class TestRequestSizeBound:
+    @staticmethod
+    def _base(few_shot):
+        return _size(build_judge_request(
+            _candidate(), lambda item: "x", model="m", max_chars=MAX_CHARS, few_shot=few_shot
+        ))
+
+    def test_production_request_totalling_exactly_the_bound_is_sent_and_one_character_more_is_not(self):
+        base = self._base(True)
+        assert base < BOUND_CHARS
+
+        def run(total):
+            candidate, judge = _candidate(), _recording_judge(_answer("yes", 0.5))
+            _judge([candidate], read_code=lambda item: "x" * (1 + total - base), judge=judge)
+            return candidate, judge
+
+        at_bound, judge = run(BOUND_CHARS)
+        assert [_size(r) for r in judge.requests] == [BOUND_CHARS]
+        assert at_bound.judged is True and not at_bound.not_judged_reason
+
+        over, judge = run(BOUND_CHARS + 1)
+        assert judge.requests == []
+        assert over.judged is False and over.not_judged_reason == "request-too-large"
+
+    @pytest.mark.parametrize("few_shot", [True, False])
+    def test_build_succeeds_at_the_bound_and_raises_request_too_large_one_character_over(self, few_shot):
+        base = self._base(few_shot)
+
+        def build(total):
+            return build_judge_request(
+                _candidate(), lambda item: "x" * (1 + total - base), model="m", max_chars=BOUND_CHARS,
+                few_shot=few_shot,
+            )
+
+        assert _size(build(BOUND_CHARS)) == BOUND_CHARS
+        with pytest.raises(RequestTooLarge):
+            build(BOUND_CHARS + 1)
+
+    def test_state_within_the_bound_is_refused_when_state_plus_instructions_exceed_it(self):
+        state_len = len(_state(_candidate(), read_code=lambda item: "x"))
+        pad = BOUND_CHARS - state_len
+        candidate, judge = _candidate(), _recording_judge()
+
+        _judge([candidate], read_code=lambda item: "x" * pad, judge=judge)
+
+        assert state_len + pad <= BOUND_CHARS
+        assert judge.requests == []
+        assert candidate.judged is False and candidate.not_judged_reason == "request-too-large"
+
+    def test_over_bound_request_is_not_sent_truncated(self):
+        candidate, judge = _candidate(), _recording_judge()
+
+        _judge([candidate], read_code=lambda item: "TAIL_SENTINEL".rjust(BOUND_CHARS + 500, "z"), judge=judge)
+
+        assert judge.requests == []
+        assert candidate.not_judged_reason == "request-too-large"
+
+    @pytest.mark.parametrize("citations", [3, 4, 5])
+    def test_live_shaped_finding_with_a_quoted_claim_fits_the_bound_with_examples(self, citations):
+        finding, code = _live_shaped(citations)
+
+        request = build_judge_request(
+            finding, lambda item: code[item.file], model="kev-test", max_chars=BOUND_CHARS, few_shot=True
+        )
+
+        assert _size(request) <= BOUND_CHARS
+
+
+class TestParseKevReply:
+    @staticmethod
+    def _reply(**kwargs) -> dict:
+        return _kev_payload(_build(_candidate()), **kwargs)
+
+    def test_reply_yields_supported_verdict_severity_and_provenance_confidence(self):
+        request = _build(_candidate())
+        reply = _kev_payload(request, supported=False, confidence=0.37, variant=1)
+
+        parsed = judge_module.parse_kev_reply(reply)
+
+        assert parsed["supported"] == "no"
+        assert parsed["provenance_confidence"] == 0.37
+        questions = request["questions"]
+        if questions["verdict"]["type"] == "choice":
+            assert parsed["verdict"] == list(questions["verdict"]["criteria"])[-1]
+        else:
+            assert parsed["verdict"] is not None
+        if questions["severity"]["type"] == "choice":
+            assert parsed["severity"] == judge_module.SEVERITY_LEVELS[-1]
+        else:
+            assert parsed["severity"] is not None
+
+    def test_reply_yields_the_input_tokens_kev_reported(self):
+        parsed = judge_module.parse_kev_reply(self._reply(input_tokens=7777))
+
+        assert parsed["input_tokens"] == 7777
+
+    @pytest.mark.parametrize("missing", sorted(QUESTION_IDS))
+    def test_reply_missing_an_answer_is_refused_not_guessed(self, missing):
+        reply = self._reply()
+        del reply["answers"][missing]
+
+        with pytest.raises(ValueError):
+            judge_module.parse_kev_reply(reply)
+
+    def test_reply_without_answers_is_refused(self):
+        with pytest.raises(ValueError):
+            judge_module.parse_kev_reply({"usage": {"input_tokens": 1}})
+
+    @pytest.mark.parametrize("missing", ["verdict", "severity"])
+    def test_candidate_whose_answer_lacks_verdict_or_severity_is_not_judged_as_judge_failed(self, missing):
+        candidate = _candidate()
+        reply = {k: v for k, v in _answer("yes", 0.8).items() if k != missing}
+
+        _judge([candidate], judge=lambda request: reply)
+
+        _assert_not_judged(candidate)
+        assert candidate.not_judged_reason == "judge-failed"
+        assert candidate.kev_verdict is None and candidate.kev_severity is None
+
+    @pytest.mark.parametrize("missing", sorted(QUESTION_IDS))
+    def test_http_reply_missing_an_answer_leaves_the_candidate_not_judged_as_judge_failed(
+        self, endpoints, missing
+    ):
+        def body(request):
+            payload = _kev_payload(request)
+            del payload["answers"][missing]
+            return json.dumps(payload).encode()
+
+        finding = _judge_via_config(endpoints(body=body).url)
+
+        _assert_not_judged(finding)
+        assert finding.not_judged_reason == "judge-failed"
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+
+class TestHttpJudgeResult:
+    def test_flat_mapping_carries_the_four_answers_and_kev_reported_input_tokens(self, endpoints):
+        endpoint = endpoints(body=lambda request: json.dumps(_kev_payload(request, input_tokens=9100)).encode())
+        config = LGTMConfig(judge_endpoint=endpoint.url, judge_timeout=5.0)
+
+        result = judge_module.http_judge(config)(_build(_candidate()))
+
+        assert QUESTION_IDS <= set(result)
+        assert result["input_tokens"] == 9100
+        assert result["supported"] == "yes"
+
+    def test_judged_candidate_records_the_verdict_and_severity_kev_answered(self, endpoints):
+        endpoint = endpoints(body=lambda request: json.dumps(_kev_payload(request, variant=1)).encode())
+
+        finding = _judge_via_config(endpoint.url)
+
+        assert finding.judged is True
+        assert finding.kev_verdict is not None
+        assert finding.kev_severity is not None
+
+
+class TestKevFieldsOnTheFinding:
+    def test_new_finding_has_no_kev_verdict_or_severity(self):
+        finding = _candidate()
+
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+    def test_judged_answer_is_recorded_with_supported_and_provenance_confidence(self):
+        finding = _candidate()
+        severity = _severity_levels()[-1]
+        answer = _answer("yes", 0.6, severity=severity)
+
+        apply_judge_answer(finding, answer)
+
+        assert (finding.supported, finding.provenance_confidence, finding.judged) == (True, 0.6, True)
+        assert finding.kev_severity == severity
+        assert finding.kev_verdict == answer["verdict"]
+
+    @pytest.mark.parametrize("missing", ["verdict", "severity"])
+    def test_answer_without_verdict_or_severity_raises_and_changes_nothing(self, missing):
+        finding = _candidate()
+        answer = {k: v for k, v in _answer("yes", 0.6).items() if k != missing}
+
+        with pytest.raises(ValueError):
+            apply_judge_answer(finding, answer)
+
+        assert (finding.judged, finding.supported, finding.provenance_confidence) == (False, None, None)
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+    def test_failed_rejudge_clears_the_earlier_verdict_and_severity(self):
+        finding = _candidate()
+        _judge([finding])
+        assert finding.kev_verdict is not None
+
+        _judge([finding], judge=_failing_judge)
+
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+    def test_candidate_too_large_to_judge_has_no_verdict_or_severity(self):
+        finding = _candidate(kev_verdict="stale", kev_severity="stale")
+
+        _judge([finding], read_code=lambda item: "X" * (BOUND_CHARS * 2))
+
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+    def test_candidate_without_evidence_has_no_verdict_or_severity(self):
+        finding = _candidate(evidence=[], kev_verdict="stale", kev_severity="stale")
+
+        _judge([finding])
+
+        assert finding.kev_verdict is None and finding.kev_severity is None

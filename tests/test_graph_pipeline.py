@@ -1703,17 +1703,30 @@ def start_kev():
 def _kev_reply(
     request: dict, supported: bool, confidence: float, *, unknown_answer=False, omit_confidence=False
 ) -> Reply:
-    """Answers the yes/no choice question and the noul confidence question."""
+    """Answers every question: the yes/no support question, the noul confidence question, and the others by their type."""
     answers: dict[str, dict] = {}
     for qid, question in request["questions"].items():
         if question["type"] == "noul":
-            if not omit_confidence:
-                answers[qid] = {"noul": confidence}
+            if qid == "provenance_confidence":
+                if not omit_confidence:
+                    answers[qid] = {"type": "noul", "noul": confidence}
+            else:
+                answers[qid] = {"type": "noul", "noul": 0.2}
+            continue
+        if question["type"] == "score":
+            answers[qid] = {"type": "score", "score": 0.5, "legend": list(question["criteria"]),
+                            "probabilities": {}, "confidence": 0.5}
             continue
         labels = list(question["criteria"])
-        want = "y" if supported else "n"
-        label = "maybe" if unknown_answer else next(name for name in labels if name.lower().startswith(want))
-        answers[qid] = {"choice": label, "probabilities": {name: (0.9 if name == label else 0.1) for name in labels}}
+        if qid == "supported":
+            want = "y" if supported else "n"
+            label = "maybe" if unknown_answer else next(name for name in labels if name.lower().startswith(want))
+        else:
+            label = labels[0]
+        answers[qid] = {
+            "type": "choice", "choice": label, "confidence": 0.8,
+            "probabilities": {name: (0.9 if name == label else 0.1) for name in labels},
+        }
     payload = {
         "model": request["model"], "answers": answers,
         "usage": {"input_tokens": 1, "output_tokens": 0}, "latency_ms": 1,
@@ -1849,8 +1862,7 @@ class TestJudgeOverHttp:
             assert set(received.body) == {"model", "state", "questions"}
             assert received.body["model"] == KEV_MODEL
             assert isinstance(received.body["state"], str) and received.body["state"]
-            types = sorted(q["type"] for q in received.body["questions"].values())
-            assert types == ["choice", "noul"]
+            assert list(received.body["questions"]) == ["supported", "verdict", "severity", "provenance_confidence"]
             assert not any(
                 name in received.body["state"]
                 for name in ("evidence_valid", "evidence_issues", "grounded_in_pr", "judge_verdict")

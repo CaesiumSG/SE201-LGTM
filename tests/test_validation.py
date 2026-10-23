@@ -58,6 +58,17 @@ class TestValidationStageOnlyAnnotatesPrGrounding:
             assert name not in AgentFinding.model_fields
             assert not hasattr(finding, name)
 
+    def test_validation_stage_leaves_the_kev_verdict_and_severity_unset(self, git_repo):
+        validator = EvidenceValidator(git_repo, "main")
+        finding = make_finding(
+            evidence=[EvidenceItem(type="code", file="app.py", content=PR_SNIPPET)]
+        )
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
+        validator.validate_all([finding])
+
+        assert finding.kev_verdict is None and finding.kev_severity is None
+
     def test_unresolved_citation_is_annotated_not_grounded_and_the_finding_is_kept(self, git_repo):
         validator = EvidenceValidator(git_repo, "main")
         finding = make_finding(
