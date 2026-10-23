@@ -45,7 +45,7 @@ def dedup_findings(findings: Iterable[AgentFinding]) -> list[AgentFinding]:
 
 
 def _mergeable(finding: AgentFinding) -> bool:
-    return finding.verdict != "safe" and bool(finding.file) and bool(finding.cwe_id)
+    return finding.supported is not False and bool(finding.file) and bool(finding.cwe_id)
 
 
 def _spans(finding: AgentFinding) -> list[_Span]:
@@ -81,7 +81,7 @@ def _evidence_key(item: EvidenceItem) -> tuple:
 
 
 def _merged_pr_graph_ok(group: list[AgentFinding]) -> bool | None:
-    # False takes precedence so the PR-grounding cap applies to the merged finding in any member order.
+    # False takes precedence in any member order.
     stamps = [f.pr_graph_ok for f in group]
     if False in stamps:
         return False

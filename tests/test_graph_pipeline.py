@@ -314,13 +314,6 @@ def _unreachable_judge(request):
     raise ConnectionError("judge unreachable")
 
 
-def _judge_answering(verdict, severity="high", provenance_confidence=0.8):
-    def judge(request):
-        return {"verdict": verdict, "severity": severity, "provenance_confidence": provenance_confidence}
-
-    return judge
-
-
 def _review(repo, llm, mode="lgtm", output_dir=None, judge=_unreachable_judge, **config):
     pipeline = ReviewPipeline(repo, LGTMConfig(mode=mode, **config), llm=llm, judge=judge)
     return pipeline.run("main", "pr", output_dir)
@@ -422,10 +415,6 @@ class TestRefFreeze:
         everything = llm.everything_seen() + "".join(semgrep.values()) + "".join(facts_sources)
         for token in MOVED_TOKENS:
             assert token not in everything
-
-        by_file = {f.file: f for f in result.findings}
-        assert by_file["c.py"].evidence_valid is True
-        assert by_file["c.py"].evidence_issues == []
 
         assert _git(repo, "symbolic-ref", "--short", "HEAD").strip() == "main"
         assert _git(repo, "status", "--porcelain") == state["status"]
@@ -965,8 +954,6 @@ class TestCapIntegration:
 
         first = next(f for f in result.findings if f.category == "authz" and f.file == "a.py")
         assert first.pr_graph_ok is False
-        assert first.evidence_issues == []
-        assert first.evidence_valid is True
         assert not first.verdict
         assert CAP_MARKER not in first.explanation
 
@@ -978,7 +965,6 @@ class TestCapIntegration:
 
         first = next(f for f in result.findings if f.file == "a.py")
         assert first.pr_graph_ok is True
-        assert first.evidence_valid is True
         assert not first.verdict
         assert CAP_MARKER not in first.explanation
 
@@ -1593,34 +1579,11 @@ class TestSectionPipeline:
         assert result.meta.coverage is None
 
 
-# --- judge-validation: PR-grounding cap on the judge verdict (AC-2-6) ----------
+# --- support-judge: PR-grounding annotation --------------------------------------
 
 
-class TestJudgeVerdictCapIntegration:
-    def test_vulnerable_triage_judgement_is_capped_when_the_graph_binary_is_missing_and_nothing_grounds_it(
-        self, repo, install_graph, semgrep
-    ):
-        install_graph(FakeRunner(available=False))
-        llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
-
-        result = _review(repo, llm, judge=_judge_answering("vulnerable", "critical", 0.9))
-
-        triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
-        assert triage.pr_graph_ok is False
-        assert triage.verdict == "possible"
-        assert (triage.severity, triage.provenance_confidence, triage.judged) == ("critical", 0.9, True)
-
-    def test_vulnerable_judgement_stands_when_the_graph_is_healthy(self, repo, install_graph, semgrep):
-        install_graph()
-        llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
-
-        result = _review(repo, llm, judge=_judge_answering("vulnerable"))
-
-        first = next(f for f in result.findings if f.file == "a.py")
-        assert first.pr_graph_ok is True
-        assert first.verdict == "vulnerable"
-
-    def test_vulnerable_judgement_stands_when_a_cited_item_is_grounded_in_the_pr(
+class TestGroundedInPrAnnotation:
+    def test_a_cited_item_found_through_the_pr_graph_is_annotated_grounded_in_pr(
         self, repo, install_graph, semgrep
     ):
         install_graph(FakeRunner(init={"pr": failure("timeout")}))
@@ -1632,40 +1595,18 @@ class TestJudgeVerdictCapIntegration:
             ))),
         ])
 
-        result = _review(repo, llm, judge=_judge_answering("vulnerable"))
+        result = _review(repo, llm)
 
         first = next(f for f in result.findings if f.category == "authz" and f.file == "a.py")
-        assert first.pr_graph_ok is False
         assert [i.grounded_in_pr for i in first.evidence] == [True]
-        assert first.verdict == "vulnerable"
-
-    def test_section_candidates_are_capped_when_the_pr_graph_is_down_and_nothing_grounds_them(
-        self, repo, install_graph, semgrep
-    ):
-        install_graph(FakeRunner(init={"pr": failure("timeout")}))
-        llm = ScriptedLLM([
-            *_triage_then_plan(),
-            _call("investigate_pr_code", {"query": "find_a"}),
-            _msg(_findings(_section_finding(
-                file="a.py", explanation="Injectable.",
-                evidence=[_base_evidence("a")],
-            ))),
-            _msg(_findings()),
-            _msg(_findings(_section_finding(file="b.py", evidence=[_base_evidence("b")]))),
-        ])
-
-        result = _review(repo, llm, judge=_judge_answering("vulnerable"))
-
-        authz = [f for f in result.findings if f.category == "authz"]
-        assert authz
-        assert all(f.pr_graph_ok is False and f.verdict == "possible" for f in authz)
 
 
-# --- judge-validation: Kev-4B judge over HTTP (Connectivity: AC-2-3, AC-2-4, AC-4-3, AC-4-5) ----
+# --- support-judge: Kev-4B judge over HTTP (Connectivity: AC-2-3, AC-2-4, AC-2-7, AC-4-3, AC-4-5) ----
 
 KEV_PATH = "/v1/systemone"
-KEV_VERDICTS = {"vulnerable", "possible", "safe", "insufficient_evidence"}
 KEV_MODEL = "kev-test-model"
+REQUEST_BOUND = 28_000
+CLAIM_OVERSIZE_PAD = "OVERSIZE_PADDING_SENTINEL"
 
 
 @dataclass
@@ -1759,29 +1700,20 @@ def start_kev():
         kev.stop()
 
 
-def _choice_answer(question: dict, label: str) -> dict:
-    labels = list(question["criteria"])
-    return {
-        "choice": label,
-        "probabilities": {name: (0.9 if name == label else 0.1) for name in labels},
-        "confidence": 0.9,
-    }
-
-
-def _kev_reply(request: dict, verdict: str, severity: str, confidence: float, omit_confidence=False) -> Reply:
+def _kev_reply(
+    request: dict, supported: bool, confidence: float, *, unknown_answer=False, omit_confidence=False
+) -> Reply:
+    """Answers the yes/no choice question and the noul confidence question."""
     answers: dict[str, dict] = {}
     for qid, question in request["questions"].items():
         if question["type"] == "noul":
             if not omit_confidence:
                 answers[qid] = {"noul": confidence}
-        elif set(question["criteria"]) == KEV_VERDICTS:
-            answers[qid] = _choice_answer(question, verdict)
-        elif question["type"] == "score":
-            levels = list(question["criteria"])
-            level = float(levels.index(severity)) if severity in levels else 9.0
-            answers[qid] = {"score": level}
-        else:
-            answers[qid] = _choice_answer(question, severity)
+            continue
+        labels = list(question["criteria"])
+        want = "y" if supported else "n"
+        label = "maybe" if unknown_answer else next(name for name in labels if name.lower().startswith(want))
+        answers[qid] = {"choice": label, "probabilities": {name: (0.9 if name == label else 0.1) for name in labels}}
     payload = {
         "model": request["model"], "answers": answers,
         "usage": {"input_tokens": 1, "output_tokens": 0}, "latency_ms": 1,
@@ -1793,9 +1725,9 @@ CLAIM_TRIAGE = "TRIAGE_CLAIM_SENTINEL"
 CLAIM_AUTHZ_A = "AUTHZ_A_CLAIM_SENTINEL"
 CLAIM_AUTHZ_B = "AUTHZ_B_CLAIM_SENTINEL"
 KEV_ANSWERS = {
-    CLAIM_TRIAGE: ("vulnerable", "high", 0.9),
-    CLAIM_AUTHZ_A: ("possible", "medium", 0.4),
-    CLAIM_AUTHZ_B: ("safe", "low", 0.2),
+    CLAIM_TRIAGE: (True, 0.9),
+    CLAIM_AUTHZ_A: (True, 0.4),
+    CLAIM_AUTHZ_B: (False, 0.2),
 }
 
 
@@ -1812,23 +1744,23 @@ def _by_claim(overrides=None):
     return respond
 
 
-def _two_agent_llm() -> ScriptedLLM:
+def _two_agent_llm(authz_a_claim: str = CLAIM_AUTHZ_A) -> ScriptedLLM:
     """One SAST-triage candidate (a.py, the only Semgrep hit) and two authz candidates (a.py, b.py)."""
-    triage = _final(verdict="vulnerable", explanation=CLAIM_TRIAGE, evidence=[_pr_evidence()])
+    triage = _final(explanation=CLAIM_TRIAGE, evidence=[_pr_evidence()])
     return ScriptedLLM([
         _msg(triage), _msg(_no_sections()),
-        _msg(_findings(_section_finding(file="a.py", explanation=CLAIM_AUTHZ_A, evidence=[_pr_evidence()]))),
+        _msg(_findings(_section_finding(file="a.py", explanation=authz_a_claim, evidence=[_pr_evidence()]))),
         _msg(_findings()),
-        _msg(_findings(_section_finding(file="b.py", explanation=CLAIM_AUTHZ_B))),
+        _msg(_findings(_section_finding(file="b.py", explanation=CLAIM_AUTHZ_B, evidence=[_base_evidence("b")]))),
     ])
 
 
-def _review_over_http(repo, endpoint: str, **config):
+def _review_over_http(repo, endpoint: str, llm=None, **config):
     config.setdefault("judge_timeout", 2.0)
     pipeline = ReviewPipeline(
         repo,
         LGTMConfig(mode="lgtm", judge_endpoint=endpoint, judge_model=KEV_MODEL, **config),
-        llm=_two_agent_llm(),
+        llm=llm or _two_agent_llm(),
     )
     return pipeline.run("main", "pr")
 
@@ -1844,9 +1776,9 @@ def _findings_by_claim(result) -> dict:
 
 def _assert_not_judged(finding) -> None:
     assert finding.judged is False
-    assert finding.verdict == ""
-    assert finding.severity == ""
+    assert finding.supported is None
     assert finding.provenance_confidence is None
+    assert finding.not_judged_reason
 
 
 def _closed_loopback_port() -> int:
@@ -1874,7 +1806,7 @@ def healthy_stack(install_graph, semgrep, monkeypatch):
 
 @pytest.mark.usefixtures("healthy_stack")
 class TestJudgeOverHttp:
-    def test_every_candidate_from_both_agents_is_sent_once_and_carries_the_judge_outputs(
+    def test_every_candidate_from_both_agents_is_sent_once_and_carries_the_support_answer(
         self, repo, start_kev
     ):
         kev = start_kev()
@@ -1889,15 +1821,21 @@ class TestJudgeOverHttp:
             assert sum(claim in r.body["state"] for r in kev.requests) == 1
         triage, authz_a, authz_b = claims[CLAIM_TRIAGE], claims[CLAIM_AUTHZ_A], claims[CLAIM_AUTHZ_B]
         assert triage.category != "authz" and authz_a.category == "authz" and authz_b.category == "authz"
-        for finding, expected in (
-            (triage, ("vulnerable", "high", 0.9)),
-            (authz_a, ("possible", "medium", 0.4)),
-            (authz_b, ("safe", "", 0.2)),
-        ):
-            assert (finding.verdict, finding.severity, finding.provenance_confidence) == expected
+        for claim, finding in claims.items():
+            supported, confidence = KEV_ANSWERS[claim]
             assert finding.judged is True
+            assert finding.supported is supported
+            assert not finding.not_judged_reason
+            assert finding.provenance_confidence == confidence
 
-    def test_judge_request_is_a_json_post_to_the_system_one_endpoint_with_three_questions(
+    def test_judge_does_not_change_the_candidate_severity(self, repo, start_kev):
+        judged = _findings_by_claim(_review_over_http(repo, start_kev().url))
+        unjudged = _findings_by_claim(_review_over_http(repo, f"http://127.0.0.1:{_closed_loopback_port()}"))
+
+        for claim in KEV_ANSWERS:
+            assert judged[claim].severity == unjudged[claim].severity
+
+    def test_judge_request_is_a_json_post_to_the_system_one_endpoint_with_the_support_and_confidence_questions(
         self, repo, start_kev
     ):
         kev = start_kev()
@@ -1911,10 +1849,12 @@ class TestJudgeOverHttp:
             assert set(received.body) == {"model", "state", "questions"}
             assert received.body["model"] == KEV_MODEL
             assert isinstance(received.body["state"], str) and received.body["state"]
-            questions = list(received.body["questions"].values())
-            assert len(questions) == 3
-            assert [q["type"] for q in questions].count("noul") == 1
-            assert sum(set(q["criteria"]) == KEV_VERDICTS for q in questions if q["type"] == "choice") == 1
+            types = sorted(q["type"] for q in received.body["questions"].values())
+            assert types == ["choice", "noul"]
+            assert not any(
+                name in received.body["state"]
+                for name in ("evidence_valid", "evidence_issues", "grounded_in_pr", "judge_verdict")
+            )
 
     @pytest.mark.parametrize(
         "failure_reply",
@@ -1924,17 +1864,17 @@ class TestJudgeOverHttp:
             pytest.param(lambda r: Reply(200, b"<html>not json</html>"), id="unparsable-body"),
             pytest.param(lambda r: Reply(200, b'{"answers": {}}'), id="no-answers"),
             pytest.param(lambda r: Reply(mode="drop"), id="connection-dropped"),
-            pytest.param(lambda r: _kev_reply(r, "definitely_vulnerable", "medium", 0.4), id="unknown-verdict"),
-            pytest.param(lambda r: _kev_reply(r, "possible", "catastrophic", 0.4), id="unknown-severity"),
-            pytest.param(lambda r: _kev_reply(r, "possible", "medium", 1.7), id="confidence-above-one"),
-            pytest.param(lambda r: _kev_reply(r, "possible", "medium", -0.2), id="confidence-below-zero"),
-            pytest.param(lambda r: _kev_reply(r, "possible", "medium", 0.4, omit_confidence=True), id="confidence-unanswered"),
+            pytest.param(lambda r: _kev_reply(r, True, 0.4, unknown_answer=True), id="unknown-answer"),
+            pytest.param(lambda r: _kev_reply(r, True, 1.7), id="confidence-above-one"),
+            pytest.param(lambda r: _kev_reply(r, True, -0.2), id="confidence-below-zero"),
+            pytest.param(lambda r: _kev_reply(r, True, 0.4, omit_confidence=True), id="confidence-unanswered"),
         ],
     )
     def test_a_failed_judge_call_leaves_only_that_candidate_not_judged(
         self, repo, start_kev, failure_reply
     ):
         kev = start_kev(_by_claim({CLAIM_AUTHZ_A: failure_reply}))
+        healthy = _findings_by_claim(_review_over_http(repo, start_kev().url))
 
         result = _review_over_http(repo, kev.url)
 
@@ -1942,11 +1882,11 @@ class TestJudgeOverHttp:
         assert set(claims) == set(KEV_ANSWERS)
         failed = claims[CLAIM_AUTHZ_A]
         _assert_not_judged(failed)
+        assert failed.severity == healthy[CLAIM_AUTHZ_A].severity
         assert [i.file for i in failed.evidence] == ["a.py"]
-        assert failed.evidence_valid is True and failed.evidence_issues == []
         for claim in (CLAIM_TRIAGE, CLAIM_AUTHZ_B):
             assert claims[claim].judged is True
-            assert claims[claim].provenance_confidence == KEV_ANSWERS[claim][2]
+            assert claims[claim].supported is KEV_ANSWERS[claim][0]
 
     def test_a_judge_call_that_exceeds_the_timeout_leaves_that_candidate_not_judged(
         self, repo, start_kev
@@ -1970,12 +1910,40 @@ class TestJudgeOverHttp:
         assert set(claims) == set(KEV_ANSWERS)
         for finding in claims.values():
             _assert_not_judged(finding)
-        assert claims[CLAIM_AUTHZ_A].evidence_valid is True
+        assert [i.file for i in claims[CLAIM_AUTHZ_A].evidence] == ["a.py"]
+
+    def test_a_candidate_whose_request_exceeds_the_bound_is_never_sent_and_is_not_judged_as_request_too_large(
+        self, repo, start_kev
+    ):
+        kev = start_kev()
+        oversize_claim = CLAIM_AUTHZ_A + CLAIM_OVERSIZE_PAD * (REQUEST_BOUND // len(CLAIM_OVERSIZE_PAD) + 100)
+
+        result = _review_over_http(repo, kev.url, llm=_two_agent_llm(oversize_claim))
+
+        claims = _findings_by_claim(result)
+        assert set(claims) == set(KEV_ANSWERS)
+        oversize = claims[CLAIM_AUTHZ_A]
+        _assert_not_judged(oversize)
+        assert oversize.not_judged_reason == "request-too-large"
+        assert not any(CLAIM_AUTHZ_A in r.body["state"] or CLAIM_OVERSIZE_PAD in json.dumps(r.body) for r in kev.requests)
+        assert len(kev.requests) == 2
+        assert all(len(r.body["state"]) <= REQUEST_BOUND for r in kev.requests)
+        for claim in (CLAIM_TRIAGE, CLAIM_AUTHZ_B):
+            assert claims[claim].judged is True
+            assert claims[claim].supported is KEV_ANSWERS[claim][0]
+            assert not claims[claim].not_judged_reason
+
+    def test_a_judge_failure_reason_is_distinct_from_request_too_large(self, repo, start_kev):
+        kev = start_kev(_by_claim({CLAIM_AUTHZ_A: lambda r: Reply(500, b"{}")}))
+
+        failed = _findings_by_claim(_review_over_http(repo, kev.url))[CLAIM_AUTHZ_A]
+
+        assert failed.not_judged_reason and failed.not_judged_reason != "request-too-large"
 
     def test_requests_go_to_the_endpoint_set_in_a_config_file_given_to_the_cli(
         self, repo, tmp_path, monkeypatch, start_kev
     ):
-        target = start_kev(lambda r: _kev_reply(r, "possible", "medium", 0.5))
+        target = start_kev(lambda r: _kev_reply(r, True, 0.5))
         elsewhere = start_kev()
         config_file = tmp_path / "lgtm.json"
         config_file.write_text(
@@ -1989,7 +1957,7 @@ class TestJudgeOverHttp:
             "--config-file", str(config_file), "--output", str(tmp_path / "out"),
         ])
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert len(target.requests) == 3
         assert elsewhere.requests == []
 
@@ -2005,10 +1973,10 @@ class TestJudgeOverHttp:
 def test_judge_request_carries_the_code_at_the_cited_revision_and_not_the_agent_snippet(
     repo, start_kev, snapshot, lines, cited_code, other_revision_code
 ):
-    kev = start_kev(lambda r: _kev_reply(r, "possible", "medium", 0.5))
+    kev = start_kev(lambda r: _kev_reply(r, True, 0.5))
     agent_snippet = cited_code.upper()
     cited = {"type": "code", "file": "a.py", "lines": lines, "content": agent_snippet, "snapshot": snapshot}
-    llm = ScriptedLLM([_msg(_final(verdict="vulnerable", explanation=CLAIM_TRIAGE, evidence=[cited])), _msg(_no_sections())])
+    llm = ScriptedLLM([_msg(_final(explanation=CLAIM_TRIAGE, evidence=[cited])), _msg(_no_sections())])
 
     ReviewPipeline(
         repo, LGTMConfig(mode="lgtm", judge_endpoint=kev.url, judge_model=KEV_MODEL, judge_timeout=2.0), llm=llm

@@ -248,6 +248,9 @@ class ReviewPipeline:
                 findings, validator.read_cited_code, self.config, self._judge
             )
         if section_stage is not None:
+            by_id = {f.finding_id: f.supported for f in findings}
+            for result in section_stage.results.values():
+                result.supported = [by_id.get(i) for i in result.finding_ids]
             meta.coverage = build_coverage(
                 section_stage.plan,
                 investigator_status=section_stage.investigator_status,
@@ -319,11 +322,11 @@ class ReviewPipeline:
             error = authz_agent.errors[seen_errors:]
             results[section.section_id] = SectionResult(
                 status="failed" if error else "completed",
-                verdicts=[f.verdict for f in reviewed],
+                supported=[f.supported for f in reviewed],
                 finding_ids=[f.finding_id for f in reviewed],
                 error=error[0]["message"] if error else None,
             )
-            section_findings.extend(f for f in reviewed if f.verdict != "safe")
+            section_findings.extend(reviewed)
 
         return _SectionStage(
             findings=dedup_findings(section_findings),

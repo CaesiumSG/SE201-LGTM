@@ -274,7 +274,8 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     extra["pin"] = pin
     try:
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        grounded = [f for f in findings if f.get("evidence_valid")]
+        judged = mode in evaluate.JUDGED_MODES
+        grounded = [f for f in findings if f.get("supported")]
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
         if mode in DOC_MODES:
             coverage = getattr(result.meta, "coverage", None)
@@ -283,7 +284,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         return evaluate.score_case({
             "id": cid, "category": case["category"], "split": "real_world",
             "expected": case["expected_verdict"], "n_findings": len(findings),
-            "verdicts": [f["verdict"] for f in findings], "grounded": len(grounded),
+            "verdicts": [evaluate.finding_verdict(f, judged) for f in findings], "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),

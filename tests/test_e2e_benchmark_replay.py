@@ -21,14 +21,14 @@ CASE_ID = "case_a"
 BASE_APP = "line1\nbase2\nbase3\nline4\nline5\n"
 PR_APP = "line1\npr2\npr3\nline4\nline5\n"
 
-# claim -> Kev answer level (None: HTTP 500)
+# claim -> (supported, confidence); None: HTTP 500
 SCRIPT = {
-    "claim vulnerable": ("vulnerable", 3, 0.9),
-    "claim safe": ("safe", 0, 0.2),
-    "claim possible": ("possible", 1, 0.6),
+    "claim supported": (True, 0.9),
+    "claim unsupported": (False, 0.8),
+    "claim also supported": (True, 0.6),
     "claim judge down": None,
 }
-LABELS = {"claim vulnerable": "correct", "claim safe": "incorrect", "claim possible": "incorrect"}
+LABELS = {"claim supported": "correct", "claim unsupported": "incorrect", "claim also supported": "incorrect"}
 
 
 class _FakeKev(BaseHTTPRequestHandler):
@@ -40,12 +40,16 @@ class _FakeKev(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             return
-        choice, level, probability = answer
-        body = json.dumps({"answers": {
-            "verdict": {"choice": choice},
-            "severity": {"score": level},
-            "provenance_confidence": {"noul": probability},
-        }}).encode()
+        supported, confidence = answer
+        answers = {}
+        for qid, question in request["questions"].items():
+            if question["type"] == "noul":
+                answers[qid] = {"noul": confidence if supported else 1 - confidence}
+            else:
+                want = "y" if supported else "n"
+                label = next(n for n in question["criteria"] if n.lower().startswith(want))
+                answers[qid] = {"choice": label, "confidence": confidence}
+        body = json.dumps({"answers": answers}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -101,7 +105,7 @@ def _case_repo(root: Path) -> dict:
 def _frozen_finding(claim: str) -> dict:
     return AgentFinding(
         finding_id=claim, explanation=claim, cwe_id="CWE-89", category="sqli", agent="authz",
-        file="app.py", line=2, pr_graph_ok=True, evidence_valid=True,
+        file="app.py", line=2, pr_graph_ok=True,
         evidence=[EvidenceItem(type="code", file="app.py", lines=[2, 3], snapshot="pr",
                                content="pr2\npr3", grounded_in_pr=True)],
     ).model_dump(exclude={"raw_response"})

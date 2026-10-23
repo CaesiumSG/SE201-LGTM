@@ -77,19 +77,19 @@ class AgentFinding(BaseModel):
     semgrep_severity: str = ""
     semgrep_message: str = ""
     # Result fields: left unset by agents, written by validation.
-    verdict: str = ""
-    judge_verdict: str = ""  # the judge's answer before the PR-grounding cap
+    verdict: str = ""  # baseline modes only
     severity: str = ""
+    supported: bool | None = None
     provenance_confidence: float | None = None
     judged: bool = False
+    not_judged_reason: str = ""
+    unsupported_reason: str = ""
     # Filled in by the pipeline / validator:
     category: str = ""  # "sqli" | "authz"
     agent: str = ""  # which agent produced this
     file: str = ""  # primary file under review
     line: int = 0  # primary line under review
     tool_calls_used: int = 0
-    evidence_valid: bool | None = None
-    evidence_issues: list[str] = Field(default_factory=list)
     # Set by the pipeline from graph session health; never read from model JSON.
     pr_graph_ok: bool | None = None
     raw_response: str = ""

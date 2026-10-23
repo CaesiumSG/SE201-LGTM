@@ -109,7 +109,8 @@ def evaluate_single_case(case: dict, config: LGTMConfig) -> dict:
     latency = time.monotonic() - started
     cat = case["category"]
     relevant = [f for f in findings if f.get("category") in (cat, "", "sast", None)]
-    verdicts = [f.get("verdict") for f in relevant]
+    judged = config.mode in evaluate.JUDGED_MODES
+    verdicts = [evaluate.finding_verdict(f, judged) for f in relevant]
     if "vulnerable" in verdicts:
         predicted = "vulnerable"
     elif "possible" in verdicts:

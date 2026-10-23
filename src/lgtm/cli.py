@@ -86,7 +86,14 @@ def review(
     judge_timeout: float | None,
     verbose: bool,
 ) -> None:
-    """Run the full security review pipeline on a PR."""
+    """Run the full security review pipeline on a PR.
+
+    \b
+    Exit codes:
+      1  at least one candidate is supported
+      2  no candidate is supported, but a candidate is not judged or an agent errored
+      0  otherwise
+    """
     setup_logging(verbose)
     if gpu_model and (gpu_cluster or model):
         raise click.UsageError("--gpu-model cannot be combined with --gpu-cluster or --model.")
@@ -121,19 +128,20 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
-    vulnerable = sum(1 for f in result.findings if f.verdict == "vulnerable")
-    possible = sum(1 for f in result.findings if f.verdict == "possible")
+    supported = sum(1 for f in result.findings if f.supported is True)
+    not_judged = sum(1 for f in result.findings if f.not_judged_reason)
     click.echo("")
     click.echo(f"Review complete in {result.meta.duration_seconds:.1f}s")
     click.echo(
         f"  Findings: {len(result.findings)} "
-        f"(vulnerable: {vulnerable}, possible: {possible})"
+        f"(supported: {supported}, not judged: {not_judged})"
     )
     if result.json_path:
         click.echo(f"  JSON report:     {result.json_path}")
         click.echo(f"  Markdown report: {result.md_path}")
-    # Exit code 1 signals confirmed findings (useful in CI)
-    sys.exit(1 if vulnerable else 0)
+    if supported:
+        sys.exit(1)
+    sys.exit(2 if not_judged or result.meta.agent_errors else 0)
 
 
 if __name__ == "__main__":

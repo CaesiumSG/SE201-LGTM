@@ -117,8 +117,8 @@ and `docs/evaluation-log.md`.
 
 - Precision / recall / F1 — overall, per category (sqli, authz), and per
   dev/eval split.
-- "Grounded" variants of the above (`grounded_only`): a detection only counts
-  if the evidence validator accepted its citations.
+- "Grounded" variants of the above (`grounded_only`): in `lgtm` and
+  `lgtm-no-sast` they equal the plain scoring, which keys on `supported`.
 - `vulnerable_scored` / `safe_scored`: scored cases per expected label.
   `excluded_on_safe`: safe rows excluded from the safe-control rates.
 - `abstentions` / `possible_on_safe`: rows labelled `insufficient_evidence` or
@@ -128,7 +128,7 @@ and `docs/evaluation-log.md`.
 - Off-category alarm rate: cases where an agent flags the category the case
   does *not* test (e.g. an ownership warning on a SQLi case).
 - False-positive rate on the safe controls.
-- Evidence grounding rate (findings whose citations all check out).
+- Evidence grounding rate (share of findings that are `supported`).
 - `insufficient_evidence` rate and `possible` rate.
 - Median latency per case and estimated tokens per PR.
 - Errors — cases where the pipeline raised or an agent reported an
@@ -182,7 +182,7 @@ python benchmark/judge_eval.py RUN_DIR export.json labels.json
 
 It prints percent correct before judging and for the judged population (with
 `n` and unlabelled counts), mean confidence for correct and incorrect units,
-severity agreement, verdict accuracy on `judge_verdict`, and the fallback rate.
+severity agreement, verdict accuracy on `supported`, and the fallback rate.
 Recorded runs carry no per-candidate latency, so the latency median and 95th
 percentile appear only with `--judge-records RECORDS.json`, a JSON list written
 from `measure_judge_run` in `judge_eval.py`; without it the fallback rate comes
@@ -213,10 +213,11 @@ the first matching rule:
 1. `scan_failure`: no coverage block, no section scheduled and the
    investigator reported an error, or scheduled sections and none completed.
 2. `no_candidate`: no target section (see [Target sections](#target-sections)).
-3. `detected_vulnerability`: a relevant finding has verdict `vulnerable`.
+3. `detected_vulnerability`: a relevant finding is `supported` (verdict
+   `vulnerable` in the baseline modes).
 4. `missing_review`: a target section did not complete.
-5. `possible_vulnerability`: a relevant finding has verdict `possible`.
-6. `insufficient_evidence`: every relevant finding is `insufficient_evidence`.
+5. `possible_vulnerability`: a relevant baseline finding has verdict `possible`.
+6. `insufficient_evidence`: every relevant baseline finding is `insufficient_evidence`.
 7. `explicit_safe`: any other case.
 
 A finding is relevant when its category is the case category or is empty,
@@ -232,8 +233,7 @@ apply in that order. Their `coverage_gap` is `false`.
 `no_candidate` when no finding is relevant; otherwise rules 3, 5, 6 and 7
 apply in that order.
 
-`case_label_grounded` applies the same rules after a `vulnerable` finding
-whose evidence failed validation is treated as `possible`.
+`case_label_grounded` equals `case_label`.
 
 `coverage_gap` is `true` when `case_label` is `detected_vulnerability` and
 the coverage is incomplete, has failed sections, or has leftover hunks.

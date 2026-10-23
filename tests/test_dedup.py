@@ -5,9 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
-from lgtm.diff.git_diff import get_pr_diff
 from lgtm.review.dedup import dedup_findings
-from lgtm.validation.evidence import PR_GROUNDING_CAP_MARKER, EvidenceValidator
 
 FILE = "app/views.py"
 
@@ -18,9 +16,9 @@ def ev(lines, snapshot=None, file=FILE, content="code", type="code", source=None
     )
 
 
-def finding(fid, *, line=0, evidence=(), file=FILE, cwe="CWE-639", verdict="", **kw):
+def finding(fid, *, line=0, evidence=(), file=FILE, cwe="CWE-639", **kw):
     return AgentFinding(
-        finding_id=fid, file=file, line=line, cwe_id=cwe, verdict=verdict,
+        finding_id=fid, file=file, line=line, cwe_id=cwe,
         evidence=list(evidence), **kw,
     )
 
@@ -38,7 +36,7 @@ def test_findings_on_the_same_line_with_same_cwe_merge_into_one():
     assert ids(merged) == ["a"]
 
 
-def test_merged_finding_keeps_the_first_id_takes_member_text_and_carries_no_verdict_or_confidence():
+def test_merged_finding_keeps_the_first_id_takes_member_text_and_carries_no_supported_value_or_confidence():
     first = finding("a", line=10, explanation="short", suggested_fix="a much longer suggested fix")
     second = finding(
         "b", line=10, explanation="a considerably longer explanation", suggested_fix="fix"
@@ -46,7 +44,8 @@ def test_merged_finding_keeps_the_first_id_takes_member_text_and_carries_no_verd
     third = finding("c", line=10)
     (merged,) = dedup_findings([first, second, third])
     assert merged.finding_id == "a"
-    assert not merged.verdict
+    assert merged.supported is None
+    assert merged.judged is False
     assert "confidence" not in merged.model_dump()
     assert merged.explanation == "short"
     assert merged.suggested_fix == "a much longer suggested fix"
@@ -205,7 +204,7 @@ def test_merging_is_transitive_through_a_bridging_finding():
     bridge = finding("b", line=0, evidence=[ev([12, 20])])
     (merged,) = dedup_findings([a, c, bridge])
     assert merged.finding_id == "a"
-    assert not merged.verdict
+    assert merged.supported is None
 
 
 def test_output_keeps_first_occurrence_order():
@@ -217,27 +216,37 @@ def test_output_keeps_first_occurrence_order():
     assert ids(result) == ["x", "y", "w"]
 
 
-def test_safe_findings_pass_through_unchanged_and_unmerged():
-    s1 = finding("s1", line=10, verdict="safe", explanation="fine")
-    s2 = finding("s2", line=10, verdict="safe", explanation="also fine")
+def _unsupported(fid, **kw):
+    return finding(fid, supported=False, judged=True, provenance_confidence=0.8, **kw)
+
+
+def test_unsupported_findings_pass_through_unchanged_and_unmerged():
+    s1 = _unsupported("s1", line=10, explanation="fine")
+    s2 = _unsupported("s2", line=10, explanation="also fine")
     assert dedup_findings([s1, s2]) == [s1, s2]
 
 
-def test_safe_finding_is_not_merged_with_an_overlapping_vulnerable_one():
-    safe = finding("s", line=10, verdict="safe")
-    vuln = finding("v", line=10)
-    result = dedup_findings([safe, vuln])
+def test_unsupported_finding_is_not_merged_with_an_overlapping_candidate():
+    unsupported = _unsupported("s", line=10)
+    other = finding("v", line=10)
+    result = dedup_findings([unsupported, other])
     assert ids(result) == ["s", "v"]
-    assert result[0].verdict == "safe" and not result[1].verdict
+    assert result[0].supported is False and result[1].supported is None
 
 
-def test_safe_findings_keep_their_position_among_merged_ones():
+def test_supported_findings_on_the_same_line_with_same_cwe_still_merge():
+    a = finding("a", line=10, supported=True, judged=True)
+    b = finding("b", line=10, supported=True, judged=True)
+    assert ids(dedup_findings([a, b])) == ["a"]
+
+
+def test_unsupported_findings_keep_their_position_among_merged_ones():
     first = finding("a", line=10)
-    safe = finding("s", line=10, verdict="safe")
+    unsupported = _unsupported("s", line=10)
     dup = finding("b", line=10)
-    result = dedup_findings([first, safe, dup])
+    result = dedup_findings([first, unsupported, dup])
     assert ids(result) == ["a", "s"]
-    assert not result[0].verdict
+    assert result[0].supported is None
 
 
 def _stamped_pair(first_stamp, second_stamp):
@@ -259,31 +268,3 @@ def test_merged_finding_keeps_pr_graph_down_stamp_whatever_the_section_order(rev
 def test_merged_findings_with_the_same_pr_graph_stamp_keep_it(stamp):
     (merged,) = dedup_findings(_stamped_pair(stamp, stamp))
     assert merged.pr_graph_ok is stamp
-
-
-@pytest.mark.parametrize("reverse", [False, True], ids=["first-stamped-up", "second-stamped-up"])
-def test_merged_candidate_stays_unjudged_after_validation_when_pr_graph_went_down(
-    git_repo, reverse
-):
-    pair = list(_stamped_pair(True, False))
-    if reverse:
-        pair.reverse()
-    (merged,) = dedup_findings(pair)
-    EvidenceValidator(git_repo, "main").validate(merged)
-    assert not merged.verdict
-    assert PR_GROUNDING_CAP_MARKER not in merged.explanation
-
-
-def test_merged_candidate_grounded_in_pr_code_stays_unjudged_and_unmarked(git_repo):
-    snippet = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
-    grounded = EvidenceItem(type="code", file="app.py", content=snippet)
-    first = finding("a", line=10, file="app.py", pr_graph_ok=True)
-    second = finding(
-        "b", line=10, file="app.py", pr_graph_ok=False,
-        evidence=[grounded],
-    )
-    (merged,) = dedup_findings([first, second])
-    diffs = get_pr_diff(git_repo, "main", "pr")
-    EvidenceValidator(git_repo, "main", diffs).validate(merged)
-    assert not merged.verdict
-    assert PR_GROUNDING_CAP_MARKER not in merged.explanation

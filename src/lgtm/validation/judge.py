@@ -1,7 +1,7 @@
 """Kev-4B judge: builds the request for a candidate, calls the endpoint, records the answer.
 
-A candidate the judge fails on stays not judged (``judged`` false, no verdict,
-severity or provenance confidence); the review continues.
+A candidate the judge fails on stays not judged (``judged`` false, no support
+answer or provenance confidence, a ``not_judged_reason``); the review continues.
 """
 
 from __future__ import annotations
@@ -19,45 +19,40 @@ from lgtm.config import LGTMConfig
 logger = logging.getLogger(__name__)
 
 SYSTEM_ONE_PATH = "/v1/systemone"
-JUDGE_STATE_MAX_CHARS = 100_000
+JUDGE_STATE_MAX_CHARS = 28_000
 JUDGE_REPLY_MAX_BYTES = 1_000_000
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 
-VERDICTS = {
-    "vulnerable": "The cited code has the described flaw and an attacker can reach it.",
-    "possible": "The described flaw is plausible but the evidence does not confirm it.",
-    "safe": "The cited code does not have the described flaw.",
-    "insufficient_evidence": "The evidence is too thin or wrong to decide.",
+REASON_REQUEST_TOO_LARGE = "request-too-large"
+REASON_JUDGE_FAILED = "judge-failed"
+REASON_NO_CITED_SOURCE = "no-cited-source"
+
+SUPPORT_ANSWERS = {
+    "yes": "The cited code supports the claimed security flaw.",
+    "no": "The cited code does not support the claimed security flaw.",
 }
-SEVERITIES = ("low", "medium", "high", "critical")  # ordered, as the score question's levels
-QUESTION_VERDICT = "verdict"
-QUESTION_SEVERITY = "severity"
+QUESTION_SUPPORT = "supported"
 QUESTION_CONFIDENCE = "provenance_confidence"
 
 JudgeCall = Callable[[dict], Mapping[str, Any]]
 
 
+class RequestTooLarge(ValueError):
+    """The judge request state exceeds the bound."""
+
+
 def _questions() -> dict[str, dict]:
     return {
-        QUESTION_VERDICT: {
+        QUESTION_SUPPORT: {
             "type": "choice",
-            "instructions": "Judge whether the claimed security flaw is real, given the cited code.",
-            "criteria": VERDICTS,
-        },
-        QUESTION_SEVERITY: {
-            "type": "score",
-            "instructions": "Rate the severity of the claimed flaw if it is real.",
-            "criteria": list(SEVERITIES),
+            "instructions": "Does the cited code support the claimed security flaw?",
+            "criteria": SUPPORT_ANSWERS,
         },
         QUESTION_CONFIDENCE: {
             "type": "noul",
             "instructions": "Does the cited code actually support the claim and its citations?",
         },
     }
-
-
-def _yes_no(value: bool | None) -> str:
-    return "unknown" if value is None else "yes" if value else "no"
 
 
 def _location(item: EvidenceItem) -> str:
@@ -76,7 +71,7 @@ def build_judge_request(
     model: str,
     max_chars: int,
 ) -> dict:
-    """Judge request for one candidate; code is dropped first when the state exceeds ``max_chars``."""
+    """Judge request for one candidate; raises RequestTooLarge when the state exceeds ``max_chars``."""
     head = [
         f"Claim: {finding.explanation}",
         f"CWE: {finding.cwe_id}",
@@ -88,45 +83,35 @@ def build_judge_request(
             f"Semgrep: rule {finding.semgrep_rule_id}, severity {finding.semgrep_severity}, "
             f"message {finding.semgrep_message}"
         )
-    head.append(f"Grounding check passed: {_yes_no(finding.evidence_valid)}")
-    head.extend(f"Grounding issue: {issue}" for issue in finding.evidence_issues)
 
-    blocks: list[tuple[str, str]] = []
+    parts = list(head)
     for item in finding.evidence:
         label = f"Cited item: {_location(item)}"
         if item.type == "policy":
-            blocks.append((f"{label}\n{item.content}", ""))
-        else:
-            label += f"; grounded in PR: {_yes_no(item.grounded_in_pr)}"
-            blocks.append((label, read_code(item)))
-
-    budget = max_chars - len("\n".join(head)) - sum(len(b) + 2 for b, _ in blocks)
-    parts = list(head)
-    for text, code in blocks:
-        code = code[: max(budget, 0)]
-        budget -= len(code) + 1
-        parts.append(f"{text}\n{code}" if code else text)
-    return {"model": model, "state": "\n".join(parts)[:max_chars], "questions": _questions()}
+            parts.append(f"{label}\n{item.content}")
+            continue
+        try:
+            code = read_code(item)
+        except Exception as exc:  # noqa: BLE001 - an unreadable item is left out, the rest is still judged
+            logger.warning("Cited code unreadable for %s: %s", finding.finding_id, exc)
+            code = ""
+        parts.append(f"{label}\n{code}" if code else label)
+    state = "\n".join(parts)
+    if len(state) > max_chars:
+        raise RequestTooLarge(f"judge request is {len(state)} characters, bound {max_chars}")
+    return {"model": model, "state": state, "questions": _questions()}
 
 
 def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None:
     """Record a judge answer, or raise ValueError and change nothing when it is invalid."""
-    verdict = answer.get("verdict")
-    severity = answer.get("severity")
-    confidence = answer.get("provenance_confidence")
-    if verdict not in VERDICTS:
-        raise ValueError(f"unknown verdict: {verdict!r}")
-    if severity not in SEVERITIES:
-        raise ValueError(f"unknown severity: {severity!r}")
+    supported = answer.get(QUESTION_SUPPORT)
+    confidence = answer.get(QUESTION_CONFIDENCE)
+    if not isinstance(supported, str) or supported not in SUPPORT_ANSWERS:
+        raise ValueError(f"unknown support answer: {supported!r}")
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError(f"provenance confidence outside 0 to 1: {confidence!r}")
 
-    finding.judge_verdict = verdict
-    ungrounded = not any(item.grounded_in_pr is True for item in finding.evidence)
-    if verdict == "vulnerable" and finding.pr_graph_ok is False and ungrounded:
-        verdict = "possible"
-    finding.verdict = verdict
-    finding.severity = severity if verdict in ("vulnerable", "possible") else ""
+    finding.supported = supported == "yes"
     finding.provenance_confidence = confidence
     finding.judged = True
 
@@ -134,13 +119,9 @@ def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None
 def _parse_kev_reply(reply: Any) -> dict[str, Any]:
     """The one place that reads Kev answer fields."""
     answers = reply["answers"]
-    level = answers[QUESTION_SEVERITY]["score"]
-    if not 0 <= level <= len(SEVERITIES) - 1:
-        raise ValueError(f"severity level outside the scale: {level!r}")
     return {
-        "verdict": answers[QUESTION_VERDICT]["choice"],
-        "severity": SEVERITIES[round(level)],
-        "provenance_confidence": answers[QUESTION_CONFIDENCE]["noul"],
+        QUESTION_SUPPORT: answers[QUESTION_SUPPORT]["choice"],
+        QUESTION_CONFIDENCE: answers[QUESTION_CONFIDENCE]["noul"],
     }
 
 
@@ -182,16 +163,25 @@ def judge_candidates(
     """Judge each candidate in place; a failed call leaves only that candidate not judged."""
     judge = judge or http_judge(config)
     for finding in findings:
-        finding.verdict = ""
-        finding.judge_verdict = ""
-        finding.severity = ""
+        finding.supported = None
         finding.provenance_confidence = None
         finding.judged = False
+        finding.not_judged_reason = ""
+        finding.unsupported_reason = ""
+        if not finding.evidence:
+            finding.supported = False
+            finding.judged = True
+            finding.unsupported_reason = REASON_NO_CITED_SOURCE
+            continue
         try:
             request = build_judge_request(
                 finding, read_code, model=config.judge_model, max_chars=JUDGE_STATE_MAX_CHARS
             )
             apply_judge_answer(finding, judge(request))
+        except RequestTooLarge as exc:
+            logger.warning("Judge skipped for %s: %s", finding.finding_id, exc)
+            finding.not_judged_reason = REASON_REQUEST_TOO_LARGE
         except Exception as exc:  # noqa: BLE001 - any judge failure leaves the candidate not judged
             logger.warning("Judge failed for %s: %s", finding.finding_id, exc)
+            finding.not_judged_reason = REASON_JUDGE_FAILED
     return findings

@@ -37,7 +37,6 @@ from lgtm.config import LGTMConfig  # noqa: E402
 from lgtm.validation.judge import JudgeCall, judge_candidates  # noqa: E402
 
 LABELS = ("correct", "incorrect")
-ACTIONABLE = ("vulnerable", "possible")
 SEVERITIES = ("critical", "high", "medium", "low")
 CORRUPTIONS = ("shifted_lines", "other_file", "swapped_snippet", "flipped_snapshot")
 LINE_SHIFT = 20
@@ -66,9 +65,7 @@ def _validate_labels(unit_ids: Sequence[str], labels: dict) -> dict[str, dict]:
 
 def citation_correctness(unit_ids: Sequence[str], labels: dict, outcomes: list[dict]) -> dict:
     units = _validate_labels(unit_ids, labels)
-    judged_ids = [
-        o["unit_id"] for o in outcomes if o["judged"] and o["verdict"] in ACTIONABLE
-    ]
+    judged_ids = [o["unit_id"] for o in outcomes if o["judged"] and o["supported"]]
 
     def population(ids: Sequence[str]) -> dict:
         labelled = [units[i]["citation"] for i in ids if i in units]
@@ -101,11 +98,8 @@ def verdict_accuracy(cases: list[dict]) -> dict:
         if not case.get("expected"):
             unlabelled += 1
             continue
-        judged = [
-            {**f, "verdict": f.get("judge_verdict", "")}
-            for f in case["findings"] if f.get("judged")
-        ]
-        predicted = evaluate.predict_case_verdict(judged, case["category"])
+        judged = [f for f in case["findings"] if f.get("judged")]
+        predicted = evaluate.predict_case_verdict(judged, case["category"], judged=True)
         n += 1
         correct += evaluate.outcome_for(predicted, case["expected"]) in ("TP", "TN")
     return {
@@ -154,7 +148,7 @@ def measure_corruptions(
     judge: JudgeCall,
     other_file: str,
 ) -> list[dict]:
-    grounded = [(c, _first_code_index(c)) for c in candidates if c.evidence_valid]
+    grounded = [(c, _first_code_index(c)) for c in candidates]
     grounded = [(c, i) for c, i in grounded if i is not None]
     pairs = []
     for pos, (finding, idx) in enumerate(grounded):
@@ -210,8 +204,7 @@ def measure_judge_run(
             "finding_id": copied.finding_id,
             "judged": copied.judged,
             "latency_seconds": clock() - started,
-            "verdict": copied.verdict,
-            "judge_verdict": copied.judge_verdict,
+            "supported": copied.supported,
             "severity": copied.severity,
             "provenance_confidence": copied.provenance_confidence,
         })
@@ -238,7 +231,7 @@ def run_outcomes(run_dir: Path) -> list[dict]:
         {
             "unit_id": uid,
             "judged": bool(finding.get("judged")),
-            "verdict": finding.get("verdict", ""),
+            "supported": finding.get("supported"),
             "severity": finding.get("severity", ""),
             "provenance_confidence": finding.get("provenance_confidence"),
         }

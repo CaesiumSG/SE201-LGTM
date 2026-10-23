@@ -9,7 +9,7 @@ For every case in labels.json:
 
 Metrics: precision / recall / F1 (overall, per category, and per dev/eval
 split), false-positive rate on safe controls, evidence grounding rate,
-"grounded" metrics that only count a detection when its evidence validated,
+"grounded" metrics that only count a detection when its finding is supported,
 possible- and insufficient-evidence rates, median latency, and estimated
 tokens per PR.
 
@@ -220,28 +220,38 @@ def build_case_repo(tmp: Path, patch_path: Path) -> None:
     run(["git", "checkout", "-q", "main"], tmp)
 
 
+def is_judged_row(row: dict) -> bool:
+    """Judged-mode rows score on ``supported``; baselines and legacy rows on ``verdict``."""
+    return "pin" in row and row.get("mode", "lgtm") in JUDGED_MODES
+
+
+def finding_verdict(f: dict, judged: bool) -> str | None:
+    if judged:
+        return "vulnerable" if f.get("supported") else "safe"
+    return f.get("verdict")
+
+
 def predict_case_verdict(
-    findings: list[dict], category: str, require_grounded: bool = False
+    findings: list[dict], category: str, require_grounded: bool = False,
+    judged: bool = False,
 ) -> str:
     """Collapse per-finding verdicts into one case-level prediction.
 
     Only findings of the case's own category count (a case tests one task);
     uncategorized findings count for either. With ``require_grounded``, a
-    "vulnerable" finding only counts if its evidence passed validation —
-    an ungrounded accusation is treated as "possible".
+    verdict-keyed "vulnerable" finding only counts if it is ``supported``;
+    otherwise it is treated as "possible".
     """
     relevant = [
         f for f in findings
         if f.get("category") in (category, "", "sast", None)
     ]
-    if require_grounded:
-        relevant = [
-            {**f, "verdict": "possible"}
-            if f.get("verdict") == "vulnerable" and not f.get("evidence_valid")
-            else f
-            for f in relevant
+    verdicts = [finding_verdict(f, judged) for f in relevant]
+    if require_grounded and not judged:
+        verdicts = [
+            "possible" if v == "vulnerable" and not f.get("supported") else v
+            for v, f in zip(verdicts, relevant)
         ]
-    verdicts = [f.get("verdict") for f in relevant]
     if "vulnerable" in verdicts:
         return "vulnerable"
     if "possible" in verdicts:
@@ -291,19 +301,15 @@ def outcome_for_label(label: str, expected: str) -> str:
     return "UNCREDITED"
 
 
-def _relevant_verdicts(
-    row: dict, grounded: bool = False, files: set[str] | None = None
-) -> list:
+def _relevant_verdicts(row: dict, files: set[str] | None = None) -> list:
+    judged = is_judged_row(row)
     verdicts = []
     for f in row.get("findings", []):
         if f.get("category") not in (row["category"], "", "sast", None):
             continue
         if files is not None and f.get("file") and f["file"] not in files:
             continue
-        verdict = f.get("verdict")
-        if grounded and verdict == "vulnerable" and not f.get("evidence_valid"):
-            verdict = "possible"
-        verdicts.append(verdict)
+        verdicts.append(finding_verdict(f, judged))
     return verdicts
 
 
@@ -351,12 +357,8 @@ def _scan_failed(cov: dict) -> bool:
 
 def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     if "coverage" not in row:
-        return (
-            _findings_label(_relevant_verdicts(row)),
-            _findings_label(_relevant_verdicts(row, grounded=True)),
-            [],
-            False,
-        )
+        label = _findings_label(_relevant_verdicts(row))
+        return label, label, [], False
     cov = row["coverage"]
     if cov is None:
         return "scan_failure", "scan_failure", [], False
@@ -364,12 +366,8 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     target_ids = [s["section_id"] for s in targets]
     if row["category"] != "authz":
         files = _target_files(row)
-        return (
-            _findings_label(_relevant_verdicts(row, files=files)),
-            _findings_label(_relevant_verdicts(row, grounded=True, files=files)),
-            target_ids,
-            False,
-        )
+        label = _findings_label(_relevant_verdicts(row, files=files))
+        return label, label, target_ids, False
     if _scan_failed(cov):
         return "scan_failure", "scan_failure", target_ids, False
     if not targets:
@@ -377,9 +375,7 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     missing = any(s["status"] != "completed" for s in targets)
     files = {h["file"] for s in targets for h in s["hunks"]} | {row.get("file")}
     label = _verdict_label(_relevant_verdicts(row, files=files), missing)
-    grounded_label = _verdict_label(
-        _relevant_verdicts(row, grounded=True, files=files), missing
-    )
+    grounded_label = label
     gap = label == "detected_vulnerability" and (
         not cov["complete"] or cov["sections_failed"] > 0 or cov["hunks_leftover"] > 0
     )
@@ -406,11 +402,12 @@ def score_case(result: dict) -> dict:
         else:
             result.update(target_sections=[], coverage_gap=False)
     elif legacy:
-        result["predicted"] = predict_case_verdict(findings, result["category"])
+        judged = is_judged_row(result)
+        result["predicted"] = predict_case_verdict(findings, result["category"], judged=judged)
         result["outcome"] = outcome_for(result["predicted"], result["expected"])
         result["correct"] = result["outcome"] in ("TP", "TN")
         result["predicted_grounded"] = predict_case_verdict(
-            findings, result["category"], require_grounded=True
+            findings, result["category"], require_grounded=True, judged=judged
         )
         result["outcome_grounded"] = outcome_for(
             result["predicted_grounded"], result["expected"]
@@ -454,14 +451,15 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
     )
     try:
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        grounded = [f for f in findings if f.get("evidence_valid")]
+        judged = config.mode in JUDGED_MODES
+        grounded = [f for f in findings if f.get("supported")]
         return score_case({
             "id": case["id"],
             "category": case["category"],
             "split": case.get("split", "eval"),
             "expected": case["expected_verdict"],
             "n_findings": len(findings),
-            "verdicts": [f["verdict"] for f in findings],
+            "verdicts": [finding_verdict(f, judged) for f in findings],
             "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
@@ -583,8 +581,9 @@ def summarize(results: list[dict]) -> dict:
         # A "vulnerable" verdict in the category the case does NOT test. The
         # benchmark PRs are single-flaw, so these are unlabelled (and, on
         # inspection, spurious) alarms that case-level scoring cannot see.
+        judged = is_judged_row(r)
         return any(
-            f.get("verdict") == "vulnerable"
+            finding_verdict(f, judged) == "vulnerable"
             and f.get("category") not in (r["category"], "", "sast", None)
             for f in r["findings"]
         )
@@ -594,7 +593,7 @@ def summarize(results: list[dict]) -> dict:
     for r in results:
         (errs if result_is_error(r) else scored).append(r)
     all_findings = [f for r in scored for f in r["findings"]]
-    grounded = sum(1 for f in all_findings if f.get("evidence_valid"))
+    grounded = sum(1 for f in all_findings if f.get("supported"))
     possible = sum(1 for r in scored if r["predicted"] == "possible")
     insufficient = sum(1 for r in scored if r["predicted"] == "insufficient_evidence")
     latencies = [r["latency_seconds"] for r in scored]
@@ -614,8 +613,8 @@ def summarize(results: list[dict]) -> dict:
         "per_split": by("split"),
         "graph_states": dict(Counter(
             r.get("graph_state") or "unknown" for r in results)),
-        # Same scoring, but a "vulnerable" verdict only counts as a detection
-        # when the evidence validator accepted its citations.
+        # Same scoring in judged modes; legacy verdict rows count a detection
+        # only when the finding is supported.
         "grounded_only": {
             "overall": metrics(results, "outcome_grounded", "case_label_grounded"),
             "per_category": by("category", "outcome_grounded", "case_label_grounded"),

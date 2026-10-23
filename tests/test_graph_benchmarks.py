@@ -41,8 +41,8 @@ SUMMARY_KEYS = {
 class FakeFinding:
     def __init__(self, verdict="vulnerable", category="sqli", explanation="ok"):
         self.data = {"finding_id": f"{category}:1", "category": category,
-                     "verdict": verdict, "evidence_valid": True,
-                     "explanation": explanation}
+                     "verdict": verdict, "supported": verdict == "vulnerable",
+                     "judged": True, "explanation": explanation}
 
     def model_dump(self, exclude=None):
         return dict(self.data)

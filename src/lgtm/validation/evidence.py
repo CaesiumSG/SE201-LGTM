@@ -9,7 +9,7 @@ Verifies that every claim an agent made is grounded in reality:
 Code evidence labelled with a snapshot is checked only against the committed
 blob at that snapshot's frozen commit, with exact matching.
 
-Findings get ``evidence_valid`` and a list of ``evidence_issues``.
+Validation annotates each cited code item with ``grounded_in_pr``.
 """
 
 from __future__ import annotations
@@ -28,10 +28,6 @@ from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
 logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 0.75
-PR_GROUNDING_CAP_MARKER = (
-    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
-    "for this finding and no cited evidence validated against the PR snapshot or the diff.]"
-)
 
 
 def _normalize(text: str) -> str:
@@ -316,25 +312,10 @@ class EvidenceValidator:
         return "\n".join(lines)
 
     def validate(self, finding: AgentFinding) -> AgentFinding:
-        """Validate one finding in place and return it."""
-        issues: list[str] = []
+        """Annotate ``grounded_in_pr`` on each cited code item in place and return the finding."""
         for item in finding.evidence:
-            if item.type == "policy":
-                issues.extend(self._validate_policy_item(item))
-            else:
-                item_issues = self._validate_code_item(item)
-                item.grounded_in_pr = self._grounds_pr(item, item_issues)
-                issues.extend(item_issues)
-
-        if finding.verdict in ("vulnerable", "safe") and not finding.evidence:
-            issues.append(f"verdict {finding.verdict} provided without any evidence")
-
-        finding.evidence_issues = issues
-        finding.evidence_valid = not issues
-        if issues:
-            logger.info(
-                "Evidence issues for %s: %s", finding.finding_id, "; ".join(issues)
-            )
+            if item.type != "policy":
+                item.grounded_in_pr = self._grounds_pr(item, self._validate_code_item(item))
         return finding
 
     def validate_all(self, findings: list[AgentFinding]) -> list[AgentFinding]:

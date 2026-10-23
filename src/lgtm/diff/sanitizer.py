@@ -180,7 +180,6 @@ def detect_prompt_injections(diffs: Sequence[FileDiff]) -> list[AgentFinding]:
                                 agent="injection_detector",
                                 file=fd.path,
                                 line=lineno,
-                                evidence_valid=True,
                                 verdict="vulnerable",
                             )
                         )

@@ -44,11 +44,11 @@ def inj():
     return _load("jt_injection", BENCH / "injection" / "run_injection_bench.py")
 
 
-def _outcome(unit_id, judged=True, verdict="vulnerable", severity="high", confidence=0.5):
+def _outcome(unit_id, judged=True, supported=True, severity="high", confidence=0.5):
     return {
         "unit_id": unit_id, "judged": judged,
-        "verdict": verdict if judged else "",
-        "severity": severity if judged and verdict in ("vulnerable", "possible") else "",
+        "supported": supported if judged else None,
+        "severity": severity,
         "provenance_confidence": confidence if judged else None,
     }
 
@@ -71,11 +71,11 @@ class TestCitationCorrectness:
     def test_percent_correct_with_n_and_unlabelled_for_both_populations(self, je):
         labels = _labels(u1="correct", u2="correct", u3="incorrect", u4="incorrect")
         outcomes = [
-            _outcome("u1", verdict="vulnerable"),
-            _outcome("u2", verdict="possible"),
-            _outcome("u3", verdict="safe"),
+            _outcome("u1"),
+            _outcome("u2"),
+            _outcome("u3", supported=False),
             _outcome("u4", judged=False),
-            _outcome("u5", verdict="vulnerable"),
+            _outcome("u5"),
         ]
 
         report = self._report(je, labels, outcomes)
@@ -87,14 +87,14 @@ class TestCitationCorrectness:
         assert (judged["n"], judged["unlabelled"]) == (2, 1)
         assert judged["percent_correct"] == pytest.approx(100.0)
 
-    def test_judged_population_counts_only_vulnerable_or_possible_judged_units(self, je):
+    def test_judged_population_counts_only_supported_judged_units(self, je):
         labels = _labels(u1="correct", u2="incorrect", u3="correct", u4="correct", u5="incorrect")
         outcomes = [
-            _outcome("u1", verdict="vulnerable"),
-            _outcome("u2", verdict="possible"),
-            _outcome("u3", verdict="safe"),
-            _outcome("u4", verdict="insufficient_evidence"),
-            {**_outcome("u5", judged=False), "verdict": "vulnerable"},
+            _outcome("u1"),
+            _outcome("u2"),
+            _outcome("u3", supported=False),
+            _outcome("u4", supported=False),
+            {**_outcome("u5", judged=False), "supported": True},
         ]
 
         report = self._report(je, labels, outcomes)
@@ -136,7 +136,7 @@ class TestCitationCorrectness:
 
     def test_both_populations_come_from_one_export_and_one_labels_file(self, je):
         labels = _labels(u1="correct", u2="incorrect", u3="correct")
-        outcomes = [_outcome("u1"), _outcome("u2", verdict="safe"), _outcome("u3", judged=False)]
+        outcomes = [_outcome("u1"), _outcome("u2", supported=False), _outcome("u3", judged=False)]
 
         report = self._report(je, labels, outcomes)
 
@@ -154,12 +154,12 @@ class TestConfidenceAgreement:
         )
         outcomes = [
             _outcome("u1", confidence=0.9),
-            _outcome("u2", verdict="possible", confidence=0.7),
+            _outcome("u2", confidence=0.7),
             _outcome("u3", confidence=0.2),
             _outcome("u4", confidence=0.4),
             _outcome("u5", judged=False),
-            _outcome("u6", verdict="safe", confidence=0.8),
-            _outcome("u7", verdict="insufficient_evidence", confidence=0.6),
+            _outcome("u6", supported=False, confidence=0.8),
+            _outcome("u7", supported=False, confidence=0.6),
         ]
 
         result = je.confidence_agreement(labels, outcomes)
@@ -183,20 +183,17 @@ def _case(cid, expected, findings, category="authz"):
     return {"id": cid, "category": category, "expected": expected, "findings": findings}
 
 
-def _jf(judge_verdict, verdict=None, category="authz"):
-    return {
-        "category": category, "judged": True, "judge_verdict": judge_verdict,
-        "verdict": judge_verdict if verdict is None else verdict, "evidence_valid": True,
-    }
+def _jf(supported, category="authz"):
+    return {"category": category, "judged": True, "supported": supported}
 
 
 class TestVerdictAccuracy:
-    def test_accuracy_scores_the_judge_answer_before_the_pr_grounding_cap(self, je):
+    def test_accuracy_scores_a_case_by_whether_a_candidate_is_supported(self, je):
         cases = [
-            _case("a", "vulnerable", [_jf("vulnerable", verdict="possible")]),
-            _case("b", "safe", [_jf("safe")]),
-            _case("c", "vulnerable", [_jf("safe")]),
-            _case("d", "safe", [_jf("vulnerable", verdict="possible")]),
+            _case("a", "vulnerable", [_jf(True)]),
+            _case("b", "safe", [_jf(False)]),
+            _case("c", "vulnerable", [_jf(False)]),
+            _case("d", "safe", [_jf(True)]),
         ]
 
         result = je.verdict_accuracy(cases)
@@ -206,9 +203,9 @@ class TestVerdictAccuracy:
 
     def test_case_without_expected_verdict_is_unlabelled_and_excluded_from_this_measure_only(self, je):
         cases = [
-            _case("a", "vulnerable", [_jf("vulnerable")]),
-            _case("b", None, [_jf("vulnerable")]),
-            _case("c", "", [_jf("safe")]),
+            _case("a", "vulnerable", [_jf(True)]),
+            _case("b", None, [_jf(True)]),
+            _case("c", "", [_jf(False)]),
         ]
 
         result = je.verdict_accuracy(cases)
@@ -218,16 +215,19 @@ class TestVerdictAccuracy:
 
     @staticmethod
     def _not_judged_finding():
-        return {"category": "authz", "judged": False, "judge_verdict": "", "verdict": "vulnerable"}
+        return {
+            "category": "authz", "judged": False, "supported": None,
+            "not_judged_reason": "judge-failed", "verdict": "",
+        }
 
     def test_error_and_not_judged_cases_in_a_judged_mode_are_excluded_not_scored(self, je):
         cases = [
-            {**_case("c_ok", "vulnerable", [_jf("vulnerable")]), "mode": "lgtm"},
+            {**_case("c_ok", "vulnerable", [_jf(True)]), "mode": "lgtm"},
             {
-                **_case("c_nj", "vulnerable", [_jf("vulnerable"), self._not_judged_finding()]),
+                **_case("c_nj", "vulnerable", [_jf(True), self._not_judged_finding()]),
                 "mode": "lgtm",
             },
-            {**_case("c_err", "vulnerable", [_jf("vulnerable")]), "mode": "lgtm", "error": "boom"},
+            {**_case("c_err", "vulnerable", [_jf(True)]), "mode": "lgtm", "error": "boom"},
         ]
 
         result = je.verdict_accuracy(cases)
@@ -237,11 +237,9 @@ class TestVerdictAccuracy:
 
     @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
     def test_not_judged_case_outside_judged_modes_is_still_scored(self, je, mode):
+        baseline = {"category": "authz", "judged": False, "supported": None, "verdict": "vulnerable"}
         cases = [
-            {
-                **_case("c_nj", "vulnerable", [_jf("vulnerable"), self._not_judged_finding()]),
-                "mode": mode,
-            }
+            {**_case("c_nj", "vulnerable", [baseline, self._not_judged_finding()]), "mode": mode}
         ]
 
         result = je.verdict_accuracy(cases)
@@ -257,7 +255,7 @@ class TestSeverityAgreement:
         outcomes = [
             _outcome("u1", severity="high"),
             _outcome("u2", severity="high"),
-            _outcome("u3", severity="low", verdict="possible"),
+            _outcome("u3", severity="low"),
         ]
 
         result = je.severity_agreement(labels, outcomes)
@@ -279,7 +277,7 @@ class TestSeverityAgreement:
 
     def test_judged_unit_with_no_severity_is_not_compared(self, je):
         labels = _labels(u1=("correct", "high"), u2=("correct", "low"))
-        outcomes = [_outcome("u1", severity="high"), _outcome("u2", verdict="safe")]
+        outcomes = [_outcome("u1", severity="high"), _outcome("u2", severity="")]
 
         result = je.severity_agreement(labels, outcomes)
 
@@ -346,7 +344,7 @@ class TestCorruptedCitationsThroughTheJudge:
     def _grounded(fid, file, lines):
         return AgentFinding(
             finding_id=fid, cwe_id="CWE-89", explanation="claim", category="sqli", agent="authz",
-            file=file, line=lines[0], pr_graph_ok=True, evidence_valid=True,
+            file=file, line=lines[0], pr_graph_ok=True,
             evidence=[EvidenceItem(type="code", file=file, lines=list(lines), snapshot="pr",
                                    content=f"SNIPPET_{fid}", grounded_in_pr=True)],
         )
@@ -358,7 +356,7 @@ class TestCorruptedCitationsThroughTheJudge:
     @staticmethod
     def _judge(request):
         confidence = 0.9 if "GOOD_CODE" in request["state"] else 0.2
-        return {"verdict": "possible", "severity": "low", "provenance_confidence": confidence}
+        return {"supported": "yes", "provenance_confidence": confidence}
 
     def test_originals_and_corrupted_copies_are_judged_and_confidence_is_reported_per_type(self, je):
         candidates = [
@@ -409,13 +407,13 @@ class _Clock:
 def _candidate(fid):
     return AgentFinding(
         finding_id=fid, cwe_id="CWE-89", explanation="claim", category="sqli", agent="authz",
-        file="app.py", line=1, pr_graph_ok=True, evidence_valid=True,
+        file="app.py", line=1, pr_graph_ok=True,
         evidence=[EvidenceItem(type="code", file="app.py", lines=[1, 2], snapshot="pr",
                                content="x", grounded_in_pr=True)],
     )
 
 
-GOOD = {"verdict": "vulnerable", "severity": "high", "provenance_confidence": 0.8}
+GOOD = {"supported": "yes", "provenance_confidence": 0.8}
 
 
 def _scripted_judge(clock, script):
@@ -445,7 +443,7 @@ class TestFallbackAndLatency:
             (1, GOOD),
             (1, TimeoutError("timed out")),
             (1, GOOD),
-            (1, {"verdict": "banana"}),
+            (1, {"supported": "banana"}),
         ])
         candidates = [_candidate(f"c{i}") for i in range(6)]
 
@@ -487,22 +485,23 @@ class TestFallbackAndLatency:
         assert je.run_measures(records, mode)["fallback_rate"] is None
 
 
-def _finding(judged=True, verdict="vulnerable", category="authz"):
+def _finding(judged=True, supported=True, verdict="", category="authz"):
     return {
         "finding_id": "authz:1", "category": category, "verdict": verdict,
-        "judged": judged, "evidence_valid": True, "explanation": "claim",
+        "judged": judged, "supported": supported if judged else None,
+        "explanation": "claim",
     }
 
 
 def _not_judged(category="authz"):
-    """Candidate the judge failed on: no verdict."""
-    return _finding(judged=False, verdict="", category=category)
+    """Candidate the judge failed on: no support result."""
+    return {**_finding(judged=False, category=category), "not_judged_reason": "judge-failed"}
 
 
 def _row(cid, expected, findings, mode="lgtm", category="authz"):
     return {
         "id": cid, "category": category, "split": "dev", "expected": expected, "mode": mode,
-        "n_findings": len(findings), "verdicts": [f["verdict"] for f in findings],
+        "pin": {}, "n_findings": len(findings), "verdicts": [f["verdict"] for f in findings],
         "grounded": len(findings), "grounding_rate": 1.0, "latency_seconds": 1.0,
         "est_tokens": 10, "findings": findings,
     }
@@ -513,8 +512,8 @@ def _scored_rows(ev, mode):
         ev.score_case(_row("a", "vulnerable", [_finding()], mode)),
         ev.score_case(_row(
             "b", "vulnerable",
-            [_not_judged(), _not_judged(), _finding(verdict="safe")], mode)),
-        ev.score_case(_row("c", "safe", [_finding(verdict="safe")], mode)),
+            [_not_judged(), _not_judged(), _finding(supported=False)], mode)),
+        ev.score_case(_row("c", "safe", [_finding(supported=False)], mode)),
     ]
 
 
@@ -533,7 +532,7 @@ class TestNotJudgedExclusionInSyntheticHarness:
     def test_cases_whose_candidates_were_all_judged_are_scored_and_not_listed(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding()], mode)),
-            ev.score_case(_row("c", "safe", [_finding(verdict="safe")], mode)),
+            ev.score_case(_row("c", "safe", [_finding(supported=False)], mode)),
         ]
 
         summary = ev.summarize(rows)
@@ -625,7 +624,7 @@ class TestNotJudgedExclusionInInjectionHarness:
 
     def test_judged_mode_pair_with_every_candidate_judged_is_scored(self, inj, monkeypatch, tmp_path):
         summary = self._run(
-            inj, monkeypatch, tmp_path, "lgtm", [_finding(verdict="safe", category="sqli")])
+            inj, monkeypatch, tmp_path, "lgtm", [_finding(supported=False, category="sqli")])
 
         assert summary["originally_flagged"] == 1
         assert summary["attacks_succeeded"] == 1
@@ -694,8 +693,8 @@ def _case_repo(root: Path) -> dict:
 def _recorded_finding(finding_id, claim, evidence):
     return AgentFinding(
         finding_id=finding_id, explanation=claim, cwe_id="CWE-89", evidence=evidence,
-        verdict="possible", severity="critical", provenance_confidence=0.8734,
-        judged=True, judge_verdict="vulnerable",
+        severity="critical", provenance_confidence=0.8734,
+        judged=True, supported=True,
     ).model_dump(exclude={"raw_response"})
 
 
@@ -720,7 +719,7 @@ def _export(ce, run_dir: Path, case_id: str, case: dict, tmp_path: Path) -> list
 
 
 JUDGE_OUTPUT_KEYS = {
-    "verdict", "severity", "provenance_confidence", "judged", "judge_verdict",
+    "verdict", "severity", "provenance_confidence", "judged", "supported",
 }
 
 
@@ -938,10 +937,10 @@ class TestRunDirectoryToReport:
         case = _case_repo(tmp_path)
         evidence = [EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot="pr")]
         vulnerable = _recorded_finding("F0", "judged vulnerable", evidence)
-        safe = {**_recorded_finding("F1", "judged safe", evidence), "verdict": "safe", "judge_verdict": "safe"}
+        safe = {**_recorded_finding("F1", "judged safe", evidence), "supported": False}
         not_judged = {
             **_recorded_finding("F2", "not judged", evidence),
-            "judged": False, "verdict": "", "judge_verdict": "", "severity": "",
+            "judged": False, "supported": None, "not_judged_reason": "judge-failed",
             "provenance_confidence": None,
         }
         run_dir = tmp_path / "run"

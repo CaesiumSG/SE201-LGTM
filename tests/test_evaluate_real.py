@@ -253,7 +253,7 @@ class TestResultsAndSummary:
         class Finding:
             def model_dump(self, exclude=None):
                 return {"finding_id": "authz:1", "category": "authz",
-                        "verdict": "insufficient_evidence", "evidence_valid": False,
+                        "verdict": "insufficient_evidence",
                         "explanation": "LLM call failed: x"}
 
         class Pipeline:
@@ -380,7 +380,7 @@ class TestGraphMetadataOnRecords:
         class Finding:
             def model_dump(self, exclude=None):
                 return {"finding_id": "authz:1", "category": "authz",
-                        "verdict": verdict, "evidence_valid": True,
+                        "verdict": verdict,
                         "explanation": explanation}
 
         return type("Result", (), {"findings": [Finding()], "meta": meta})()

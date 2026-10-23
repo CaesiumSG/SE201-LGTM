@@ -13,9 +13,9 @@ from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.config import LGTMConfig
 from lgtm.validation.judge import apply_judge_answer, build_judge_request, judge_candidates
 
-VERDICTS = {"vulnerable", "possible", "safe", "insufficient_evidence"}
-SEVERITIES = {"critical", "high", "medium", "low"}
 MAX_CHARS = 200_000
+BOUND_CHARS = 28_000
+REMOVED_FIELDS = ("evidence_valid", "evidence_issues", "judge_verdict")
 
 
 def _item(file="app.py", lines=(10, 12), content="AGENT_SNIPPET", snapshot="pr", grounded=None):
@@ -31,9 +31,6 @@ def _candidate(**kwargs) -> AgentFinding:
         "cwe_id": "CWE-89",
         "explanation": "RATIONALE_SENTINEL query is built from user input",
         "evidence": [_item(grounded=True)],
-        "evidence_valid": True,
-        "evidence_issues": [],
-        "pr_graph_ok": True,
         "category": "sqli",
         "agent": "authz",
         "file": "app.py",
@@ -55,23 +52,41 @@ def _labels(criteria) -> set[str]:
     return set(criteria)
 
 
+def _answer(supported="yes", confidence=0.5) -> dict:
+    return {"supported": supported, "provenance_confidence": confidence}
+
+
+class TestRemovedFields:
+    @pytest.mark.parametrize("name", REMOVED_FIELDS)
+    def test_validator_flags_and_judge_verdict_no_longer_exist_on_a_finding(self, name):
+        assert name not in AgentFinding.model_fields
+        assert not hasattr(_candidate(), name)
+
+
 class TestJudgeRequestContent:
-    def test_request_names_the_model_and_asks_three_independent_questions(self):
+    def test_request_names_the_model_and_asks_one_support_question_and_one_confidence_question(self):
         request = _build(_candidate())
 
         assert request["model"] == "kev-test"
-        questions = request["questions"]
-        assert len(questions) == 3
-        verdict = [q for q in questions.values() if q["type"] == "choice" and _labels(q["criteria"]) == VERDICTS]
-        severity = [q for q in questions.values() if _labels(q.get("criteria") or []) == SEVERITIES]
-        confidence = [q for q in questions.values() if q["type"] == "noul"]
-        assert (len(verdict), len(severity), len(confidence)) == (1, 1, 1)
+        questions = list(request["questions"].values())
+        support = [
+            q for q in questions
+            if q["type"] == "choice" and sorted(label.lower()[0] for label in q["criteria"]) == ["n", "y"]
+        ]
+        confidence = [q for q in questions if q["type"] == "noul"]
+        assert (len(questions), len(support), len(confidence)) == (2, 1, 1)
 
     def test_state_carries_claim_cwe_and_rationale(self):
         state = _state(_candidate(cwe_id="CWE-639"))
 
         assert "RATIONALE_SENTINEL" in state
         assert "CWE-639" in state
+
+    def test_state_carries_category_and_location_of_the_finding(self):
+        state = _state(_candidate(category="CATEGORY_SENTINEL", file="svc/orders.py", line=77))
+
+        assert "CATEGORY_SENTINEL" in state
+        assert "svc/orders.py" in state
 
     def test_state_carries_code_read_at_the_cited_location_not_the_agent_snippet(self):
         finding = _candidate(evidence=[_item(content="AGENT_SNIPPET_SENTINEL", grounded=True)])
@@ -106,24 +121,12 @@ class TestJudgeRequestContent:
         assert "routes/orders.py" in state
         assert "41" in state and "47" in state
 
-    def test_state_carries_grounding_issues(self):
-        finding = _candidate(
-            evidence_valid=False, evidence_issues=["ISSUE_SENTINEL cited file does not exist"],
-        )
-
-        assert "ISSUE_SENTINEL" in _state(finding)
-
-    def test_grounding_valid_flag_is_part_of_the_request(self):
-        valid = _state(_candidate(evidence_valid=True))
-        invalid = _state(_candidate(evidence_valid=False))
-
-        assert valid != invalid
-
-    def test_per_item_pr_grounding_is_part_of_the_request(self):
+    def test_pr_grounding_never_reaches_the_request(self):
         grounded = _state(_candidate(evidence=[_item(grounded=True)]))
         ungrounded = _state(_candidate(evidence=[_item(grounded=False)]))
+        unknown = _state(_candidate(evidence=[_item(grounded=None)]))
 
-        assert grounded != ungrounded
+        assert grounded == ungrounded == unknown
 
     def test_semgrep_metadata_is_included_when_present(self):
         finding = _candidate(
@@ -150,165 +153,95 @@ class TestJudgeRequestContent:
         def read_code(item):
             raise AssertionError("policy items have no code location")
 
-        assert "policy_sentinel.md" in _state(finding, read_code=read_code)
+        state = _state(finding, read_code=read_code)
 
-
-class TestJudgeRequestBound:
-    def test_oversized_code_keeps_the_request_within_the_bound(self):
-        finding = _candidate()
-
-        state = _state(finding, read_code=lambda item: "X" * 100_000, max_chars=4_000)
-
-        assert len(state) <= 4_000
-
-    def test_claim_rationale_and_grounding_survive_oversized_code(self):
-        finding = _candidate(
-            cwe_id="CWE-ORACLE", evidence_valid=False, evidence_issues=["ISSUE_SENTINEL"],
-            evidence=[_item(file=f"f{i}.py", grounded=False) for i in range(8)],
-        )
-
-        state = _state(finding, read_code=lambda item: "X" * 100_000, max_chars=4_000)
-
-        assert "RATIONALE_SENTINEL" in state
-        assert "CWE-ORACLE" in state
-        assert "ISSUE_SENTINEL" in state
-
-    def test_code_within_the_bound_is_not_dropped(self):
-        assert "SMALL_CODE_SENTINEL" in _state(_candidate(), read_code=lambda item: "SMALL_CODE_SENTINEL")
+        assert "policy_sentinel.md" in state
+        assert "POLICY_TEXT" in state
 
 
 class TestApplyJudgeAnswer:
-    @pytest.mark.parametrize("verdict", sorted(VERDICTS))
-    def test_valid_answer_is_recorded_as_the_candidate_verdict(self, verdict):
+    @pytest.mark.parametrize("answer,expected", [("yes", True), ("no", False)])
+    def test_valid_answer_is_recorded_as_supported_yes_or_no(self, answer, expected):
         finding = _candidate()
 
-        apply_judge_answer(finding, {"verdict": verdict, "severity": "high", "provenance_confidence": 0.5})
+        apply_judge_answer(finding, _answer(answer, 0.5))
 
-        assert finding.verdict == verdict
+        assert finding.supported is expected
         assert finding.judged is True
+        assert not finding.not_judged_reason
 
     @pytest.mark.parametrize("confidence", [0, 0.0, 0.37, 1, 1.0])
     def test_provenance_confidence_in_range_is_recorded_as_given(self, confidence):
         finding = _candidate()
 
-        apply_judge_answer(finding, {"verdict": "possible", "severity": "low", "provenance_confidence": confidence})
+        apply_judge_answer(finding, _answer("yes", confidence))
 
         assert finding.provenance_confidence == confidence
 
-    @pytest.mark.parametrize("severity", sorted(SEVERITIES))
-    @pytest.mark.parametrize("verdict", ["vulnerable", "possible"])
-    def test_severity_is_recorded_for_vulnerable_and_possible(self, verdict, severity):
-        finding = _candidate()
+    @pytest.mark.parametrize("answer", ["yes", "no"])
+    @pytest.mark.parametrize("severity", ["", "low", "high", "WARNING"])
+    def test_candidate_severity_is_unchanged_by_the_answer(self, answer, severity):
+        finding = _candidate(severity=severity)
 
-        apply_judge_answer(finding, {"verdict": verdict, "severity": severity, "provenance_confidence": 0.5})
+        apply_judge_answer(finding, {**_answer(answer, 0.9), "severity": "critical"})
 
         assert finding.severity == severity
 
-    def test_grounding_result_is_still_recorded_after_judging(self):
-        finding = _candidate(
-            evidence_valid=False, evidence_issues=["ISSUE_SENTINEL"],
-            evidence=[_item(grounded=True), _item(file="b.py", grounded=False)],
-        )
+    @pytest.mark.parametrize("graph_ok", [True, False, None])
+    def test_unsupported_or_supported_is_never_capped_by_pr_grounding(self, graph_ok):
+        finding = _candidate(pr_graph_ok=graph_ok, evidence=[_item(grounded=False)])
 
-        apply_judge_answer(finding, {"verdict": "safe", "severity": "low", "provenance_confidence": 0.2})
+        apply_judge_answer(finding, _answer("yes", 0.9))
 
-        assert finding.evidence_valid is False
-        assert finding.evidence_issues == ["ISSUE_SENTINEL"]
+        assert finding.supported is True
+
+    def test_grounded_in_pr_annotation_is_unchanged_after_judging(self):
+        finding = _candidate(evidence=[_item(grounded=True), _item(file="b.py", grounded=False)])
+
+        apply_judge_answer(finding, _answer("no", 0.2))
+
         assert [i.grounded_in_pr for i in finding.evidence] == [True, False]
 
-    @pytest.mark.parametrize("verdict", ["safe", "insufficient_evidence"])
-    @pytest.mark.parametrize("severity", sorted(SEVERITIES))
-    def test_no_severity_is_recorded_for_safe_or_insufficient_evidence(self, verdict, severity):
-        finding = _candidate()
-
-        apply_judge_answer(finding, {"verdict": verdict, "severity": severity, "provenance_confidence": 0.6})
-
-        assert finding.verdict == verdict
-        assert not finding.severity
-        assert finding.provenance_confidence == 0.6
-        assert finding.judged is True
-
-
-class TestPrGroundingCap:
-    ANSWER = {"verdict": "vulnerable", "severity": "critical", "provenance_confidence": 0.9}
-
-    def test_vulnerable_is_capped_to_possible_when_graph_was_down_and_nothing_is_grounded(self):
-        finding = _candidate(
-            pr_graph_ok=False, evidence=[_item(grounded=False), _item(file="b.py", grounded=False)],
-        )
-
-        apply_judge_answer(finding, self.ANSWER)
-
-        assert finding.verdict == "possible"
-        assert finding.judge_verdict == "vulnerable"
-        assert finding.judged is True
-
-    def test_capped_candidate_keeps_the_judge_severity_and_confidence(self):
-        finding = _candidate(pr_graph_ok=False, evidence=[_item(grounded=False)])
-
-        apply_judge_answer(finding, self.ANSWER)
-
-        assert finding.severity == "critical"
-        assert finding.provenance_confidence == 0.9
-
-    def test_candidate_without_code_items_is_capped_when_graph_was_down(self):
-        policy = EvidenceItem(type="policy", source="policy.md", content="rule")
-        finding = _candidate(pr_graph_ok=False, evidence=[policy])
-
-        apply_judge_answer(finding, self.ANSWER)
-
-        assert finding.verdict == "possible"
-
-    def test_one_pr_grounded_item_exempts_the_candidate_from_the_cap(self):
-        finding = _candidate(
-            pr_graph_ok=False, evidence=[_item(grounded=False), _item(file="b.py", grounded=True)],
-        )
-
-        apply_judge_answer(finding, self.ANSWER)
-
-        assert finding.verdict == "vulnerable"
-        assert finding.judge_verdict == "vulnerable"
-
-    def test_healthy_graph_never_caps(self):
-        finding = _candidate(pr_graph_ok=True, evidence=[_item(grounded=False)])
-
-        apply_judge_answer(finding, self.ANSWER)
-
-        assert finding.verdict == "vulnerable"
-        assert finding.judge_verdict == "vulnerable"
-
-    @pytest.mark.parametrize("verdict", sorted(VERDICTS))
-    def test_judge_verdict_keeps_the_judge_answer_for_every_verdict(self, verdict):
-        finding = _candidate(pr_graph_ok=False, evidence=[_item(grounded=False)])
-
-        apply_judge_answer(finding, {**self.ANSWER, "verdict": verdict})
-
-        assert finding.judge_verdict == verdict
-
-    def test_invalid_answer_leaves_judge_verdict_empty(self):
-        finding = _candidate()
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            _answer("maybe", 0.5),
+            _answer(None, 0.5),
+            _answer(True, 0.5),
+            _answer("yes", 1.5),
+            _answer("yes", -0.1),
+            _answer("yes", "0.5"),
+            _answer("yes", True),
+            _answer("yes", None),
+            {"supported": "yes"},
+            {"provenance_confidence": 0.5},
+            {},
+        ],
+    )
+    def test_invalid_answer_raises_and_changes_nothing(self, answer):
+        finding = _candidate(severity="medium")
 
         with pytest.raises(ValueError):
-            apply_judge_answer(finding, {**self.ANSWER, "provenance_confidence": 1.5})
+            apply_judge_answer(finding, answer)
 
-        assert not finding.judge_verdict
-
-    @pytest.mark.parametrize("verdict", ["possible", "safe", "insufficient_evidence"])
-    def test_cap_never_changes_a_verdict_other_than_vulnerable(self, verdict):
-        finding = _candidate(pr_graph_ok=False, evidence=[_item(grounded=False)])
-
-        apply_judge_answer(finding, {**self.ANSWER, "verdict": verdict})
-
-        assert finding.verdict == verdict
+        assert finding.judged is False
+        assert finding.supported is None
+        assert finding.provenance_confidence is None
+        assert finding.severity == "medium"
 
 
-KEV_REPLY = {
-    "answers": {
-        "verdict": {"choice": "vulnerable"},
-        "severity": {"score": 2.0},
-        "provenance_confidence": {"noul": 0.9},
-    }
-}
+def _reply_for(request: dict, choice="yes", noul=0.9) -> bytes:
+    answers = {}
+    for qid, question in request["questions"].items():
+        if question["type"] == "noul":
+            answers[qid] = {"noul": noul}
+        else:
+            label = next((n for n in question["criteria"] if n.lower().startswith(choice[0])), choice)
+            answers[qid] = {"choice": label, "confidence": noul}
+    return json.dumps({"answers": answers}).encode()
+
+
+KEV_REPLY = _reply_for
 OVER_BOUND_PADDING = "x" * 20_000_000
 
 
@@ -322,13 +255,14 @@ class _Endpoint:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 outer.requests += 1
-                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                payload = body(json.loads(raw)) if callable(body) else body
                 self.send_response(status)
                 for name, value in (headers or {}).items():
                     self.send_header(name, value)
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(payload)
 
             do_GET = do_POST
 
@@ -366,10 +300,9 @@ def _judge_via_config(endpoint_url) -> AgentFinding:
 
 def _assert_not_judged(finding):
     assert finding.judged is False
-    assert not finding.verdict
-    assert not finding.judge_verdict
-    assert not finding.severity
-    assert not finding.provenance_confidence
+    assert finding.supported is None
+    assert finding.provenance_confidence is None
+    assert finding.not_judged_reason
 
 
 class TestJudgeEndpointIsLoopbackHttpOnly:
@@ -417,16 +350,17 @@ class TestJudgeEndpointIsLoopbackHttpOnly:
         assert all(not f.judged for f in result)
 
     def test_loopback_http_endpoint_is_judged(self, endpoints):
-        endpoint = endpoints(body=json.dumps(KEV_REPLY).encode())
+        endpoint = endpoints(body=KEV_REPLY)
 
         finding = _judge_via_config(endpoint.url)
 
         assert finding.judged is True
-        assert finding.verdict == "vulnerable"
+        assert finding.supported is True
+        assert finding.provenance_confidence == 0.9
         assert endpoint.requests == 1
 
     def test_redirect_is_not_followed_and_candidate_is_not_judged(self, endpoints):
-        target = endpoints(body=json.dumps(KEV_REPLY).encode())
+        target = endpoints(body=KEV_REPLY)
         redirector = endpoints(status=307, headers={"Location": target.url + "/v1/systemone"})
 
         finding = _judge_via_config(redirector.url)
@@ -438,8 +372,9 @@ class TestJudgeEndpointIsLoopbackHttpOnly:
 
 class TestJudgeReplySizeBound:
     def test_reply_over_the_maximum_size_leaves_candidate_not_judged(self, endpoints):
-        oversized = json.dumps({**KEV_REPLY, "padding": OVER_BOUND_PADDING}).encode()
-        endpoint = endpoints(body=oversized)
+        endpoint = endpoints(
+            body=lambda request: json.dumps({**json.loads(_reply_for(request)), "padding": OVER_BOUND_PADDING}).encode()
+        )
 
         finding = _judge_via_config(endpoint.url)
 
@@ -447,7 +382,7 @@ class TestJudgeReplySizeBound:
         _assert_not_judged(finding)
 
     def test_normal_sized_reply_is_still_judged(self, endpoints):
-        endpoint = endpoints(body=json.dumps(KEV_REPLY).encode())
+        endpoint = endpoints(body=KEV_REPLY)
 
         finding = _judge_via_config(endpoint.url)
 
@@ -482,27 +417,39 @@ def _failing_judge(request):
     raise ConnectionError("judge unreachable")
 
 
+def _recording_judge(answer=None):
+    requests = []
+
+    def judge(request):
+        requests.append(request)
+        return answer or _answer("yes", 0.8)
+
+    judge.requests = requests
+    return judge
+
+
+def _judge(findings, read_code=lambda item: "CODE", judge=None):
+    return judge_candidates(findings, read_code, LGTMConfig(), judge or _recording_judge())
+
+
 @pytest.mark.usefixtures("stub_validator")
 class TestValidateCandidatesEntry:
     def test_successful_judge_returns_the_same_candidates_with_result_fields_filled(self):
         candidates = [_candidate(finding_id="a"), _candidate(finding_id="b")]
-        answer = {"verdict": "vulnerable", "severity": "high", "provenance_confidence": 0.8}
 
-        result = _run_validation(candidates, lambda request: answer)
+        result = _run_validation(candidates, lambda request: _answer("yes", 0.8))
 
         assert [c.finding_id for c in result] == ["a", "b"]
         for finding in result:
             assert finding.judged is True
-            assert finding.verdict == "vulnerable"
-            assert finding.severity == "high"
+            assert finding.supported is True
             assert finding.provenance_confidence == 0.8
+            assert not finding.not_judged_reason
+            assert not finding.unsupported_reason
 
     def test_failed_rejudge_clears_the_earlier_judge_result(self):
         candidate = _candidate()
-        _run_validation(
-            [candidate],
-            lambda request: {"verdict": "vulnerable", "severity": "high", "provenance_confidence": 0.9},
-        )
+        _run_validation([candidate], lambda request: _answer("yes", 0.9))
         assert candidate.judged is True
 
         result = _run_validation([candidate], _failing_judge)
@@ -511,16 +458,211 @@ class TestValidateCandidatesEntry:
 
     def test_candidate_the_judge_failed_on_is_not_judged_and_others_still_are(self):
         good, bad = _candidate(finding_id="good"), _candidate(finding_id="bad")
-
         calls = iter([None, ConnectionError("down")])
 
         def judge_once_then_fail(request):
             outcome = next(calls)
             if outcome:
                 raise outcome
-            return {"verdict": "possible", "severity": "low", "provenance_confidence": 0.5}
+            return _answer("no", 0.5)
 
         result = _run_validation([good, bad], judge_once_then_fail)
 
-        assert result[0].judged is True
+        assert result[0].judged is True and result[0].supported is False
         _assert_not_judged(result[1])
+
+
+class TestJudgeFailureFallback:
+    @pytest.mark.parametrize(
+        "bad_answer",
+        [_answer("maybe", 0.5), _answer("yes", 2), {"supported": "yes"}, {}],
+    )
+    def test_invalid_answer_leaves_candidate_not_judged_with_a_reason_and_keeps_its_severity(self, bad_answer):
+        candidate = _candidate(severity="high")
+
+        _judge([candidate], judge=lambda request: bad_answer)
+
+        _assert_not_judged(candidate)
+        assert candidate.severity == "high"
+        assert candidate.not_judged_reason != "request-too-large"
+        assert not candidate.unsupported_reason
+
+    def test_judge_exception_leaves_candidate_not_judged_with_a_reason_distinct_from_request_too_large(self):
+        candidate = _candidate()
+
+        _judge([candidate], judge=_failing_judge)
+
+        _assert_not_judged(candidate)
+        assert candidate.not_judged_reason != "request-too-large"
+
+    def test_judged_candidate_has_no_not_judged_reason(self):
+        candidate = _candidate()
+
+        _judge([candidate])
+
+        assert candidate.judged is True
+        assert not candidate.not_judged_reason
+
+
+class TestRequestBound:
+    def test_over_bound_request_is_never_sent_and_the_candidate_is_not_judged_with_request_too_large(self):
+        candidate = _candidate()
+        judge = _recording_judge()
+
+        _judge([candidate], read_code=lambda item: "X" * (BOUND_CHARS * 2), judge=judge)
+
+        assert judge.requests == []
+        assert candidate.judged is False
+        assert candidate.not_judged_reason == "request-too-large"
+        assert candidate.supported is None
+        assert candidate.provenance_confidence is None
+
+    def test_over_bound_candidate_keeps_its_severity(self):
+        candidate = _candidate(severity="medium")
+
+        _judge([candidate], read_code=lambda item: "X" * (BOUND_CHARS * 2))
+
+        assert candidate.severity == "medium"
+
+    def test_other_candidates_are_still_judged_when_one_is_over_the_bound(self):
+        big = _candidate(finding_id="big", evidence=[_item(file="big.py")])
+        small = _candidate(finding_id="small", evidence=[_item(file="small.py")])
+        judge = _recording_judge()
+
+        def read_code(item):
+            return "X" * (BOUND_CHARS * 2) if item.file == "big.py" else "ok"
+
+        _judge([big, small], read_code=read_code, judge=judge)
+
+        assert len(judge.requests) == 1
+        assert big.not_judged_reason == "request-too-large"
+        assert small.judged is True and small.supported is True
+
+    def test_request_within_the_bound_is_sent_whole_without_truncation(self):
+        candidate = _candidate()
+        judge = _recording_judge()
+        code = "HEAD_SENTINEL " + "y" * 20_000 + " TAIL_SENTINEL"
+
+        _judge([candidate], read_code=lambda item: code, judge=judge)
+
+        assert len(judge.requests) == 1
+        assert code in judge.requests[0]["state"]
+        assert candidate.judged is True
+
+    def test_many_items_that_together_exceed_the_bound_are_not_judged_rather_than_trimmed(self):
+        candidate = _candidate(evidence=[_item(file=f"f{i}.py") for i in range(6)])
+        judge = _recording_judge()
+
+        _judge([candidate], read_code=lambda item: "Z" * 10_000, judge=judge)
+
+        assert judge.requests == []
+        assert candidate.not_judged_reason == "request-too-large"
+
+
+class TestNoCitedSource:
+    def test_candidate_without_evidence_is_recorded_unsupported_without_a_judge_call(self):
+        candidate = _candidate(evidence=[], severity="high")
+        judge = _recording_judge()
+
+        _judge([candidate], judge=judge)
+
+        assert judge.requests == []
+        assert candidate.unsupported_reason == "no-cited-source"
+        assert candidate.supported is False
+        assert candidate.judged is True
+        assert candidate.provenance_confidence is None
+        assert not candidate.not_judged_reason
+        assert candidate.severity == "high"
+
+    def test_stale_result_is_cleared_for_a_candidate_without_evidence(self):
+        candidate = _candidate(evidence=[], supported=True, provenance_confidence=0.9)
+
+        _judge([candidate])
+
+        assert candidate.supported is False
+        assert candidate.provenance_confidence is None
+
+    def test_candidate_with_evidence_never_gets_an_unsupported_reason(self):
+        candidate = _candidate()
+
+        _judge([candidate], judge=_recording_judge(_answer("no", 0.7)))
+
+        assert candidate.supported is False
+        assert not candidate.unsupported_reason
+
+    def test_candidate_without_evidence_does_not_stop_the_others_from_being_judged(self):
+        empty, cited = _candidate(finding_id="empty", evidence=[]), _candidate(finding_id="cited")
+        judge = _recording_judge()
+
+        _judge([empty, cited], judge=judge)
+
+        assert len(judge.requests) == 1
+        assert cited.supported is True
+
+
+class TestPolicyOnlyCandidate:
+    def test_policy_only_candidate_is_judged_with_the_cited_policy_text_as_its_source(self):
+        policy = EvidenceItem(type="policy", source="auth_policy.md", content="POLICY_TEXT_SENTINEL")
+        candidate = _candidate(evidence=[policy])
+        judge = _recording_judge(_answer("yes", 0.6))
+
+        def read_code(item):
+            raise AssertionError("policy items have no code location")
+
+        _judge([candidate], read_code=read_code, judge=judge)
+
+        assert len(judge.requests) == 1
+        assert "POLICY_TEXT_SENTINEL" in judge.requests[0]["state"]
+        assert candidate.judged is True
+        assert candidate.supported is True
+        assert not candidate.unsupported_reason
+
+
+class TestUnreadableCitedItem:
+    def test_unreadable_item_does_not_stop_other_candidates_from_being_judged(self):
+        broken = _candidate(finding_id="broken", evidence=[_item(file="gone.py")])
+        fine = _candidate(finding_id="fine")
+
+        def read_code(item):
+            if item.file == "gone.py":
+                raise FileNotFoundError(item.file)
+            return "CODE"
+
+        _judge([broken, fine], read_code=read_code)
+
+        assert fine.judged is True and fine.supported is True
+        assert broken.judged != bool(broken.not_judged_reason)
+
+    def test_readable_items_of_the_same_candidate_still_reach_the_judge(self):
+        candidate = _candidate(evidence=[_item(file="gone.py"), _item(file="ok.py")])
+        judge = _recording_judge()
+
+        def read_code(item):
+            if item.file == "gone.py":
+                raise FileNotFoundError(item.file)
+            return "READABLE_SENTINEL"
+
+        _judge([candidate], read_code=read_code, judge=judge)
+
+        assert len(judge.requests) == 1
+        assert "READABLE_SENTINEL" in judge.requests[0]["state"]
+
+
+class TestSeverityComesFromTheCandidate:
+    @pytest.mark.parametrize("answer", ["yes", "no"])
+    def test_semgrep_candidate_keeps_its_semgrep_severity_when_judged(self, answer):
+        candidate = _candidate(
+            agent="semgrep", semgrep_rule_id="rule.x", semgrep_severity="ERROR", severity="high",
+        )
+
+        _judge([candidate], judge=_recording_judge(_answer(answer, 0.7)))
+
+        assert candidate.judged is True
+        assert candidate.severity == "high"
+
+    def test_authz_candidate_without_severity_gets_none_from_the_judge(self):
+        candidate = _candidate(severity="")
+
+        _judge([candidate], judge=lambda request: {**_answer("yes", 0.9), "severity": "critical"})
+
+        assert not candidate.severity
