@@ -15,6 +15,7 @@ from typing import Any
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.config import LGTMConfig
+from lgtm.validation.cwe_criteria import CWE_CRITERIA
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,34 @@ JudgeCall = Callable[[dict], Mapping[str, Any]]
 
 class RequestTooLarge(ValueError):
     """The judge request state exceeds the bound."""
+
+
+REQUEST_FORMATS = ("current", "short_claim", "code_first", "code_only")
+SHORT_CLAIM_MAX_CHARS = 200
+
+
+def _check_format(request_format: str) -> None:
+    if request_format not in REQUEST_FORMATS:
+        raise ValueError(
+            f"unknown request format {request_format!r}; valid formats: {', '.join(REQUEST_FORMATS)}"
+        )
+
+
+def _neutral_questions(subject: str) -> dict[str, dict]:
+    return {
+        QUESTION_SUPPORT: {
+            "type": "choice",
+            "instructions": f"Looking only at the cited code, does it contain {subject}?",
+            "criteria": {
+                "yes": f"The cited code contains {subject}.",
+                "no": f"The cited code does not contain {subject}.",
+            },
+        },
+        QUESTION_CONFIDENCE: {
+            "type": "noul",
+            "instructions": "How confident are you in this answer about the cited code?",
+        },
+    }
 
 
 def _questions() -> dict[str, dict]:
@@ -70,8 +99,11 @@ def build_judge_request(
     *,
     model: str,
     max_chars: int,
+    request_format: str = "current",
 ) -> dict:
-    """Judge request for one candidate; raises RequestTooLarge when the state exceeds ``max_chars``."""
+    """Judge request for one candidate; raises RequestTooLarge when the state exceeds ``max_chars``
+    and ValueError for an unknown ``request_format``."""
+    _check_format(request_format)
     head = [
         f"Claim: {finding.explanation}",
         f"CWE: {finding.cwe_id}",
@@ -84,22 +116,39 @@ def build_judge_request(
             f"message {finding.semgrep_message}"
         )
 
-    parts = list(head)
+    cited = []
     for item in finding.evidence:
         label = f"Cited item: {_location(item)}"
         if item.type == "policy":
-            parts.append(f"{label}\n{item.content}")
+            cited.append(f"{label}\n{item.content}")
             continue
         try:
             code = read_code(item)
         except Exception as exc:  # noqa: BLE001 - an unreadable item is left out, the rest is still judged
             logger.warning("Cited code unreadable for %s: %s", finding.finding_id, exc)
             code = ""
-        parts.append(f"{label}\n{code}" if code else label)
+        cited.append(f"{label}\n{code}" if code else label)
+
+    if request_format == "current":
+        parts = head + cited
+        questions = _questions()
+    elif request_format == "code_only":
+        parts = cited
+        questions = _neutral_questions("a security flaw")
+    else:
+        criteria = CWE_CRITERIA.get(str(finding.cwe_id).strip().upper())
+        weakness = [f"Weakness: {finding.cwe_id}"] + ([f"Criteria: {criteria}"] if criteria else [])
+        if request_format == "short_claim":
+            first_line = (finding.explanation.strip().splitlines() or [""])[0]
+            claim = f"Claim: {first_line[:SHORT_CLAIM_MAX_CHARS]}"
+        else:
+            claim = f"Claim to check (it may be wrong): {finding.explanation}"
+        parts = cited + weakness + [claim]
+        questions = _neutral_questions("the weakness named under Weakness")
     state = "\n".join(parts)
     if len(state) > max_chars:
         raise RequestTooLarge(f"judge request is {len(state)} characters, bound {max_chars}")
-    return {"model": model, "state": state, "questions": _questions()}
+    return {"model": model, "state": state, "questions": questions}
 
 
 def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None:
@@ -159,8 +208,13 @@ def judge_candidates(
     read_code: Callable[[EvidenceItem], str],
     config: LGTMConfig,
     judge: JudgeCall | None = None,
+    *,
+    request_format: str = "current",
 ) -> list[AgentFinding]:
-    """Judge each candidate in place; a failed call leaves only that candidate not judged."""
+    """Judge each candidate in place; a failed call leaves only that candidate not judged.
+
+    An unknown ``request_format`` raises ValueError before any candidate is touched."""
+    _check_format(request_format)
     judge = judge or http_judge(config)
     for finding in findings:
         finding.supported = None
@@ -175,7 +229,11 @@ def judge_candidates(
             continue
         try:
             request = build_judge_request(
-                finding, read_code, model=config.judge_model, max_chars=JUDGE_STATE_MAX_CHARS
+                finding,
+                read_code,
+                model=config.judge_model,
+                max_chars=JUDGE_STATE_MAX_CHARS,
+                request_format=request_format,
             )
             apply_judge_answer(finding, judge(request))
         except RequestTooLarge as exc:

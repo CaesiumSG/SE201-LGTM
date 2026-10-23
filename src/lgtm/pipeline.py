@@ -59,6 +59,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+PRODUCTION_REQUEST_FORMAT = "current"
+
 # Heuristic SQL sink detector for the lgtm-no-sast ablation
 SQL_SINK_RE = re.compile(
     r"\.(execute|executemany|exec_driver_sql)\s*\(|text\s*\(|"
@@ -245,7 +247,11 @@ class ReviewPipeline:
         findings = validator.validate_all(findings)
         if mode in ("lgtm", "lgtm-no-sast"):
             findings = judge_candidates(
-                findings, validator.read_cited_code, self.config, self._judge
+                findings,
+                validator.read_cited_code,
+                self.config,
+                self._judge,
+                request_format=PRODUCTION_REQUEST_FORMAT,
             )
         if section_stage is not None:
             by_id = {f.finding_id: f.supported for f in findings}

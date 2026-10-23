@@ -666,3 +666,229 @@ class TestSeverityComesFromTheCandidate:
         _judge([candidate], judge=lambda request: {**_answer("yes", 0.9), "severity": "critical"})
 
         assert not candidate.severity
+
+
+FORMATS = ("current", "short_claim", "code_first", "code_only")
+NON_CURRENT = ("short_claim", "code_first", "code_only")
+CLAIM_FORMATS = ("short_claim", "code_first")
+UNAUTHORED_CWE = "CWE-99999"
+CLAIM = "CLAIMSENT the query is built from user input"
+
+
+def _request(finding, request_format, read_code=lambda item: "CODE_AT_LOCATION"):
+    return build_judge_request(
+        finding, read_code, model="kev-test", max_chars=MAX_CHARS, request_format=request_format
+    )
+
+
+def _without(text: str, *fragments: str) -> str:
+    for fragment in fragments:
+        text = text.replace(fragment, "")
+    return text
+
+
+def _questions_text(request) -> str:
+    return json.dumps(request["questions"])
+
+
+class TestRequestFormatSelection:
+    def test_omitting_the_format_builds_the_base_commit_request(self):
+        request = _build(_candidate())
+
+        assert request == {
+            "model": "kev-test",
+            "state": (
+                "Claim: RATIONALE_SENTINEL query is built from user input\n"
+                "CWE: CWE-89\n"
+                "Category: sqli\n"
+                "Location: app.py:10\n"
+                "Cited item: app.py:10-12 at pr snapshot\n"
+                "CODE_AT_LOCATION"
+            ),
+            "questions": {
+                "supported": {
+                    "type": "choice",
+                    "instructions": "Does the cited code support the claimed security flaw?",
+                    "criteria": {
+                        "yes": "The cited code supports the claimed security flaw.",
+                        "no": "The cited code does not support the claimed security flaw.",
+                    },
+                },
+                "provenance_confidence": {
+                    "type": "noul",
+                    "instructions": "Does the cited code actually support the claim and its citations?",
+                },
+            },
+        }
+
+    def test_current_format_by_name_equals_the_default_request(self):
+        assert _request(_candidate(), "current") == _build(_candidate())
+
+    def test_unknown_format_name_is_refused_naming_the_valid_formats(self):
+        with pytest.raises(Exception) as excinfo:
+            _request(_candidate(), "no_such_format")
+
+        assert all(name in str(excinfo.value) for name in FORMATS)
+
+    @pytest.mark.parametrize("request_format", NON_CURRENT)
+    def test_every_format_keeps_the_question_ids_and_answer_labels_read_from_replies(self, request_format):
+        current = _request(_candidate(), "current")["questions"]
+        other = _request(_candidate(), request_format)["questions"]
+
+        assert set(other) == set(current)
+        assert other["supported"]["type"] == "choice"
+        assert set(other["supported"]["criteria"]) == {"yes", "no"}
+        assert other["provenance_confidence"]["type"] == "noul"
+
+
+class TestCodeBeforeClaim:
+    @pytest.mark.parametrize("request_format", CLAIM_FORMATS)
+    def test_cited_code_appears_before_the_claim_text(self, request_format):
+        state = _request(_candidate(explanation=CLAIM), request_format)["state"]
+
+        assert "CODE_AT_LOCATION" in state
+        assert "CLAIMSENT" in state
+        assert state.index("CODE_AT_LOCATION") < state.index("CLAIMSENT")
+
+    def test_code_only_state_carries_the_cited_code(self):
+        state = _request(_candidate(explanation=CLAIM), "code_only")["state"]
+
+        assert "CODE_AT_LOCATION" in state
+
+
+class TestCodeFirstAndShortClaim:
+    @pytest.mark.parametrize("request_format", CLAIM_FORMATS)
+    def test_question_and_options_do_not_state_the_flaw_exists(self, request_format):
+        text = _questions_text(_request(_candidate(explanation=CLAIM), request_format))
+
+        assert "CLAIMSENT" not in text
+        assert "CWE-89" not in text
+        assert "claimed" not in text.lower()
+
+    @pytest.mark.parametrize("request_format", CLAIM_FORMATS)
+    def test_state_carries_criteria_for_the_finding_cwe(self, request_format):
+        authored = _request(_candidate(cwe_id="CWE-89"), request_format)["state"]
+        unauthored = _request(_candidate(cwe_id=UNAUTHORED_CWE), request_format)["state"]
+
+        authored_body = _without(authored, "CWE-89")
+        unauthored_body = _without(unauthored, UNAUTHORED_CWE)
+        assert len(authored_body) > len(unauthored_body)
+
+    def test_short_claim_claim_fits_on_one_line(self):
+        finding = _candidate(explanation="CLAIM_PART_A first\nCLAIM_PART_B second\nCLAIM_PART_C third")
+
+        state = _request(finding, "short_claim")["state"]
+
+        claim_lines = [ln for ln in state.splitlines() if "CLAIM_PART_" in ln]
+        assert len(claim_lines) <= 1
+
+    @pytest.mark.parametrize("request_format", CLAIM_FORMATS)
+    def test_cwe_without_authored_criteria_builds_a_request_without_criteria_text(self, request_format):
+        first = _request(_candidate(cwe_id=UNAUTHORED_CWE), request_format)
+        second = _request(_candidate(cwe_id="CWE-88888"), request_format)
+
+        assert _without(first["state"], UNAUTHORED_CWE) == _without(second["state"], "CWE-88888")
+        assert "CODE_AT_LOCATION" in first["state"]
+        assert first["model"] == "kev-test"
+
+
+class TestCodeOnly:
+    def test_request_carries_no_claim_cwe_category_or_criteria(self):
+        finding = _candidate(
+            explanation="CLAIMSENT injection flaw", cwe_id="CWE-89", category="CATEGORY_SENTINEL"
+        )
+
+        request = _request(finding, "code_only")
+        text = (request["state"] + _questions_text(request)).lower()
+
+        for forbidden in ("claimsent", "cwe-89", "category_sentinel", "injection"):
+            assert forbidden not in text
+
+    def test_request_does_not_vary_with_the_claim_cwe_or_category(self):
+        authored = _candidate(explanation="CLAIM ONE", cwe_id="CWE-89", category="sqli")
+        other = _candidate(explanation="CLAIM TWO", cwe_id=UNAUTHORED_CWE, category="other")
+
+        assert _request(authored, "code_only") == _request(other, "code_only")
+
+
+class TestEvidenceAcrossFormats:
+    @pytest.mark.parametrize("request_format", ("current", "short_claim", "code_first"))
+    def test_policy_text_is_passed_verbatim(self, request_format):
+        policy = EvidenceItem(type="policy", source="docs/POLICY.md", content="POLICY_TEXT\n  indented  line\n")
+        finding = _candidate(evidence=[_item(grounded=True), policy])
+
+        state = _request(finding, request_format)["state"]
+
+        assert "POLICY_TEXT\n  indented  line\n" in state
+        assert "docs/POLICY.md" in state
+
+    @pytest.mark.parametrize("request_format", FORMATS)
+    def test_code_is_reread_from_the_repository_not_taken_from_the_agent_snippet(self, request_format):
+        finding = _candidate(evidence=[_item(content="AGENT_SNIPPET_SENTINEL", grounded=True)])
+        seen = []
+
+        def read_code(item):
+            seen.append((item.file, item.lines, item.snapshot))
+            return "REAL_CODE_SENTINEL"
+
+        state = _request(finding, request_format, read_code=read_code)["state"]
+
+        assert "REAL_CODE_SENTINEL" in state
+        assert "AGENT_SNIPPET_SENTINEL" not in state
+        assert seen == [("app.py", [10, 12], "pr")]
+
+
+class TestJudgingInEachFormat:
+    @pytest.mark.parametrize("request_format", FORMATS)
+    def test_rejecting_answer_yields_a_rejected_result(self, request_format):
+        candidate = _candidate()
+
+        judge_candidates(
+            [candidate], lambda item: "CODE", LGTMConfig(), _recording_judge(_answer("no", 0.7)),
+            request_format=request_format,
+        )
+
+        assert (candidate.judged, candidate.supported, candidate.provenance_confidence) == (True, False, 0.7)
+
+    @pytest.mark.parametrize("request_format", FORMATS)
+    def test_accepting_answer_yields_an_accepted_result(self, request_format):
+        candidate = _candidate()
+
+        judge_candidates(
+            [candidate], lambda item: "CODE", LGTMConfig(), _recording_judge(_answer("yes", 0.9)),
+            request_format=request_format,
+        )
+
+        assert (candidate.judged, candidate.supported, candidate.provenance_confidence) == (True, True, 0.9)
+
+    @pytest.mark.parametrize("request_format", FORMATS)
+    def test_judge_receives_the_request_built_in_that_format(self, request_format):
+        judge = _recording_judge()
+
+        judge_candidates(
+            [_candidate()], lambda item: "CODE_AT_LOCATION", LGTMConfig(), judge, request_format=request_format
+        )
+
+        expected = _request(_candidate(), request_format)
+        assert [r["state"] for r in judge.requests] == [expected["state"]]
+        assert judge.requests[0]["questions"] == expected["questions"]
+
+    def test_omitting_the_format_sends_the_current_request(self):
+        judge = _recording_judge()
+
+        judge_candidates([_candidate()], lambda item: "CODE_AT_LOCATION", LGTMConfig(), judge)
+
+        assert [r["state"] for r in judge.requests] == [_request(_candidate(), "current")["state"]]
+
+    def test_unknown_format_is_refused_naming_the_valid_formats_and_the_judge_is_not_called(self):
+        candidate = _candidate()
+        judge = _recording_judge()
+
+        with pytest.raises(Exception) as excinfo:
+            judge_candidates(
+                [candidate], lambda item: "CODE", LGTMConfig(), judge, request_format="no_such_format"
+            )
+
+        assert all(name in str(excinfo.value) for name in FORMATS)
+        assert judge.requests == []
+        assert candidate.judged is False
