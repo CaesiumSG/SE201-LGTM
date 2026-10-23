@@ -353,14 +353,14 @@ python benchmark/injection/run_injection_bench.py --mode lgtm \
 | A: sast-only | 0% (0/3) | Semgrep ignores comments and docstrings |
 | B: llm-only | 0% (0/3) | Still flagged all 3 SQLi cases |
 | C: lgtm, mitigations off (`--no-strip-comments --no-detect-injection`) | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
-| **C: lgtm, default (mitigations on)** | **__MITIGATED_ASR__** | __MITIGATED_WHAT__ |
+| **C: lgtm, default (mitigations on)** | **0% (0/6)** | All 6 originals flagged, all 6 injected twins still flagged; every own-category agent verdict stayed `vulnerable` even before the detector's finding is counted |
 
 Only the 3 SQLi attacks are counted: none of the modes flagged the 3 authz
 originals as `vulnerable` in this harness, so no authz attack could succeed.
 The committed run files in `benchmark/injection/results/` cover every row:
 `lgtm/` is the unmitigated run and `lgtm-mitigated/` the default
 configuration. Since 23 Oct the mitigations are on by default in the lgtm
-modes; on the Shoply dev split they changed __DEV_REGRESSION__ (see
+modes; on the Shoply dev split they changed no case outcome (F1 1.00 in both arms) and cut off-category alarms from 11 to 10 (see
 [`docs/prompt-injection.md`](docs/prompt-injection.md) §7).
 
 ### 4. Field trial on ordinary merged PRs

@@ -413,6 +413,45 @@ here.
 > number from a different tree, scoring rule and case set. The merge was
 > only possible once the old behaviour was reachable again behind flags and
 > every number was either traceable to a committed run or marked pending.
+## Round 9: prompt-injection mitigations on by default, dev split only (23 Oct, checkpoint pipeline)
+
+**Measured on the checkpoint pipeline** (`main` at `4fc0999`, before round 8); the
+defaults carry over to the section pipeline and are re-measured with it in the
+pending cluster run.
+
+**Change:** `strip_comments` and `detect_prompt_injection` (Brian's
+mitigations, see [`prompt-injection.md`](prompt-injection.md)) default to
+on in the `lgtm` and `lgtm-no-sast` modes. The `llm-only` baseline is
+untouched. Data: `benchmark/runs/run7-mitigation-defaults/` (dev split,
+both arms from one frozen tree at `4fc0999`) and
+`benchmark/injection/results/lgtm-mitigated/`.
+
+| Arm (dev, n = 18) | Case F1 | Off-category alarms | Grounding | Median latency |
+|---|---|---|---|---|
+| control (mitigations off) | 1.00 | 11 / 18 | 0.94 | 28.8s |
+| mitigations on | 1.00 | 10 / 18 | 0.89 | 28.8s |
+
+Injection suite, mitigations on: attack success rate **0% (0/6)** (was
+100% of 3 unmitigated).
+
+### What worked / what didn't
+
+- ✅ Same outcome on all 18 dev cases; no new false alarm, no lost
+  detection, no latency cost. The detector fired on no ordinary case.
+- ✅ With comments stripped the triage agent keeps its verdict on its own;
+  the detector's extra finding is a second line of defence, not the reason
+  the attacks fail.
+- ⚠️ Grounding fell from 0.94 to 0.89: snippets the model quotes from the
+  stripped diff no longer match lines that carried an inline comment. The
+  validator reads the real file, so the citation is right and the match is
+  what fails. A comment-insensitive snippet match would fix the metric.
+
+### Learning
+
+> **A guardrail that changes the model's input needs the same regression
+> run as a prompt change.** Stripping comments could have removed context
+> the agents relied on. It didn't here, but we only know that because we
+> ran the control arm from the same frozen tree.
 
 ---
 
