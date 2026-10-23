@@ -28,7 +28,7 @@ SCRIPT = {
     "claim also supported": (True, 0.6),
     "claim judge down": None,
 }
-LABELS = {"claim supported": "correct", "claim unsupported": "incorrect", "claim also supported": "incorrect"}
+LABELS = {"claim supported": "yes", "claim unsupported": "no", "claim also supported": "no"}
 
 
 class _FakeKev(BaseHTTPRequestHandler):
@@ -151,20 +151,20 @@ def test_replay_reports_both_populations_over_the_same_unit_ids_from_one_export_
     by_claim = dict(zip(SCRIPT, frozen_ids))
     labels = tmp_path / "labels.json"
     labels.write_text(json.dumps({"units": {
-        by_claim[claim]: {"citation": label} for claim, label in LABELS.items()
+        by_claim[claim]: {"supports": label} for claim, label in LABELS.items()
     }}), encoding="utf-8")
 
     before = _cli("judge_eval.py", frozen_dir, tmp_path / "export.json", labels)
     after = _cli("judge_eval.py", judged_dir, tmp_path / "export.json", labels)
 
     assert before.returncode == 0 and after.returncode == 0, before.stderr + after.stderr
-    before_report = json.loads(before.stdout)["citation_correctness"]
-    after_report = json.loads(after.stdout)["citation_correctness"]
+    before_report = json.loads(before.stdout)["citation_support"]
+    after_report = json.loads(after.stdout)["citation_support"]
     assert after_report["before_judging"] == before_report["before_judging"]
     assert after_report["before_judging"]["n"] == 3
     assert after_report["before_judging"]["unlabelled"] == 1
-    assert after_report["before_judging"]["percent_correct"] == pytest.approx(100 / 3)
-    assert after_report["judged"] == {"n": 2, "unlabelled": 0, "percent_correct": 50.0}
+    assert after_report["before_judging"]["percent_yes"] == pytest.approx(100 / 3)
+    assert after_report["judged"] == {"n": 2, "unlabelled": 0, "percent_yes": 50.0}
     assert before_report["judged"]["n"] == 0
 
 

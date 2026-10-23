@@ -1,5 +1,5 @@
-"""Unit tests for judge evaluation: citation correctness, judge-quality measures, corrupted
-citations, fallback and latency, and not-judged case exclusion in the three harnesses."""
+"""Unit tests for judge evaluation: citation support, judge-quality measures, support
+perturbations, fallback and latency, and not-judged case exclusion in the three harnesses."""
 
 from __future__ import annotations
 
@@ -44,32 +44,27 @@ def inj():
     return _load("jt_injection", BENCH / "injection" / "run_injection_bench.py")
 
 
-def _outcome(unit_id, judged=True, supported=True, severity="high", confidence=0.5):
+def _outcome(unit_id, judged=True, supported=True, confidence=0.5):
     return {
         "unit_id": unit_id, "judged": judged,
         "supported": supported if judged else None,
-        "severity": severity,
         "provenance_confidence": confidence if judged else None,
     }
 
 
 def _labels(**units):
-    """_labels(u1="correct", u2=("incorrect", "high")) -> labels file content."""
-    entries = {}
-    for unit_id, spec in units.items():
-        label, severity = spec if isinstance(spec, tuple) else (spec, None)
-        entries[unit_id] = {"citation": label, **({"severity": severity} if severity else {})}
-    return {"units": entries}
+    """_labels(u1="yes", u2="no") -> labels file content."""
+    return {"units": {unit_id: {"supports": label} for unit_id, label in units.items()}}
 
 
-class TestCitationCorrectness:
+class TestCitationSupport:
     UNITS = ["u1", "u2", "u3", "u4", "u5"]
 
     def _report(self, je, labels, outcomes):
-        return je.citation_correctness(self.UNITS, labels, outcomes)
+        return je.citation_support(self.UNITS, labels, outcomes)
 
-    def test_percent_correct_with_n_and_unlabelled_for_both_populations(self, je):
-        labels = _labels(u1="correct", u2="correct", u3="incorrect", u4="incorrect")
+    def test_percent_yes_with_n_and_unlabelled_for_both_populations(self, je):
+        labels = _labels(u1="yes", u2="yes", u3="no", u4="no")
         outcomes = [
             _outcome("u1"),
             _outcome("u2"),
@@ -82,13 +77,13 @@ class TestCitationCorrectness:
 
         before = report["before_judging"]
         assert (before["n"], before["unlabelled"]) == (4, 1)
-        assert before["percent_correct"] == pytest.approx(50.0)
+        assert before["percent_yes"] == pytest.approx(50.0)
         judged = report["judged"]
         assert (judged["n"], judged["unlabelled"]) == (2, 1)
-        assert judged["percent_correct"] == pytest.approx(100.0)
+        assert judged["percent_yes"] == pytest.approx(100.0)
 
-    def test_judged_population_counts_only_supported_judged_units(self, je):
-        labels = _labels(u1="correct", u2="incorrect", u3="correct", u4="correct", u5="incorrect")
+    def test_judged_population_counts_only_units_the_judge_found_supported(self, je):
+        labels = _labels(u1="yes", u2="no", u3="yes", u4="yes", u5="no")
         outcomes = [
             _outcome("u1"),
             _outcome("u2"),
@@ -100,30 +95,33 @@ class TestCitationCorrectness:
         report = self._report(je, labels, outcomes)
 
         assert report["judged"]["n"] == 2
-        assert report["judged"]["percent_correct"] == pytest.approx(50.0)
+        assert report["judged"]["percent_yes"] == pytest.approx(50.0)
         assert report["before_judging"]["n"] == 5
 
     def test_unlabelled_units_are_counted_and_do_not_fail_the_report(self, je):
-        report = self._report(je, _labels(u1="correct"), [_outcome(u) for u in self.UNITS])
+        report = self._report(je, _labels(u1="yes"), [_outcome(u) for u in self.UNITS])
 
         assert report["before_judging"]["n"] == 1
         assert report["before_judging"]["unlabelled"] == 4
-        assert report["before_judging"]["percent_correct"] == pytest.approx(100.0)
+        assert report["before_judging"]["percent_yes"] == pytest.approx(100.0)
 
     def test_population_without_labelled_units_reports_no_percentage(self, je):
         report = self._report(je, _labels(), [_outcome(u) for u in self.UNITS])
 
         assert report["judged"]["n"] == 0
         assert report["judged"]["unlabelled"] == 5
-        assert report["judged"]["percent_correct"] is None
+        assert report["judged"]["percent_yes"] is None
 
     @pytest.mark.parametrize(
         "labels,offender",
         [
-            (_labels(u1="correct", ghost="correct"), "ghost"),
-            ({"units": {"u1": {"citation": "maybe"}}}, "u1"),
-            ({"units": {"u1": {"citation": "Correct"}}}, "u1"),
-            ({"units": {"u1": {"citation": None}}}, "u1"),
+            (_labels(u1="yes", ghost="yes"), "ghost"),
+            ({"units": {"u1": {"supports": "maybe"}}}, "u1"),
+            ({"units": {"u1": {"supports": "Yes"}}}, "u1"),
+            ({"units": {"u1": {"supports": "correct"}}}, "u1"),
+            ({"units": {"u1": {"supports": True}}}, "u1"),
+            ({"units": {"u1": {"supports": None}}}, "u1"),
+            ({"units": {"u1": {}}}, "u1"),
         ],
     )
     def test_labels_file_with_unknown_id_or_bad_label_stops_naming_the_entry(
@@ -135,7 +133,7 @@ class TestCitationCorrectness:
         assert offender in str(exc.value)
 
     def test_both_populations_come_from_one_export_and_one_labels_file(self, je):
-        labels = _labels(u1="correct", u2="incorrect", u3="correct")
+        labels = _labels(u1="yes", u2="no", u3="yes")
         outcomes = [_outcome("u1"), _outcome("u2", supported=False), _outcome("u3", judged=False)]
 
         report = self._report(je, labels, outcomes)
@@ -147,10 +145,10 @@ class TestCitationCorrectness:
 
 
 class TestConfidenceAgreement:
-    def test_mean_confidence_for_correct_and_incorrect_units_with_n(self, je):
+    def test_mean_confidence_for_yes_and_no_units_with_n(self, je):
         labels = _labels(
-            u1="correct", u2="correct", u3="incorrect", u4="incorrect", u5="incorrect",
-            u6="correct", u7="incorrect",
+            u1="yes", u2="yes", u3="no", u4="no", u5="no",
+            u6="yes", u7="no",
         )
         outcomes = [
             _outcome("u1", confidence=0.9),
@@ -164,19 +162,19 @@ class TestConfidenceAgreement:
 
         result = je.confidence_agreement(labels, outcomes)
 
-        assert result["correct"]["n"] == 3
-        assert result["correct"]["mean"] == pytest.approx(0.8)
-        assert result["incorrect"]["n"] == 3
-        assert result["incorrect"]["mean"] == pytest.approx(0.4)
+        assert result["yes"]["n"] == 3
+        assert result["yes"]["mean"] == pytest.approx(0.8)
+        assert result["no"]["n"] == 3
+        assert result["no"]["mean"] == pytest.approx(0.4)
 
     def test_unlabelled_units_do_not_enter_either_mean(self, je):
         outcomes = [_outcome("u1", confidence=0.9), _outcome("u2", confidence=0.1)]
 
-        result = je.confidence_agreement(_labels(u1="correct"), outcomes)
+        result = je.confidence_agreement(_labels(u1="yes"), outcomes)
 
-        assert result["correct"] == {"mean": pytest.approx(0.9), "n": 1}
-        assert result["incorrect"]["n"] == 0
-        assert result["incorrect"]["mean"] is None
+        assert result["yes"] == {"mean": pytest.approx(0.9), "n": 1}
+        assert result["no"]["n"] == 0
+        assert result["no"]["mean"] is None
 
 
 def _case(cid, expected, findings, category="authz"):
@@ -247,153 +245,197 @@ class TestVerdictAccuracy:
         assert (result["n"], result["excluded"]) == (1, 0)
 
 
-class TestSeverityAgreement:
-    def test_exact_agreement_with_n_over_judged_units_with_a_severity_label(self, je):
-        labels = _labels(
-            u1=("correct", "high"), u2=("correct", "medium"), u3=("correct", "low"),
-        )
+class TestSupportedAgreement:
+    def test_share_of_judged_units_whose_supported_answer_matches_the_label_with_n(self, je):
+        labels = _labels(u1="yes", u2="no", u3="yes", u4="no")
         outcomes = [
-            _outcome("u1", severity="high"),
-            _outcome("u2", severity="high"),
-            _outcome("u3", severity="low"),
+            _outcome("u1"),
+            _outcome("u2", supported=False),
+            _outcome("u3", supported=False),
+            _outcome("u4"),
         ]
 
-        result = je.severity_agreement(labels, outcomes)
+        result = je.supported_agreement(labels, outcomes)
 
-        assert (result["n"], result["agree"]) == (3, 2)
-        assert result["agreement"] == pytest.approx(2 / 3)
+        assert (result["n"], result["agree"]) == (4, 2)
+        assert result["agreement"] == pytest.approx(0.5)
 
-    def test_correct_unit_without_severity_label_is_unlabelled_and_excluded_from_this_measure_only(self, je):
-        labels = _labels(u1=("correct", "high"), u2="correct", u3="incorrect")
-        outcomes = [_outcome("u1", severity="high"), _outcome("u2"), _outcome("u3")]
-
-        severity = je.severity_agreement(labels, outcomes)
-        citation = je.citation_correctness(["u1", "u2", "u3"], labels, outcomes)
-
-        assert (severity["n"], severity["unlabelled"]) == (1, 1)
-        assert severity["agreement"] == pytest.approx(1.0)
-        assert citation["before_judging"]["n"] == 3
-        assert citation["before_judging"]["unlabelled"] == 0
-
-    def test_judged_unit_with_no_severity_is_not_compared(self, je):
-        labels = _labels(u1=("correct", "high"), u2=("correct", "low"))
-        outcomes = [_outcome("u1", severity="high"), _outcome("u2", severity="")]
-
-        result = je.severity_agreement(labels, outcomes)
-
-        assert result["n"] == 1
-
-
-class TestCorruptedCitations:
-    ITEM = {"file": "app/orders.py", "lines": [10, 12], "content": "ORIGINAL_SNIPPET", "snapshot": "pr"}
-    DONOR = {"file": "app/users.py", "lines": [3, 4], "content": "DONOR_SNIPPET", "snapshot": "base"}
-
-    def _copies(self, je):
-        return je.corrupt_citation(dict(self.ITEM), dict(self.DONOR), "app/other.py")
-
-    def test_one_known_incorrect_copy_per_corruption_type(self, je):
-        copies = self._copies(je)
-
-        assert sorted(c["corruption"] for c in copies) == [
-            "flipped_snapshot", "other_file", "shifted_lines", "swapped_snippet",
-        ]
-        assert all(c["known_incorrect"] is True for c in copies)
-
-    def test_each_copy_changes_only_its_own_field(self, je):
-        by_type = {c["corruption"]: c for c in self._copies(je)}
-
-        assert by_type["shifted_lines"]["lines"] != self.ITEM["lines"]
-        assert by_type["shifted_lines"]["file"] == self.ITEM["file"]
-        assert by_type["shifted_lines"]["snapshot"] == self.ITEM["snapshot"]
-        assert by_type["other_file"]["file"] == "app/other.py"
-        assert by_type["other_file"]["lines"] == self.ITEM["lines"]
-        assert by_type["swapped_snippet"]["content"] == "DONOR_SNIPPET"
-        assert by_type["swapped_snippet"]["file"] == self.ITEM["file"]
-        assert by_type["flipped_snapshot"]["snapshot"] == "base"
-        assert by_type["flipped_snapshot"]["content"] == self.ITEM["content"]
-
-    def test_original_citation_is_not_modified(self, je):
-        item = dict(self.ITEM)
-
-        je.corrupt_citation(item, dict(self.DONOR), "app/other.py")
-
-        assert item == self.ITEM
-
-    def test_report_states_original_and_corrupted_confidence_per_corruption_type(self, je):
-        pairs = [
-            {"corruption": "shifted_lines", "original": 0.9, "corrupted": 0.5},
-            {"corruption": "shifted_lines", "original": 0.7, "corrupted": 0.3},
-            {"corruption": "other_file", "original": 0.8, "corrupted": 0.1},
-            {"corruption": "other_file", "original": 0.6, "corrupted": None},
+    def test_unlabelled_and_not_judged_units_are_excluded_and_counted(self, je):
+        labels = _labels(u1="yes", u2="no", u4="yes")
+        outcomes = [
+            _outcome("u1"),
+            _outcome("u2", judged=False),
+            _outcome("u3"),
+            _outcome("u4", judged=False),
+            _outcome("u5", judged=False),
         ]
 
-        report = je.corruption_report(pairs)
+        result = je.supported_agreement(labels, outcomes)
 
-        assert report["shifted_lines"]["n"] == 2
-        assert report["shifted_lines"]["original_mean"] == pytest.approx(0.8)
-        assert report["shifted_lines"]["corrupted_mean"] == pytest.approx(0.4)
-        assert report["other_file"]["n"] == 1
-        assert report["other_file"]["original_mean"] == pytest.approx(0.8)
-        assert report["other_file"]["corrupted_mean"] == pytest.approx(0.1)
+        assert (result["n"], result["agree"]) == (1, 1)
+        assert result["unlabelled"] == 1
+        assert result["not_judged"] == 3
+        assert result["agreement"] == pytest.approx(1.0)
+
+    def test_no_judged_labelled_unit_reports_no_agreement(self, je):
+        result = je.supported_agreement(_labels(u1="yes"), [_outcome("u1", judged=False)])
+
+        assert result["n"] == 0
+        assert result["agreement"] is None
 
 
-class TestCorruptedCitationsThroughTheJudge:
-    LOCATIONS = {("app/orders.py", (10, 12), "pr"), ("app/users.py", (3, 4), "pr")}
+def _not_judged_with(reason):
+    return {**_finding(judged=False), "not_judged_reason": reason}
+
+
+class TestNotJudgedByReason:
+    def test_counts_per_reason_with_request_too_large_distinct_from_judge_failures(self, je):
+        findings = [
+            _not_judged_with("request-too-large"),
+            _not_judged_with("judge-failed"),
+            _not_judged_with("judge-failed"),
+            _finding(),
+            _finding(supported=False),
+        ]
+
+        counts = je.not_judged_by_reason(findings)
+
+        assert counts == {"request-too-large": 1, "judge-failed": 2}
+
+    def test_run_with_every_candidate_judged_has_no_reasons(self, je):
+        assert je.not_judged_by_reason([_finding(), _finding(supported=False)]) == {}
+
+
+class TestSupportPerturbations:
+    CLAIMS = {"claim a": "a.py", "claim b": "b.py", "claim c": "elsewhere.py"}
 
     @staticmethod
-    def _grounded(fid, file, lines):
+    def _candidate(fid, claim, file, with_citation=True):
+        evidence = [EvidenceItem(type="code", file=file, lines=[1, 2], snapshot="pr",
+                                 content="agent snippet", grounded_in_pr=True)]
         return AgentFinding(
-            finding_id=fid, cwe_id="CWE-89", explanation="claim", category="sqli", agent="authz",
-            file=file, line=lines[0], pr_graph_ok=True,
-            evidence=[EvidenceItem(type="code", file=file, lines=list(lines), snapshot="pr",
-                                   content=f"SNIPPET_{fid}", grounded_in_pr=True)],
+            finding_id=fid, cwe_id="CWE-639", explanation=claim, category="authz", agent="authz",
+            file=file, line=1, pr_graph_ok=True, evidence=evidence if with_citation else [],
         )
 
-    def _read_code(self, item):
-        known = (item.file, tuple(item.lines or ()), item.snapshot) in self.LOCATIONS
-        return "GOOD_CODE" if known else "BAD_CODE"
-
-    @staticmethod
-    def _judge(request):
-        confidence = 0.9 if "GOOD_CODE" in request["state"] else 0.2
-        return {"supported": "yes", "provenance_confidence": confidence}
-
-    def test_originals_and_corrupted_copies_are_judged_and_confidence_is_reported_per_type(self, je):
-        candidates = [
-            self._grounded("a", "app/orders.py", (10, 12)),
-            self._grounded("b", "app/users.py", (3, 4)),
+    def _candidates(self):
+        return [
+            self._candidate("a", "claim a", "a.py"),
+            self._candidate("b", "claim b", "b.py"),
+            self._candidate("c", "claim c", "c.py"),
         ]
 
-        pairs = je.measure_corruptions(
-            candidates, self._read_code, LGTMConfig(), self._judge, other_file="app/other.py")
-        report = je.corruption_report(pairs)
+    @staticmethod
+    def _read_code(item):
+        if item.file == "gone.py":
+            raise FileNotFoundError(item.file)
+        return f"CODE_OF_{item.file}"
 
-        assert set(report) == {"shifted_lines", "other_file", "swapped_snippet", "flipped_snapshot"}
-        for corruption, row in report.items():
-            assert row["n"] == 2, corruption
-            assert row["original_mean"] == pytest.approx(0.9), corruption
-        for corruption in ("shifted_lines", "other_file", "flipped_snapshot"):
-            assert report[corruption]["corrupted_mean"] == pytest.approx(0.2), corruption
+    def _judge(self, request):
+        claim = request["state"].splitlines()[0].removeprefix("Claim: ")
+        expected = self.CLAIMS.get(claim)
+        supported = expected is not None and f"CODE_OF_{expected}" in request["state"]
+        return {"supported": "yes" if supported else "no",
+                "provenance_confidence": 0.9 if supported else 0.2}
 
-    def test_candidate_the_judge_fails_on_is_left_out_of_the_report_and_the_run_completes(self, je):
-        candidates = [self._grounded("a", "app/orders.py", (10, 12))]
+    @staticmethod
+    def _unrelated(finding):
+        return "UNRELATED_CODE"
 
-        def failing(request):
-            raise ConnectionError("unreachable")
+    @staticmethod
+    def _safe_twin(finding):
+        return "SAFE_TWIN_CODE"
 
-        pairs = je.measure_corruptions(
-            candidates, self._read_code, LGTMConfig(), failing, other_file="app/other.py")
+    def _measure(self, je, candidates, judge=None, safe_twin=None):
+        return je.measure_perturbations(
+            candidates, self._read_code, LGTMConfig(), judge or self._judge,
+            unrelated_code=self._unrelated, safe_twin_code=safe_twin or self._safe_twin,
+        )
 
-        assert all(row["n"] == 0 for row in je.corruption_report(pairs).values())
+    def test_one_known_unsupported_copy_per_perturbation_for_every_judged_original(self, je):
+        measured = self._measure(je, self._candidates())
+
+        by_type = {}
+        for record in measured["records"]:
+            by_type.setdefault(record["perturbation"], []).append(record)
+        assert set(by_type) == {"unrelated_code", "mutated_claim", "safe_twin_code"}
+        assert all(len(records) == 3 for records in by_type.values())
+        assert all(r["known_unsupported"] is True for r in measured["records"])
+
+    def test_report_states_support_rate_and_confidence_drop_per_perturbation_with_n(self, je):
+        report = je.perturbation_report(self._measure(je, self._candidates()))
+
+        assert set(report) == {"unrelated_code", "mutated_claim", "safe_twin_code"}
+        for name, row in report.items():
+            assert row["n"] == 3, name
+            assert row["support_rate_drop"] == pytest.approx(2 / 3), name
+            assert row["confidence_drop"] == pytest.approx((0.9 + 0.9 + 0.2) / 3 - 0.2), name
+
+    def test_perturbation_the_judge_still_supports_shows_no_drop(self, je):
+        def credulous(request):
+            return {"supported": "yes", "provenance_confidence": 0.9}
+
+        report = je.perturbation_report(self._measure(je, self._candidates(), judge=credulous))
+
+        for name, row in report.items():
+            assert row["n"] == 3, name
+            assert row["support_rate_drop"] == pytest.approx(0), name
+            assert row["confidence_drop"] == pytest.approx(0), name
+
+    def test_safe_twin_is_skipped_and_counted_for_a_candidate_without_a_fixed_variant(self, je):
+        def twin_for_a_only(finding):
+            return "SAFE_TWIN_CODE" if finding.finding_id == "a" else None
+
+        report = je.perturbation_report(
+            self._measure(je, self._candidates(), safe_twin=twin_for_a_only))
+
+        assert (report["safe_twin_code"]["n"], report["safe_twin_code"]["skipped"]) == (1, 2)
+        assert report["unrelated_code"]["n"] == 3
+        assert report["mutated_claim"]["n"] == 3
+
+    def test_original_the_judge_fails_on_is_left_out_and_the_run_completes(self, je):
+        def fails_on_claim_a(request):
+            if request["state"].startswith("Claim: claim a\n"):
+                raise ConnectionError("unreachable")
+            return self._judge(request)
+
+        report = je.perturbation_report(self._measure(je, self._candidates(), judge=fails_on_claim_a))
+
+        assert all(row["n"] == 2 for row in report.values())
+
+    def test_perturbed_copy_the_judge_fails_on_is_left_out_of_its_perturbation_only(self, je):
+        def fails_on_mutated_claim_of_b(request):
+            if request["state"].startswith(f"Claim: {je.MUTATED_CLAIM}\n") and "CODE_OF_b.py" in request["state"]:
+                raise ConnectionError("unreachable")
+            return self._judge(request)
+
+        report = je.perturbation_report(
+            self._measure(je, self._candidates(), judge=fails_on_mutated_claim_of_b))
+
+        assert (report["unrelated_code"]["n"], report["safe_twin_code"]["n"]) == (3, 3)
+        mutated = report["mutated_claim"]
+        assert mutated["n"] == 2
+        assert mutated["support_rate_drop"] == pytest.approx(0.5)
+        assert mutated["confidence_drop"] == pytest.approx(0.35)
+
+    def test_candidate_without_a_readable_code_citation_is_not_perturbed(self, je):
+        candidates = [
+            self._candidate("a", "claim a", "a.py"),
+            self._candidate("none", "claim a", "a.py", with_citation=False),
+            self._candidate("gone", "claim a", "gone.py"),
+        ]
+
+        report = je.perturbation_report(self._measure(je, candidates))
+
+        assert all(row["n"] == 1 for row in report.values())
 
     def test_candidates_passed_in_are_not_modified(self, je):
-        candidate = self._grounded("a", "app/orders.py", (10, 12))
-        before = candidate.model_dump()
+        candidates = self._candidates()
+        before = [c.model_dump() for c in candidates]
 
-        je.measure_corruptions(
-            [candidate], self._read_code, LGTMConfig(), self._judge, other_file="app/other.py")
+        self._measure(je, candidates)
 
-        assert candidate.model_dump() == before
+        assert [c.model_dump() for c in candidates] == before
 
 
 class _Clock:
@@ -474,6 +516,21 @@ class TestFallbackAndLatency:
         assert measures["latency_median"] == pytest.approx(1.0)
         assert measures["latency_p95"] == pytest.approx(5.0)
         assert measures["fallback_rate"] == 0
+
+    def test_candidates_with_no_cited_source_are_excluded_from_judge_latency_and_n(self, je):
+        clock = _Clock()
+        judge = _scripted_judge(clock, [(5, GOOD)])
+        no_source = _candidate("no-source")
+        no_source.evidence = []
+
+        records = _measure(je, [_candidate("with-code"), no_source], judge, clock)
+        measures = je.run_measures(records, "lgtm")
+
+        assert measures["n"] == 1
+        assert measures["not_judged"] == 0
+        assert measures["fallback_rate"] == 0
+        assert measures["latency_median"] == pytest.approx(5.0)
+        assert measures["latency_p95"] == pytest.approx(5.0)
 
     @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
     def test_fallback_rate_is_not_reported_for_modes_without_a_judge(self, je, mode):
@@ -720,6 +777,7 @@ def _export(ce, run_dir: Path, case_id: str, case: dict, tmp_path: Path) -> list
 
 JUDGE_OUTPUT_KEYS = {
     "verdict", "severity", "provenance_confidence", "judged", "supported",
+    "not_judged_reason", "unsupported_reason",
 }
 
 
@@ -956,15 +1014,21 @@ class TestRunDirectoryToReport:
         by_claim = {u["claim"]: u["unit_id"] for u in exported}
         labels_path = tmp_path / "labels.json"
         labels_path.write_text(json.dumps({"units": {
-            by_claim["judged vulnerable"]: {"citation": "correct"},
-            by_claim["judged safe"]: {"citation": "incorrect"},
-            by_claim["not judged"]: {"citation": "correct"},
+            by_claim["judged vulnerable"]: {"supports": "yes"},
+            by_claim["judged safe"]: {"supports": "no"},
+            by_claim["not judged"]: {"supports": "yes"},
         }}), encoding="utf-8")
 
         result = je.report(run_dir, export_path, labels_path)
 
         assert [o["unit_id"] for o in je.run_outcomes(run_dir)] == ids
-        assert result["citation_correctness"]["before_judging"]["n"] == 3
-        judged = result["citation_correctness"]["judged"]
+        assert result["citation_support"]["before_judging"]["n"] == 3
+        judged = result["citation_support"]["judged"]
         assert judged["n"] == 1
-        assert judged["percent_correct"] == 100
+        assert judged["percent_yes"] == 100
+        assert result["supported_agreement"]["n"] == 2
+        assert result["supported_agreement"]["agree"] == 2
+        assert result["supported_agreement"]["not_judged"] == 1
+        assert result["not_judged_by_reason"] == {"judge-failed": 1}
+        assert (result["case_accuracy"]["n"], result["case_accuracy"]["excluded"]) == (0, 1)
+        assert "severity_agreement" not in result

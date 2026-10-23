@@ -147,11 +147,11 @@ and `docs/evaluation-log.md`.
   metric and listed with their count. The injection benchmark drops such a
   pair from `originally_flagged` and `attacks_succeeded`.
 
-## Citation correctness and judge quality
+## Citation support and judge quality
 
-Both populations (every cited unit before judging, and judged units with a
-`vulnerable` or `possible` verdict) are computed from one recorded run
-directory, one export and one labels file. Committed runs stay read-only.
+Both populations (every cited unit before judging, and judged units the judge
+found supported) are computed from one recorded run directory, one export and
+one labels file. Committed runs stay read-only.
 
 Export the units of a recorded run for labelling (one `--repo` per case):
 
@@ -159,18 +159,18 @@ Export the units of a recorded run for labelling (one `--repo` per case):
 python benchmark/citation_export.py RUN_DIR export.json --repo CASE_ID=REPO_PATH
 ```
 
-Each unit has `unit_id`, `claim`, `file`, `lines`, `snapshot` and `code`;
-`unreadable: true` marks a location whose code could not be read. No judge
-output is exported.
+Each unit has a stable `unit_id` (`<case id>/<finding index>.<evidence index>`),
+`claim`, `file`, `lines`, `snapshot` and `code`; `unreadable: true` marks a
+location whose code could not be read. No judge output is exported. The
+question for each unit: does the code support the claim, yes or no.
 
 Labels file:
 
 ```json
-{"units": {"<unit_id>": {"citation": "correct", "severity": "high"}}}
+{"units": {"<unit_id>": {"supports": "yes"}}}
 ```
 
-`citation` is `correct` or `incorrect`; `severity` (`critical`, `high`,
-`medium`, `low`) is optional. An id outside the export or any other label value
+`supports` is `yes` or `no`. An id outside the export or any other label value
 stops the report naming the entry. Units without a label are counted as
 unlabelled.
 
@@ -180,19 +180,31 @@ Report:
 python benchmark/judge_eval.py RUN_DIR export.json labels.json
 ```
 
-It prints percent correct before judging and for the judged population (with
-`n` and unlabelled counts), mean confidence for correct and incorrect units,
-severity agreement, verdict accuracy on `supported`, and the fallback rate.
+It prints, as `citation_support`, percent yes before judging and for the judged
+population (with `n` and unlabelled counts); mean confidence for `yes` and `no`
+units; `supported_agreement`, the share of judged labelled units whose
+supported answer matches the label; `case_accuracy` on `supported`;
+`not_judged_by_reason`, the not-judged candidates per reason, with
+`request-too-large` apart from `judge-failed`; and the fallback rate.
 Recorded runs carry no per-candidate latency, so the latency median and 95th
 percentile appear only with `--judge-records RECORDS.json`, a JSON list written
 from `measure_judge_run` in `judge_eval.py`; without it the fallback rate comes
-from the recorded `judged` flags. `measure_corruptions` in the same file
-produces the corrupted-citation pairs for `corruption_report`; both need a live
-judge.
+from the recorded `judged` flags.
+
+Support perturbations need a live judge. `perturb_case` in `judge_eval.py`
+judges each judged candidate with a valid code citation and three copies known
+to be unsupported: `unrelated_code` (other code from the same repository),
+`mutated_claim` (a different claim, same code) and `safe_twin_code` (the fixed
+variant of a vulnerable case; skipped and counted when none exists).
+`perturbation_report` states, per perturbation, `n`, `skipped`,
+`support_rate_drop` and `confidence_drop` (original minus perturbed, over pairs
+the judge answered). Real-world cases pass `repo`, a clone prepared by
+`real_world/fetch.py`.
 
 Pending labelling: the independent Claude Code session reads `export.json`
 without the run directory and writes `labels.json`. Pending deploy: recording
-a candidate set and the judged replay against the live judge.
+a candidate set and the judged replay and perturbation run against the live
+judge.
 
 ## Regenerating cases
 
