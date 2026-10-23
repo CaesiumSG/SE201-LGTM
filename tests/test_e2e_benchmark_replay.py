@@ -3,9 +3,11 @@ then the export and report commands of benchmark/README.md run as processes."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -34,8 +36,7 @@ LABELS = {"claim supported": "yes", "claim unsupported": "no", "claim also suppo
 class _FakeKev(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        claim = request["state"].splitlines()[0].removeprefix("Claim: ")
-        answer = SCRIPT[claim]
+        answer = self.answer(request["state"])
         if answer is None:
             self.send_response(500)
             self.end_headers()
@@ -56,8 +57,33 @@ class _FakeKev(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def answer(self, state: str):
+        return SCRIPT[state.splitlines()[0].removeprefix("Claim: ")]
+
     def log_message(self, *args):
         pass
+
+
+class _GroundedKev(_FakeKev):
+    """Supports only the original claim next to its original cited code."""
+
+    def answer(self, state: str):
+        grounded = state.startswith("Claim: claim supported\n") and "pr2\npr3" in state
+        return (True, 0.9) if grounded else (False, 0.2)
+
+
+def _serve(handler):
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def grounded_kev():
+    yield from _serve(_GroundedKev)
 
 
 @pytest.fixture
@@ -166,6 +192,41 @@ def test_replay_reports_both_populations_over_the_same_unit_ids_from_one_export_
     assert after_report["before_judging"]["percent_yes"] == pytest.approx(100 / 3)
     assert after_report["judged"] == {"n": 2, "unlabelled": 0, "percent_yes": 50.0}
     assert before_report["judged"]["n"] == 0
+
+
+def test_replay_states_a_support_drop_for_each_of_the_three_perturbations(
+    tmp_path, monkeypatch, grounded_kev
+):
+    case = _case_repo(tmp_path)
+    repo = case["repo"]
+    _git(repo, "branch", "rw/case_a/base", "main")
+    _git(repo, "checkout", "-q", "-b", "rw/case_a/pr", "pr")
+    (repo / "other.py").write_text("unrelated = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "unrelated code")
+    _git(repo, "checkout", "-q", "main")
+
+    spec = importlib.util.spec_from_file_location("e2e_judge_eval", BENCH / "judge_eval.py")
+    judge_eval = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = judge_eval
+    spec.loader.exec_module(judge_eval)
+    real_tempdir = tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        judge_eval.tempfile, "TemporaryDirectory", lambda **kw: real_tempdir(**{**kw, "dir": tmp_path})
+    )
+
+    config = LGTMConfig(judge_endpoint=grounded_kev, judge_timeout=5)
+    measured = judge_eval.perturb_case(
+        {"id": CASE_ID, "construction": "synthetic-revert"},
+        [AgentFinding.model_validate(_frozen_finding("claim supported"))],
+        config, http_judge(config), repo=repo,
+    )
+    report = judge_eval.perturbation_report(measured)
+
+    assert set(report) == {"unrelated_code", "mutated_claim", "safe_twin_code"}
+    for name, row in report.items():
+        assert (row["n"], row["skipped"], row["support_rate_drop"]) == (1, 0, 1.0), name
+        assert row["confidence_drop"] > 0, name
 
 
 def _frozen_findings(run_dir: Path) -> list[dict]:

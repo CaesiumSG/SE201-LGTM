@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -13,12 +16,16 @@ from lgtm.sast.semgrep_runner import SemgrepFinding
 from tests.test_graph_pipeline import (  # noqa: F401 - fixtures and scripted-agent helpers
     CLAIM_AUTHZ_A,
     CLAIM_AUTHZ_B,
+    CLAIM_OVERSIZE_PAD,
     CLAIM_TRIAGE,
     KEV_ANSWERS,
     KEV_MODEL,
+    REQUEST_BOUND,
     ScriptedLLM,
     _closed_loopback_port,
+    _final,
     _findings,
+    _kev_reply,
     _base_evidence,
     _msg,
     _no_sections,
@@ -32,6 +39,18 @@ from tests.test_graph_pipeline import (  # noqa: F401 - fixtures and scripted-ag
 )
 
 UNPARSABLE = "The change looks fine to me."
+CLAIM_DROPPED = "DROPPED_CLAIM_SENTINEL"
+ATTEMPTS = 4  # first attempt plus the three retries
+BENCHMARK = Path(__file__).resolve().parent.parent / "benchmark"
+
+
+@pytest.fixture(scope="module")
+def judge_eval():
+    spec = importlib.util.spec_from_file_location("e2e_judge_eval", BENCHMARK / "judge_eval.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["e2e_judge_eval"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -126,3 +145,66 @@ def test_review_completes_with_candidates_not_judged_and_the_unparsable_agent_er
     errors_section = markdown.partition("## Agent Errors")[2].partition("##")[0]
     assert "fake.sqli:a.py:5" in errors_section
     assert CLAIM_TRIAGE not in markdown
+
+
+@pytest.mark.usefixtures("one_semgrep_hit")
+def test_review_drops_unresolvable_references_without_an_agent_error_or_exit_code_change_and_never_sends_them_to_the_judge(
+    repo, tmp_path, monkeypatch, start_kev
+):
+    kev = start_kev(lambda request: _kev_reply(request, False, 0.5))
+    ghost_file = {**_pr_evidence(), "file": "ghost.py"}
+    out_of_range = {**_pr_evidence(), "lines": [900, 901]}
+    mixed = _msg(_findings(_section_finding(
+        file="a.py", explanation=CLAIM_AUTHZ_A, evidence=[_pr_evidence(), out_of_range],
+    )))
+    unresolvable = _msg(_findings(_section_finding(
+        file="a.py", explanation=CLAIM_DROPPED, evidence=[ghost_file],
+    )))
+    llm = ScriptedLLM([
+        _msg(_final(explanation=CLAIM_TRIAGE, evidence=[_pr_evidence()])), _msg(_no_sections()),
+        *[mixed] * ATTEMPTS,
+        *[unresolvable] * ATTEMPTS,
+        _msg(_findings(_section_finding(file="b.py", explanation=CLAIM_AUTHZ_B, evidence=[_base_evidence("b")]))),
+    ])
+
+    done, report, markdown = _review_cli(repo, tmp_path, monkeypatch, llm, kev.url)
+
+    assert done.exit_code == 0, done.output  # nothing supported; the dropped candidate is not an anomaly
+    assert report["review"]["agent_errors"] == []
+    found = _by_claim(report, (CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B, CLAIM_DROPPED))
+    assert set(found) == {CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B}
+    assert len(report["findings"]) == 3
+    assert all((f["judged"], f["supported"]) == (True, False) for f in found.values())
+    assert [(i["file"], i["lines"]) for i in found[CLAIM_AUTHZ_A]["evidence"]] == [("a.py", [4, 4])]
+    assert CLAIM_DROPPED not in markdown and "Agent Errors" not in markdown
+
+    assert len(kev.requests) == 3
+    sent = json.dumps([r.body for r in kev.requests])
+    assert CLAIM_DROPPED not in sent and "ghost.py" not in sent
+
+
+@pytest.mark.usefixtures("one_semgrep_hit")
+def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benchmark_counts_it_per_reason(
+    repo, tmp_path, monkeypatch, start_kev, judge_eval
+):
+    kev = start_kev()
+    oversize_claim = CLAIM_AUTHZ_A + CLAIM_OVERSIZE_PAD * (REQUEST_BOUND // len(CLAIM_OVERSIZE_PAD) + 100)
+
+    done, report, markdown = _review_cli(
+        repo, tmp_path, monkeypatch, _two_agent_llm(oversize_claim), kev.url
+    )
+
+    assert done.exit_code == 1, done.output  # the normal triage candidate is supported
+    found = _by_claim(report, KEV_ANSWERS)
+    assert set(found) == set(KEV_ANSWERS)
+    large = found[CLAIM_AUTHZ_A]
+    assert (large["judged"], large.get("supported")) == (False, None)
+    assert large["not_judged_reason"] == "request-too-large"
+    assert "request-too-large" in markdown
+    for claim in (CLAIM_TRIAGE, CLAIM_AUTHZ_B):
+        assert found[claim]["judged"] is True
+        assert found[claim]["supported"] is KEV_ANSWERS[claim][0]
+    assert len(kev.requests) == 2
+    assert not any(CLAIM_OVERSIZE_PAD in json.dumps(r.body) for r in kev.requests)
+
+    assert judge_eval.not_judged_by_reason(report["findings"]) == {"request-too-large": 1}
