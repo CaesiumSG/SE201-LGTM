@@ -284,6 +284,7 @@ def measure_judge_run(
     config: LGTMConfig,
     judge: JudgeCall,
     clock: Callable[[], float] = time.monotonic,
+    case_id: str | None = None,
 ) -> list[dict]:
     records = []
     for candidate in candidates:
@@ -291,6 +292,7 @@ def measure_judge_run(
         started = clock()
         judge_candidates([copied], read_code, config, judge)
         records.append({
+            "case_id": case_id,
             "finding_id": copied.finding_id,
             "judged": copied.judged,
             "latency_seconds": clock() - started,

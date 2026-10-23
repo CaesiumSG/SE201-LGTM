@@ -990,6 +990,56 @@ class TestCitationExportFromRebuiltOrChangedRepos:
         assert not (tmp_path / "x").exists() and not (case["repo"] / "x").exists()
 
 
+class TestJudgeRecordsPerCase:
+    @staticmethod
+    def _empty_run(tmp_path):
+        run_dir = tmp_path / "run"
+        _record_run(run_dir, "case_a", _case_repo(tmp_path), [])
+        export_path, labels_path = tmp_path / "export.json", tmp_path / "labels.json"
+        export_path.write_text(json.dumps({"units": []}), encoding="utf-8")
+        labels_path.write_text(json.dumps({"units": {}}), encoding="utf-8")
+        return run_dir, export_path, labels_path
+
+    def test_same_finding_id_in_two_cases_gives_two_records_each_attributable_to_its_case(
+        self, je, tmp_path
+    ):
+        clock = _Clock()
+        judge = _scripted_judge(clock, [(1, GOOD), (1, ConnectionError("down"))])
+        records = (
+            je.measure_judge_run([_candidate("F1")], lambda item: "CODE", LGTMConfig(), judge,
+                                 clock=clock, case_id="case_a")
+            + je.measure_judge_run([_candidate("F1")], lambda item: "CODE", LGTMConfig(), judge,
+                                   clock=clock, case_id="case_b")
+        )
+        run_dir, export_path, labels_path = self._empty_run(tmp_path)
+        records_path = tmp_path / "judge-records.json"
+        records_path.write_text(json.dumps(records), encoding="utf-8")
+
+        result = je.report(run_dir, export_path, labels_path, records_path)
+
+        by_case = {r["case_id"]: r for r in json.loads(records_path.read_text(encoding="utf-8"))}
+        assert set(by_case) == {"case_a", "case_b"}
+        assert (by_case["case_a"]["judged"], by_case["case_b"]["judged"]) == (True, False)
+        assert {r["finding_id"] for r in by_case.values()} == {"F1"}
+        assert (result["run"]["n"], result["run"]["not_judged"]) == (2, 1)
+
+    def test_records_in_the_old_finding_id_only_form_are_still_read_by_the_report(self, je, tmp_path):
+        old_form = [
+            {"finding_id": "F1", "judged": True, "latency_seconds": 2.0, "supported": True,
+             "provenance_confidence": 0.8, "unsupported_reason": None},
+            {"finding_id": "F2", "judged": False, "latency_seconds": 4.0, "supported": None,
+             "provenance_confidence": None, "unsupported_reason": None},
+        ]
+        run_dir, export_path, labels_path = self._empty_run(tmp_path)
+        records_path = tmp_path / "judge-records.json"
+        records_path.write_text(json.dumps(old_form), encoding="utf-8")
+
+        result = je.report(run_dir, export_path, labels_path, records_path)
+
+        assert (result["run"]["n"], result["run"]["not_judged"]) == (2, 1)
+        assert result["run"]["latency_median"] == pytest.approx(3.0)
+
+
 class TestRunDirectoryToReport:
     def test_report_populations_and_outcome_ids_follow_the_exported_units(self, ce, je, tmp_path):
         case = _case_repo(tmp_path)
