@@ -253,6 +253,18 @@ class EvidenceValidator:
                 )
         return issues
 
+    def resolves(self, item: EvidenceItem) -> bool:
+        """Whether a code item resolves at its snapshot; unlabelled items resolve at pr, then base."""
+        if self._shas is None:
+            return True
+        if item.snapshot is None and not item.snapshot_conflict:
+            return any(
+                not self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                for label in ("pr", "base")
+                if label in self._shas
+            )
+        return not self._validate_code_item(item)
+
     def _validate_policy_item(self, item: EvidenceItem) -> list[str]:
         issues: list[str] = []
         source = item.source or item.file

@@ -18,6 +18,7 @@ from lgtm.agents.base import extract_json_object, parse_agent_output, run_tool_l
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import LineChange
+from lgtm.graph.snapshot import resolve_refs
 from lgtm.review.sections import HunkRef, Section
 from lgtm.sast.semgrep_runner import SemgrepFinding
 
@@ -388,13 +389,13 @@ class TestReviewSection:
         self._assert_no_candidates(out)
 
     @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
-    def test_invalid_evidence_line_citation_reaches_the_validator_unchanged(
+    def test_invalid_evidence_line_citation_drops_the_candidate_after_the_retry_budget(
         self, git_repo, lines
     ):
         evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
-        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=[evidence]))]))
-        assert [f.finding_id for f in out] == ["authz:s1:1"]
-        assert list(out[0].evidence[0].lines) == lines
+        llm = _SequenceLLM(_reply(_finding(evidence=[evidence])).content)
+        assert _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo)) == []
+        assert llm.calls == 4
 
     def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
         config = LGTMConfig()
@@ -450,19 +451,28 @@ SEMGREP_HIT = SemgrepFinding(
     message="SQL built from user input", severity="ERROR", cwe=["CWE-89"],
     matched_code="cursor.execute(f\"...\")",
 )
+PR_SQL_LINE = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
 CODE_ITEM = {
-    "type": "code", "file": "app.py", "lines": [11, 12], "content": "x = 1", "snapshot": "pr",
+    "type": "code", "file": "app.py", "lines": [6, 6], "content": PR_SQL_LINE, "snapshot": "pr",
 }
 POLICY_ITEM = {"type": "policy", "source": "policy.md", "content": "Only admins may delete users."}
 
 
+def _snapshot_toolbox(git_repo, config=None):
+    return AgentToolbox(
+        git_repo, "main", None, config or LGTMConfig(),
+        shas=resolve_refs(git_repo, "main", "pr"),
+    )
+
+
 def _authz_candidates(git_repo, llm):
-    return _review(git_repo, llm, **NO_RETRY_CONFIG)
+    config = LGTMConfig(**NO_RETRY_CONFIG)
+    return _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo, config), **NO_RETRY_CONFIG)
 
 
 def _triage_candidate(git_repo, llm):
     config = LGTMConfig(**NO_RETRY_CONFIG)
-    agent = SASTTriageAgent(AgentToolbox(git_repo, "main", None, config), config, llm=llm)
+    agent = SASTTriageAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
     return agent.triage(SEMGREP_HIT, None)
 
 
@@ -479,7 +489,7 @@ def _assert_structured_candidate(candidate, *, cwe, claim):
     assert candidate.explanation == claim
     code, policy = candidate.evidence
     assert (code.type, code.file, list(code.lines), code.content, code.snapshot) == (
-        "code", "app.py", [11, 12], "x = 1", "pr",
+        "code", "app.py", [6, 6], PR_SQL_LINE, "pr",
     )
     assert (policy.type, policy.source) == ("policy", "policy.md")
     assert not candidate.verdict
@@ -873,3 +883,164 @@ def test_real_chat_ollama_accepts_our_kwargs():
 
     llm = build_llm(LGTMConfig(ollama_model="m"))  # no network: construction only
     assert llm.num_predict == 2048
+
+
+BASE_DEF_LINE = "def get_user(cursor, user_id):"
+GOOD_PR = CODE_ITEM
+GOOD_BASE = {
+    "type": "code", "file": "app.py", "lines": [1, 1], "content": BASE_DEF_LINE, "snapshot": "base",
+}
+UNRESOLVED = {
+    "file missing": {**GOOD_PR, "file": "nope.py"},
+    "lines out of range": {**GOOD_PR, "lines": [90, 91]},
+    "snippet mismatch": {**GOOD_PR, "content": "os.system(user_input)"},
+    "snippet only in other snapshot": {**GOOD_PR, "snapshot": "base"},
+}
+BAD = pytest.mark.parametrize("bad", list(UNRESOLVED.values()), ids=list(UNRESOLVED))
+
+
+def _authz_agent(git_repo, llm):
+    config = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    return AuthzReviewerAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+
+
+def _triage_agent(git_repo, llm):
+    config = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    return SASTTriageAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+
+
+def _authz_reply(*findings):
+    return _reply(*findings).content
+
+
+def _warnings(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+
+class TestUnresolvedReferenceReask:
+    @BAD
+    def test_authz_reasks_inside_the_parse_budget_and_uses_the_first_resolving_attempt(
+        self, git_repo, bad
+    ):
+        llm = _SequenceLLM(
+            _authz_reply(_finding(explanation="first", evidence=[bad])),
+            _authz_reply(_finding(explanation="second", evidence=[GOOD_PR])),
+        )
+        agent = _authz_agent(git_repo, llm)
+        out = agent.review_section(_section())
+        assert [f.explanation for f in out] == ["second"]
+        assert [e.content for e in out[0].evidence] == [PR_SQL_LINE]
+        assert llm.calls == 2 and agent.errors == []
+
+    @BAD
+    def test_triage_reasks_inside_the_parse_budget_and_uses_the_first_resolving_attempt(
+        self, git_repo, bad
+    ):
+        llm = _SequenceLLM(
+            _triage_reply(explanation="first", evidence=[bad]),
+            _triage_reply(explanation="second", evidence=[GOOD_PR]),
+        )
+        agent = _triage_agent(git_repo, llm)
+        candidate = agent.triage(SEMGREP_HIT, None)
+        assert candidate.explanation == "second"
+        assert llm.calls == 2 and agent.errors == []
+
+    def test_resolving_references_on_both_snapshots_are_not_reasked(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, GOOD_BASE])))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+        assert len(out) == 1 and len(out[0].evidence) == 2 and llm.calls == 1
+
+    def test_unresolved_references_never_exceed_the_unparsable_answer_budget(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[UNRESOLVED["file missing"]])))
+        _authz_agent(git_repo, llm).review_section(_section())
+        assert llm.calls == 4
+
+    def test_triage_unresolved_references_never_exceed_the_unparsable_answer_budget(
+        self, git_repo
+    ):
+        llm = _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        _triage_agent(git_repo, llm).triage(SEMGREP_HIT, None)
+        assert llm.calls == 4
+
+
+class TestUnresolvedReferencesAfterBudget:
+    @BAD
+    def test_authz_drops_unresolved_items_and_keeps_the_valid_ones(self, git_repo, bad):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad, GOOD_PR, GOOD_BASE])))
+        agent = _authz_agent(git_repo, llm)
+        [candidate] = agent.review_section(_section())
+        assert [(e.file, e.snapshot) for e in candidate.evidence] == [
+            ("app.py", "pr"), ("app.py", "base"),
+        ]
+        assert llm.calls == 4 and agent.errors == []
+
+    @BAD
+    def test_triage_drops_unresolved_items_and_keeps_the_valid_ones(self, git_repo, bad):
+        llm = _SequenceLLM(_triage_reply(evidence=[bad, GOOD_PR]))
+        agent = _triage_agent(git_repo, llm)
+        candidate = agent.triage(SEMGREP_HIT, None)
+        assert [(e.file, e.snapshot) for e in candidate.evidence] == [("app.py", "pr")]
+        assert llm.calls == 4 and agent.errors == []
+
+    @BAD
+    def test_authz_candidate_with_no_valid_code_item_is_dropped_and_logged_not_errored(
+        self, git_repo, bad, caplog
+    ):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad])))
+        agent = _authz_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            assert agent.review_section(_section()) == []
+        assert any("s1" in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_other_candidates_of_the_section_are_still_reported(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(
+            _finding(explanation="invented", evidence=[UNRESOLVED["file missing"]]),
+            _finding(explanation="grounded", evidence=[GOOD_PR]),
+        ))
+        agent = _authz_agent(git_repo, llm)
+        out = agent.review_section(_section())
+        assert [f.explanation for f in out] == ["grounded"]
+        assert agent.errors == []
+
+    @BAD
+    def test_triage_candidate_with_no_valid_code_item_is_dropped_and_logged_not_errored(
+        self, git_repo, bad, caplog
+    ):
+        llm = _SequenceLLM(_triage_reply(evidence=[bad]))
+        agent = _triage_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            assert agent.triage(SEMGREP_HIT, None) is None
+        assert any(SEMGREP_HIT.finding_id in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_a_dropped_triage_candidate_does_not_stop_the_next_hit(self, git_repo):
+        agent = _triage_agent(
+            git_repo, _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        )
+        assert agent.triage(SEMGREP_HIT, None) is None
+        agent.llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR]))
+        assert agent.triage(SEMGREP_HIT, None) is not None
+
+    def test_unparsable_replies_after_the_budget_remain_the_only_agent_errors(self, git_repo):
+        agent = _authz_agent(git_repo, _SequenceLLM(UNPARSABLE))
+        assert agent.review_section(_section()) == []
+        assert [e["source"] for e in agent.errors] == ["s1"]
+        triage = _triage_agent(git_repo, _SequenceLLM(UNPARSABLE))
+        assert triage.triage(SEMGREP_HIT, None) is None
+        assert [e["source"] for e in triage.errors] == [SEMGREP_HIT.finding_id]
+
+
+class TestGuardrailExemptions:
+    def test_policy_items_are_not_checked_for_resolution(self, git_repo):
+        ghost_policy = {"type": "policy", "source": "missing-policy.md", "content": "nothing"}
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, ghost_policy])))
+        [candidate] = _authz_agent(git_repo, llm).review_section(_section())
+        assert [e.type for e in candidate.evidence] == ["code", "policy"]
+        assert llm.calls == 1
+
+    def test_candidate_citing_no_code_is_not_reasked_or_dropped(self, git_repo):
+        policy_only = {"type": "policy", "source": "policy.md", "content": "x"}
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[policy_only]), _finding(evidence=[])))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+        assert len(out) == 2 and llm.calls == 1

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
-    answer_until_parsed,
+    answer_until_resolved,
     build_llm,
     extract_json_object,
     parse_agent_output,
@@ -194,8 +194,10 @@ class AuthzReviewerAgent:
 
         logger.info("Authz section review: %s", section.section_id)
         try:
-            findings = answer_until_parsed(
-                lambda: run_tool_loop(self.llm, tools, system, user, self.config), parse
+            findings = answer_until_resolved(
+                lambda: run_tool_loop(self.llm, tools, system, user, self.config),
+                parse,
+                self.toolbox,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Authz section review failed for %s: %s", section.section_id, exc)

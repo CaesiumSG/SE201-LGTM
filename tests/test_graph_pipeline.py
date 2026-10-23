@@ -854,6 +854,14 @@ def _pr_evidence(snapshot="pr", content=PR_SQL_LINE):
     return {"type": "code", "file": "a.py", "lines": [4, 4], "content": content, "snapshot": snapshot}
 
 
+def _base_evidence(stem="a"):
+    """Resolves at the base snapshot and is not grounded in the PR."""
+    return {
+        "type": "code", "file": f"{stem}.py", "lines": [1, 1],
+        "content": _sentinel(stem), "snapshot": "base",
+    }
+
+
 class TestCapIntegration:
     def test_section_candidates_stay_unjudged_and_unmarked_when_pr_graph_is_down_and_nothing_grounds_them(
         self, repo, install_graph, semgrep
@@ -869,10 +877,10 @@ class TestCapIntegration:
         llm = ScriptedLLM([
             *_triage_then_plan(),
             _call("investigate_pr_code", {"query": "find_a"}),
-            vulnerable("a.py", _pr_evidence(content="os.system('invented')")),
+            vulnerable("a.py", _base_evidence("a")),
             _msg(_findings()),
             vulnerable("b.py"),
-            vulnerable("c.py", _pr_evidence(snapshot="base")),
+            vulnerable("c.py", _base_evidence("c")),
         ])
 
         result = _review(repo, llm)
@@ -964,13 +972,13 @@ class TestCapIntegration:
 
     def test_healthy_graph_never_caps(self, repo, install_graph, semgrep):
         install_graph()
-        llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
+        llm = ScriptedLLM([_msg(_vulnerable(_base_evidence()))])
 
         result = _review(repo, llm)
 
         first = next(f for f in result.findings if f.file == "a.py")
         assert first.pr_graph_ok is True
-        assert first.evidence_valid is False
+        assert first.evidence_valid is True
         assert not first.verdict
         assert CAP_MARKER not in first.explanation
 
@@ -989,8 +997,8 @@ class TestCapIntegration:
         result = _review(repo, llm)
 
         first = next(f for f in result.findings if f.file == "a.py")
-        assert first.evidence_valid is False
-        assert any("at base snapshot" in issue for issue in first.evidence_issues)
+        assert first.evidence == []
+        assert not first.verdict
 
 
 class RoutedLLM:
@@ -1387,8 +1395,7 @@ class TestSectionPipeline:
     ):
         install_graph()
         overlapping = _section_finding(
-            cwe_id="CWE-862", file="a.py", line=1,
-            evidence=[{"type": "code", "file": "a.py", "lines": [1, 40], "content": "x"}],
+            cwe_id="CWE-862", file="a.py", line=1, evidence=[_base_evidence("a")],
         )
 
         def section(prompt: str):
@@ -1641,10 +1648,10 @@ class TestJudgeVerdictCapIntegration:
             _call("investigate_pr_code", {"query": "find_a"}),
             _msg(_findings(_section_finding(
                 file="a.py", explanation="Injectable.",
-                evidence=[_pr_evidence(content="os.system('invented')")],
+                evidence=[_base_evidence("a")],
             ))),
             _msg(_findings()),
-            _msg(_findings(_section_finding(file="b.py", evidence=[_pr_evidence(snapshot="base")]))),
+            _msg(_findings(_section_finding(file="b.py", evidence=[_base_evidence("b")]))),
         ])
 
         result = _review(repo, llm, judge=_judge_answering("vulnerable"))
@@ -1987,9 +1994,6 @@ class TestJudgeOverHttp:
         assert elsewhere.requests == []
 
 
-AGENT_SNIPPET = "AGENT_SNIPPET_NOT_IN_THE_REPOSITORY"
-
-
 @pytest.mark.usefixtures("healthy_stack")
 @pytest.mark.parametrize(
     ("snapshot", "lines", "cited_code", "other_revision_code"),
@@ -2002,7 +2006,8 @@ def test_judge_request_carries_the_code_at_the_cited_revision_and_not_the_agent_
     repo, start_kev, snapshot, lines, cited_code, other_revision_code
 ):
     kev = start_kev(lambda r: _kev_reply(r, "possible", "medium", 0.5))
-    cited = {"type": "code", "file": "a.py", "lines": lines, "content": AGENT_SNIPPET, "snapshot": snapshot}
+    agent_snippet = cited_code.upper()
+    cited = {"type": "code", "file": "a.py", "lines": lines, "content": agent_snippet, "snapshot": snapshot}
     llm = ScriptedLLM([_msg(_final(verdict="vulnerable", explanation=CLAIM_TRIAGE, evidence=[cited])), _msg(_no_sections())])
 
     ReviewPipeline(
@@ -2013,4 +2018,4 @@ def test_judge_request_carries_the_code_at_the_cited_revision_and_not_the_agent_
     assert len(states) == 1
     assert cited_code in states[0]
     assert other_revision_code not in states[0]
-    assert AGENT_SNIPPET not in states[0].partition("Cited item:")[2]
+    assert agent_snippet not in states[0].partition("Cited item:")[2]

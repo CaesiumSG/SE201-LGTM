@@ -2048,3 +2048,45 @@ class TestSummaryContract:
             "e", "safe", coverage=_coverage([_target_section()]), error="boom"))
         assert row["target_sections"] == []
         assert row["coverage_gap"] is False
+
+
+UNRESOLVABLE_ASSESSMENTS = json.dumps({
+    "assessments": [{
+        "category": "sqli", "verdict": "vulnerable", "cwe_id": "CWE-89", "file": "ghost.py",
+        "line": 40, "explanation": "invented sink",
+        "evidence": [{"type": "code", "file": "ghost.py", "lines": [40, 41],
+                      "content": "ghost.execute(sql)", "snapshot": "pr"}],
+    }]
+})
+
+
+class TestReferenceGuardrailExemptions:
+    def test_llm_only_keeps_a_finding_whose_references_do_not_resolve_without_a_second_call(
+        self, git_repo
+    ):
+        llm = _NoToolsLLM(UNRESOLVABLE_ASSESSMENTS)
+        result = ReviewPipeline(git_repo, LGTMConfig(mode="llm-only"), llm=llm).run("main", "pr")
+        sqli = [f for f in result.findings if f.category == "sqli"][0]
+        assert llm.calls == 1
+        assert sqli.explanation == "invented sink"
+        assert [(e.file, list(e.lines), e.content) for e in sqli.evidence] == [
+            ("ghost.py", [40, 41], "ghost.execute(sql)")
+        ]
+
+    def test_plain_reviewer_parse_leaves_unresolvable_evidence_unchanged(self):
+        [finding] = PlainLLMReviewer._parse(UNRESOLVABLE_ASSESSMENTS)[:1]
+        assert [(e.file, list(e.lines)) for e in finding.evidence] == [("ghost.py", [40, 41])]
+
+    def test_sast_only_candidate_keeps_its_semgrep_citation_when_the_file_is_absent(self):
+        from lgtm.sast.semgrep_runner import SemgrepFinding
+
+        hit = SemgrepFinding(
+            rule_id="py.sqli", path="ghost.py", start_line=40, end_line=41,
+            message="SQL built from input", severity="ERROR", cwe=["CWE-89"],
+            matched_code="ghost.execute(sql)",
+        )
+        finding = ReviewPipeline._sast_finding_to_agent_finding(hit)
+        assert (finding.verdict, finding.judged) == ("vulnerable", False)
+        assert [(e.file, list(e.lines), e.content) for e in finding.evidence] == [
+            ("ghost.py", [40, 41], "ghost.execute(sql)")
+        ]

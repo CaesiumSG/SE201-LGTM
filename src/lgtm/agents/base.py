@@ -279,6 +279,52 @@ def answer_until_parsed(ask: Callable[[], str], parse: Callable[[str], Any | Non
     return None
 
 
+def answer_until_resolved(
+    ask: Callable[[], str],
+    parse: Callable[[str], AgentFinding | list[AgentFinding] | None],
+    toolbox: Any,
+) -> list[AgentFinding] | None:
+    """Like ``answer_until_parsed``, but an answer citing code that does not resolve at the
+    toolbox snapshots counts as a parse failure.
+
+    After the budget the last such answer is returned with unresolved items dropped and
+    candidates left without valid code evidence removed (logged); None means no answer parsed.
+    """
+    from lgtm.validation.evidence import EvidenceValidator
+
+    validator = EvidenceValidator(
+        toolbox.repo, toolbox.base_ref, config=toolbox.config, shas=toolbox.shas
+    )
+    pruned: list[AgentFinding] | None = None
+    dropped: list[AgentFinding] = []
+
+    def check(raw: str) -> list[AgentFinding] | None:
+        nonlocal pruned, dropped
+        result = parse(raw)
+        if result is None:
+            return None
+        findings = result if isinstance(result, list) else [result]
+        bad = {
+            id(f): [i for i in f.evidence if i.type != "policy" and not validator.resolves(i)]
+            for f in findings
+        }
+        if not any(bad.values()):
+            return findings
+        pruned, dropped = [], []
+        for f in findings:
+            f.evidence = [i for i in f.evidence if i not in bad[id(f)]]
+            emptied = bad[id(f)] and not any(i.type != "policy" for i in f.evidence)
+            (dropped if emptied else pruned).append(f)
+        return None
+
+    answer = answer_until_parsed(ask, check)
+    if answer is not None:
+        return answer
+    for f in dropped:
+        logger.warning("Dropped candidate %s: no cited code resolves", f.finding_id)
+    return pruned
+
+
 def build_llm(config: LGTMConfig):
     """Construct the ChatOllama LLM from config."""
     from langchain_ollama import ChatOllama
