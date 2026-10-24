@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from lgtm.config import LGTMConfig
+from lgtm.graph import runner as runner_module
 from lgtm.graph.runner import GraphOutcome, GraphRunner, remove_tree, sanitize_query
 from lgtm.graph.session import GraphSession
 from lgtm.graph.snapshot import resolve_refs
@@ -23,6 +24,7 @@ from lgtm.graph.exporter import export_snapshot
 
 from tests.graph_fakes import (
     FLOOD_TOKEN,
+    FakeCodegraph,
     FakeRunner,
     failure,
     kill_pids,
@@ -349,6 +351,62 @@ class TestRunnerProcessLifecycle:
         assert wait_all_dead(fake.all_pids()) == []
         for call in fake.calls():
             assert not Path(env_of(call)["HOME"]).exists()
+
+
+class TestFailedCallLeavesNoChildRunning:
+    @pytest.fixture
+    def fake_codegraph(self, monkeypatch):
+        fake_processes = FakeCodegraph()
+        monkeypatch.setattr(shutil, "which", lambda binary: binary)
+        monkeypatch.setattr(runner_module, "subprocess", fake_processes.namespace)
+        monkeypatch.setattr(os, "killpg", fake_processes.killpg, raising=False)
+        monkeypatch.setattr(runner_module, "_assign_job", lambda pid: pid)
+        monkeypatch.setattr(runner_module, "_close_handle", fake_processes.kill_tree)
+        yield fake_processes
+        fake_processes.kill_all()
+
+    @pytest.mark.parametrize(
+        ("command", "plan", "reason"),
+        [
+            ("explore", {"hangs": True}, "timeout"),
+            ("explore", {"hangs": True, "descendant": True}, "timeout"),
+            ("init", {"hangs": True, "descendant": True}, "timeout"),
+            ("explore", {"exit_code": 3}, "nonzero"),
+            ("explore", {"exit_code": 3, "descendant": True}, "nonzero"),
+            ("init", {"exit_code": 1, "descendant": True}, "nonzero"),
+        ],
+    )
+    def test_timed_out_or_failed_call_reports_the_failure_with_no_process_left(
+        self, fake_codegraph, root, command, plan, reason
+    ):
+        fake_codegraph._plans.append(plan)
+        runner = GraphRunner("codegraph", init_timeout_s=0.2, query_timeout_s=0.2, max_output_chars=6000)
+
+        result = runner.init(root) if command == "init" else runner.explore(root, "q")
+
+        assert (result.ok, result.reason) == (False, reason)
+        assert len(fake_codegraph.processes) == 1
+        assert fake_codegraph.running() == []
+
+    def test_interrupted_call_propagates_with_no_process_left(self, fake_codegraph, root):
+        fake_codegraph._plans.append({"hangs": True, "descendant": True, "interrupt": True})
+        runner = GraphRunner("codegraph", init_timeout_s=60, query_timeout_s=60, max_output_chars=6000)
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.explore(root, "q")
+
+        assert len(fake_codegraph.processes) == 1
+        assert fake_codegraph.running() == []
+
+    def test_failed_call_leaves_nothing_of_an_earlier_failed_call_running_for_the_next(self, fake_codegraph, root):
+        fake_codegraph._plans.extend([{"hangs": True, "descendant": True}, {"exit_code": 2, "descendant": True}, {}])
+        runner = GraphRunner("codegraph", init_timeout_s=0.2, query_timeout_s=0.2, max_output_chars=6000)
+
+        reasons = [runner.explore(root, "q").reason for _ in range(3)]
+
+        assert reasons == ["timeout", "nonzero", "no_match"]
+        assert len(fake_codegraph.processes) == 3
+        assert fake_codegraph.running() == []
 
 
 class TestRunnerOutputBounds:

@@ -13,14 +13,13 @@ from lgtm.agents.base import AgentFinding
 
 logger = logging.getLogger(__name__)
 
-VERDICT_EMOJI = {
-    "vulnerable": "🔴",
-    "possible": "🟠",
-    "insufficient_evidence": "⚪",
-    "safe": "🟢",
-}
+SUPPORT_EMOJI = {"supported": "🔴", "unsupported": "🟢", "not judged": "⚪"}
 
-VERDICT_ORDER = ["vulnerable", "possible", "insufficient_evidence", "safe"]
+
+def _support_label(finding: AgentFinding) -> str:
+    if finding.supported is None:
+        return "not judged"
+    return "supported" if finding.supported else "unsupported"
 
 
 @dataclass
@@ -41,22 +40,18 @@ class ReviewMetadata:
     pr_sha: str = ""
     extra: dict = field(default_factory=dict)
     coverage: dict | None = None
+    agent_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 class ReportBuilder:
     def __init__(self, findings: list[AgentFinding], meta: ReviewMetadata):
-        self.findings = sorted(
-            findings,
-            key=lambda f: (
-                VERDICT_ORDER.index(f.verdict) if f.verdict in VERDICT_ORDER else 99,
-                -f.confidence,
-            ),
-        )
+        order = list(SUPPORT_EMOJI)
+        self.findings = sorted(findings, key=lambda f: order.index(_support_label(f)))
         self.meta = meta
 
     # ------------------------------------------------------------------
     def build_json(self) -> dict:
-        grounded = [f for f in self.findings if f.evidence_valid]
+        counts = Counter(_support_label(f) for f in self.findings)
         return {
             "tool": "lgtm",
             "version": "0.1.0",
@@ -73,19 +68,16 @@ class ReportBuilder:
                 "base_sha": self.meta.base_sha,
                 "pr_sha": self.meta.pr_sha,
                 "coverage": self.meta.coverage,
+                "agent_errors": self.meta.agent_errors,
             },
             "stats": {
                 "total_findings": len(self.findings),
-                "by_verdict": dict(Counter(f.verdict for f in self.findings)),
+                "supported": counts["supported"],
+                "unsupported": counts["unsupported"],
+                "not_judged": counts["not judged"],
                 "by_cwe": dict(Counter(f.cwe_id for f in self.findings if f.cwe_id)),
                 "by_category": dict(
                     Counter(f.category for f in self.findings if f.category)
-                ),
-                "evidence_grounded": len(grounded),
-                "evidence_grounding_rate": (
-                    round(len(grounded) / len(self.findings), 3)
-                    if self.findings
-                    else None
                 ),
                 "semgrep_findings_total": self.meta.semgrep_findings_total,
                 "semgrep_findings_in_diff": self.meta.semgrep_findings_in_diff,
@@ -112,16 +104,15 @@ class ReportBuilder:
         # Summary
         add("## Summary")
         add("")
-        verdict_counts = Counter(f.verdict for f in self.findings)
+        support_counts = Counter(_support_label(f) for f in self.findings)
         cwe_counts = Counter(f.cwe_id for f in self.findings if f.cwe_id)
         add(f"**{len(self.findings)} finding(s)** after triage and validation.")
         add("")
-        add("| Verdict | Count |")
+        add("| Support | Count |")
         add("|---|---|")
-        for verdict in VERDICT_ORDER:
-            if verdict_counts.get(verdict):
-                emoji = VERDICT_EMOJI.get(verdict, "")
-                add(f"| {emoji} {verdict} | {verdict_counts[verdict]} |")
+        for label, emoji in SUPPORT_EMOJI.items():
+            if support_counts[label]:
+                add(f"| {emoji} {label} | {support_counts[label]} |")
         add("")
         if cwe_counts:
             add("| CWE | Count |")
@@ -130,16 +121,6 @@ class ReportBuilder:
                 add(f"| {cwe} | {count} |")
             add("")
 
-        # Grounding stats
-        add("## Evidence Grounding")
-        add("")
-        grounded = sum(1 for f in self.findings if f.evidence_valid)
-        ungrounded = sum(1 for f in self.findings if f.evidence_valid is False)
-        rate = f"{grounded / len(self.findings) * 100:.0f}%" if self.findings else "n/a"
-        add(
-            f"- {grounded}/{len(self.findings)} findings fully grounded "
-            f"({rate}); {ungrounded} with evidence issues."
-        )
         add(
             f"- Semgrep: {self.meta.semgrep_findings_in_diff} finding(s) in diff "
             f"(of {self.meta.semgrep_findings_total} total)."
@@ -148,24 +129,38 @@ class ReportBuilder:
             add(f"- Semgrep failed: {self.meta.sast_error}")
         add("")
 
+        if self.meta.agent_errors:
+            add("## Agent Errors")
+            add("")
+            for err in self.meta.agent_errors:
+                add(f"- `{err.get('source', 'unknown')}`: {err.get('message', '')}")
+            add("")
+
         # Per-finding sections
         add("## Findings")
         add("")
         if not self.findings:
-            add("_No findings. The PR passed all configured checks._")
+            if self.meta.agent_errors:
+                add("_No findings reported; some sections or hits failed (see Agent Errors)._")
+            else:
+                add("_No findings. The PR passed all configured checks._")
         for i, f in enumerate(self.findings, 1):
-            emoji = VERDICT_EMOJI.get(f.verdict, "")
-            add(f"### {i}. {emoji} [{f.verdict.upper()}] {f.cwe_id or 'uncategorized'} — `{f.file}:{f.line}`")
+            label = _support_label(f)
+            add(
+                f"### {i}. {SUPPORT_EMOJI[label]} [{label.upper()}] "
+                f"{f.cwe_id or 'uncategorized'} — `{f.file}:{f.line}`"
+            )
             add("")
             add(f"- **Finding ID:** `{f.finding_id}`")
+            if f.severity:
+                add(f"- **Severity:** {f.severity}")
+            if f.provenance_confidence is not None:
+                add(f"- **Provenance confidence:** {f.provenance_confidence:.0%}")
+            if f.not_judged_reason:
+                add(f"- **Not judged reason:** {f.not_judged_reason}")
+            if f.unsupported_reason:
+                add(f"- **Unsupported reason:** {f.unsupported_reason}")
             add(f"- **Agent:** {f.agent} | **Category:** {f.category or 'n/a'}")
-            add(f"- **Confidence:** {f.confidence:.2f}")
-            grounding = (
-                "✅ grounded"
-                if f.evidence_valid
-                else ("⚠️ evidence issues" if f.evidence_valid is False else "not validated")
-            )
-            add(f"- **Evidence validation:** {grounding}")
             add(f"- **Tool calls used:** {f.tool_calls_used}")
             add("")
             add(f"**Explanation:** {f.explanation or '_none provided_'}")
@@ -187,6 +182,8 @@ class ReportBuilder:
                             loc = f"`{ev.file}`"
                             if ev.lines:
                                 loc += f" lines {ev.lines[0]}-{ev.lines[-1]}"
+                        if ev.grounded_in_pr is not None:
+                            loc += f" (grounded in PR: {'yes' if ev.grounded_in_pr else 'no'})"
                         add(f"- 💻 Code — {loc}:")
                         add("")
                         add("  ```")
@@ -194,12 +191,7 @@ class ReportBuilder:
                             add(f"  {snippet_line}")
                         add("  ```")
                 add("")
-            if f.evidence_issues:
-                add("**Evidence issues:**")
-                for issue in f.evidence_issues:
-                    add(f"- ⚠️ {issue}")
-                add("")
-            if f.suggested_fix and f.verdict != "safe":
+            if f.suggested_fix and f.supported is not False:
                 add(f"**Suggested fix:** {f.suggested_fix}")
                 add("")
             add("---")

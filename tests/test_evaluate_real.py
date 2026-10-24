@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -253,7 +254,7 @@ class TestResultsAndSummary:
         class Finding:
             def model_dump(self, exclude=None):
                 return {"finding_id": "authz:1", "category": "authz",
-                        "verdict": "insufficient_evidence", "evidence_valid": False,
+                        "verdict": "insufficient_evidence",
                         "explanation": "LLM call failed: x"}
 
         class Pipeline:
@@ -380,7 +381,7 @@ class TestGraphMetadataOnRecords:
         class Finding:
             def model_dump(self, exclude=None):
                 return {"finding_id": "authz:1", "category": "authz",
-                        "verdict": verdict, "evidence_valid": True,
+                        "verdict": verdict,
                         "explanation": explanation}
 
         return type("Result", (), {"findings": [Finding()], "meta": meta})()
@@ -770,3 +771,447 @@ class TestAuthzScanRecords:
                                       "extract_changed" + "_endpoints"])
     def test_endpoint_gating_helpers_are_gone(self, name):
         assert not hasattr(er, name)
+
+
+class TestGitLaunchAbortLeavesAResumableRun:
+    GIT_NOT_STARTED = 3221225794
+
+    @classmethod
+    def _aborted_run(cls, tmp_path, monkeypatch, failing=(1, 2), seeded=()):
+        cases = er.fetch.load_cases()
+        ids = [c["id"] for c in cases]
+        cache, out = tmp_path / "cache", tmp_path / "out"
+        for case in cases:
+            (cache / er.fetch.project_of(case) / ".git").mkdir(parents=True, exist_ok=True)
+        no_start = [er.fetch.branch(ids[i], "base") for i in failing]
+        real_run = subprocess.run
+
+        def fake_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and argv[:2] == ["git", "-C"] and Path(argv[2]).is_relative_to(cache):
+                failing = any(branch in " ".join(argv) for branch in no_start)
+                return subprocess.CompletedProcess(argv, cls.GIT_NOT_STARTED if failing else 0, "", "")
+            return real_run(argv, *args, **kwargs)
+
+        meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_pin", lambda *a, **k: {}, raising=False)
+        monkeypatch.setattr(er, "ReviewPipeline", TestGraphMetadataOnRecords._pipeline(
+            [TestGraphMetadataOnRecords._review(meta)], []))
+        argv = ["--cache", str(cache), "--output", str(out), "--modes", "llm-only",
+                "--variants", "own"]
+        mode_dir = out / "llm-only"
+        if seeded:
+            mode_dir.mkdir(parents=True)
+            for i in seeded:
+                row = TestResultsAndSummary._result(ids[i], "vulnerable", "TP")
+                (mode_dir / f"{ids[i]}.json").write_text(json.dumps(row), encoding="utf-8")
+            (mode_dir / "summary.json").write_text(
+                json.dumps({"complete": True, "missing": []}), encoding="utf-8")
+            argv.append("--resume")
+        try:
+            code = er.main(argv)
+        except SystemExit as exc:
+            code = exc.code
+        return argv, mode_dir, ids, code
+
+    @staticmethod
+    def _rows(mode_dir):
+        return {p.stem: json.loads(p.read_text(encoding="utf-8"))
+                for p in mode_dir.glob("*.json") if p.name != "summary.json"}
+
+    def test_two_consecutive_launch_failures_leave_scored_rows_no_error_rows_and_an_incomplete_summary(
+        self, tmp_path, monkeypatch
+    ):
+        _argv, mode_dir, ids, code = self._aborted_run(tmp_path, monkeypatch)
+
+        rows = self._rows(mode_dir)
+        assert code == 4
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+
+        assert set(rows) == {ids[0]}
+        assert rows[ids[0]]["outcome"] != "ERROR"
+        assert summary["complete"] is False
+        assert set(summary["missing"]) == set(ids[1:])
+
+    def test_resumed_run_aborting_on_its_first_two_units_replaces_the_stale_summary_and_a_later_resume_completes(
+        self, tmp_path, monkeypatch
+    ):
+        argv, mode_dir, ids, code = self._aborted_run(tmp_path, monkeypatch, failing=(2, 3), seeded=(0, 1))
+        kept = {i: (mode_dir / f"{ids[i]}.json").read_bytes() for i in (0, 1)}
+
+        rows = self._rows(mode_dir)
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+
+        assert code not in (None, 0)
+        assert set(rows) == {ids[0], ids[1]}
+        assert not [r for r in rows.values() if r.get("error")]
+        assert summary["complete"] is False
+        assert set(summary["missing"]) == set(ids[2:])
+
+        ran: list[str] = []
+
+        def record(case, variant, mode, cache, output, config, index_only=False):
+            ran.append(case["id"])
+            return TestResultsAndSummary._result(case["id"], "vulnerable", "TP")
+
+        monkeypatch.setattr(er, "run_unit", record)
+        er.main(argv)
+
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+        assert ran == ids[2:]
+        assert {i: (mode_dir / f"{ids[i]}.json").read_bytes() for i in (0, 1)} == kept
+        assert summary["complete"] is True and summary["missing"] == []
+
+    def test_rerun_resumes_from_the_first_unrecorded_unit_and_keeps_the_scored_row(self, tmp_path, monkeypatch):
+        argv, mode_dir, ids, _code = self._aborted_run(tmp_path, monkeypatch)
+        kept = (mode_dir / f"{ids[0]}.json").read_bytes()
+        ran: list[str] = []
+
+        def record(case, variant, mode, cache, output, config, index_only=False):
+            ran.append(case["id"])
+            return TestResultsAndSummary._result(case["id"], "vulnerable", "TP")
+
+        monkeypatch.setattr(er, "run_unit", record)
+        er.main([*argv, "--resume"])
+
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+        assert ran == ids[1:]
+        assert (mode_dir / f"{ids[0]}.json").read_bytes() == kept
+        assert summary["complete"] is True and summary["missing"] == []
+
+
+class TestKevFieldsAndMetrics:
+    """Real-world producer: Kev answers per judged candidate and summary metrics over them."""
+
+    CASE = {"id": "x", "category": "sqli", "expected_verdict": "vulnerable",
+            "repo_url": "https://github.com/o/p", "file": "src/app/routes.py"}
+
+    @staticmethod
+    def _candidate(fid, **kwargs):
+        from lgtm.agents.base import AgentFinding
+
+        return AgentFinding(
+            finding_id=fid, cwe_id="CWE-89", explanation=f"claim {fid}", category="sqli",
+            agent="authz", file="a.py", line=1, pr_graph_ok=True, **kwargs,
+        )
+
+    def _run(self, monkeypatch, tmp_path, mode, findings):
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": findings, "meta": meta})()
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        return er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+
+    @staticmethod
+    def _row(cid, findings, mode="lgtm"):
+        base = TestResultsAndSummary._result(cid, "vulnerable", "TP", category="sqli")
+        return {**base, "mode": mode, "pin": {}, "findings": findings}
+
+    @staticmethod
+    def _kev(verdict="real", severity="high", confidence=0.8, tokens=1000, **extra):
+        return {"finding_id": "f", "category": "sqli", "verdict": "", "judged": True, "supported": True,
+                "kev_verdict": verdict, "kev_severity": severity, "provenance_confidence": confidence,
+                "input_tokens": tokens, **extra}
+
+    @staticmethod
+    def _summary(tmp_path, name, rows, mode="lgtm"):
+        out = tmp_path / name
+        out.mkdir()
+        for row in rows:
+            (out / f"{row['id']}.json").write_text(json.dumps(row), encoding="utf-8")
+        return er.write_dir_summary(out, mode, "own", {r["id"] for r in rows}, "m")["summary"]
+
+    def test_saved_record_gives_judged_candidate_kev_verdict_severity_and_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        findings = [
+            self._candidate("ok", judged=True, supported=True, provenance_confidence=0.7,
+                            kev_verdict="not_real", kev_severity="low"),
+            self._candidate("down", judged=False, not_judged_reason="judge-failed"),
+        ]
+
+        saved = {f["finding_id"]: f for f in self._run(monkeypatch, tmp_path, "lgtm", findings)["findings"]}
+
+        assert (saved["ok"]["kev_verdict"], saved["ok"]["kev_severity"]) == ("not_real", "low")
+        assert saved["ok"]["provenance_confidence"] == 0.7
+        assert (saved["down"].get("kev_verdict"), saved["down"].get("kev_severity")) == (None, None)
+        assert (saved["down"]["judged"], saved["down"]["not_judged_reason"]) == (False, "judge-failed")
+
+    def test_saved_judged_candidates_record_the_input_tokens_of_their_judge_reply(self, tmp_path, monkeypatch):
+        replies = iter([
+            {"valid": True, "input_tokens": 1000},
+            {"valid": True, "input_tokens": 9000},
+            {"valid": False, "input_tokens": 555},
+            {"valid": True, "input_tokens": 300},
+        ])
+        candidates = [
+            self._candidate("a1").model_copy(update={"explanation": "claim a"}),
+            self._candidate("a2").model_copy(update={"explanation": "claim a"}),
+            self._candidate("b"),
+            self._candidate("c"),
+        ]
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                self._judge = lambda request: next(replies)
+
+            def run(self, base, pr, output_dir=None):
+                judged = []
+                for f in candidates:
+                    reply = self._judge({"state": f"Claim: {f.explanation}\nCited item: a.py"})
+                    update = (
+                        {"judged": True, "supported": True, "kev_verdict": "real", "kev_severity": "high"}
+                        if reply["valid"] else {"judged": False, "not_judged_reason": "judge-failed"}
+                    )
+                    judged.append(f.model_copy(update=update))
+                meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+                return type("Result", (), {"findings": judged, "meta": meta})()
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+
+        record = er.run_unit(self.CASE, "own", "lgtm", tmp_path, tmp_path, er.LGTMConfig())
+
+        saved = {f["finding_id"]: f for f in record["findings"]}
+        assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_modes_without_a_judge_save_no_kev_fields(self, tmp_path, monkeypatch, mode):
+        record = self._run(monkeypatch, tmp_path, mode, [self._candidate("a", verdict="vulnerable")])
+
+        for f in record["findings"]:
+            assert [f.get(k) for k in ("kev_verdict", "kev_severity", "input_tokens")] == [None, None, None]
+
+    def test_summary_reports_kev_metrics_over_judged_candidates_and_counts_not_judged_by_reason(self, tmp_path):
+        down = {"finding_id": "d", "category": "sqli", "verdict": "", "judged": False, "supported": None,
+                "not_judged_reason": "judge-failed"}
+        rows = [
+            self._row("a", [self._kev(), self._kev("not_real", "low", 0.2, 9000)]),
+            self._row("b", [self._kev("real", "critical", 0.5, 8192), down]),
+        ]
+
+        kev = self._summary(tmp_path, "lgtm", rows)["kev"]
+
+        assert kev["judged"] == 3
+        assert kev["verdicts"] == {"real": 2, "not_real": 1}
+        assert kev["severities"] == {"high": 1, "low": 1, "critical": 1}
+        assert kev["provenance_confidence_mean"] == pytest.approx(0.5)
+        assert kev["not_judged"] == {"judge-failed": 1}
+        assert kev["requests_over_8192_input_tokens"] == 1
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    def test_summary_of_modes_without_a_judge_has_no_kev_metrics(self, tmp_path, mode):
+        row = self._row("a", [{"finding_id": "f", "category": "sqli", "verdict": "vulnerable",
+                               "judged": False}], mode)
+
+        summary = self._summary(tmp_path, mode, [row], mode)
+
+        kev = summary.get("kev", {})
+        assert (kev.get("judged", 0), kev.get("verdicts", {}), kev.get("severities", {}),
+                kev.get("not_judged", {}), kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, {}, 0)
+        assert summary["overall"]["tp"] == 1
+
+    def test_existing_summary_fields_equal_those_of_the_same_run_without_kev_answers(self, tmp_path):
+        with_kev = [self._row("a", [self._kev("not_real", "low")]),
+                    self._row("b", [self._kev(tokens=20_000)])]
+        bare = {"kev_verdict", "kev_severity", "input_tokens"}
+        plain = [{**r, "findings": [{k: v for k, v in f.items() if k not in bare} for f in r["findings"]]}
+                 for r in with_kev]
+
+        left = self._summary(tmp_path, "with", with_kev)
+        right = self._summary(tmp_path, "plain", plain)
+
+        assert {k: v for k, v in left.items() if k != "kev"} == {k: v for k, v in right.items() if k != "kev"}
+
+    def test_resume_judges_again_a_judged_unit_without_kev_fields_and_keeps_one_with_them(self, tmp_path):
+        cases = er.fetch.load_cases()[:3]
+        units = list(er.work_units(cases, ["lgtm"], ["own"]))
+        out = er.out_dir_for(tmp_path, "lgtm", "own")
+        out.mkdir(parents=True)
+        old = {"finding_id": "f", "category": "sqli", "verdict": "", "judged": True, "supported": True}
+        rows = {
+            cases[0]["id"]: self._row(cases[0]["id"], [old]),
+            cases[1]["id"]: self._row(cases[1]["id"], [self._kev()]),
+        }
+        for cid, row in rows.items():
+            (out / f"{cid}.json").write_text(json.dumps(row), encoding="utf-8")
+
+        pending = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+
+        assert pending == [cases[0]["id"], cases[2]["id"]]
+
+
+GIT_NOT_STARTED = 3221225794
+
+
+class _GitScript:
+    """Runs er.main over the first cases, one unit per case, with a scripted git outcome per unit."""
+
+    def __init__(self, tmp_path, monkeypatch, outcomes):
+        self.cases = er.fetch.load_cases()[: len(outcomes)]
+        self.ids = [c["id"] for c in self.cases]
+        self.cache, self.out = tmp_path / "cache", tmp_path / "out"
+        for case in self.cases:
+            (self.cache / er.fetch.project_of(case) / ".git").mkdir(parents=True, exist_ok=True)
+        by_branch = {er.fetch.branch(cid, "base"): kind for cid, kind in zip(self.ids, outcomes)}
+        real_run = subprocess.run
+
+        def fake_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and argv[:2] == ["git", "-C"] and Path(argv[2]).is_relative_to(self.cache):
+                kind = next((k for b, k in by_branch.items() if b in " ".join(argv)), "ok")
+                if kind == "launch":
+                    raise FileNotFoundError("git")
+                code = {"ok": 0, "start": GIT_NOT_STARTED, "bad": 128}[kind]
+                stderr = "fatal: bad revision" if kind == "bad" else ""
+                return subprocess.CompletedProcess(argv, code, "", stderr)
+            return real_run(argv, *args, **kwargs)
+
+        meta = type("Meta", (), {"semgrep_findings_in_diff": 0})()
+        reviews = [TestGraphMetadataOnRecords._review(meta) for _ in outcomes]
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_pin", lambda *a, **k: {}, raising=False)
+        monkeypatch.setattr(er, "ReviewPipeline", TestGraphMetadataOnRecords._pipeline(reviews, []))
+        self.argv = ["--cache", str(self.cache), "--output", str(self.out), "--modes", "llm-only",
+                     "--variants", "own", "--cases", *self.ids]
+
+    def run(self, capsys):
+        try:
+            code = er.main(self.argv)
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+            text = str(exc.code)
+        else:
+            text = ""
+        captured = capsys.readouterr()
+        return code, (text + captured.out + captured.err).lower()
+
+    def rows(self):
+        mode_dir = self.out / "llm-only"
+        return {p.stem: json.loads(p.read_text(encoding="utf-8"))
+                for p in mode_dir.glob("*.json") if p.name not in ("summary.json", "run.json")}
+
+
+class TestMissingCloneStopsTheRunBeforeAnyUnit:
+    @pytest.mark.parametrize("cloned", [(), (0,), None], ids=["empty cache", "one of two cloned", "no cache directory"])
+    def test_exits_non_zero_naming_the_cache_and_the_fetch_step_without_running_a_unit(
+        self, tmp_path, monkeypatch, capsys, cloned
+    ):
+        cases = er.fetch.load_cases()
+        picked = [cases[0]]
+        picked += [next(c for c in cases if er.fetch.project_of(c) != er.fetch.project_of(cases[0]))]
+        cache = tmp_path / "cache"
+        if cloned is not None:
+            cache.mkdir()
+        for i in cloned or ():
+            (cache / er.fetch.project_of(picked[i]) / ".git").mkdir(parents=True)
+        missing = [er.fetch.project_of(c) for i, c in enumerate(picked) if i not in (cloned or ())]
+        ran: list[str] = []
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda case, *a, **k: ran.append(case["id"]))
+
+        with pytest.raises(SystemExit) as raised:
+            er.main(["--cache", str(cache), "--output", str(tmp_path / "out"), "--modes", "llm-only",
+                     "--variants", "own", "--cases", *[c["id"] for c in picked]])
+
+        message = str(raised.value.code).replace("\\", "/")
+        assert raised.value.code not in (0, None)
+        assert cache.as_posix() in message
+        assert "fetch.py" in message
+        assert all(project in message for project in missing)
+        assert ran == []
+        assert not list((tmp_path / "out").rglob("*.json"))
+
+
+class TestGitThatCannotStartAbortsTheRun:
+    @pytest.mark.parametrize("outcomes", [
+        ["ok", "start", "start", "ok"],
+        ["ok", "start", "launch", "ok"],
+        ["ok", "launch", "start", "ok"],
+        ["ok", "launch", "launch", "ok"],
+        ["start", "start", "ok", "ok"],
+    ], ids="-".join)
+    def test_second_consecutive_start_failure_exits_non_zero_with_a_git_cannot_start_message(
+        self, tmp_path, monkeypatch, capsys, outcomes
+    ):
+        script = _GitScript(tmp_path, monkeypatch, outcomes)
+
+        code, text = script.run(capsys)
+
+        first_failure = next(i for i, kind in enumerate(outcomes) if kind != "ok")
+        assert code != 0
+        assert "git" in text and "cannot start" in text
+        assert set(script.rows()) == set(script.ids[:first_failure])
+
+
+class TestGitAbortDuringIndexOnly:
+    def test_abort_during_an_index_only_run_exits_non_zero_with_a_git_cannot_start_message(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        script = _GitScript(tmp_path, monkeypatch, ["ok", "start", "start", "ok"])
+        script.argv.append("--index-only")
+
+        code, text = script.run(capsys)
+
+        assert code != 0
+        assert "git" in text and "cannot start" in text
+        assert not list(script.out.rglob("*.json"))
+
+
+class TestOsErrorLaunchFailuresAbortTheRun:
+    @pytest.mark.parametrize("error", [FileNotFoundError("git"), PermissionError("git")], ids=type)
+    def test_two_consecutive_os_errors_abort_with_exit_four_and_an_incomplete_summary(
+        self, tmp_path, monkeypatch, capsys, error
+    ):
+        script = _GitScript(tmp_path, monkeypatch, ["ok", "ok", "ok", "ok"])
+        failing = {er.fetch.branch(cid, "base") for cid in script.ids[1:3]}
+
+        def get_pr_diff(clone, base, pr, timeout=None):
+            if base in failing:
+                raise error
+            return []
+
+        monkeypatch.setattr(er, "get_pr_diff", get_pr_diff)
+
+        code, text = script.run(capsys)
+
+        summary = json.loads((script.out / "llm-only" / "summary.json").read_text(encoding="utf-8"))
+        assert code == 4
+        assert "git" in text and "cannot start" in text
+        assert set(script.rows()) == {script.ids[0]}
+        assert summary["complete"] is False
+        assert set(script.ids[1:]) <= set(summary["missing"])
+        assert script.ids[0] not in summary["missing"]
+
+
+class TestOtherGitFailuresKeepTheRunGoing:
+    @pytest.mark.parametrize("outcomes", [
+        ["ok", "bad", "bad", "ok"],
+        ["start", "ok", "ok", "ok"],
+        ["ok", "ok", "ok", "start"],
+        ["ok", "launch", "ok", "ok"],
+        ["ok", "start", "bad", "ok"],
+        ["ok", "bad", "start", "ok"],
+        ["ok", "bad", "launch", "ok"],
+        ["start", "ok", "start", "ok"],
+    ], ids="-".join)
+    def test_failing_units_are_errored_rows_and_every_unit_runs(self, tmp_path, monkeypatch, capsys, outcomes):
+        script = _GitScript(tmp_path, monkeypatch, outcomes)
+
+        code, text = script.run(capsys)
+
+        rows = script.rows()
+        assert code == 0
+        assert "cannot start" not in text
+        assert set(rows) == set(script.ids)
+        errored = {cid for cid, kind in zip(script.ids, outcomes) if kind != "ok"}
+        assert {cid for cid, row in rows.items() if row["outcome"] == "ERROR"} == errored

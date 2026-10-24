@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
+    answer_until_resolved,
     build_llm,
     extract_json_object,
     parse_agent_output,
@@ -96,10 +97,6 @@ def _valid_line(value: object) -> int | None:
     return line if 0 < line <= _MAX_LINE else None
 
 
-def failed_finding_id(section_id: str) -> str:
-    return f"authz:{section_id}:failed"
-
-
 def _section_items(raw: str) -> list[dict] | None:
     data = extract_json_object(raw)
     findings = data.get("findings") if data else None
@@ -107,15 +104,6 @@ def _section_items(raw: str) -> list[dict] | None:
         return None
     items = [item for item in findings if isinstance(item, dict)]
     return items if items or not findings else None
-
-
-def _failure(finding_id: str, explanation: str) -> AgentFinding:
-    return AgentFinding(
-        finding_id=finding_id,
-        verdict="insufficient_evidence",
-        cwe_id="CWE-862",
-        explanation=explanation,
-    )
 
 
 class AuthzReviewerAgent:
@@ -128,6 +116,7 @@ class AuthzReviewerAgent:
         self.config = config or LGTMConfig()
         self.toolbox = toolbox
         self.llm = llm or build_llm(self.config)
+        self.errors: list[dict[str, str]] = []
 
     def review_section(
         self, section: Section, semgrep_notes: str = ""
@@ -181,42 +170,45 @@ class AuthzReviewerAgent:
             first_line=first_line,
             last_line=last_line,
         )
-        failed_id = failed_finding_id(section.section_id)
-        unparsable = _failure(
-            failed_id, registry.render("authz_reviewer.unparsable_explanation", where=where)
-        )
+
+        def parse(raw: str) -> list[AgentFinding] | None:
+            items = _section_items(raw)
+            if items is None:
+                return None
+            findings: list[AgentFinding] = []
+            for n, item in enumerate(items, 1):
+                finding_id = f"authz:{section.section_id}:{n}"
+                try:
+                    finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                finding.finding_id = finding_id
+                findings.append(
+                    self._stamp(
+                        finding,
+                        str(item.get("file") or "") or first_file,
+                        _valid_line(item.get("line")) or fallback_line,
+                    )
+                )
+            return findings
 
         logger.info("Authz section review: %s", section.section_id)
         try:
-            raw = run_tool_loop(self.llm, tools, system, user, self.config)
+            findings = answer_until_resolved(
+                lambda: run_tool_loop(self.llm, tools, system, user, self.config),
+                parse,
+                self.toolbox,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Authz section review failed for %s: %s", section.section_id, exc)
-            failure = _failure(
-                failed_id, registry.render("authz_reviewer.failed_explanation", where=where, error=exc)
-            )
-            return [self._stamp(failure, first_file, fallback_line)]
-
-        items = _section_items(raw)
-        if items is None:
+            message = registry.render("authz_reviewer.failed_explanation", where=where, error=exc)
+        else:
+            if findings is not None:
+                return findings
             logger.warning("Authz section review for %s had no parsable findings", section.section_id)
-            return [self._stamp(unparsable, first_file, fallback_line)]
-
-        findings: list[AgentFinding] = []
-        for n, item in enumerate(items, 1):
-            finding_id = f"authz:{section.section_id}:{n}"
-            try:
-                finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
-            except (TypeError, ValueError, OverflowError):
-                return [self._stamp(unparsable, first_file, fallback_line)]
-            finding.finding_id = finding_id
-            findings.append(
-                self._stamp(
-                    finding,
-                    str(item.get("file") or "") or first_file,
-                    _valid_line(item.get("line")) or fallback_line,
-                )
-            )
-        return findings
+            message = registry.render("authz_reviewer.unparsable_explanation", where=where)
+        self.errors.append({"source": section.section_id, "message": message})
+        return []
 
     def _policy_context(self, query: str) -> str:
         if self.toolbox.retriever is None:

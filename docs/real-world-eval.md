@@ -252,7 +252,7 @@ repository's own docs.
   (`delete_api_key(..., user_id)`), but the authz prompt contains only the
   endpoint file's diff (`api_key.py`), so the check is not in front of the
   model. `tool_calls_used` is 0: it never tried to look. Its code snippet
-  also failed validation (`evidence_valid: false`).
+  was also not supported (`supported: false`).
 - **Policy, vulnerable PR → `vulnerable` (TP), but for a wrong reason**
   (`lgtm-policy/langflow_authz_vulnerable.json`). The explanation is "The
   policy requires that only superusers can delete API keys", citing the

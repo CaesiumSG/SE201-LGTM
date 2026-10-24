@@ -449,3 +449,20 @@ def test_untrusted_block_is_closed_before_the_trailing_instruction(diff_chars, c
     instruction = next(i for i, line in enumerate(lines) if line.startswith("Group the hunks"))
     assert max(closers) < instruction
     assert not any(line.startswith("Group the hunks") for line in fenced_lines(text))
+
+
+def test_context_pointers_that_name_missing_files_are_returned_without_a_second_model_call(
+    config, toolbox
+):
+    payload = json.loads(sections_json("app.py#0"))
+    payload["sections"][0]["context"] = [{
+        "path": "ghost.py", "symbol": "gone", "start_line": 400, "end_line": 410,
+        "snapshot": "pr", "why": "caller",
+    }]
+    llm = ScriptedLLM([answer(json.dumps(payload))])
+
+    result = run(small_diffs(), config, toolbox, llm)
+
+    assert result.status == "ok"
+    assert [p.path for p in result.proposed[0].context] == ["ghost.py"]
+    assert len(llm.seen) == 1

@@ -38,19 +38,19 @@ TOP_KEYS = {
 }
 SECTION_KEYS = {
     "section_id", "origin", "title", "files", "split", "partial_hunk", "hunks",
-    "status", "verdicts", "finding_ids", "error",
+    "status", "supported", "finding_ids", "error",
 }
 HUNK_KEYS = {"hunk_id", "file", "old_start", "old_count", "new_start", "new_count", "change"}
 
 
-def completed(verdicts=("safe",), finding_ids=()):
+def completed(supported=(False,), finding_ids=()):
     return SectionResult(
-        status="completed", verdicts=list(verdicts), finding_ids=list(finding_ids), error=None
+        status="completed", supported=list(supported), finding_ids=list(finding_ids), error=None
     )
 
 
 def failed(error="llm timeout"):
-    return SectionResult(status="failed", verdicts=[], finding_ids=[], error=error)
+    return SectionResult(status="failed", supported=[], finding_ids=[], error=error)
 
 
 def coverage(p, results, **kw):
@@ -125,7 +125,7 @@ def test_fully_completed_plan_is_complete(main_plan):
 
 def test_section_rows_carry_plan_data_and_results(main_plan):
     results = all_completed(main_plan)
-    results["s1"] = completed(verdicts=["vulnerable", "possible"], finding_ids=["f1", "f2"])
+    results["s1"] = completed(supported=[True, False], finding_ids=["f1", "f2"])
     cov = coverage(main_plan, results)
     row = next(r for r in cov["sections"] if r["section_id"] == "s1")
     assert row["origin"] == "investigator"
@@ -133,7 +133,7 @@ def test_section_rows_carry_plan_data_and_results(main_plan):
     assert row["files"] == ["app/a.py"]
     assert row["split"] is False and row["partial_hunk"] is False
     assert row["status"] == "completed"
-    assert row["verdicts"] == ["vulnerable", "possible"]
+    assert row["supported"] == [True, False]
     assert row["finding_ids"] == ["f1", "f2"]
     assert row["hunks"] == [{
         "hunk_id": "app/a.py#0", "file": "app/a.py", "old_start": 10, "old_count": 3,
@@ -197,7 +197,7 @@ def test_section_without_a_result_is_neither_completed_nor_failed_and_blocks_com
     assert cov["complete"] is False
     row = next(r for r in cov["sections"] if r["section_id"] == "s2")
     assert row["status"] is None
-    assert row["verdicts"] == [] and row["finding_ids"] == [] and row["error"] is None
+    assert row["supported"] == [] and row["finding_ids"] == [] and row["error"] is None
 
 
 def test_fallback_plan_reports_planner_and_skipped_investigator():

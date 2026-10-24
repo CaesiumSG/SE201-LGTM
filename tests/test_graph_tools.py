@@ -197,7 +197,7 @@ def run_agent(request, git_repo):
 def _text_result(name, args, result):
     return (
         f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
-        "Call another tool, or give your final JSON verdict."
+        "Call another tool, or give your final JSON answer."
     )
 
 
@@ -215,7 +215,7 @@ class TestFailedCallsSpendSlots:
         assert result.tool_calls_used == 5
         assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
         assert _touched(git_commands, "app.py") == []
-        assert result.verdict == "safe"
+        assert not result.verdict
 
     def test_eight_failed_native_calls_saturate_at_five_with_no_extra_backend_work(
         self, run_agent, git_commands
@@ -327,7 +327,7 @@ class TestRejectedCallsSpendSlots:
         script = [_text("rm_rf", {"path": "x"}), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 1
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 2
         assert "ERROR" in llm.seen[1][-1].content
 
@@ -335,7 +335,7 @@ class TestRejectedCallsSpendSlots:
         tagged = '<tool_call>{"name": "shell", "arguments": {"cmd": "ls"}}</tool_call>'
         result, llm = run_agent([_msg(tagged), _msg(SAFE)])
         assert result.tool_calls_used == 1
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 2
 
     def test_text_call_with_invalid_schema_spends_a_slot(self, run_agent):
@@ -349,8 +349,8 @@ class TestRejectedCallsSpendSlots:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 3
         assert llm.channels == ["bound", "bound", "bound", "unbound"]
-        assert "Produce your final JSON verdict NOW" in llm.seen[3][-1].content
-        assert result.verdict == "safe"
+        assert "Produce your final JSON answer NOW" in llm.seen[3][-1].content
+        assert not result.verdict
 
 
 class TestNonToolOutputsAreNotCalls:
@@ -361,7 +361,7 @@ class TestNonToolOutputsAreNotCalls:
         )
         result, llm = run_agent([_msg(verdict)])
         assert result.tool_calls_used == 0
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 1
 
     def test_prose_mentioning_a_tool_is_not_a_tool_call(self, run_agent):
@@ -369,15 +369,18 @@ class TestNonToolOutputsAreNotCalls:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 0
         assert "not a valid JSON object" in llm.seen[1][-1].content
-        assert result.verdict == "safe"
+        assert not result.verdict
 
 
     @pytest.mark.parametrize(
         "payload",
         [
-            {"name": "x", "explanation": "no verdict here"},
-            {"name": "rm_rf", "explanation": "unregistered, no arguments"},
-            {"name": "finding-7", "confidence": 0.4},
+            {"name": "x", "explanation": "no verdict here",
+             "findings": [{"explanation": "no verdict here"}]},
+            {"name": "rm_rf", "explanation": "unregistered, no arguments",
+             "findings": [{"explanation": "unregistered, no arguments"}]},
+            {"name": "finding-7", "confidence": 0.4,
+             "findings": [{"confidence": 0.4}]},
         ],
         ids=["named_object", "unregistered_name", "named_finding"],
     )
@@ -425,7 +428,7 @@ class TestSuccessfulCallsAndResilience:
         script += [_msg("prose"), _msg("more prose"), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert "not a valid JSON object" in llm.seen[-1][-1].content
 
     @pytest.mark.parametrize("agent", ["sast_triage", "authz_reviewer"])
@@ -531,9 +534,9 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         script.append(_msg(SAFE))
         result, llm = run_agent(script, max_agent_iterations=20)
         assert result.tool_calls_used == 5
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert llm.channels == ["bound"] * 8 + ["unbound"]
-        assert "Produce your final JSON verdict NOW" in llm.seen[8][-1].content
+        assert "Produce your final JSON answer NOW" in llm.seen[8][-1].content
 
 
 # ---------------------------------------------------------------------------
