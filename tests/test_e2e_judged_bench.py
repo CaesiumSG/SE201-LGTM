@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -80,8 +81,56 @@ def test_wrapper_argv_parses_in_each_real_cli_in_order_with_one_cancel(run, monk
     assert [Path(p).as_posix() for p in (judge.run_dir, judge.export, judge.labels)] == [
         b.run_dir.as_posix(), b.export.as_posix(), b.labels.as_posix()]
     assert judge.live is True
+    subdirectories = {"evaluate.py": "evaluate", "evaluate_real.py": "evaluate-real"}
     for s in kd.RESUME_STEPS:
-        assert parsed[s].resume is True and Path(parsed[s].output).as_posix() == b.results.as_posix()
+        assert parsed[s].resume is True
+        assert Path(parsed[s].output).as_posix() == (b.results / subdirectories[s]).as_posix()
+
+
+def _load(script: str):
+    spec = importlib.util.spec_from_file_location(f"e2e_shared_{script[:-3]}", SCRIPTS[script])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _scored_row(case_id: str, category: str) -> dict:
+    return {
+        "id": case_id, "category": category, "split": "real_world", "expected": "vulnerable",
+        "predicted": "vulnerable", "outcome": "TP", "correct": True, "case_label": "tp",
+        "predicted_grounded": "vulnerable", "outcome_grounded": "TP",
+        "n_findings": 0, "verdicts": [], "grounded": 0, "grounding_rate": None,
+        "latency_seconds": 1.0, "est_tokens": 0, "findings": [],
+    }
+
+
+def test_both_evaluators_keep_their_run_manifests_when_given_the_one_results_directory(run, monkeypatch, tmp_path):
+    b, go = run
+    steps = dict(go("--results-dir", b.results.as_posix()))
+    evaluate, real = _load("evaluate.py"), _load("evaluate_real.py")
+    labelled = json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))["cases"][0]
+    real_case = real.fetch.load_cases()[0]
+    cache = tmp_path / "clones"
+    (cache / real.fetch.project_of(real_case) / ".git").mkdir(parents=True)
+    monkeypatch.setattr(evaluate, "evaluate_case", lambda case, config: _scored_row(case["id"], case["category"]))
+    monkeypatch.setattr(real, "preflight", lambda modes, config: {})
+    monkeypatch.setattr(
+        real, "run_unit", lambda case, variant, mode, *a, **k: _scored_row(case["id"], case["category"])
+    )
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", *steps["evaluate.py"], "--split", "all", "--cases", labelled["id"]])
+    real_argv = [*steps["evaluate_real.py"], "--cache", str(cache), "--cases", real_case["id"],
+                 "--modes", "llm-only", "--variants", "own"]
+
+    for name, call in (("evaluate.py", evaluate.main), ("evaluate_real.py", lambda: real.main(real_argv))):
+        try:
+            call()
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                pytest.fail(f"{name} stopped on the shared results directory: {exc.code}")
+
+    manifests = [json.loads(p.read_text(encoding="utf-8")) for p in b.results.rglob("run.json")]
+    assert len(manifests) == 2
+    assert sum("modes" in m for m in manifests) == 1
 
 
 def test_wrapper_argv_without_results_directory_parses_with_normal_reviewer_path(run, monkeypatch):

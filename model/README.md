@@ -216,12 +216,22 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
   `--export` and `--labels` are the judge eval inputs, and `--run-dir` is the
   recorded reviewer run the export came from; `--out` is the base
   directory for the standalone benchmark report; `--wait-seconds` bounds the
-  wait for readiness (default 1800, `0` checks once). With `--results-dir DIR`,
-  steps 3 and 4 get `--output DIR --resume`. Judged-mode units whose judged
+  wait for readiness (default 1800, `0` checks once). Every Python step runs
+  with `PYTHONUTF8=1`. `evaluate_real.py` reads its clones from the real-world
+  cache of the worktree, `benchmark/real_world/.cache`. Before submitting, the
+  command exits non-zero when a clone of a case is missing there, naming the
+  cache and `benchmark/real_world/fetch.py`. Run `benchmark/real_world/fetch.py --policies`
+  from the worktree before the job, or copy the clones into the cache. With
+  `--results-dir DIR`, step 3 gets `--output DIR/evaluate --resume` and step 4
+  gets `--output DIR/evaluate-real --resume`. Judged-mode units whose judged
   candidates carry no Kev answer are reviewed again; sast-only and llm-only
   units are reused. Without it they run their normal reviewer path. DIR must be
-  gitignored or outside the repo; its top level holds the `evaluate.py` case
-  files and its subdirectories hold the `evaluate_real.py` modes. The job is
+  gitignored or outside the repo; its top level holds `judge-eval.json` and one
+  subdirectory per evaluator, `evaluate` for the `evaluate.py` case files and
+  `evaluate-real` for the `evaluate_real.py` modes. Without `--results-dir`,
+  `judge-eval.json` is written in OUTDIR. Results in a `--results-dir` written in the older top-level layout are not resumed under `evaluate/` and `evaluate-real/`. The judge eval report is the step's
+  stdout; a report with no judged count or zero judged units marks the step failed, the remaining
+  steps still run, and the exit code is non-zero. The job is
   cancelled on success, on a failing step (the step is named and the exit code
   is non-zero), on an interrupt, and when the job is not ready within the wait.
   If submission fails, nothing is cancelled and no step runs.

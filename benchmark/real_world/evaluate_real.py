@@ -62,13 +62,14 @@ evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 fetch = _load("lgtm_rw_fetch", HERE / "fetch.py")
 
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
-from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
+from lgtm.diff.git_diff import GitError, get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
 
 MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
 DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
+GIT_START_FAILURES = ("exit 3221225794", "git executable not found")
 DEFAULT_OUTPUT = BENCH / "results" / "real_world"
 INFRA_PREFIXES = evaluate.INFRA_PREFIXES
 
@@ -410,9 +411,6 @@ def main(argv: list[str] | None = None) -> int:
     scrubs = path_replacements(args.cache, args.output)
     args.output.mkdir(parents=True, exist_ok=True)
 
-    # Also for --summarize-only: every summary.json records the environment it
-    # was built in, and a rebuild must not drop those fields.
-    env_info = preflight(args.modes, config)
     if not args.summarize_only:
         missing = [fetch.project_of(c) for c in cases
                    if not (args.cache / fetch.project_of(c) / ".git").is_dir()]
@@ -421,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"no clone for {sorted(set(missing))} under {args.cache}; "
                 "run benchmark/real_world/fetch.py --policies first"
             )
+    # Runs for --summarize-only too; every summary.json records this environment.
+    env_info = preflight(args.modes, config)
 
     units = list(pending_units(work_units(cases, args.modes, variants),
                                args.output, args.resume and not args.index_only))
@@ -434,6 +434,16 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     touched: set[tuple[str, str]] = set()
     done = 0
+    held = None  # a git start failure is recorded only once the next unit shows it was not the second in a row
+    aborted = False
+
+    def record(case, variant, mode, result):
+        out_dir = out_dir_for(args.output, mode, variant)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{case['id']}.json").write_text(
+            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
+        touched.add((mode, variant))
+
     for i, (case, variant, mode) in enumerate(units, 1):
         if args.summarize_only:
             break
@@ -453,16 +463,27 @@ def main(argv: list[str] | None = None) -> int:
             result = error_result(
                 case, mode, variant, exc,
                 pin=run_pin(config, REPO_ROOT, {}))
+            if isinstance(exc, GitError) and any(s in str(exc) for s in GIT_START_FAILURES):
+                if held is not None:
+                    print("git cannot start (two units in a row); aborting. Re-run with "
+                          "--resume once git works.", file=sys.stderr)
+                    held = None
+                    aborted = True
+                    break
+                held = (case, variant, mode, result)
+                print(f"    ERROR: {scrub(result['error'], scrubs)}")
+                done += 1
+                continue
+        if held is not None:
+            if not args.index_only:
+                record(*held)
+            held = None
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
         if result is None or args.index_only:
             continue  # an index-only failure is printed, never a case result
-        out_dir = out_dir_for(args.output, mode, variant)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{case['id']}.json").write_text(
-            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
-        touched.add((mode, variant))
+        record(case, variant, mode, result)
         if not evaluate.result_is_error(result):
             if result.get("index_seconds") is not None:
                 index_note = f"index {result['index_seconds']}s"
@@ -473,8 +494,10 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result['predicted']}; review {result['latency_seconds']}s, "
                   f"{index_note}; {result['n_findings']} finding(s))")
 
+    if held is not None and not args.index_only:
+        record(*held)
     if args.index_only:
-        return 0
+        return 4 if aborted else 0
     targets = touched if not args.summarize_only else {
         (m, v) for m in args.modes for v in variants
         if out_dir_for(args.output, m, v).is_dir()}
@@ -489,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"scored={o['scored']} errors={o['errors']} "
                   f"tp={o['tp']} fp={o['fp']} fn={o['fn']} tn={o['tn']} "
                   f"f1={o['f1']} complete={summary['complete']}")
-    return 0
+    return 4 if aborted else 0
 
 
 if __name__ == "__main__":

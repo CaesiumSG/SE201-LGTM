@@ -517,10 +517,21 @@ RESUME_STEPS = ["evaluate.py", "evaluate_real.py"]
 FAKE_PY = r"""#!/usr/bin/env bash
 script=$(basename "$1"); shift
 { printf 'PY\t%s' "$script"; printf '\t%s' "$@"; echo; } >> "$STUB_LOG"
+printf 'UTF8\t%s\t%s\n' "$script" "${PYTHONUTF8-unset}" >> "$STUB_LOG"
 if [[ "${FAKE_INTERRUPT:-}" == "$script" ]]; then kill -INT "$PPID"; exit 130; fi
 if [[ "${FAKE_FAIL:-}" == "$script" ]]; then echo "simulated failure" >&2; exit 3; fi
+if [[ "$script" == judge_eval.py ]]; then
+  printf '{"kev": {"judged": %s, "marker": "%s"}}\n' "${FAKE_JUDGED-3}" "${FAKE_MARKER-none}"
+fi
 exit 0
 """
+
+CASES = """{"cases": [
+  {"id": "alpha_authz_safe", "category": "authz", "expected_verdict": "safe", "repo_url": "https://github.com/o/alpha"},
+  {"id": "beta_sqli_vulnerable", "category": "sqli", "expected_verdict": "vulnerable", "repo_url": "https://github.com/o/beta.git"}
+]}
+"""
+PROJECTS = ["alpha", "beta"]
 
 SSH_FAILING_SBATCH = """#!/usr/bin/env bash
 if [[ "$*" == *sbatch* ]]; then echo "$*" >> "$STUB_LOG"; echo "sbatch: error" >&2; exit 1; fi
@@ -541,6 +552,21 @@ class Bench:
         self.labels.write_text("{}")
         (sb.bin / "fakepy").write_bytes(FAKE_PY.encode())
         (sb.bin / "fakepy").chmod(0o755)
+        real_world = sb.model.parent / "benchmark" / "real_world"
+        self.cache = real_world / ".cache"
+        real_world.mkdir(parents=True)
+        (real_world / "cases.json").write_text(CASES)
+        for project in PROJECTS:
+            (self.cache / project / ".git").mkdir(parents=True)
+
+    def drop_clones(self, *projects: str) -> None:
+        if not projects:
+            shutil.rmtree(self.cache)
+        for project in projects:
+            shutil.rmtree(self.cache / project)
+
+    def utf8_modes(self) -> list[tuple[str, str]]:
+        return [tuple(c.split("\t")[1:]) for c in self.sb.calls() if c.startswith("UTF8\t")]
 
     def fail_submission(self) -> None:
         ssh = self.sb.bin / "ssh"
@@ -751,6 +777,74 @@ def test_missing_input_path_fails_before_any_submission(bench, missing):
     assert bench.py_steps() == []
 
 
+# Python steps run in UTF-8 mode
+
+def test_every_python_step_starts_with_utf8_mode_on(bench):
+    ok(bench.run(PYTHONUTF8=""))
+    assert bench.utf8_modes() == [(script, "1") for script in STEP_SCRIPTS.values()]
+
+
+# Clone cache check before submission
+
+@pytest.mark.parametrize("dropped", [("beta",), ("alpha", "beta"), ()], ids=["one clone", "every clone", "no cache"])
+def test_missing_clone_fails_before_any_submission_naming_the_cache_and_the_fetch_step(bench, dropped):
+    bench.drop_clones(*dropped)
+    result = bench.run()
+    output = (result.stdout + result.stderr).replace("\\", "/")
+    assert result.returncode != 0
+    assert "real_world/.cache" in output
+    assert "fetch.py" in output
+    if dropped:
+        assert "beta" in output
+    assert sbatch_calls(bench.sb.calls()) == []
+    assert bench.scancels() == []
+    assert bench.py_steps() == []
+
+
+def test_cache_holding_every_selected_clone_passes_the_check_and_runs_the_steps(bench):
+    ok(bench.run())
+    calls = bench.sb.calls()
+    assert len(sbatch_calls(calls)) == 1
+    assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
+    assert len(bench.scancels()) == 1
+
+
+# Judge-eval report
+
+def test_judge_eval_report_is_saved_in_the_results_directory(bench):
+    bench.results.mkdir()
+    ok(bench.run("--results-dir", bench.results.as_posix(), FAKE_MARKER="report-7f3a"))
+    saved = [p for p in bench.results.rglob("*") if p.is_file() and "report-7f3a" in p.read_text(encoding="utf-8")]
+    assert len(saved) == 1
+
+
+def test_judge_eval_report_without_a_results_directory_is_saved_under_the_out_directory(bench):
+    ok(bench.run(FAKE_MARKER="report-9c1d"))
+    saved = [p for p in bench.out.rglob("*") if p.is_file() and "report-9c1d" in p.read_text(encoding="utf-8")]
+    assert len(saved) == 1
+
+
+def test_judge_eval_that_judged_nothing_fails_the_step_runs_the_rest_cancels_once_and_exits_non_zero(bench):
+    result = bench.run(FAKE_JUDGED="0")
+    calls = bench.sb.calls()
+    assert result.returncode != 0
+    assert failed_steps(result) == {"judge-eval"}, result.stdout + result.stderr
+    assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
+    cancels = bench.scancels()
+    assert len(cancels) == 1 and STUB_JOB_ID in calls[cancels[0]]
+    assert cancels[0] > max(i for i, c in enumerate(calls) if c.startswith("PY\t"))
+
+
+# Temporary path with a space
+
+def test_wrapper_runs_all_steps_and_cancels_once_when_the_temporary_path_contains_a_space(tmp_path):
+    root = tmp_path / "with space"
+    spaced = Bench(Sandbox(root / "cur", MODEL), root)
+    ok(spaced.run())
+    assert [s for s, _ in spaced.py_steps()] == list(STEP_SCRIPTS.values())
+    assert len(spaced.scancels()) == 1
+
+
 # AC-4-6 results directory documentation
 
 def test_readme_states_where_the_results_directory_may_live_and_how_it_is_laid_out():
@@ -758,3 +852,15 @@ def test_readme_states_where_the_results_directory_may_live_and_how_it_is_laid_o
     section = readme[readme.index(WRAPPER):].split("\n- **Prerequisites", 1)[0]
     assert re.search(r"gitignore", section, re.I) and re.search(r"outside the repo", section, re.I)
     assert re.search(r"top level", section, re.I) and re.search(r"subdirector", section, re.I)
+
+
+# AC-5-9 clone cache documentation
+
+def test_readme_states_that_evaluate_real_reads_clones_from_the_worktree_cache_and_how_to_fetch_or_copy_them():
+    readme = (MODEL / "README.md").read_text(encoding="utf-8")
+    section = readme[readme.index(WRAPPER):].split("\n- **Prerequisites", 1)[0].replace("\\", "/")
+    assert re.search(r"evaluate_real\.py[^.]*\bclones?\b|\bclones?\b[^.]*evaluate_real\.py", section)
+    assert "benchmark/real_world/.cache" in section
+    assert re.search(r"worktree", section, re.I)
+    assert "benchmark/real_world/fetch.py" in section
+    assert re.search(r"\bcopy", section, re.I)
