@@ -11,6 +11,4 @@ Each format was evaluated on 30 incorrect findings (6 for each of 5 kinds) and 1
 | code_first | 12 | 27 | 0 | 2 | 0 | 45 |
 | code_only | 12 | 21 | 0 | 3 | 0 | 45 |
 
-Eligible formats keep at least as many correct controls as `current` (14 of 15). `short_claim` and `code_first` keep 12 and do not qualify. `code_only` is reported but not eligible.
-
-Production default: `current`. It is the only qualifying format, with 14 correct controls kept and 28 of 30 incorrect findings rejected.
+Production default: `current`.

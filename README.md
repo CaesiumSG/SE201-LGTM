@@ -94,7 +94,8 @@ Outputs `lgtm-output/report.json` (machine-readable findings) and
 `lgtm-output/report.md` (human-readable review). Both list supported,
 unsupported and not judged candidates, supported first.
 
-Exit code of `lgtm review`: 1 if any candidate is supported; otherwise 2 if
+Exit code of `lgtm review`: 1 if any candidate is supported, or a baseline
+mode reports a vulnerable finding; otherwise 2 if
 any candidate is not judged or any agent errored; otherwise 0 (CI-friendly).
 
 `--gpu-model qwen3.8-27b` connects through the existing GPU cluster

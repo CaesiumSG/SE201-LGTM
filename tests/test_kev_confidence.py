@@ -172,6 +172,16 @@ class TestPerQuestionMetrics:
 
         assert got == pytest.approx(0.35, **APPROX)
 
+    def test_top_probability_of_one_falls_in_the_last_bin(self, confidence):
+        last_bin = [
+            _case("a", "control", "real", "supported", "low", {"few_shot": _rec(_v(0.0), _s(0.9), UNIFORM, 0.9)}),
+            _case("b", "control", "real", "supported", "low", {"few_shot": _rec(_v(0.91), _s(0.9), UNIFORM, 0.9)}),
+        ]
+        # 1.0 (wrong) and 0.91 (right) share bin [0.9, 1.0]: confidence 0.955, accuracy 0.5
+        got = confidence.score({"arms": ["few_shot"], "cases": last_bin})["metrics"]["few_shot"]["verdict"]["all"]["ece"]
+
+        assert got == pytest.approx(0.455, **APPROX)
+
 
 class TestLogLossClipping:
     def test_zero_probability_on_the_correct_option_is_clipped_at_epsilon(self, confidence):

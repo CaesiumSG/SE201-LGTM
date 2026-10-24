@@ -21,7 +21,7 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --device 
 server=$!
 trap 'kill $server 2>/dev/null; rm -f "$RUN_DIR/$SLURM_JOB_ID.env"; rm -rf "$TMPDIR"' EXIT
 
-until curl -s -o /dev/null "http://127.0.0.1:$PORT/v1/models"; do
+until curl -s --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/v1/models"; do
   kill -0 "$server" 2>/dev/null || { echo "kev.serve exited before it was ready" >&2; exit 1; }
   sleep 5
 done

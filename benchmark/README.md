@@ -201,11 +201,6 @@ variant of a vulnerable case; skipped and counted when none exists).
 the judge answered). Real-world cases pass `repo`, a clone prepared by
 `real_world/fetch.py`.
 
-Pending labelling: the independent Claude Code session reads `export.json`
-without the run directory and writes `labels.json`. Pending deploy: recording
-a candidate set and the judged replay and perturbation run against the live
-judge.
-
 ## Kev validation benchmark
 
 `benchmark/kev_support/` sends authored cases through evidence validation and the production Kev judge

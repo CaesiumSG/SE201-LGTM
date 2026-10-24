@@ -308,6 +308,8 @@ def _finding(kind: str) -> AgentFinding:
         "no-source": {"supported": False, "judged": True, "unsupported_reason": "no-cited-source"},
         "not-judged": {"not_judged_reason": "judge-unreachable"},
         "too-large": {"not_judged_reason": "request-too-large"},
+        "baseline-vulnerable": {"verdict": "vulnerable"},
+        "baseline-safe": {"verdict": "safe"},
     }[kind]
     return AgentFinding(finding_id=kind, file="a.py", line=1, **fields)
 
@@ -336,6 +338,8 @@ def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=()):
     (["no-source"], [], 0),
     (["unsupported", "no-source"], [], 0),
     ([], [], 0),
+    (["baseline-vulnerable", "baseline-safe"], [], 1),
+    (["baseline-safe"], [], 0),
 ])
 def test_exit_code_is_1_if_any_supported_else_2_if_not_judged_or_agent_error_else_0(
     tmp_path, monkeypatch, kinds, agent_errors, expected

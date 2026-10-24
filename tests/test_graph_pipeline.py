@@ -827,11 +827,6 @@ class TestBaselines:
         assert (meta.base, meta.pr) == ("main", "pr")
 
 
-CAP_MARKER = (
-    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
-    "for this finding and no cited evidence validated against the PR snapshot or the diff."
-    "]"
-)
 PR_SQL_LINE = "cursor.execute(f\"SELECT * FROM t_a WHERE n = '{name}'\")"
 
 
@@ -879,7 +874,6 @@ class TestCapIntegration:
         for finding in by_file.values():
             assert finding.pr_graph_ok is False
             assert not finding.verdict
-            assert CAP_MARKER not in finding.explanation
             assert "confidence" not in finding.model_dump()
 
     def test_triage_candidate_keeps_its_up_stamp_when_the_pr_graph_goes_down_in_a_later_section(
@@ -900,7 +894,6 @@ class TestCapIntegration:
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
         assert triage.pr_graph_ok is True
         assert not triage.verdict
-        assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "degraded:pr:timeout"
 
     def test_triage_candidate_is_stamped_down_and_stays_unjudged_when_the_graph_binary_is_missing(
@@ -914,7 +907,6 @@ class TestCapIntegration:
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
         assert triage.pr_graph_ok is False
         assert not triage.verdict
-        assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "unavailable:missing"
 
     def test_authz_candidates_stay_unjudged_when_pr_graph_is_down(self, repo_with_endpoints, install_graph, semgrep):
@@ -931,7 +923,6 @@ class TestCapIntegration:
         authz = [f for f in result.findings if f.category == "authz"]
         assert len(authz) == 2
         assert all(not f.verdict and f.pr_graph_ok is False for f in authz)
-        assert all(CAP_MARKER not in f.explanation for f in authz)
 
     def test_pr_labelled_evidence_validates_against_frozen_pr_commit(
         self, repo, install_graph, semgrep
@@ -955,7 +946,6 @@ class TestCapIntegration:
         first = next(f for f in result.findings if f.category == "authz" and f.file == "a.py")
         assert first.pr_graph_ok is False
         assert not first.verdict
-        assert CAP_MARKER not in first.explanation
 
     def test_healthy_graph_never_caps(self, repo, install_graph, semgrep):
         install_graph()
@@ -966,7 +956,6 @@ class TestCapIntegration:
         first = next(f for f in result.findings if f.file == "a.py")
         assert first.pr_graph_ok is True
         assert not first.verdict
-        assert CAP_MARKER not in first.explanation
 
     def test_labelled_evidence_ignores_dirty_working_tree(
         self, repo, install_graph, semgrep

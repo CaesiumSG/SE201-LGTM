@@ -229,7 +229,7 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
   gitignored or outside the repo; its top level holds `judge-eval.json` and one
   subdirectory per evaluator, `evaluate` for the `evaluate.py` case files and
   `evaluate-real` for the `evaluate_real.py` modes. Without `--results-dir`,
-  `judge-eval.json` is written in the run directory, `OUTDIR/kev-bench-<timestamp>`. Results in a `--results-dir` written in the older top-level layout are not resumed under `evaluate/` and `evaluate-real/`. The judge eval report is the step's
+  `judge-eval.json` is written in the run directory, `OUTDIR/kev-bench-<timestamp>`. The judge eval report is the step's
   stdout; a report with no judged count or zero judged units marks the step failed, the remaining
   steps still run, and the exit code is non-zero. The job is
   cancelled on success, on a failing step (the step is named and the exit code

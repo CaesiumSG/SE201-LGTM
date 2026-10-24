@@ -823,9 +823,10 @@ class TestGitLaunchAbortLeavesAResumableRun:
     def test_two_consecutive_launch_failures_leave_scored_rows_no_error_rows_and_an_incomplete_summary(
         self, tmp_path, monkeypatch
     ):
-        _argv, mode_dir, ids, _code = self._aborted_run(tmp_path, monkeypatch)
+        _argv, mode_dir, ids, code = self._aborted_run(tmp_path, monkeypatch)
 
         rows = self._rows(mode_dir)
+        assert code == 4
         summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
 
         assert set(rows) == {ids[0]}

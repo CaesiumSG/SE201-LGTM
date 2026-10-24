@@ -1651,6 +1651,12 @@ class TestCoverageRowErrors:
         assert summary["error_cases"] == []
         assert summary["overall"]["errors"] == 0
 
+    @pytest.mark.parametrize("reason,done", [("judge-failed", False), ("request-too-large", True)])
+    def test_is_done_reruns_rows_whose_judge_call_failed(self, stored, reason, done):
+        row = _case_row(findings=[{"category": "authz", "judged": False, "not_judged_reason": reason}], raw=True)
+        stored(row)
+        assert evaluate.is_done(Path("row.json")) is done
+
     def test_is_done_is_false_for_scan_failure_rows(self, stored):
         stored(evaluate.score_case(_case_row(**_scenario("scan_failure"))))
         assert evaluate.is_done(Path("row.json")) is False

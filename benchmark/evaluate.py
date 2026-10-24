@@ -43,7 +43,7 @@ from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.coverage import location_overlaps  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
-from lgtm.validation.judge import http_judge  # noqa: E402
+from lgtm.validation.judge import REASON_JUDGE_FAILED, http_judge  # noqa: E402
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
@@ -161,7 +161,8 @@ def is_done(path: Path) -> bool:
     if data is None or result_is_error(data) or data.get("case_label") == "scan_failure":
         return False
     if is_judged_row(data) and any(
-        f.get("judged") and not f.get("unsupported_reason") and f.get("kev_verdict") is None
+        (f.get("judged") and not f.get("unsupported_reason") and f.get("kev_verdict") is None)
+        or f.get("not_judged_reason") == REASON_JUDGE_FAILED
         for f in data.get("findings") or []
     ):
         return False

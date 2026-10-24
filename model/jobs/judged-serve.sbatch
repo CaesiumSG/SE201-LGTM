@@ -21,8 +21,8 @@ rm -f "$KEV_RUN_DIR/$SLURM_JOB_ID.env"
 kev=$!
 trap 'kill $kev 2>/dev/null; rm -f "$KEV_RUN_DIR/$SLURM_JOB_ID.env"; rm -rf "$TMPDIR"' EXIT
 
-# Kev loads first so Ollama sizes its allocation against the memory Kev leaves.
-until curl -s -o /dev/null "http://127.0.0.1:$KEV_PORT/v1/models"; do
+# Kev loads before Ollama; Ollama sizes its allocation from the remaining GPU memory.
+until curl -s --max-time 5 -o /dev/null "http://127.0.0.1:$KEV_PORT/v1/models"; do
   kill -0 "$kev" 2>/dev/null || { echo "kev.serve exited before it was ready" >&2; exit 1; }
   sleep 5
 done
