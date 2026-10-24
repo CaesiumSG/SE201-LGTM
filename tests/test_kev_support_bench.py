@@ -9,7 +9,9 @@ import ast
 import importlib
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import urllib.request
 from collections import Counter
@@ -985,3 +987,11 @@ class TestKevReplyWithoutInputTokens:
             assert report["cells"][arm]
         assert report["input_tokens"]["few_shot"] == {"n": 2, "requests_over_8192_input_tokens": 2}
         assert report["input_tokens"]["zero_shot"] == {"n": 2, "requests_over_8192_input_tokens": 0}
+
+
+def test_runner_script_imports_without_pythonpath():
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    done = subprocess.run([sys.executable, str(BENCH / "kev_support" / "runner.py"), "--help"],
+                          capture_output=True, text=True, env=env)
+    assert done.returncode == 0, done.stderr
+    assert "--rescore" in done.stdout

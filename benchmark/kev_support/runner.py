@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from kev_support.confidence import score as confidence_score  # noqa: E402
 from kev_support.fixtures import KINDS, OTHER_FLAW, Fixture, build_repos, load_fixtures  # noqa: E402
