@@ -763,6 +763,66 @@ class TestEntryPoint:
         assert (tmp_path / "out" / "report.json").is_file()
 
 
+PRE_CONFIDENCE_KEYS = ("evidence_failures", "arms", "cases", "cells", "subrows", "severity", "input_tokens")
+
+
+class TestRescore:
+    @pytest.fixture
+    def recorded(self, runner, tmp_path, all_fixtures):
+        """A fresh run, plus a copy of its report as written before confidence keys existed."""
+        subset = [*of_kind(all_fixtures, CONTROL, 3), *of_kind(all_fixtures, "safe_twin", 2)]
+        fresh = runner.run(
+            tmp_path / "fresh",
+            work_dir=tmp_path / "work",
+            judge=ideal_judge(all_fixtures),
+            permute=ideal_permute(all_fixtures),
+            fixtures=subset,
+        )
+        old = {k: v for k, v in fresh.items() if k in PRE_CONFIDENCE_KEYS}
+        source = tmp_path / "recorded" / "report.json"
+        source.parent.mkdir()
+        source.write_text(json.dumps(old, indent=2), encoding="utf-8")
+        return fresh, source
+
+    @staticmethod
+    def _rescore(runner, source, out):
+        def fail(*args, **kwargs):
+            pytest.fail("re-score called Kev")
+
+        return runner.main(["--rescore", str(source), "--out", str(out)], judge=fail, permute=fail)
+
+    def test_fresh_run_adds_confidence_keys_beside_the_existing_keys(self, recorded):
+        fresh, _ = recorded
+
+        assert set(PRE_CONFIDENCE_KEYS) <= set(fresh)
+        assert set(fresh) - set(PRE_CONFIDENCE_KEYS)
+
+    def test_rescore_recomputes_confidence_without_calling_kev_into_a_new_output_and_leaves_the_input_unchanged(
+        self, recorded, runner, tmp_path, monkeypatch
+    ):
+        fresh, source = recorded
+        before = source.read_bytes()
+
+        def no_network(*args, **kwargs):
+            pytest.fail("re-score reached the network")
+
+        monkeypatch.setattr(urllib.request, "build_opener", no_network)
+        monkeypatch.setattr(urllib.request, "urlopen", no_network)
+        out = tmp_path / "rescored"
+
+        code = self._rescore(runner, source, out)
+
+        assert code == 0
+        assert source.read_bytes() == before
+        written = list(out.rglob("*.json"))
+        assert len(written) == 1 and written[0] != source
+        rescored = json.loads(written[0].read_text(encoding="utf-8"))
+        added = set(fresh) - set(PRE_CONFIDENCE_KEYS)
+        assert added <= set(rescored)
+        for key in (*PRE_CONFIDENCE_KEYS, *added):
+            assert rescored[key] == fresh[key], key
+
+
 AGENT_MODULE_ROOTS = ("lgtm.agents", "lgtm.pipeline", "lgtm.review", "evaluate")
 ALLOWED_AGENT_IMPORTS = ("lgtm.agents.base",)
 

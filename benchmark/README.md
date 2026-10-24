@@ -251,6 +251,21 @@ else is written outside `--out` and the work directory.
   `plain_unstable` is true when the plain answer differs from unanimous permute choices.
 - The runner exits 0 only when no case is in `error`, no permute call failed, and at least one case was
   evaluated; otherwise it exits 1, after writing `report.json`.
+- `report["confidence"]` holds `epsilon` (1e-6, the clip of log loss), `metrics[arm][question]` for
+  `verdict`, `supported`, `provenance` and `severity`, each with `all` and `kinds[kind]` entries of `brier`,
+  `log_loss`, `ece` (10 equal-width bins), `mean_prob_correct` and `excluded`, `auroc[arm]` of
+  `provenance_confidence` (`all`, and `kinds[kind]` against the control cases; `null` when one class is
+  absent), `headline[arm]` (mean Brier of `verdict`, `provenance` and `severity`, lower is better) and
+  `left_out`. Severity is scored on `control` cases only. A question whose option probabilities or ground
+  truth are not in the report is listed in `left_out` with the reason and has no entry in `metrics`.
+
+```bash
+python benchmark/kev_support/runner.py --rescore PATH/report.json --out DIR
+```
+
+Re-score mode recomputes `report["confidence"]` from a recorded `report.json` without calling Kev, writes the
+report with the recomputed key to `DIR/<name of the report's directory>.json`, and leaves the source file
+unchanged. It exits 0.
 
 ## Regenerating cases
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from kev_support.confidence import score as confidence_score  # noqa: E402
 from kev_support.fixtures import KINDS, OTHER_FLAW, Fixture, build_repos, load_fixtures  # noqa: E402
 from lgtm.config import LGTMConfig  # noqa: E402
 from lgtm.validation.evidence import EvidenceValidator  # noqa: E402
@@ -212,6 +213,7 @@ def run(
             }
         )
     _summarise(report, fixtures)
+    report["confidence"] = confidence_score(report)
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     (Path(out_dir) / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
@@ -244,7 +246,20 @@ def main(argv: Sequence[str] | None = None, *, judge: JudgeCall | None = None, p
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, type=Path, help="new directory that receives report.json")
     parser.add_argument("--work-dir", type=Path, help="directory for the temporary case repositories")
+    parser.add_argument("--rescore", type=Path, help="recompute the confidence scores of this report.json without calling Kev")
     args = parser.parse_args(argv)
+
+    if args.rescore:
+        source = args.rescore.resolve()
+        target = args.out / f"{source.parent.name}.json"
+        if target.resolve() == source:
+            parser.error("--out would overwrite the report being re-scored")
+        report = json.loads(source.read_text(encoding="utf-8"))
+        report["confidence"] = confidence_score(report)
+        args.out.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"re-scored report written to {target}")
+        return 0
 
     config = LGTMConfig()
     if judge is None:
