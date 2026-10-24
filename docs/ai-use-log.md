@@ -1,7 +1,8 @@
 # AI Use Disclosure Log
 
 The course allows AI tools during development but requires us to track
-their use. This log covers **AI used to build the project**, collated at
+their use. Each member's own log, in the format the policy asks for, is
+in [`ai-log/`](../ai-log/README.md) (one file per member). This log covers **AI used to build the project**, collated at
 team level by area of work. The LLM that LGTM runs at review time (Qwen via
 Ollama) is part of the product; its risks are covered in the checkpoint
 report's Responsible AI section.

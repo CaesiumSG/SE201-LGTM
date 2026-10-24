@@ -322,6 +322,29 @@ originals as `vulnerable` in this harness, so no authz attack could succeed.
 The committed run files in `benchmark/injection/results/` cover the three
 unmitigated rows.
 
+### 4. Field trial on ordinary merged PRs
+
+12 merged PRs from mealie (FastAPI), alerta (Flask) and redash (Flask) that
+touch route handlers, permission helpers or database code. Every PR was
+accepted by its maintainers, so this measures crash rate, latency and
+false alarms on everyday traffic, not detection.
+
+```bash
+python benchmark/field_trial/run_field_trial.py --fetch
+python benchmark/field_trial/run_field_trial.py --modes sast-only lgtm llm-only
+```
+
+| Mode | Crashes | PRs flagged `vulnerable` | Findings | Median review latency |
+|---|---|---|---|---|
+| A: sast-only | 0 / 12 | 0 | 0 | 4.8 s |
+| B: llm-only | 0 / 12 | 0 | 23 (1 `possible`) | 14.1 s |
+| **C: lgtm** | **0 / 12** | **0** | 14 (all `safe`) | 2.5 s (144 s on the 11-endpoint PR) |
+
+No false alarms, but **10 of 12 PRs reached no LLM agent**: Semgrep found
+nothing and only 2 PRs had a route decorator inside a changed hunk. On the
+PR that was reviewed, the agent cited Mealie's own permission docs and
+judged 11 endpoints correctly. Write-up: [`docs/field-trial.md`](docs/field-trial.md).
+
 ### All results at a glance
 
 | Mode | Shoply F1, all 36 (eval 18) | Real-world F1 (12) | Injection ASR (lower is better) |
