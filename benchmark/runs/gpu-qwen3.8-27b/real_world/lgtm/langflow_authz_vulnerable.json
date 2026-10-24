@@ -1,0 +1,98 @@
+{
+  "id": "langflow_authz_vulnerable",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 29.88,
+  "case_seconds": 153.53,
+  "est_tokens": 826,
+  "findings": [
+    {
+      "finding_id": "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]",
+      "verdict": "vulnerable",
+      "confidence": 0.85,
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the `current_user: CurrentActiveUser` parameter from `delete_api_key_route` and changes the call from `delete_api_key(db, api_key_id, current_user.id)` to `delete_api_key(db, api_key_id)`. The base implementation of `delete_api_key` (crud.py:44-52) enforces ownership via `if api_key.user_id != user_id: raise ValueError('API Key not found')`. By dropping the `user_id` argument, the route no longer passes the requester's identity to the CRUD layer, so the ownership check cannot be performed \u2014 any authenticated user can delete any other user's API key by supplying its UUID. The repository's own test `test_delete_api_key_route_unauthorized` (test_api_key.py) explicitly documents the intended behavior: 'Test that users cannot delete API keys belonging to other users.' The added `Depends(auth_utils.get_current_active_user)` only authenticates the caller; it does not authorize the specific resource, so the change introduces a classic IDOR (CWE-639).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            54
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\")\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n    current_user: CurrentActiveUser,\n):\n    try:\n        await delete_api_key(db, api_key_id, current_user.id)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            52
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    if api_key.user_id != user_id:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/tests/unit/api/v1/test_api_key.py",
+          "lines": [
+            85,
+            90
+          ],
+          "source": null,
+          "content": "async def test_delete_api_key_route_unauthorized(client: AsyncClient, logged_in_headers, active_user):\n    \"\"\"Test that users cannot delete API keys belonging to other users.\"\"\""
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/auth/utils.py",
+          "lines": [
+            261,
+            264
+          ],
+          "source": null,
+          "content": "async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\n    if not current_user.is_active:\n        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n    return current_user"
+        }
+      ],
+      "suggested_fix": "Keep the `current_user: CurrentActiveUser` parameter (or use `Depends(auth_utils.get_current_active_user)` and read `request.state`/dependency result) and continue passing `current_user.id` to `delete_api_key(db, api_key_id, current_user.id)` so the CRUD layer's ownership check (`api_key.user_id != user_id`) is enforced. Do not remove the `user_id` argument from the CRUD call.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "line": 41,
+      "tool_calls_used": 8,
+      "evidence_valid": true,
+      "evidence_issues": []
+    }
+  ],
+  "project": "langflow",
+  "mode": "lgtm",
+  "variant": "own",
+  "diff_files": 3,
+  "diff_added": 5,
+  "diff_deleted": 9,
+  "diff_py_chars": 2299,
+  "diff_max_file_chars": 1023,
+  "endpoints_detected": [
+    "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]"
+  ],
+  "index_seconds": 119.3,
+  "index_chunks": 6082,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "vulnerable",
+  "outcome_grounded": "TP"
+}

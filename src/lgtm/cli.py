@@ -3,7 +3,7 @@
 Usage:
     lgtm index  --repo <path>
     lgtm review --repo <path> --base <branch> --pr <branch> \
-                [--model <ollama_model>] [--output <dir>]
+                [--model <ollama_model>] [--gpu-model qwen3.8-27b] [--output <dir>]
                 [--mode lgtm|sast-only|llm-only|lgtm-no-sast]
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 import click
 
 from lgtm import __version__
-from lgtm.config import LGTMConfig, setup_logging
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +53,16 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository under review.")
 @click.option("--base", required=True, help="Base branch (trusted).")
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
-@click.option("--model", default=None, help="Ollama model name (default: qwen2.5-coder:7b).")
-@click.option("--ollama-url", default=None, help="Ollama base URL.")
-@click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen2.5:7b. Does not start the server or tunnel.")
+@click.option("--model", default=None, help="Ollama model name (default: qwen3.8:27b).")
+@click.option("--ollama-url", default=None, help="Ollama base URL (default: http://localhost:11434, a local Ollama; --gpu-model switches to the cluster tunnel).")
+@click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen3.8:27b. Does not start the server or tunnel.")
+@click.option("--gpu-model", type=click.Choice(sorted(GPU_MODELS)), default=None, help="Use the GPU cluster tunnel at http://127.0.0.1:11435 with a registered model (thinking off). Cannot be combined with --gpu-cluster or --model; --ollama-url overrides the URL.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
 @click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
 @click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
+@click.option("--graph/--no-graph", "graph_enabled", default=None, help="Use CodeGraph (npm: @colbymchenry/codegraph) for investigate_* tools when the binary is on PATH (default: on; agents fall back to read_file/grep_repo when it is missing).")
+@click.option("--authz-planner", type=click.Choice(["investigator", "endpoint"]), default=None, help="How the authz review picks what to look at: 'investigator' (default, every changed hunk) or 'endpoint' (checkpoint behaviour: only hunks with a route decorator).")
 @click.option("--strip-comments", is_flag=True, help="Mitigation: strip comments and docstrings from PR code in prompts.")
 @click.option("--detect-prompt-injection", is_flag=True, help="Mitigation: detect reviewer-directed instructions in diff.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
@@ -70,20 +73,25 @@ def review(
     model: str | None,
     ollama_url: str | None,
     gpu_cluster: bool,
+    gpu_model: str | None,
     output_dir: str | None,
     mode: str,
     semgrep_config: str | None,
     config_file: str | None,
+    graph_enabled: bool | None,
+    authz_planner: str | None,
     strip_comments: bool,
     detect_prompt_injection: bool,
     verbose: bool,
 ) -> None:
     """Run the full security review pipeline on a PR."""
     setup_logging(verbose)
+    if gpu_model and (gpu_cluster or model):
+        raise click.UsageError("--gpu-model cannot be combined with --gpu-cluster or --model.")
     from lgtm.pipeline import ReviewPipeline
 
     if gpu_cluster:
-        model = model or "qwen2.5:7b"
+        model = model or "qwen3.8:27b"
         ollama_url = ollama_url or "http://127.0.0.1:11435"
     config = _load_config(
         config_file,
@@ -91,7 +99,13 @@ def review(
         ollama_base_url=ollama_url,
         semgrep_config=semgrep_config,
     )
+    if gpu_model:
+        apply_gpu_model(config, gpu_model, base_url=ollama_url)
     config.mode = mode
+    if graph_enabled is not None:
+        config.graph_enabled = graph_enabled
+    if authz_planner is not None:
+        config.authz_planner = authz_planner
     if strip_comments:
         config.strip_comments = True
     if detect_prompt_injection:

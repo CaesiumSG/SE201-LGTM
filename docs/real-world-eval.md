@@ -10,6 +10,14 @@ evaluation: 6 published vulnerabilities in open-source Python web projects,
 **It is a held-out test.** No prompt, rule or config was tuned on these
 cases, and every experiment flag is off.
 
+> **Case refs changed on 24 Oct.** PR #14 re-pinned 8 of the 12 cases
+> (vulnerable PRs no longer carry the fix's tests; the postgraas and litellm
+> fixes were extended) and made the runner review every PR without endpoint
+> gating. The runs and numbers on this page were produced on the earlier
+> refs with the checkpoint pipeline; they remain the record of that
+> evaluation and must not be compared with runs on the current cases until
+> the re-run is committed under `benchmark/runs/real_world/`.
+
 - **Data:** [`benchmark/real_world/cases.json`](../benchmark/real_world/cases.json)
   (how the cases are built: [`benchmark/real_world/README.md`](../benchmark/real_world/README.md)).
 - **Runs:** [`benchmark/runs/real_world/`](../benchmark/runs/real_world/),
@@ -91,10 +99,11 @@ Three small indexes (pyload ×2, postgraas vulnerable) were built at
   touched. Safe diffs therefore include the fix's test files, and vulnerable
   diffs do not (aegra's safe diff is 22.5k characters of Python against
   2.5k for its vulnerable twin).
-- The endpoint detector recognises only `@x.route/get/post/put/patch/delete("...")`
-  decorators on a single line, and only when one appears inside a changed
-  hunk. It does not see Flask-RESTful `Resource` classes (postgraas),
-  `add_url_rule` or Django views.
+- The endpoint column comes from the endpoint detector used in these runs. It
+  recognised only `@x.route/get/post/put/patch/delete("...")` decorators on a
+  single line, and only when one appears inside a changed hunk. It did not see
+  Flask-RESTful `Resource` classes (postgraas), `add_url_rule` or Django views.
+  The current scan does not gate on endpoints.
 - litellm's fix is two commits (PR #25541); its third commit is not in the
   advisory and is excluded. alerta uses the 2026 fix `fdd52cd`, not the 2018
   commit the advisory also links.
@@ -349,9 +358,8 @@ that can see one.
 
 Decoding ran at about 5 tokens/s, so a single agent call took 37–139 s.
 These figures are specific to this laptop; see the latency caveat above.
-Indexes are skipped only when the pipeline's own functions show that no
-agent can run (`index_skipped` and `index_skip_reason` are in every JSON);
-the output is then determined without the index.
+`lgtm` and `lgtm-no-sast` units always build the index and run the authz
+scan; `index_skipped` and `index_skip_reason` are in every JSON.
 
 ## Bugs found while running
 
@@ -415,7 +423,8 @@ real-world run.
   a third-party write-up of an issue similar to litellm's; it was excluded and
   the policy comes only from the official pages.
 - **Order of work.** Before writing the policies I ran the deterministic
-  stages (endpoint extraction, Semgrep, heuristic sinks) on all 12 cases to
+  stages (the endpoint detector used at the time, Semgrep, heuristic sinks)
+  on all 12 cases to
   size the run. No model output for these projects had been seen, and the
   policies were not edited afterwards.
 - **Possible memorisation.** postgraas's CVE dates from 2018. All modes that
@@ -436,16 +445,14 @@ real-world run.
 
 Not done, and not tuned for here:
 
-1. Detector coverage: multi-line decorators, `add_url_rule`, Flask-RESTful
-   `Resource` classes, Django views, and checks that sit in a callee.
-2. Give the authz agent the callee or the other changed files for the same
+1. Give the authz agent the callee or the other changed files for the same
    endpoint, and measure it on the dev split first.
-3. Make the validator check that a cited policy line is *about* the
+2. Make the validator check that a cited policy line is *about* the
    operation under review, not only that it exists.
-4. Re-run the policy experiment with policies written by someone who has not
+3. Re-run the policy experiment with policies written by someone who has not
    seen the fixes, and for more projects.
-5. Grow the set: more CVEs, and real vulnerable PRs rather than reverts.
-6. Fix the Windows decoding bug in `src/lgtm/diff/`.
+4. Grow the set: more CVEs, and real vulnerable PRs rather than reverts.
+5. Fix the Windows decoding bug in `src/lgtm/diff/`.
 
 ## Reproduce
 

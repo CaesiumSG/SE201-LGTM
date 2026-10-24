@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Literal
+import time
+from collections.abc import Callable
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from lgtm.agents import registry
 from lgtm.config import LGTMConfig
 
 logger = logging.getLogger(__name__)
@@ -17,6 +20,13 @@ Verdict = Literal["vulnerable", "safe", "possible", "insufficient_evidence"]
 
 VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
 
+SNAPSHOT_LABELS = ("base", "pr")
+
+_LOCATOR_ALIAS = re.compile(
+    r"^(?P<path>.+?)(?::L(?P<start>\d+)(?:-L?(?P<end>\d+))?)?\s+@(?P<label>base|pr)$",
+    re.IGNORECASE,
+)
+
 
 class EvidenceItem(BaseModel):
     type: Literal["code", "policy"] = "code"
@@ -24,6 +34,38 @@ class EvidenceItem(BaseModel):
     lines: list[int] | None = None  # [start, end]
     source: str | None = None  # for policy evidence (doc path)
     content: str = ""
+    snapshot: Literal["base", "pr"] | None = None
+    snapshot_conflict: bool = False
+    raw_snapshot: Any = Field(default=None, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_locator_and_snapshot(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        updates: dict[str, Any] = {}
+
+        alias_label = None
+        file = data.get("file")
+        alias = _LOCATOR_ALIAS.match(file.strip()) if isinstance(file, str) else None
+        if alias is not None:
+            alias_label = alias["label"].lower()
+            updates["file"] = alias["path"]
+            if data.get("lines") is None and alias["start"] is not None:
+                start = int(alias["start"])
+                end = int(alias["end"]) if alias["end"] is not None else start
+                updates["lines"] = [start, end]
+
+        # Unknown values are never kept as labels; the conflict flag and raw value record them.
+        raw = data.get("snapshot")
+        label = raw.strip().lower() if isinstance(raw, str) else raw
+        if label in SNAPSHOT_LABELS and alias_label not in (None, label):
+            updates.update(snapshot=None, snapshot_conflict=True)
+        elif label in SNAPSHOT_LABELS or label in (None, ""):
+            updates["snapshot"] = label if label in SNAPSHOT_LABELS else alias_label
+        else:
+            updates.update(snapshot=None, snapshot_conflict=True, raw_snapshot=raw)
+        return {**data, **updates}
 
 
 class AgentFinding(BaseModel):
@@ -42,6 +84,8 @@ class AgentFinding(BaseModel):
     tool_calls_used: int = 0
     evidence_valid: bool | None = None
     evidence_issues: list[str] = Field(default_factory=list)
+    # Set by the pipeline from graph session health; never read from model JSON.
+    pr_graph_ok: bool | None = None
     raw_response: str = ""
 
     def normalized(self) -> "AgentFinding":
@@ -160,6 +204,14 @@ def extract_json_object(text: str) -> dict | None:
     return None
 
 
+def _is_tool_output(content: str) -> bool:
+    """Tool envelopes and failure text are not code evidence."""
+    text = content.lstrip()
+    return text.startswith(tuple(registry.entry("shared.tool_output_prefixes"))) or any(
+        marker in text for marker in registry.entry("shared.tool_output_markers")
+    )
+
+
 def parse_agent_output(
     text: str, finding_id: str, default_cwe: str = ""
 ) -> AgentFinding:
@@ -175,7 +227,7 @@ def parse_agent_output(
             finding_id=finding_id,
             verdict="insufficient_evidence",
             cwe_id=default_cwe,
-            explanation="Agent did not produce parsable structured output.",
+            explanation=registry.entry("shared.unparsable_explanation"),
             raw_response=text[:2000],
         )
 
@@ -183,6 +235,9 @@ def parse_agent_output(
     evidence: list[EvidenceItem] = []
     for item in data.get("evidence", []) or []:
         if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", ""))
+        if _is_tool_output(content):
             continue
         lines = item.get("lines")
         if isinstance(lines, int):
@@ -201,7 +256,8 @@ def parse_agent_output(
                     file=item.get("file"),
                     lines=lines,
                     source=item.get("source"),
-                    content=str(item.get("content", ""))[:2000],
+                    content=content[:2000],
+                    snapshot=item.get("snapshot"),
                 )
             )
         except ValidationError:
@@ -230,6 +286,7 @@ def build_llm(config: LGTMConfig):
     """Construct the ChatOllama LLM from config."""
     from langchain_ollama import ChatOllama
 
+    kwargs = {} if config.reasoning is None else {"reasoning": config.reasoning}
     return ChatOllama(
         model=config.ollama_model,
         base_url=config.ollama_base_url,
@@ -240,19 +297,25 @@ def build_llm(config: LGTMConfig):
         # over an hour before either existed.
         num_predict=config.llm_max_output_tokens,
         client_kwargs={"timeout": config.llm_timeout},
+        **kwargs,
     )
 
 
 TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
 
-def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
+def parse_text_tool_calls(
+    content: str, tool_names: set[str], *, include_unknown: bool = False
+) -> list[dict]:
     """Recover tool calls that a model wrote as plain text.
 
     Some local models (qwen2.5-coder via Ollama) advertise tool support but
     answer with ``{"name": "read_file", "arguments": {...}}`` in the message
     body instead of a native tool call. Without this fallback the loop takes
     that text as the final answer and the agent never uses its tools.
+
+    With ``include_unknown``, requests naming an unregistered tool are returned
+    too, and arguments that are not a JSON object are returned unchanged.
     """
     if not content or not tool_names:
         return []
@@ -265,15 +328,105 @@ def parse_text_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
         if not isinstance(data, dict) or "verdict" in data:
             continue  # a final answer, not a tool call
         name = data.get("name")
+        if not isinstance(name, str):
+            continue
+        known = name in tool_names
+        if not known and not (include_unknown and ("arguments" in data or "parameters" in data)):
+            continue
         args = data.get("arguments", data.get("parameters", {}))
         if isinstance(args, str):  # OpenAI style: arguments as a JSON string
             try:
                 args = json.loads(args) if args.strip() else {}
             except json.JSONDecodeError:
-                continue
-        if name in tool_names and isinstance(args, dict):
-            calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
+                pass
+        if not include_unknown and not (known and isinstance(args, dict)):
+            continue
+        calls.append({"name": name, "args": args, "id": f"text_call_{i}"})
     return calls
+
+
+_sleep = time.sleep
+
+
+def message_text(response) -> str:
+    return response.content if isinstance(response.content, str) else str(response.content)
+
+
+def is_json_object(text: str) -> bool:
+    return isinstance(extract_json_object(text), dict)
+
+
+def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
+    attempts = max(0, config.llm_retries) + 1
+    delays = tuple(config.llm_backoff_seconds)
+    for attempt in range(1, attempts + 1):
+        try:
+            return llm.invoke(messages)
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            delay = delays[min(attempt - 1, len(delays) - 1)] if delays else 0.0
+            logger.warning(
+                "LLM call failed (attempt %d of %d): %s: %s; retrying in %.1fs",
+                attempt,
+                attempts,
+                type(exc).__name__,
+                str(exc)[:200],
+                delay,
+            )
+            _sleep(delay)
+
+
+def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None:
+    if not isinstance(name, str) or name not in tool_map:
+        available = ", ".join(sorted(tool_map)) or registry.entry("shared.no_tools_available")
+        details = registry.render("shared.unknown_tool", available=available)
+    elif not isinstance(args, dict):
+        details = registry.entry("shared.arguments_not_object")
+    else:
+        schema = getattr(tool_map[name], "args_schema", None)
+        if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            return None
+        try:
+            schema.model_validate(args)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(str(p) for p in e['loc']) or registry.entry('shared.arguments_location')}: {e['msg']}"
+                for e in exc.errors()
+            )
+        else:
+            return None
+    details = details[:300].rstrip(". ")
+    return registry.render("shared.invalid_tool_input", name=name, details=details)
+
+
+def request_valid_answer(
+    llm,
+    messages: list,
+    content: str,
+    config: LGTMConfig,
+    is_valid: Callable[[str], bool],
+) -> str:
+    from langchain_core.messages import HumanMessage
+
+    reasks = 0
+    cap = max(0, config.max_answer_reasks)
+    while not is_valid(content) and reasks < cap:
+        reasks += 1
+        logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
+        messages.append(HumanMessage(content=registry.entry("shared.reask")))
+        response = invoke_with_retry(llm, messages, config)
+        messages.append(response)
+        content = message_text(response)
+    return content
+
+
+def _toolbox_of(tools) -> Any:
+    for tool in tools:
+        toolbox = (getattr(tool, "metadata", None) or {}).get("toolbox")
+        if toolbox is not None:
+            return toolbox
+    return None
 
 
 def run_tool_loop(
@@ -285,80 +438,100 @@ def run_tool_loop(
 ) -> str:
     """Run a manual tool-calling loop and return the final text response.
 
-    The loop stops when the model answers without tool calls or when the
-    iteration cap is reached (the model is then forced to answer).
+    The loop stops when the model answers without tool calls, when the
+    iteration cap is reached, or when the invalid tool input cap is reached
+    (the model is then forced to answer). Final answers that are not JSON
+    objects are re-asked up to ``max_answer_reasks`` times.
     """
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
     tool_map = {t.name: t for t in tools}
+    toolbox = _toolbox_of(tool_map.values())
     llm_with_tools = llm.bind_tools(tools)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     tools_used = 0
     pushed_back = False
+    invalid_inputs = 0
+    cap = config.max_invalid_tool_inputs
 
     for iteration in range(config.max_agent_iterations):
-        response = llm_with_tools.invoke(messages)
+        response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
-        content = response.content if isinstance(response.content, str) else str(response.content)
+        content = message_text(response)
         text_calls = False
         if not tool_calls:
-            tool_calls = parse_text_tool_calls(content, set(tool_map))
+            tool_calls = parse_text_tool_calls(content, set(tool_map), include_unknown=True)
             text_calls = bool(tool_calls)
             if not tool_calls:
                 if config.require_tool_use and tools and not tools_used and not pushed_back:
                     # The model answered from the prompt alone; ask it once
                     # to verify against the repository first.
                     pushed_back = True
+                    tool_names = ", ".join(t.name for t in tools)
                     messages.append(
                         HumanMessage(
-                            content=(
-                                "Before giving a verdict, verify your reasoning "
-                                "against the repository: call at least one tool "
-                                "(e.g. read the auth decorators or the function "
-                                "you are judging). Then give your final JSON."
-                            )
+                            content=registry.render("shared.verify_with_tools", tool_names=tool_names)
                         )
                     )
                     continue
-                return content
+                return request_valid_answer(llm, messages, content, config, is_json_object)
 
-        tools_used += len(tool_calls)
         for call in tool_calls:
             name = call.get("name")
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
-            tool_fn = tool_map.get(name)
-            if tool_fn is None:
-                result = f"ERROR: unknown tool '{name}'"
+            error = validate_tool_call(name, tool_map, args)
+            # Valid calls are charged by the tool body on invoke; rejected calls are charged here.
+            if error:
+                invalid_inputs += 1
+                if toolbox is None or toolbox.charge(name, args):
+                    logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
+                    result = error
+                else:
+                    result = toolbox.BUDGET_MESSAGE
             else:
+                tools_used += 1
                 try:
-                    result = tool_fn.invoke(args)
+                    result = tool_map[name].invoke(args)
                 except Exception as exc:  # noqa: BLE001 - surface to the model
                     logger.warning("Tool %s raised: %s", name, exc)
-                    result = f"ERROR: tool failed: {exc}"
+                    result = registry.render("shared.tool_failed", error=exc)
             if text_calls:
                 # No native tool_call to attach a ToolMessage to: return the
                 # result as a user turn instead.
                 messages.append(
                     HumanMessage(
-                        content=f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
-                        "Call another tool, or give your final JSON verdict."
+                        content=registry.render(
+                            "shared.text_call_result",
+                            name=name,
+                            args=json.dumps(args, default=str),
+                            result=result,
+                        )
                     )
                 )
             else:
                 messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+        if cap > 0 and invalid_inputs >= cap:
+            break
+        if toolbox is not None and toolbox.calls_used >= toolbox.budget:
+            # The budget is spent: every further tool call would be refused
+            # and still cost a full model call (a third of all calls in the
+            # 24 Oct Shoply run). Ask for the verdict now.
+            budget_spent = True
+            break
+    else:
+        budget_spent = False
+    if cap > 0 and invalid_inputs >= cap:
+        budget_spent = False
 
-    # Iteration cap reached: force a final answer without tools.
-    logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
-    messages.append(
-        HumanMessage(
-            content=(
-                "You have used all available analysis steps. Produce your final "
-                "JSON verdict NOW based on the evidence gathered so far. "
-                "Respond with ONLY the JSON object."
-            )
-        )
-    )
-    response = llm.invoke(messages)
-    return response.content if isinstance(response.content, str) else str(response.content)
+    if cap > 0 and invalid_inputs >= cap:
+        logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
+    elif budget_spent:
+        logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
+    else:
+        logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
+    messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
+    response = invoke_with_retry(llm, messages, config)
+    messages.append(response)
+    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)

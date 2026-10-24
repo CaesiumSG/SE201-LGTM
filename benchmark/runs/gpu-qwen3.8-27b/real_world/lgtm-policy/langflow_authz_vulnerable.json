@@ -1,0 +1,87 @@
+{
+  "id": "langflow_authz_vulnerable",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 0,
+  "grounding_rate": 0.0,
+  "latency_seconds": 21.46,
+  "case_seconds": 275.26,
+  "est_tokens": 723,
+  "findings": [
+    {
+      "finding_id": "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]",
+      "verdict": "vulnerable",
+      "confidence": 0.9,
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the ownership check from the DELETE /api_key/{api_key_id} endpoint. The base-branch implementation (api_key.py:44-54) passes current_user.id into delete_api_key, and the service layer (crud.py:44-52) enforces ownership: `if api_key.user_id != user_id: raise ValueError('API Key not found')`. The diff changes the call to `await delete_api_key(db, api_key_id)` \u2014 dropping the user_id argument \u2014 and removes the `current_user: CurrentActiveUser` parameter. The only auth added is `dependencies=[Depends(auth_utils.get_current_active_user)]`, which authenticates the caller but performs no ownership verification. This directly violates the documented policy that 'A Langflow API key adopts the privileges of the user who created it' and that in multi-user mode 'non-superusers cannot use their keys to reach other users' resources.' Any authenticated user can now delete another user's API key by ID (IDOR).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            54
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\")\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n    current_user: CurrentActiveUser,\n):\n    try:\n        await delete_api_key(db, api_key_id, current_user.id)"
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            52
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    if api_key.user_id != user_id:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)"
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "\"A Langflow API key adopts the privileges of the user who created it.\" ... In multi-user mode, non-superusers cannot use their keys to reach other users' resources."
+        }
+      ],
+      "suggested_fix": "Restore the ownership check: keep the `current_user: CurrentActiveUser` parameter and call `await delete_api_key(db, api_key_id, current_user.id)` so the service layer verifies `api_key.user_id == current_user.id` before deletion. Do not rely solely on `Depends(get_current_active_user)` for authorization.",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "line": 41,
+      "tool_calls_used": 6,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited policy text not found in security-policy.md: '\"A Langflow API key adopts the privileges of the user who created it.\" ... In mu'"
+      ]
+    }
+  ],
+  "project": "langflow",
+  "mode": "lgtm",
+  "variant": "policy",
+  "diff_files": 3,
+  "diff_added": 5,
+  "diff_deleted": 9,
+  "diff_py_chars": 2299,
+  "diff_max_file_chars": 1023,
+  "endpoints_detected": [
+    "authz:src/backend/base/langflow/api/v1/api_key.py:/{api_key_id}[DELETE]"
+  ],
+  "index_seconds": 251.3,
+  "index_chunks": 6084,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "FN"
+}

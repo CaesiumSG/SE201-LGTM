@@ -3,7 +3,7 @@
 Stages:
 1. Context building — git diff, semgrep scan, RAG retriever.
 2. SAST triage — LLM agent triages each semgrep finding in the diff.
-3. Authorization review — LLM agent reviews each changed endpoint.
+3. Authorization review — the investigator groups changed hunks into sections and an LLM agent reviews each one.
 4. Evidence validation — every citation is checked against the repo.
 5. Reporting — JSON + Markdown.
 
@@ -21,21 +21,30 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from lgtm.agents.authz_reviewer import (
-    AuthzReviewerAgent,
-    extract_changed_endpoints,
-)
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent, failed_finding_id
 from lgtm.agents.base import AgentFinding, build_llm
-from lgtm.analysis.facts import endpoint_facts, sql_sink_facts
+from lgtm.agents.investigator import run_investigator
+from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.agents.sast_triage import SASTTriageAgent
-from lgtm.agents.tools import AgentToolbox
+from lgtm.agents.tools import AgentToolbox, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, get_pr_diff
 from lgtm.rag.retriever import PolicyRetriever
+from lgtm.review.coverage import (
+    InvestigatorInput,
+    InvestigatorStatus,
+    SectionResult,
+    build_coverage,
+)
+from lgtm.review.dedup import dedup_findings
+from lgtm.review.endpoints import extract_changed_endpoints, gate_to_endpoint_hunks
+from lgtm.review.sections import ScanPlan, Section, plan_sections
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
 from lgtm.sast.semgrep_runner import (
     SemgrepError,
@@ -44,6 +53,9 @@ from lgtm.sast.semgrep_runner import (
     run_semgrep,
 )
 from lgtm.validation.evidence import EvidenceValidator
+
+if TYPE_CHECKING:
+    from lgtm.graph.session import GraphSession
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +76,17 @@ class ReviewResult:
     diffs: list[FileDiff] = field(default_factory=list)
 
 
+@dataclass
+class _SectionStage:
+    findings: list[AgentFinding]
+    plan: ScanPlan
+    results: dict[str, SectionResult]
+    investigator_status: InvestigatorStatus
+    investigator_error: str | None
+    investigator_input: InvestigatorInput
+    investigator_tool_calls: int
+
+
 class ReviewPipeline:
     def __init__(self, repo: str | Path, config: LGTMConfig | None = None, llm=None):
         self.repo = Path(repo).resolve()
@@ -74,15 +97,51 @@ class ReviewPipeline:
     def run(
         self, base: str, pr: str, output_dir: str | Path | None = None
     ) -> ReviewResult:
+        if self.config.mode not in ("lgtm", "lgtm-no-sast"):
+            return self._review(base, pr, base, pr, output_dir)
+
+        # Lazy import: sast-only and llm-only do not load lgtm.graph.
+        from lgtm.graph import session as graph_session
+        from lgtm.graph import snapshot as graph_snapshot
+
+        shas = graph_snapshot.resolve_refs(self.repo, base, pr)
+        session = None
+        if self.config.graph_enabled:
+            session = graph_session.GraphSession(self.repo, shas, self.config)
+        try:
+            return self._review(
+                base,
+                pr,
+                shas["base"],
+                shas["pr"],
+                output_dir,
+                shas=shas,
+                session=session,
+            )
+        finally:
+            if session is not None:
+                session.close()
+
+    def _review(
+        self,
+        base: str,
+        pr: str,
+        base_rev: str,
+        pr_rev: str,
+        output_dir: str | Path | None,
+        shas: Mapping[str, str] | None = None,
+        session: GraphSession | None = None,
+    ) -> ReviewResult:
         start = time.monotonic()
         mode = self.config.mode
         logger.info(
             "Starting LGTM review (%s): %s..%s in %s", mode, base, pr, self.repo
         )
+        # Resolved SHAs pin Git reads against moving refs.
 
         # ---- Stage 1: context ----------------------------------------
-        diffs = get_pr_diff(self.repo, base, pr, self.config.git_timeout)
-        diffs = [d for d in diffs if d.status != "deleted"]
+        scan_diffs = get_pr_diff(self.repo, base_rev, pr_rev, self.config.git_timeout)
+        diffs = [d for d in scan_diffs if d.status != "deleted"]
         logger.info("PR changes %d file(s)", len(diffs))
 
         retriever: PolicyRetriever | None = None
@@ -97,8 +156,11 @@ class ReviewPipeline:
 
         semgrep_total = 0
         semgrep_in_diff: list[SemgrepFinding] = []
+        sast_error: str | None = None
         if mode in ("lgtm", "sast-only"):
-            semgrep_in_diff, semgrep_total = self._run_sast(diffs, base, pr)
+            semgrep_in_diff, semgrep_total, sast_error = self._run_sast(
+                diffs, base_rev, pr_rev
+            )
 
         meta = ReviewMetadata(
             repo=str(self.repo),
@@ -108,13 +170,20 @@ class ReviewPipeline:
             model=self.config.ollama_model if mode != "sast-only" else "none",
             semgrep_findings_total=semgrep_total,
             semgrep_findings_in_diff=len(semgrep_in_diff),
+            sast_error=sast_error,
+            base_sha=base_rev if shas is not None else "",
+            pr_sha=pr_rev if shas is not None else "",
         )
 
         findings: list[AgentFinding] = []
+        section_stage: _SectionStage | None = None
 
         from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
 
         llm_diffs = sanitize_diffs(diffs) if self.config.strip_comments else diffs
+        llm_scan_diffs = (
+            sanitize_diffs(scan_diffs) if self.config.strip_comments else scan_diffs
+        )
 
         if mode == "sast-only":
             findings = [self._sast_finding_to_agent_finding(f) for f in semgrep_in_diff]
@@ -123,7 +192,9 @@ class ReviewPipeline:
             findings = PlainLLMReviewer(self.config, llm).review(llm_diffs)
         else:
             llm = self._llm or build_llm(self.config)
-            toolbox = AgentToolbox(self.repo, base, retriever, self.config)
+            toolbox = AgentToolbox(
+                self.repo, base_rev, retriever, self.config, shas=shas, session=session
+            )
             diff_by_path = {d.path: d for d in llm_diffs}
 
             # ---- Stage 2: SAST triage --------------------------------
@@ -138,33 +209,43 @@ class ReviewPipeline:
                 fd = diff_by_path.get(sf.path) or self._match_diff(sf.path, llm_diffs)
                 facts = ""
                 if self.config.static_facts:
-                    facts = sql_sink_facts(self._pr_source(pr, sf.path), sf.start_line)
-                findings.append(triage_agent.triage(sf, fd, facts))
+                    facts = sql_sink_facts(self._pr_source(pr_rev, sf.path), sf.start_line)
+                finding = triage_agent.triage(sf, fd, facts)
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
+                findings.append(finding)
 
             # ---- Stage 3: authorization review -----------------------
-            endpoints = extract_changed_endpoints(diffs)
-            meta.endpoints_reviewed = len(endpoints)
-            authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
-            for ep in endpoints:
-                fd = diff_by_path.get(ep.file)
-                notes = "\n".join(
-                    f"- {sf.rule_id} at {sf.path}:{sf.start_line}: {sf.message}"
-                    for sf in semgrep_in_diff
-                    if sf.path == ep.file
-                )
-                facts = ""
-                if self.config.static_facts:
-                    facts = endpoint_facts(
-                        self._pr_source(pr, ep.file), ep.decorator_line
-                    )
-                findings.append(authz_agent.review(ep, fd, notes, facts))
+            section_stage = self._review_sections(
+                llm_scan_diffs, semgrep_in_diff, toolbox, llm
+            )
+            findings.extend(section_stage.findings)
+            meta.endpoints_reviewed = len(extract_changed_endpoints(diffs))
+            meta.graph_state = toolbox.graph_state() if session is not None else "disabled"
+            meta.graph_index_seconds = (
+                round(session.init_seconds, 2) if session is not None else 0.0
+            )
 
         if self.config.detect_prompt_injection:
             findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------
-        validator = EvidenceValidator(self.repo, base, diffs, self.config)
+        validator = EvidenceValidator(
+            self.repo,
+            base_rev,
+            diffs,
+            self.config,
+            shas={"base": base_rev, "pr": pr_rev} if shas is not None else None,
+        )
         findings = validator.validate_all(findings)
+        if section_stage is not None:
+            meta.coverage = build_coverage(
+                section_stage.plan,
+                investigator_status=section_stage.investigator_status,
+                investigator_error=section_stage.investigator_error,
+                investigator_input=section_stage.investigator_input,
+                investigator_tool_calls=section_stage.investigator_tool_calls,
+                results=section_stage.results,
+            )
 
         # ---- Stage 5: report ------------------------------------------
         meta.duration_seconds = time.monotonic() - start
@@ -187,9 +268,94 @@ class ReviewPipeline:
         )
 
     # ------------------------------------------------------------------
+    def _review_sections(
+        self,
+        scan_diffs: list[FileDiff],
+        semgrep_in_diff: list[SemgrepFinding],
+        toolbox: AgentToolbox,
+        llm,
+    ) -> _SectionStage:
+        investigator_status: InvestigatorStatus = "skipped"
+        investigator_input: InvestigatorInput = "none"
+        investigator_error: str | None = None
+        investigator_tool_calls = 0
+        proposed = None
+        if self.config.authz_planner == "endpoint":
+            # Checkpoint-era gating: review only hunks that carry a route
+            # decorator, one section per file, no investigator.
+            gated, gated_out = gate_to_endpoint_hunks(scan_diffs)
+            plan = plan_sections(gated, None, self.config)
+            plan.planner = "endpoint"
+            plan.fallback_reason = "endpoint gating"
+            plan.hunks_gated = gated_out
+        else:
+            if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
+                investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
+                investigator_status = investigation.status
+                investigator_input = investigation.input_mode
+                investigator_error = investigation.error
+                investigator_tool_calls = investigation.tool_calls
+                proposed = investigation.proposed
+            plan = plan_sections(scan_diffs, proposed, self.config)
+
+        authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
+        results: dict[str, SectionResult] = {}
+        section_findings: list[AgentFinding] = []
+        failed_findings: list[AgentFinding] = []
+        for section in plan.sections:
+            scoped = replace(
+                section,
+                context=[p for p in section.context if self._inside_snapshot(p.path)],
+            )
+            notes = "\n".join(
+                f"- {sf.rule_id} at {sf.path}:{sf.start_line}: {sf.message}"
+                for sf in semgrep_in_diff
+                if sf.path in scoped.files
+            )
+            reviewed = authz_agent.review_section(scoped, notes)
+            for finding in reviewed:
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
+            failed_id = failed_finding_id(section.section_id)
+            results[section.section_id] = self._section_result(reviewed, failed_id)
+            for finding in reviewed:
+                if finding.verdict == "safe":
+                    continue
+                if finding.finding_id == failed_id:
+                    failed_findings.append(finding)
+                else:
+                    section_findings.append(finding)
+
+        return _SectionStage(
+            findings=[*dedup_findings(section_findings), *failed_findings],
+            plan=plan,
+            results=results,
+            investigator_status=investigator_status,
+            investigator_error=investigator_error,
+            investigator_input=investigator_input,
+            investigator_tool_calls=investigator_tool_calls,
+        )
+
+    @staticmethod
+    def _section_result(findings: list[AgentFinding], failed_id: str) -> SectionResult:
+        failure = next((f for f in findings if f.finding_id == failed_id), None)
+        return SectionResult(
+            status="failed" if failure else "completed",
+            verdicts=[f.verdict for f in findings],
+            finding_ids=[f.finding_id for f in findings],
+            error=failure.explanation if failure else None,
+        )
+
+    @staticmethod
+    def _inside_snapshot(path: str) -> bool:
+        if relative_path(path) is None:
+            return False
+        # Windows strips trailing dots and spaces from components, so these resolve to "..".
+        return not any(re.fullmatch(r"\.\.[. ]*", part) for part in re.split(r"[\\/]", path))
+
+    # ------------------------------------------------------------------
     def _run_sast(
         self, diffs: list[FileDiff], base: str, pr: str
-    ) -> tuple[list[SemgrepFinding], int]:
+    ) -> tuple[list[SemgrepFinding], int, str | None]:
         """Run semgrep on the PR version of the changed python files.
 
         The repo's working tree may be on any branch, so the changed files
@@ -202,7 +368,7 @@ class ReviewPipeline:
 
         changed_files = [d.path for d in diffs if d.path.endswith(".py")]
         if not changed_files:
-            return [], 0
+            return [], 0, None
         semgrep_config = self.config.semgrep_config
         if semgrep_config == "auto":
             # Bundled CWE-89 rules work offline; "auto" needs registry access.
@@ -229,9 +395,9 @@ class ReviewPipeline:
                 )
         except SemgrepError as exc:
             logger.error("Semgrep failed, continuing without SAST: %s", exc)
-            return [], 0
+            return [], 0, str(exc)
         in_diff = filter_to_diff(all_findings, diffs)
-        return in_diff, len(all_findings)
+        return in_diff, len(all_findings), None
 
     def _pr_source(self, pr: str, path: str) -> str:
         """PR-version file content for static analysis (parsed, never run)."""

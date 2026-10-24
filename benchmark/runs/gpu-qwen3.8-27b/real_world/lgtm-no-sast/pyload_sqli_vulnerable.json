@@ -1,0 +1,88 @@
+{
+  "id": "pyload_sqli_vulnerable",
+  "category": "sqli",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 0,
+  "grounding_rate": 0.0,
+  "latency_seconds": 22.64,
+  "case_seconds": 22.69,
+  "est_tokens": 788,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:src/pyload/core/database/file_database.py:271",
+      "verdict": "vulnerable",
+      "confidence": 0.85,
+      "cwe_id": "CWE-89",
+      "explanation": "The PR diff replaces a parameterized query (placeholders + urls list) with an f-string that interpolates user-influenced data directly into the SQL: `self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")` where `statuses = \"','\".join(x[3] for x in data)`. The `data` parameter of `update_link_info` (file_database.py:261) is documented as a list of tuples (name, size, status, url) and is passed straight from `update_file_info` (file_manager.py:586-590), which in turn is called from `update_db` in info_thread.py:126 with `result` built from plugin `get_info` output and from `[(url, 0, 3, url) for url in urls]` (info_thread.py:117). The `url` values originate from user-supplied download links (the `container`/`urls` in info_thread.py:84-117), so a user can craft a URL containing a single quote (e.g. `x' OR '1'='1`) to break out of the quoted IN-list and inject arbitrary SQL. The prior code used bound parameters (`?` placeholders with `urls`), which the PR explicitly removes, so the mitigation is gone. No whitelist validation of the url field is present in the call chain I traced.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pyload/core/database/file_database.py",
+          "lines": [
+            260,
+            274
+          ],
+          "source": null,
+          "content": "def update_link_info(self, data):\n    \"\"\"\n    data is list of tuples (name, size, status, url)\n    \"\"\"\n    self.c.executemany(\n        \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n        data,\n    )\n    urls = [x[3] for x in data]\n    placeholders = ','.join('?' * len(urls))\n    self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)"
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/managers/file_manager.py",
+          "lines": [
+            585,
+            594
+          ],
+          "source": null,
+          "content": "@change\ndef update_file_info(self, data, pid):\n    \"\"\"\n    updates file info (name, size, status, url)\n    \"\"\"\n    self.pyload.db.update_link_info(data)"
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/threads/info_thread.py",
+          "lines": [
+            115,
+            126
+          ],
+          "source": null,
+          "content": "else:\n    # generate default result\n    result = [(url, 0, 3, url) for url in urls]\n    self.update_result(pluginname, result, True)\n...\ndef update_db(self, plugin, result):\n    self.pyload.files.update_file_info(result, self.pid)"
+        }
+      ],
+      "suggested_fix": "Restore the parameterized query: build `urls = [x[3] for x in data]`, create `placeholders = ','.join('?' * len(urls))`, and call `self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)`. Never interpolate user-controlled values (URLs) into SQL via f-strings; always use bound parameters.",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "src/pyload/core/database/file_database.py",
+      "line": 271,
+      "tool_calls_used": 8,
+      "evidence_valid": false,
+      "evidence_issues": [
+        "cited code snippet not found in src/pyload/core/threads/info_thread.py: 'else:\\n    # generate default result\\n    result = [(url, 0, 3, url) for url in ur'"
+      ]
+    }
+  ],
+  "project": "pyload",
+  "mode": "lgtm-no-sast",
+  "variant": "own",
+  "diff_files": 1,
+  "diff_added": 5,
+  "diff_deleted": 5,
+  "diff_py_chars": 820,
+  "diff_max_file_chars": 820,
+  "endpoints_detected": [],
+  "index_seconds": 30.7,
+  "index_chunks": 1359,
+  "index_reused": true,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "semgrep_findings_in_diff": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "predicted_grounded": "possible",
+  "outcome_grounded": "FN"
+}

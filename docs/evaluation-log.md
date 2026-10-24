@@ -5,7 +5,7 @@ wrong, why, what we changed, and what we learned. The aim of the project is
 to *learn* where an LLM helps pre-merge security review, so failures are
 recorded as carefully as successes.
 
-- **Setup for all rounds:** `qwen2.5-coder:7b` on Ollama (local, temperature
+- **Setup for rounds 1–6:** `qwen2.5-coder:7b` on Ollama (local, temperature
   0), Semgrep CE with the bundled rules, and the Shoply benchmark. The
   benchmark has 36 cases (12 SQLi pairs + 6 authz pairs), split 50/50 into
   dev and eval sets.
@@ -326,6 +326,93 @@ an accident of an irrelevant prompt string, and **0.94 / 0.89 is the
 honest number**, not 0.97 / 0.95. The two remaining errors (`sqli_04`
 triage, `authz_06_safe`) are both eval cases, so per protocol we leave
 them as known failures rather than tuning on them.
+
+---
+
+## Round 7: qwen3.8:27b on a GPU (18 Oct)
+
+**What we ran:** the same pipeline and both suites with `qwen3.8:27b`
+(Q4_K_M) on one 24 GB GPU, at commit `a9b380b`. Setup, all tables and caveats:
+[`docs/gpu-model-eval.md`](gpu-model-eval.md). Data:
+[`benchmark/runs/gpu-qwen3.8-27b/`](../benchmark/runs/gpu-qwen3.8-27b/).
+
+**Headline F1** (baseline `qwen2.5-coder:7b` → `qwen3.8:27b`):
+
+| Mode | Shoply (36) | Real-world (12) |
+|---|---|---|
+| sast-only | 0.615 | 0.444 |
+| llm-only | 0.750 → 0.944 | 0.800 → 1.000 |
+| lgtm | 0.944 → 1.000 | 0.444 → 0.667 |
+| lgtm-no-sast | 0.919 → 1.000 | 0.444 → 0.667 |
+
+### What worked / what didn't
+
+- **Worked:** Shoply llm-only authz F1 went from 0.000 to 0.833. lgtm reached
+  F1 1.000 on the authz, SQLi, dev and eval slices.
+- **Did not work:** lgtm and lgtm-no-sast miss `aegra_authz_vulnerable`,
+  `alerta_sqli_vulnerable` and `litellm_authz_vulnerable`; the policy modes
+  miss `aegra_authz_vulnerable` and `litellm_authz_vulnerable`. The three
+  remaining misses were also misses in the qwen2.5-coder:7b run.
+  `langflow_authz_safe` moved FP → TN and `langflow_authz_vulnerable` FN → TP.
+- **Did not work (grounding):** real-world evidence grounding rate fell (lgtm
+  0.833 → 0.500, lgtm-no-sast 0.750 → 0.667); grounded-only F1 fell for
+  lgtm-no-sast (0.444 → 0.286) and the policy modes (0.500 → 0.000).
+- **Watch:** the Shoply gains are not attributable to the model alone. Code
+  changes (`4bf1cb6`, `886305d`, `efe14ca`) landed between the baselines and
+  this run.
+
+### Learning
+
+> **The Shoply numbers moved; the three remaining real-world misses did not move.**
+
+---
+
+## Round 8: the section pipeline becomes the default (24 Oct)
+
+**Change (PRs #10, #12, #14, #15, integrated in one PR):** `qwen3.8:27b` is
+the default model; CodeGraph (`@colbymchenry/codegraph`) backs two
+investigate tools; the authorization review covers every changed Python
+hunk through an LLM investigator and section reviewer instead of the
+route-decorator gate; Shoply grows to 52 cases (8 new authz pairs built from
+diff shapes the gate missed); the real-world cases are re-pinned; prompts
+live in `prompts.toml` behind a byte-for-byte lock. The integration added:
+
+- `graph_enabled` (default on) and `authz_planner` (`investigator` default,
+  `endpoint` = the round 1–7 gating) so both pipelines can be run on the
+  same cases;
+- no verdict is changed when the graph is off or the binary missing (the
+  stack downgraded ungrounded `vulnerable` findings to `possible` whenever
+  `codegraph` was not installed);
+- the scorer keeps the round-2 rule (any own-category `vulnerable` finding
+  flags the PR); the coverage labels and `alarms_outside_target` are
+  diagnostics next to it;
+- the tool loop stops once the 5-call budget is spent (the stack's own
+  measurement: a third of all model calls were refused tool calls).
+
+**Evidence so far (local Ollama, this Mac, not the cluster):**
+
+| Check | Result |
+|---|---|
+| sast-only, all 52 Shoply cases | 21 detected / 31 no_candidate (12 TP + 9 FP, as on 36 cases) |
+| lgtm, `authz_01_vulnerable` + `sqli_01_safe`, 27B, no CodeGraph | TP, TN; 350 s/case |
+| lgtm, `authz_01_vulnerable`, 27B, CodeGraph 1.6.2 | TP, grounded, 4 tool calls, graph `ok` |
+| Field trial (#18, checkpoint pipeline) | 10 of 12 ordinary PRs reached no agent: the reason this round exists |
+
+**Not yet measured:** the full re-run of every mode on Shoply (52), the
+re-pinned real-world cases and the injection suite with the new pipeline,
+from one frozen tree on the GPU cluster. Every results table in the README
+carries a "pending re-measurement" note until those runs are committed.
+The numbers PR #14 reports (Shoply 25 TP / 25 TN; real-world 5 TP / 4 TN /
+2 UNCREDITED / 1 FN; 105 s and 196k prompt tokens per case) come from an
+uncommitted run with the stack's own scoring rule, so they are not quoted
+here.
+
+### Learning
+
+> **Ship the pipeline you can reproduce.** Four stacked PRs each carried a
+> number from a different tree, scoring rule and case set. The merge was
+> only possible once the old behaviour was reachable again behind flags and
+> every number was either traceable to a committed run or marked pending.
 
 ---
 

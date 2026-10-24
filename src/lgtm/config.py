@@ -9,16 +9,27 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+GRAPH_OUTPUT_CHARS_CEILING = 6000
+GRAPH_EXPORT_FILES_CEILING = 20000
+GRAPH_EXPORT_BYTES_CEILING = 200 * 1024 * 1024
+
 
 @dataclass
 class LGTMConfig:
     """Central configuration for all LGTM components."""
 
     # LLM
-    ollama_model: str = "qwen2.5-coder:7b"
+    ollama_model: str = "qwen3.8:27b"
+    # Local Ollama by default; --gpu-model / --gpu-cluster switch to the
+    # SCIS cluster tunnel (http://127.0.0.1:11435).
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
+    reasoning: bool | None = False  # None leaves the model's default thinking behaviour
+    llm_retries: int = 3
+    llm_backoff_seconds: tuple[float, ...] = (2.0, 4.0, 8.0)
+    max_invalid_tool_inputs: int = 3
+    max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
 
     # SAST
@@ -28,11 +39,24 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
+    investigator_max_tool_calls: int = 12
+    investigator_max_iterations: int = 16
+    investigator_diff_chars: int = 30000
+    investigator_max_sections: int = 12
+    section_max_chars: int = 12000
+    max_sections: int = 24
+    # How the authorization review decides what to look at:
+    # - "investigator": an LLM groups every changed Python hunk into review
+    #   sections (the default since 24 Oct; reviews the whole PR);
+    # - "endpoint": only hunks that contain a Flask/FastAPI route decorator
+    #   are reviewed, one section per file, no investigator. This reproduces
+    #   the gating of the checkpoint pipeline (docs/evaluation-log.md rounds
+    #   1-7) and is the ablation for what full coverage adds.
+    authz_planner: str = "investigator"
     # Experiments (round 4, off by default — see docs/evaluation-log.md):
     # push back once if an agent answers before using any tool
     require_tool_use: bool = False
-    # give agents deterministic AST facts (query construction, decorators)
-    # and give SAST triage the same policy pre-retrieval authz gets
+    # deterministic SQL facts (query construction, bound parameters) for agents and SAST triage
     static_facts: bool = False
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
@@ -48,11 +72,45 @@ class LGTMConfig:
     embedding_model: str = "all-MiniLM-L6-v2"
     chroma_persist_dir: str = ".lgtm/chroma"
     chroma_collection: str = "lgtm_docs"
-    chroma_code_collection: str = "lgtm_code"
-    index_source_code: bool = True  # also index source files for search_code
 
     # Git
     git_timeout: int = 60
+
+    # CodeGraph (npm: @colbymchenry/codegraph) gives the agents
+    # investigate_base_code / investigate_pr_code. Off, or binary missing:
+    # agents use read_file, grep_repo and search_policy, and verdicts are
+    # never adjusted for the graph's absence.
+    graph_enabled: bool = True
+    graph_binary: str = "codegraph"
+    graph_init_timeout_s: int = 120
+    graph_query_timeout_s: int = 20
+    graph_max_output_chars: int = GRAPH_OUTPUT_CHARS_CEILING
+    graph_max_export_files: int = GRAPH_EXPORT_FILES_CEILING
+    graph_max_export_bytes: int = GRAPH_EXPORT_BYTES_CEILING
+
+    def __post_init__(self) -> None:
+        positive_fields = (
+            "investigator_max_tool_calls",
+            "investigator_max_iterations",
+            "investigator_diff_chars",
+            "investigator_max_sections",
+            "section_max_chars",
+            "max_sections",
+            "graph_init_timeout_s",
+            "graph_query_timeout_s",
+            "graph_max_export_files",
+            "graph_max_export_bytes",
+        )
+        for key in positive_fields:
+            if getattr(self, key) <= 0:
+                raise ValueError(f"{key} must be positive")
+        if self.authz_planner not in ("investigator", "endpoint"):
+            raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
+        if self.graph_max_output_chars < 1024:
+            raise ValueError("graph_max_output_chars must be at least 1024")
+        self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)
+        self.graph_max_export_files = min(self.graph_max_export_files, GRAPH_EXPORT_FILES_CEILING)
+        self.graph_max_export_bytes = min(self.graph_max_export_bytes, GRAPH_EXPORT_BYTES_CEILING)
 
     # Output
     output_dir: str = "lgtm-output"
@@ -62,8 +120,6 @@ class LGTMConfig:
 
     # Doc file extensions indexed for RAG
     doc_extensions: tuple[str, ...] = (".md", ".txt", ".rst")
-    # Source file extensions indexed for code retrieval
-    code_extensions: tuple[str, ...] = (".py",)
 
     # Internal
     extra: dict = field(default_factory=dict)
@@ -88,6 +144,26 @@ class LGTMConfig:
         if unknown:
             logger.warning("Ignoring unknown config keys: %s", sorted(unknown))
         return cls(**kwargs)
+
+
+@dataclass(frozen=True)
+class GpuModel:
+    tag: str
+    base_url: str
+    reasoning: bool | None
+
+
+GPU_MODELS: dict[str, GpuModel] = {
+    "qwen3.8-27b": GpuModel("qwen3.8:27b", "http://127.0.0.1:11435", False),
+}
+
+
+def apply_gpu_model(config: LGTMConfig, key: str, base_url: str | None = None) -> None:
+    """Set ollama_model, ollama_base_url and reasoning from GPU_MODELS[key]; unknown key raises KeyError."""
+    entry = GPU_MODELS[key]
+    config.ollama_model = entry.tag
+    config.ollama_base_url = base_url or entry.base_url
+    config.reasoning = entry.reasoning
 
 
 def setup_logging(verbose: bool = False) -> None:

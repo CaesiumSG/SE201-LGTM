@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the 24 benchmark PR patches and labels.json.
+"""Generate the 52 benchmark PR patches and labels.json.
 
 Each case is defined as a set of edits (string replacements and/or an
 appended endpoint) against the base Shoply app. Patches are produced by a
@@ -23,7 +23,7 @@ from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent.parent
 
-HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 @dataclass
@@ -38,6 +38,12 @@ class Case:
     vuln_markers: list[str] = field(default_factory=list)
     description: str = ""
     origin: str = "custom"  # "custom" | "owasp-derived"
+    context: int = 3
+    delete_files: list[str] = field(default_factory=list)
+    new_files: dict[str, str] = field(default_factory=dict)
+    edits: list[dict] = field(default_factory=list)  # {"file", "replacements", "append"?}
+    location_markers: list[dict] = field(default_factory=list)  # {"file", "old_markers", "new_markers"}
+    diff_shape: str | None = None
 
     @property
     def patch_name(self) -> str:
@@ -48,9 +54,12 @@ class Case:
     @property
     def split(self) -> str:
         """Alternate blocks of three pairs between dev and eval (1-3 dev,
-        4-6 eval, 7-9 dev, 10-12 eval, ...). Both splits stay balanced
-        because every pair contributes one vulnerable and one safe case."""
+        4-6 eval, 7-9 dev, 10-12 eval, ...), with pair 14 in eval. Both
+        splits stay balanced because every pair contributes one vulnerable
+        and one safe case."""
         num = int(self.id.split("_")[1])
+        if num == 14:
+            return "eval"
         return "dev" if ((num - 1) % 6) < 3 else "eval"
 
 
@@ -182,7 +191,7 @@ CASES.append(Case(
 @orders_bp.route("/sorted", methods=["GET"])
 @require_role("manager")
 def sorted_orders():
-    """List orders sorted by an arbitrary column."""
+    """List orders sorted by the requested column."""
     sort_by = request.args.get("sort_by", "created_at")
     session = get_session()
     rows = session.execute(
@@ -209,7 +218,7 @@ ALLOWED_SORT_COLUMNS = {"created_at", "total", "status", "id"}
 @orders_bp.route("/sorted", methods=["GET"])
 @require_role("manager")
 def sorted_orders():
-    """List orders sorted by an allowlisted column."""
+    """List orders sorted by the requested column."""
     sort_by = request.args.get("sort_by", "created_at")
     if sort_by not in ALLOWED_SORT_COLUMNS:
         return jsonify({"error": "invalid sort column"}), 400
@@ -724,7 +733,7 @@ CASES.append(Case(
 @users_bp.route("/filter", methods=["GET"])
 @require_role("manager")
 def filter_users():
-    """Filter users by arbitrary field=value query parameters."""
+    """Filter users by field=value query parameters."""
     clauses = []
     for field, value in request.args.items():
         clauses.append(f"{field} = '{value}'")
@@ -756,7 +765,7 @@ ALLOWED_FILTER_FIELDS = {"username", "role", "email"}
 @users_bp.route("/filter", methods=["GET"])
 @require_role("manager")
 def filter_users():
-    """Filter users by allowlisted field=value query parameters."""
+    """Filter users by field=value query parameters."""
     clauses = []
     params = {}
     for field, value in request.args.items():
@@ -1105,20 +1114,599 @@ def orders_report():
     description="Report endpoint enforces the reports:read API-key scope.",
 ))
 
+# --- Pair 7: profile update without ownership check -------------------------
+CASES.append(Case(
+    id="authz_07_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    context=1,
+    replacements=[(
+        '    """Update profile fields (email, shipping preferences). Owner or admin."""\n'
+        '    if not is_owner_or_admin(g.current_user, user_id):\n'
+        '        return jsonify({"error": "forbidden"}), 403\n',
+        '    """Update profile fields (email, shipping preferences). Owner or admin."""\n',
+    )],
+    location_markers=[{
+        "file": "app/routes/users.py",
+        "old_markers": [
+            "if not is_owner_or_admin(g.current_user, user_id):",
+            'return jsonify({"error": "forbidden"}), 403',
+        ],
+    }],
+    diff_shape="deletion_only",
+    description="Profile update drops the ownership check, letting any "
+                "authenticated user edit any profile.",
+))
+
+CASES.append(Case(
+    id="authz_07_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[(
+        '    if "email" in payload:\n        user.email = payload["email"]\n',
+        "",
+    )],
+    location_markers=[{
+        "file": "app/routes/users.py",
+        "old_markers": [
+            'if "email" in payload:',
+            'user.email = payload["email"]',
+        ],
+    }],
+    diff_shape="deletion_only",
+    description="Same profile update without the email branch, keeping the "
+                "ownership check.",
+))
+
+# --- Pair 8: role comparison extracted into a helper ------------------------
+ROLE_HELPER_ANCHOR = 'ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}\n'
+ROLE_HELPER = (
+    ROLE_HELPER_ANCHOR
+    + "\n\ndef role_below(role: str, minimum_role: str) -> bool:\n"
+    + "    return ROLE_RANK.get(role, 0) < ROLE_RANK.get(minimum_role, 99)\n"
+)
+ROLE_COMPARISON = "ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99)"
+
+CASES.append(Case(
+    id="authz_08_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-863",
+    file="app/auth.py",
+    replacements=[(
+        f'            if {ROLE_COMPARISON}:\n'
+        '                return jsonify({"error": "insufficient role"}), 403\n',
+        "",
+    )],
+    location_markers=[{
+        "file": "app/auth.py",
+        "old_markers": [ROLE_COMPARISON, "insufficient role"],
+    }],
+    diff_shape="shared_helper",
+    description="require_role loses its rank comparison, so every "
+                "authenticated user passes role gates.",
+))
+
+CASES.append(Case(
+    id="authz_08_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-863",
+    file="app/auth.py",
+    replacements=[
+        (ROLE_HELPER_ANCHOR, ROLE_HELPER),
+        (f"if {ROLE_COMPARISON}:", "if role_below(user.role, minimum_role):"),
+    ],
+    location_markers=[{
+        "file": "app/auth.py",
+        "old_markers": [ROLE_COMPARISON],
+    }],
+    diff_shape="shared_helper",
+    description="Rank comparison moved into role_below with identical semantics.",
+))
+
+# --- Pair 9: owner filter replaced by a status filter -----------------------
+OWNER_FILTER = ".filter(Order.user_id == g.current_user.id)"
+
+CASES.append(Case(
+    id="authz_09_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/orders.py",
+    replacements=[(OWNER_FILTER, '.filter(Order.status != "cancelled")')],
+    vuln_markers=['.filter(Order.status != "cancelled")'],
+    location_markers=[{
+        "file": "app/routes/orders.py",
+        "old_markers": [OWNER_FILTER],
+        "new_markers": ['.filter(Order.status != "cancelled")'],
+    }],
+    diff_shape="decorator_outside_hunk",
+    description="my_orders filters by status instead of owner, exposing other "
+                "users' orders.",
+))
+
+CASES.append(Case(
+    id="authz_09_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/orders.py",
+    replacements=[(
+        OWNER_FILTER,
+        '.filter(Order.user_id == g.current_user.id, Order.status != "cancelled")',
+    )],
+    location_markers=[{
+        "file": "app/routes/orders.py",
+        "old_markers": [OWNER_FILTER],
+        "new_markers": ['Order.status != "cancelled"'],
+    }],
+    diff_shape="decorator_outside_hunk",
+    description="my_orders keeps the owner filter and adds a status filter.",
+))
+
+# --- Pair 10: auth module split into a package, scope check dropped ---------
+# Every module must stay under git's 50% rename-similarity threshold: plain
+# `git diff` has to report app/auth.py as deleted, not renamed.
+AUTH_PACKAGE_INIT = '''"""Authentication and authorization helpers for Shoply.
+
+Every protected endpoint MUST use these decorators (see
+security-policy.md). Token auth uses an opaque bearer token stored against
+the user; API-key auth is for machine integrations and is scope-checked.
+"""
+
+from app.auth.api_keys import get_api_key, require_api_key_scope
+from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role
+from app.auth.tokens import (
+    get_current_user,
+    hash_password,
+    issue_token,
+    require_auth,
+)
+
+__all__ = [
+    "ROLE_RANK",
+    "get_api_key",
+    "get_current_user",
+    "hash_password",
+    "is_owner_or_admin",
+    "issue_token",
+    "require_api_key_scope",
+    "require_auth",
+    "require_role",
+]
+'''
+AUTH_TOKENS_MODULE = '''"""Bearer-token sessions and password hashing."""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import secrets
+
+from flask import g, jsonify, request
+
+from app.models import User, get_session
+
+# In-memory token store: token -> user_id (reset on restart; fine for demo)
+_TOKENS: dict[str, int] = {}
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def issue_token(user: User) -> str:
+    token = secrets.token_hex(32)
+    _TOKENS[token] = user.id
+    return token
+
+
+def get_current_user() -> User | None:
+    """Resolve the user from the Authorization: Bearer <token> header."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    token = header[len("Bearer "):].strip()
+    user_id = _TOKENS.get(token)
+    if user_id is None:
+        return None
+    return get_session().get(User, user_id)
+
+
+def require_auth(fn):
+    """Reject the request unless a valid user token is presented."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if user is None:
+            return jsonify({"error": "authentication required"}), 401
+        g.current_user = user
+        return fn(*args, **kwargs)
+
+    return wrapper
+'''
+AUTH_ROLES_MODULE = '''"""Role gates and per-object ownership checks."""
+
+from __future__ import annotations
+
+import functools
+
+from flask import g, jsonify
+
+from app.auth.tokens import get_current_user
+from app.models import User
+
+ROLE_RANK = {"user": 1, "manager": 2, "admin": 3}
+
+
+def require_role(minimum_role: str):
+    """Require at least the given role (user < manager < admin)."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = get_current_user()
+            if user is None:
+                return jsonify({"error": "authentication required"}), 401
+            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):
+                return jsonify({"error": "insufficient role"}), 403
+            g.current_user = user
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def is_owner_or_admin(user: User, owner_id: int) -> bool:
+    """Ownership check used for per-object access (orders, profiles)."""
+    return user.id == owner_id or user.role == "admin"
+'''
+AUTH_API_KEYS_MODULE = '''"""API-key authentication for machine integrations."""
+
+from __future__ import annotations
+
+import functools
+
+from flask import g, jsonify, request
+
+from app.models import ApiKey, get_session
+
+
+def get_api_key() -> ApiKey | None:
+    """Resolve an API key from the X-Api-Key header."""
+    raw = request.headers.get("X-Api-Key", "")
+    if not raw:
+        return None
+    session = get_session()
+    return session.query(ApiKey).filter(ApiKey.key == raw).first()
+
+
+def require_api_key_scope(required_scope: str):
+    """Require an API key carrying exactly the given scope."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = get_api_key()
+            if key is None:
+                return jsonify({"error": "valid API key required"}), 401
+            if key.scope != required_scope:
+                return jsonify({"error": "API key lacks required scope"}), 403
+            g.api_key = key
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+'''
+AUTH_PACKAGE = {
+    "app/auth/__init__.py": AUTH_PACKAGE_INIT,
+    "app/auth/tokens.py": AUTH_TOKENS_MODULE,
+    "app/auth/roles.py": AUTH_ROLES_MODULE,
+    "app/auth/api_keys.py": AUTH_API_KEYS_MODULE,
+}
+SCOPE_CHECK = (
+    "            if key.scope != required_scope:\n"
+    '                return jsonify({"error": "API key lacks required scope"}), 403\n'
+)
+SCOPE_MARKERS = ["def require_api_key_scope", "g.api_key = key", "return decorator"]
+SCOPE_LOCATIONS = [
+    {"file": "app/auth.py", "old_markers": SCOPE_MARKERS},
+    {"file": "app/auth/api_keys.py", "new_markers": SCOPE_MARKERS},
+]
+
+CASES.append(Case(
+    id="authz_10_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-862",
+    file="app/auth/api_keys.py",
+    delete_files=["app/auth.py"],
+    new_files=AUTH_PACKAGE,
+    replacements=[(SCOPE_CHECK, "")],
+    vuln_markers=SCOPE_MARKERS[:2],
+    location_markers=SCOPE_LOCATIONS,
+    diff_shape="deleted_file",
+    description="auth module split into an app/auth package whose "
+                "require_api_key_scope drops the API-key scope check.",
+))
+
+CASES.append(Case(
+    id="authz_10_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-862",
+    file="app/auth/api_keys.py",
+    delete_files=["app/auth.py"],
+    new_files=AUTH_PACKAGE,
+    location_markers=SCOPE_LOCATIONS,
+    diff_shape="deleted_file",
+    description="auth module split into an app/auth package with identical "
+                "semantics.",
+))
+
+# --- Pair 11: oversized patch with the export endpoint last -----------------
+# Filler routes push the users.py endpoint into the final tenth of the patch.
+REPORT_FILLER = "".join(
+    f'''
+@admin_bp.route("/reports/{n:03d}", methods=["GET"])
+@require_role("admin")
+def report_{n:03d}():
+    """Read-only report section {n}."""
+    session = get_session()
+    return jsonify({{"section": {n}, "users": session.query(User).count()}})
+'''
+    for n in range(1, 151)
+)
+
+EXPORT_HEAD = '''
+@users_bp.route("/<int:user_id>/export", methods=["GET"])
+@require_auth
+def export_user(user_id: int):
+    """Export a user's profile and orders (/users/<id>/export)."""
+'''
+EXPORT_GUARD = (
+    "    if not is_owner_or_admin(g.current_user, user_id):\n"
+    '        return jsonify({"error": "forbidden"}), 403\n'
+)
+EXPORT_BODY = '''    session = get_session()
+    user = session.get(User, user_id)
+    if user is None:
+        return jsonify({"error": "not found"}), 404
+    orders = session.query(Order).filter(Order.user_id == user_id).all()
+    return jsonify(
+        {
+            "user": user.to_dict(include_email=True),
+            "orders": [o.to_dict() for o in orders],
+        }
+    )
+'''
+EXPORT_UNGUARDED = EXPORT_HEAD + EXPORT_BODY
+EXPORT_GUARDED = EXPORT_HEAD + EXPORT_GUARD + EXPORT_BODY
+
+EXPORT_LOCATION = [{
+    "file": "app/routes/users.py",
+    "new_markers": [
+        '@users_bp.route("/<int:user_id>/export"',
+        '"orders": [o.to_dict() for o in orders]',
+        "    )",
+    ],
+}]
+
+CASES.append(Case(
+    id="authz_11_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[USERS_ADD_ORDER_IMPORT],
+    append=EXPORT_UNGUARDED,
+    vuln_markers=['@users_bp.route("/<int:user_id>/export"', "def export_user("],
+    edits=[{"file": "app/routes/admin.py", "append": REPORT_FILLER}],
+    location_markers=EXPORT_LOCATION,
+    diff_shape="oversized_diff",
+    description="Per-user export endpoint with no ownership check, appended "
+                "after generated admin-only report routes.",
+))
+
+CASES.append(Case(
+    id="authz_11_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/routes/users.py",
+    replacements=[USERS_ADD_ORDER_IMPORT],
+    append=EXPORT_GUARDED,
+    edits=[{"file": "app/routes/admin.py", "append": REPORT_FILLER}],
+    location_markers=EXPORT_LOCATION,
+    diff_shape="oversized_diff",
+    description="Same generated report routes with the export endpoint "
+                "guarded by is_owner_or_admin.",
+))
+
+# --- Pair 12: ownership helper moved to its own module ----------------------
+OWNERSHIP_FUNCTION = (
+    "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n"
+    '    """Ownership check used for per-object access (orders, profiles)."""\n'
+    '    return user.id == owner_id or user.role == "admin"\n'
+)
+OWNERSHIP_MODULE = "from app.models import User\n\n\n" + OWNERSHIP_FUNCTION
+OWNERSHIP_RETURN = '    return user.id == owner_id or user.role == "admin"'
+AUTH_MOVE_EDIT = {
+    "file": "app/auth.py",
+    "replacements": [
+        ("from app.models import ApiKey, User, get_session\n",
+         "from app.models import ApiKey, User, get_session\n"
+         "from app.ownership import is_owner_or_admin\n"),
+        ("\n\n" + OWNERSHIP_FUNCTION, "\n"),
+    ],
+}
+OWNERSHIP_OLD_LOCATION = {
+    "file": "app/auth.py",
+    "old_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+}
+
+CASES.append(Case(
+    id="authz_12_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-639",
+    file="app/ownership.py",
+    new_files={"app/ownership.py": OWNERSHIP_MODULE},
+    replacements=[(OWNERSHIP_RETURN, "    return user is not None")],
+    vuln_markers=["return user is not None"],
+    edits=[AUTH_MOVE_EDIT],
+    location_markers=[
+        OWNERSHIP_OLD_LOCATION,
+        {
+            "file": "app/ownership.py",
+            "new_markers": ["def is_owner_or_admin", "return user is not None"],
+        },
+    ],
+    diff_shape="cross_file_move",
+    description="is_owner_or_admin moved to app/ownership.py, where it returns "
+                "True for every authenticated user.",
+))
+
+CASES.append(Case(
+    id="authz_12_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-639",
+    file="app/ownership.py",
+    new_files={"app/ownership.py": OWNERSHIP_MODULE},
+    edits=[AUTH_MOVE_EDIT],
+    location_markers=[
+        OWNERSHIP_OLD_LOCATION,
+        {
+            "file": "app/ownership.py",
+            "new_markers": ["def is_owner_or_admin", OWNERSHIP_RETURN.strip()],
+        },
+    ],
+    diff_shape="cross_file_move",
+    description="is_owner_or_admin moved to app/ownership.py without changes.",
+))
+
+# --- Pair 13: admin route renamed, decorator swapped in the vulnerable twin --
+PLATFORM_STATS_LOCATION = [{
+    "file": "app/routes/admin.py",
+    "new_markers": ['@admin_bp.route("/platform-stats"', "def platform_stats():"],
+}]
+
+CASES.append(Case(
+    id="authz_13_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-863",
+    file="app/routes/admin.py",
+    replacements=[
+        ("from app.auth import require_role",
+         "from app.auth import require_auth, require_role"),
+        ('@admin_bp.route("/stats", methods=["GET"])\n'
+         '@require_role("admin")\n'
+         "def stats():",
+         '@admin_bp.route("/platform-stats", methods=["GET"])\n'
+         "@require_auth\n"
+         "def platform_stats():"),
+    ],
+    location_markers=PLATFORM_STATS_LOCATION,
+    vuln_markers=["@require_auth", "def platform_stats():"],
+    diff_shape="renamed_route",
+    description="Admin stats route renamed, with @require_role('admin') swapped "
+                "for @require_auth.",
+))
+
+CASES.append(Case(
+    id="authz_13_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-863",
+    file="app/routes/admin.py",
+    replacements=[(
+        '@admin_bp.route("/stats", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def stats():",
+        '@admin_bp.route("/platform-stats", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def platform_stats():",
+    )],
+    location_markers=PLATFORM_STATS_LOCATION,
+    diff_shape="renamed_route",
+    description="Admin stats route renamed with @require_role('admin') kept.",
+))
+
+# --- Pair 14: auth decorator removed from an admin route --------------------
+CASES.append(Case(
+    id="authz_14_vulnerable",
+    category="authz",
+    expected_verdict="vulnerable",
+    cwe="CWE-862",
+    file="app/routes/admin.py",
+    replacements=[(
+        '@admin_bp.route("/audit", methods=["GET"])\n'
+        '@require_role("admin")\n',
+        '@admin_bp.route("/audit", methods=["GET"])\n',
+    )],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "old_markers": ['@require_role("admin")'],
+    }],
+    diff_shape="removed_auth_decorator",
+    description="Audit log route loses its @require_role('admin') decorator and "
+                "becomes unauthenticated.",
+))
+
+CASES.append(Case(
+    id="authz_14_safe",
+    category="authz",
+    expected_verdict="safe",
+    cwe="CWE-862",
+    file="app/routes/admin.py",
+    replacements=[(
+        '\n\n@admin_bp.route("/audit", methods=["GET"])\n'
+        '@require_role("admin")\n'
+        "def audit_log():\n"
+        '    """Most recent audit log entries."""\n'
+        "    session = get_session()\n"
+        "    events = (\n"
+        "        session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n"
+        "    )\n"
+        "    return jsonify(\n"
+        "        [\n"
+        '            {"id": e.id, "user_id": e.user_id, "action": e.action}\n'
+        "            for e in events\n"
+        "        ]\n"
+        "    )",
+        "",
+    )],
+    location_markers=[{
+        "file": "app/routes/admin.py",
+        "old_markers": ['@require_role("admin")'],
+    }],
+    diff_shape="removed_auth_decorator",
+    description="Audit log route removed entirely.",
+))
+
 
 # ---------------------------------------------------------------------------
 # Generation machinery
 # ---------------------------------------------------------------------------
 
 def run(cmd: list[str], cwd: Path) -> str:
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr}")
     return result.stdout
 
 
 def build_base_repo(tmp: Path) -> None:
-    """Copy the benchmark app + docs into tmp and commit as the base."""
     shutil.copytree(BENCH / "app", tmp / "app")
     for doc in ("security-policy.md", "api-spec.md", "README.md"):
         shutil.copy(BENCH / doc, tmp / doc)
@@ -1129,33 +1717,108 @@ def build_base_repo(tmp: Path) -> None:
     run(["git", "commit", "-q", "-m", "base"], tmp)
 
 
-def apply_case(tmp: Path, case: Case) -> str:
-    """Apply a case's edits in tmp and return the git diff."""
-    target = tmp / case.file
+def edit_file(tmp: Path, case_id: str, file: str,
+              replacements: list[tuple[str, str]], append: str) -> None:
+    target = tmp / file
     content = target.read_text(encoding="utf-8")
-    for old, new in case.replacements:
+    for old, new in replacements:
         if old not in content:
-            raise RuntimeError(f"{case.id}: replacement anchor not found: {old!r}")
+            raise RuntimeError(f"{case_id}: replacement anchor not found: {old!r}")
         content = content.replace(old, new, 1)
-    content = content.rstrip("\n") + "\n" + case.append.lstrip("\n")
-    if not content.endswith("\n"):
-        content += "\n"
+    if append:
+        content = content.rstrip("\n") + "\n" + append.lstrip("\n")
+        if not content.endswith("\n"):
+            content += "\n"
     target.write_text(content, encoding="utf-8")
-    diff = run(["git", "diff", "--no-color"], tmp)
-    run(["git", "checkout", "-q", "--", "."], tmp)
+
+
+def apply_case(tmp: Path, case: Case) -> str:
+    for rel in case.delete_files:
+        (tmp / rel).unlink()
+    for rel, content in case.new_files.items():
+        path = tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    edit_file(tmp, case.id, case.file, case.replacements, case.append)
+    for edit in case.edits:
+        edit_file(tmp, case.id, edit["file"],
+                  edit.get("replacements", []), edit.get("append", ""))
+    if case.delete_files or case.new_files:
+        # Untracked new files only appear in the diff once staged.
+        run(["git", "add", "-A"], tmp)
+        diff = run(["git", "diff", "--cached", "--no-color", "--no-renames",
+                    f"-U{case.context}"], tmp)
+        run(["git", "reset", "-q", "--hard"], tmp)
+        run(["git", "clean", "-fdq"], tmp)
+    else:
+        diff = run(["git", "diff", "--no-color", f"-U{case.context}"], tmp)
+        run(["git", "checkout", "-q", "--", "."], tmp)
     if not diff.strip():
         raise RuntimeError(f"{case.id}: produced an empty diff")
     return diff
 
 
+def side_lines(diff: str, file: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    removed: list[tuple[int, str]] = []
+    added: list[tuple[int, str]] = []
+    selected = in_hunk = False
+    old_no = new_no = 0
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            selected = raw == f"diff --git a/{file} b/{file}"
+            in_hunk = False
+            continue
+        start = HUNK_RE.match(raw)
+        if start:
+            in_hunk = True
+            old_no, new_no = int(start.group(1)), int(start.group(2))
+            continue
+        if not (selected and in_hunk):
+            continue
+        if raw.startswith("-"):
+            removed.append((old_no, raw[1:]))
+            old_no += 1
+        elif raw.startswith("+"):
+            added.append((new_no, raw[1:]))
+            new_no += 1
+        elif raw.startswith(" "):
+            old_no += 1
+            new_no += 1
+    return removed, added
+
+
+def marker_range(case_id: str, side: list[tuple[int, str]],
+                 markers: list[str]) -> list[int] | None:
+    if not markers:
+        return None
+    numbers: list[int] = []
+    for marker in markers:
+        matched = [number for number, text in side if marker in text]
+        # A repeated later marker keeps only matches at or after the first marker.
+        if numbers and len(matched) > 1:
+            matched = [number for number in matched if number >= min(numbers)]
+        if not matched:
+            raise RuntimeError(f"{case_id}: location marker not found: {marker}")
+        numbers.extend(matched)
+    return [min(numbers), max(numbers)]
+
+
+def location_label(case_id: str, diff: str, location: dict) -> dict:
+    removed, added = side_lines(diff, location["file"])
+    return {
+        "file": location["file"],
+        "old_range": marker_range(case_id, removed, location.get("old_markers", [])),
+        "new_range": marker_range(case_id, added, location.get("new_markers", [])),
+    }
+
+
 def vulnerable_lines_from_patch(diff: str, markers: list[str]) -> list[int]:
-    """New-file line numbers of added lines matching any marker substring."""
     lines: list[int] = []
     new_lineno = 0
     for raw in diff.splitlines():
         match = HUNK_RE.match(raw)
         if match:
-            new_lineno = int(match.group(1))
+            new_lineno = int(match.group(2))
             continue
         if raw.startswith("+++") or raw.startswith("---"):
             continue
@@ -1188,22 +1851,28 @@ def main() -> None:
                 if case.vuln_markers
                 else []
             )
-            if case.expected_verdict == "vulnerable" and not vuln_lines:
-                raise RuntimeError(f"{case.id}: no vulnerable lines matched markers")
-            labels["cases"].append(
-                {
-                    "id": case.id,
-                    "category": case.category,
-                    "split": case.split,
-                    "origin": case.origin,
-                    "expected_verdict": case.expected_verdict,
-                    "cwe": case.cwe,
-                    "file": case.file,
-                    "vulnerable_lines": vuln_lines,
-                    "patch_file": f"cases/{case.category}/{case.patch_name}",
-                    "description": case.description,
-                }
-            )
+            vuln_locations = [
+                location_label(case.id, diff, loc) for loc in case.location_markers
+            ]
+            if case.expected_verdict == "vulnerable" and not (vuln_lines or vuln_locations):
+                raise RuntimeError(f"{case.id}: no vulnerable lines or locations matched markers")
+            entry = {
+                "id": case.id,
+                "category": case.category,
+                "split": case.split,
+                "origin": case.origin,
+                "expected_verdict": case.expected_verdict,
+                "cwe": case.cwe,
+                "file": case.file,
+                "vulnerable_lines": vuln_lines,
+                "patch_file": f"cases/{case.category}/{case.patch_name}",
+                "description": case.description,
+            }
+            if case.diff_shape:
+                entry["diff_shape"] = case.diff_shape
+            if vuln_locations:
+                entry["vulnerable_locations"] = vuln_locations
+            labels["cases"].append(entry)
             counts[case.category] += 1
             print(f"  wrote {patch_path.relative_to(BENCH)} "
                   f"({len(vuln_lines)} labeled lines)")

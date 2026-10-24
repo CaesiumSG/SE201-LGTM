@@ -8,18 +8,25 @@ For every case in ``cases.json`` this script:
 3. creates local branches ``rw/<case-id>/base`` and ``rw/<case-id>/pr``.
 
 Safe cases are real history: base = parent of the fix, PR = the fix commit.
-Vulnerable cases are a *synthetic revert*: base = the fix commit, PR = a
-commit on top of it that restores only the non-test source files the fix
-touched to their pre-fix content. Branches are built with git plumbing, so
-no working tree is touched, and the revert commit uses a fixed identity and
-date so its SHA is reproducible (it is recorded as ``pr_ref`` in cases.json
-and checked on every run).
+Vulnerable cases are a *synthetic revert* made of two synthetic commits on
+top of the pre-fix commit:
+
+- base: the fix tree with every file the fix touched that is not in
+  ``touched_files`` (tests, docs, ...) restored to its pre-fix state, so it
+  holds the fixed source but none of the fix's other changes;
+- PR: the pre-fix tree, so the PR diff is exactly the reverse of the fix's
+  changes to ``touched_files``.
+
+Branches are built with git plumbing, so no working tree is touched, and the
+synthetic commits use a fixed identity and date so their SHAs are
+reproducible (recorded as ``base_ref`` and ``pr_ref`` in cases.json and
+checked on every run).
 
 Usage:
     python benchmark/real_world/fetch.py
     python benchmark/real_world/fetch.py --cases aegra_authz_vulnerable
-    python benchmark/real_world/fetch.py --record-pr-refs   # write built SHAs
-    python benchmark/real_world/fetch.py --policies         # + policy variants
+    python benchmark/real_world/fetch.py --record-refs   # write built SHAs
+    python benchmark/real_world/fetch.py --policies      # + policy variants
 
 ``--policies`` also builds ``rw/<id>/base-policy`` and ``rw/<id>/pr-policy``:
 the same trees plus ``policies/<project>.md`` as ``security-policy.md``, so
@@ -44,8 +51,8 @@ POLICY_DIR = HERE / "policies"
 # exactly like the synthetic benchmark's policy.
 POLICY_PATH = "security-policy.md"
 
-# Fixed identity and date: the synthetic revert commit must hash identically
-# on every machine.
+# Fixed identity and date: the synthetic commits must hash identically on
+# every machine.
 REVERT_ENV = {
     "GIT_AUTHOR_NAME": "LGTM Bench",
     "GIT_AUTHOR_EMAIL": "bench@lgtm.local",
@@ -161,23 +168,39 @@ def ensure_commit(repo: Path, sha: str, what: str) -> None:
         )
 
 
-def changed_source_files(repo: Path, before: str, after: str) -> list[str]:
+def changed_files(repo: Path, before: str, after: str) -> list[str]:
     # --no-renames keeps this a pure tree comparison (no blob downloads)
     out = git(repo, "diff", "--name-only", "--no-renames", before, after)
-    return sorted(p for p in out.splitlines() if p and not is_test_path(p))
+    return sorted(p for p in out.splitlines() if p)
 
 
-def build_synthetic_revert(repo: Path, case: dict, prefix: str, fix: str) -> str:
-    """Commit on top of ``fix`` restoring ``touched_files`` to ``prefix``."""
-    files = case["touched_files"]
+def changed_source_files(repo: Path, before: str, after: str) -> list[str]:
+    return [p for p in changed_files(repo, before, after) if not is_test_path(p)]
+
+
+def write_tree(repo: Path, env: dict[str, str]) -> str:
+    # Without --missing-ok, write-tree in a partial clone first downloads every
+    # blob the index references that is not in the clone yet.
+    return git(repo, "write-tree", "--missing-ok", env=env).strip()
+
+
+def commit_tree(repo: Path, tree: str, parent: str, message: str,
+                env: dict[str, str] | None = None) -> str:
+    return git(repo, "commit-tree", "--no-gpg-sign", tree, "-p", parent,
+               "-m", message, env={**REVERT_ENV, **(env or {})}).strip()
+
+
+def build_synthetic_base(repo: Path, case: dict, prefix: str, fix: str,
+                         paths: list[str]) -> str:
+    """Commit on ``prefix`` with the tree of ``fix`` but ``paths`` as in ``prefix``."""
     with tempfile.TemporaryDirectory(prefix="lgtm-rw-") as tmp:
-        env = {**REVERT_ENV, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git(repo, "read-tree", fix, env=env)
         restore: list[str] = []
         remove: list[str] = []
-        for path in files:
+        for path in paths:
             entry = git(repo, "ls-tree", prefix, "--", path).strip()
-            if not entry:  # the fix added this file: the revert deletes it
+            if not entry:  # the fix added this file
                 remove.append(path)
                 continue
             meta, _ = entry.split("\t", 1)
@@ -185,22 +208,37 @@ def build_synthetic_revert(repo: Path, case: dict, prefix: str, fix: str) -> str
             git(repo, "cat-file", "blob", sha)  # pull the blob into the clone
             restore.append(f"{mode} {sha}\t{path}")
         if restore:
-            git(repo, "update-index", "--index-info", env=env,
+            git(repo, "update-index", "--add", "--index-info", env=env,
                 stdin="\n".join(restore) + "\n")
         for path in remove:
             git(repo, "update-index", "--force-remove", "--", path, env=env)
-        tree = git(repo, "write-tree", env=env).strip()
-        message = (
-            f"Synthetic revert for {case['ghsa']}\n\n"
-            "Restores the pre-fix content of:\n"
-            + "".join(f"- {p}\n" for p in files)
-        )
-        return git(repo, "commit-tree", tree, "-p", fix, "-m", message,
-                   env=env).strip()
+        tree = write_tree(repo, env)
+    message = (
+        f"Synthetic base for {case['ghsa']}\n\n"
+        "Applies the fix's changes to:\n"
+        + "".join(f"- {p}\n" for p in case["touched_files"])
+    )
+    return commit_tree(repo, tree, prefix, message)
 
 
-def prepare_case(case: dict, repo: Path) -> tuple[str, str]:
-    """Verify one case against the clone, build its branches, return SHAs."""
+def build_synthetic_revert(repo: Path, case: dict, prefix: str,
+                           base: str) -> str:
+    """Commit on ``base`` whose tree is the pre-fix tree."""
+    message = (
+        f"Synthetic revert for {case['ghsa']}\n\n"
+        "Restores the pre-fix content of:\n"
+        + "".join(f"- {p}\n" for p in case["touched_files"])
+    )
+    return commit_tree(repo, f"{prefix}^{{tree}}", base, message)
+
+
+def prepare_case(case: dict, repo: Path,
+                 check_refs: bool = True) -> tuple[str, str]:
+    """Verify one case against the clone, build its branches, return SHAs.
+
+    With ``check_refs`` a synthetic case's recorded ``base_ref``/``pr_ref``
+    must match the built SHAs; ``None`` means not recorded yet.
+    """
     fixes = case["fix_commits"]
     for sha in fixes:
         ensure_commit(repo, sha, "fix commit")
@@ -210,7 +248,8 @@ def prepare_case(case: dict, repo: Path) -> tuple[str, str]:
     prefix = git(repo, "rev-parse", f"{fixes[0]}^").strip()
     fix = fixes[-1]
 
-    touched = changed_source_files(repo, prefix, fix)
+    all_changed = changed_files(repo, prefix, fix)
+    touched = [p for p in all_changed if not is_test_path(p)]
     if touched != sorted(case["touched_files"]):
         raise FetchError(
             f"touched_files mismatch: cases.json lists {sorted(case['touched_files'])}"
@@ -225,21 +264,25 @@ def prepare_case(case: dict, repo: Path) -> tuple[str, str]:
                 f" do not match the history ({base}, {pr})"
             )
     elif case["construction"] == "synthetic-revert":
-        base = fix
-        if case["base_ref"] != base:
+        others = [p for p in all_changed if p not in touched]
+        base = build_synthetic_base(repo, case, prefix, fix, others)
+        pr = build_synthetic_revert(repo, case, prefix, base)
+        if changed_files(repo, prefix, base) != touched:
             raise FetchError(
-                f"base_ref {case['base_ref']} is not the fix commit {base}"
+                f"synthetic base differs from the pre-fix tree in "
+                f"{changed_files(repo, prefix, base)}, expected {touched}"
             )
-        pr = build_synthetic_revert(repo, case, prefix, fix)
-        wrong = git(repo, "diff", "--name-only", "--no-renames", prefix, pr,
-                    "--", *case["touched_files"]).split()
-        if wrong:
-            raise FetchError(f"revert does not match the pre-fix content: {wrong}")
-        in_pr = git(repo, "diff", "--name-only", "--no-renames", base, pr).split()
-        if sorted(in_pr) != touched:
+        if changed_files(repo, fix, base) != others:
+            raise FetchError("synthetic base does not match the fix's source tree")
+        if changed_files(repo, base, pr) != touched:
             raise FetchError(
-                f"revert diff touches {sorted(in_pr)}, expected {touched}"
+                f"revert diff touches {changed_files(repo, base, pr)}, "
+                f"expected {touched}"
             )
+        if check_refs:
+            for name, built in (("base_ref", base), ("pr_ref", pr)):
+                if case[name] is not None and case[name] != built:
+                    raise FetchError(f"built {name} {built}, cases.json has {case[name]}")
     else:
         raise FetchError(f"unknown construction {case['construction']!r}")
 
@@ -263,14 +306,13 @@ def policy_text(case: dict) -> str | None:
 def _commit_with_policy(repo: Path, tree_ish: str, blob: str, parent: str,
                         project: str) -> str:
     with tempfile.TemporaryDirectory(prefix="lgtm-rw-") as tmp:
-        env = {**REVERT_ENV, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git(repo, "read-tree", tree_ish, env=env)
         git(repo, "update-index", "--add", "--cacheinfo",
             f"100644,{blob},{POLICY_PATH}", env=env)
-        tree = git(repo, "write-tree", env=env).strip()
-        return git(repo, "commit-tree", tree, "-p", parent, "-m",
-                   f"Add {POLICY_PATH} (access-control policy for {project})",
-                   env=env).strip()
+        tree = write_tree(repo, env)
+    return commit_tree(repo, tree, parent,
+                       f"Add {POLICY_PATH} (access-control policy for {project})")
 
 
 def prepare_policy(case: dict, repo: Path, base: str, pr: str,
@@ -306,8 +348,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--policies", action="store_true",
                         help="also build rw/<id>/{base,pr}-policy for projects "
                         "that have a file in policies/")
-    parser.add_argument("--record-pr-refs", action="store_true",
-                        help="write the built synthetic-revert SHAs into cases.json")
+    parser.add_argument("--record-refs", action="store_true",
+                        help="write the built synthetic-revert base/PR SHAs into "
+                        "cases.json")
     args = parser.parse_args(argv)
 
     cases = load_cases()
@@ -318,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         cases = [c for c in cases if c["id"] in args.cases]
 
     failures = 0
-    built: dict[str, str] = {}
+    built: dict[str, tuple[str, str]] = {}
     for url in dict.fromkeys(c["repo_url"] for c in cases):
         group = [c for c in cases if c["repo_url"] == url]
         repo = args.cache / project_of(group[0])
@@ -331,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         for case in group:
             try:
-                base, pr = prepare_case(case, repo)
+                base, pr = prepare_case(case, repo, check_refs=not args.record_refs)
                 stat = git(repo, "diff", "--shortstat", base, pr).strip()
                 policy = policy_text(case) if args.policies else None
                 if policy is not None:
@@ -341,25 +384,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  FAIL {case['id']}: {exc}", file=sys.stderr)
                 failures += 1
                 continue
-            built[case["id"]] = pr
+            built[case["id"]] = (base, pr)
             note = ""
-            if case["construction"] == "synthetic-revert":
-                if case["pr_ref"] is None:
-                    note = "  (pr_ref not recorded yet)"
-                elif case["pr_ref"] != pr:
-                    print(f"  FAIL {case['id']}: built {pr}, cases.json has "
-                          f"{case['pr_ref']}", file=sys.stderr)
-                    failures += 1
-                    continue
+            if case["construction"] == "synthetic-revert" and (
+                    None in (case["base_ref"], case["pr_ref"])):
+                note = "  (refs not recorded yet)"
             print(f"  ok {case['id']}: {base[:8]}..{pr[:8]}  {stat}{note}")
 
-    if args.record_pr_refs and not failures:
+    if args.record_refs and not failures:
         data = json.loads(CASES_FILE.read_text(encoding="utf-8"))
         for case in data["cases"]:
             if case["construction"] == "synthetic-revert" and case["id"] in built:
-                case["pr_ref"] = built[case["id"]]
+                case["base_ref"], case["pr_ref"] = built[case["id"]]
         CASES_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        print("recorded pr_ref values in cases.json")
+        print("recorded base_ref/pr_ref values in cases.json")
     return 1 if failures else 0
 
 

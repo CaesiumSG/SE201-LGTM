@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
-from lgtm.agents.authz_reviewer import extract_changed_endpoints
+import pytest
+
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.base import extract_json_object, parse_agent_output, run_tool_loop
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
-from lgtm.diff.git_diff import parse_unified_diff
+from lgtm.diff.git_diff import LineChange
+from lgtm.review.sections import HunkRef, Section
 
 
 class TestToolbox:
@@ -21,8 +30,10 @@ class TestToolbox:
 
     def test_read_file_line_range(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
-        out = toolbox.read_file_impl("app.py", 2, 2)
-        assert "2: " in out and "1: " not in out.split("===")[2]
+        lines = toolbox.read_file_impl("app.py", 2, 2).splitlines()
+        assert lines[0].endswith("lines=2-2]")
+        assert lines[1].startswith("2: ")
+        assert not any(line.startswith("1: ") for line in lines)
 
     def test_read_missing_file(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
@@ -46,19 +57,6 @@ class TestToolbox:
     def test_search_policy_without_retriever(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main", retriever=None)
         assert "ERROR" in toolbox.search_policy_impl("sql rules")
-
-    def test_search_code_without_retriever(self, git_repo):
-        toolbox = AgentToolbox(git_repo, "main", retriever=None)
-        assert "ERROR" in toolbox.search_code_impl("auth decorator")
-
-    def test_search_code_tool_registered_with_budget(self, git_repo):
-        from lgtm.config import LGTMConfig
-
-        toolbox = AgentToolbox(git_repo, "main", config=LGTMConfig(max_tool_calls=1))
-        tools = {t.name: t for t in toolbox.build_tools()}
-        assert "search_code" in tools
-        tools["search_code"].invoke({"query": "x"})
-        assert "budget exhausted" in tools["search_code"].invoke({"query": "y"})
 
     def test_tool_call_budget_enforced(self, git_repo):
         config = LGTMConfig(max_tool_calls=2)
@@ -174,6 +172,35 @@ def _ai_message(content="", tool_calls=None):
     return msg
 
 
+class _RecordingLLM:
+    def __init__(self, script):
+        self.script = list(script)
+        self.seen = []
+        self.channels = []
+
+    def bind_tools(self, tools):
+        return _BoundView(self)
+
+    def invoke(self, messages):
+        return self._next(messages, "unbound")
+
+    def _next(self, messages, channel):
+        self.seen.append(list(messages))
+        self.channels.append(channel)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _BoundView:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def invoke(self, messages):
+        return self.owner._next(messages, "bound")
+
+
 class TestRunToolLoop:
     def test_direct_answer(self):
         llm = _FakeLLM([_ai_message('{"verdict": "safe"}')])
@@ -197,44 +224,243 @@ class TestRunToolLoop:
     def test_unknown_tool_surfaces_error_and_continues(self):
         llm = _FakeLLM([
             _ai_message("", tool_calls=[{"name": "rm_rf", "args": {}, "id": "c1"}]),
-            _ai_message("done"),
+            _ai_message('{"verdict": "safe"}'),
         ])
         out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
-        assert out == "done"
+        assert out == '{"verdict": "safe"}'
 
 
-class TestExtractChangedEndpoints:
-    DIFF = """\
-diff --git a/app/routes/orders.py b/app/routes/orders.py
---- a/app/routes/orders.py
-+++ b/app/routes/orders.py
-@@ -40,3 +40,12 @@ def existing():
-     return x
-+
-+
-+@orders_bp.route("/<int:order_id>", methods=["GET"])
-+@require_auth
-+def get_order(order_id):
-+    return fetch(order_id)
-+
-+@api.get("/ping")
-+def ping():
-+    return "pong"
-"""
+def _hunk(file="app.py", start=10, lines=("a = 1", "b = 2", "c = 3"), deletion=False):
+    kind = "del" if deletion else "add"
+    changes = [
+        LineChange(kind, text, start + i if deletion else None, None if deletion else start + i)
+        for i, text in enumerate(lines)
+    ]
+    return HunkRef(
+        hunk_id=f"{file}#{start}", file=file,
+        old_start=start, old_count=len(lines) if deletion else 0,
+        new_start=0 if deletion else start, new_count=0 if deletion else len(lines),
+        change="delete" if deletion else "add", changes=changes,
+    )
 
-    def test_finds_flask_and_fastapi_routes(self):
-        diffs = parse_unified_diff(self.DIFF)
-        endpoints = extract_changed_endpoints(diffs)
-        routes = {e.route_path: e for e in endpoints}
-        assert set(routes) == {"/<int:order_id>", "/ping"}
-        assert routes["/<int:order_id>"].http_methods == ["GET"]
-        assert routes["/ping"].http_methods == ["GET"]
-        assert routes["/<int:order_id>"].file == "app/routes/orders.py"
 
-    def test_ignores_non_python_and_deleted(self):
-        diffs = parse_unified_diff(self.DIFF)
-        diffs[0].status = "deleted"
-        assert extract_changed_endpoints(diffs) == []
+def _section(hunks=None, **overrides):
+    hunks = hunks or [_hunk()]
+    fields = dict(
+        section_id="s1", origin="investigator", title="Order access",
+        files=list(dict.fromkeys(h.file for h in hunks)), hunks=hunks,
+    )
+    return Section(**{**fields, **overrides})
+
+
+def _finding(**fields):
+    return {
+        "verdict": "vulnerable", "cwe_id": "CWE-639", "confidence": 0.8,
+        "explanation": "no ownership check", "evidence": [], "suggested_fix": "check owner",
+        "file": "app.py", "line": 11, **fields,
+    }
+
+
+def _reply(*findings):
+    return _ai_message(json.dumps({"findings": list(findings)}))
+
+
+class _AlwaysLLM:
+    def __init__(self, content=None, exc=None):
+        self.content, self.exc = content, exc
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        if self.exc:
+            raise self.exc
+        return _ai_message(self.content)
+
+
+def _review(git_repo, llm, section=None, notes="", toolbox=None, **config_kwargs):
+    config = LGTMConfig(**config_kwargs)
+    toolbox = toolbox or AgentToolbox(git_repo, "main", None, config)
+    return AuthzReviewerAgent(toolbox, config, llm=llm).review_section(
+        section or _section(), notes
+    )
+
+
+class TestReviewSection:
+    def test_each_finding_is_numbered_and_carries_its_own_fields(self, git_repo):
+        llm = _FakeLLM([_reply(
+            _finding(verdict="vulnerable", cwe_id="CWE-639", line=11),
+            _finding(verdict="possible", cwe_id="CWE-862", confidence=0.4, line=12),
+        )])
+        out = _review(git_repo, llm)
+        assert [f.finding_id for f in out] == ["authz:s1:1", "authz:s1:2"]
+        assert [f.verdict for f in out] == ["vulnerable", "possible"]
+        assert [f.cwe_id for f in out] == ["CWE-639", "CWE-862"]
+        assert [f.line for f in out] == [11, 12]
+        assert all(f.category == "authz" and f.agent == "authz_reviewer" for f in out)
+        assert all(f.file == "app.py" for f in out)
+
+    @pytest.mark.parametrize(
+        "findings",
+        [[], [{"verdict": "safe", "cwe_id": "CWE-639", "confidence": 0.9, "explanation": "ok"}]],
+        ids=["zero_findings", "only_safe_findings"],
+    )
+    def test_zero_or_only_safe_findings_report_no_issue(self, git_repo, findings):
+        out = _review(git_repo, _FakeLLM([_reply(*findings)]))
+        assert all(f.verdict == "safe" for f in out)
+        assert not any(f.finding_id.endswith(":failed") for f in out)
+
+    def test_empty_file_falls_back_to_the_first_section_file(self, git_repo):
+        section = _section([_hunk("orders.py"), _hunk("refunds.py", start=40)])
+        out = _review(git_repo, _FakeLLM([_reply(_finding(file=""))]), section)
+        assert out[0].file == "orders.py"
+
+    @pytest.mark.parametrize(
+        "line", [None, "not a number", 0, -3], ids=["missing", "text", "zero", "negative"]
+    )
+    def test_missing_or_invalid_line_falls_back_to_first_hunk_new_start(self, git_repo, line):
+        section = _section([_hunk(start=10), _hunk(start=50)])
+        raw = _finding()
+        if line is None:
+            del raw["line"]
+        else:
+            raw["line"] = line
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
+        assert out[0].line == 10
+
+    @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN", "1e999"])
+    @pytest.mark.parametrize("deletion", [False, True], ids=["added", "deletion_only"])
+    def test_non_finite_line_falls_back_to_the_contract_line_without_raising(
+        self, git_repo, token, deletion
+    ):
+        hunk = _hunk(start=20, lines=("x", "y"), deletion=True) if deletion else _hunk(start=10)
+        raw = json.dumps({"findings": [_finding(line="@@")]}).replace('"@@"', token)
+        assert not isinstance(json.loads(raw)["findings"][0]["line"], str)
+        out = _review(git_repo, _FakeLLM([_ai_message(raw)]), _section([hunk]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert out[0].line == (20 if deletion else 10)
+
+    def test_deletion_only_section_falls_back_to_old_start(self, git_repo):
+        section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
+        raw = _finding()
+        del raw["line"]
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), section)
+        assert out[0].line == 20
+
+    def test_deletion_only_hunk_with_context_lines_falls_back_to_old_start(self, git_repo):
+        changes = [
+            LineChange("context", "ctx", 20, 22),
+            LineChange("del", "x", 21, None),
+            LineChange("del", "y", 22, None),
+            LineChange("del", "z", 23, None),
+            LineChange("context", "ctx2", 24, 23),
+            LineChange("context", "ctx3", 25, 24),
+        ]
+        hunk = HunkRef(
+            hunk_id="app.py#20", file="app.py", old_start=20, old_count=6,
+            new_start=22, new_count=3, change="delete", changes=changes,
+        )
+        raw = _finding()
+        del raw["line"]
+        out = _review(git_repo, _FakeLLM([_reply(raw)]), _section([hunk]))
+        assert out[0].line == 20
+
+    @staticmethod
+    def _assert_unparsable_failure(out):
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == (
+            "Section review returned no parsable findings for app.py lines 10-12"
+        )
+
+    @pytest.mark.parametrize("token", ["1e999", "Infinity"])
+    def test_non_finite_evidence_line_yields_the_unparsable_failure_finding(
+        self, git_repo, token
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": ["@@", 2], "content": "x = 1"}
+        reply = json.dumps({"findings": [_finding(verdict="possible", evidence=[evidence])]})
+        reply = reply.replace('"@@"', token)
+        assert not isinstance(json.loads(reply)["findings"][0]["evidence"][0]["lines"][0], str)
+        self._assert_unparsable_failure(_review(git_repo, _FakeLLM([_ai_message(reply)])))
+
+    @pytest.mark.parametrize("evidence", [5, True], ids=["int", "bool"])
+    def test_non_iterable_evidence_yields_the_unparsable_failure_finding(
+        self, git_repo, evidence
+    ):
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=evidence))]))
+        self._assert_unparsable_failure(out)
+
+    @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
+    def test_invalid_evidence_line_citation_reaches_the_validator_unchanged(
+        self, git_repo, lines
+    ):
+        evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
+        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=[evidence]))]))
+        assert [f.finding_id for f in out] == ["authz:s1:1"]
+        assert list(out[0].evidence[0].lines) == lines
+
+    def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
+        config = LGTMConfig()
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        toolbox.reset_budget(2)
+        reads = [
+            _ai_message("", [{"name": "read_file", "args": {"path": f"m{i}.py"}, "id": f"c{i}"}])
+            for i in range(1, 6)
+        ]
+        out = _review(git_repo, _FakeLLM(reads + [_reply(_finding())]), toolbox=toolbox)
+        assert toolbox.budget == config.max_tool_calls
+        assert out[0].tool_calls_used == config.max_tool_calls == 5
+
+    def test_tool_calls_do_not_carry_over_between_sections(self, git_repo):
+        config = LGTMConfig()
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        used = []
+        for _ in range(2):
+            read = _ai_message("", [{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}])
+            out = _review(git_repo, _FakeLLM([read, _reply(_finding())]), toolbox=toolbox)
+            used.append(out[0].tool_calls_used)
+        assert used == [1, 1]
+
+    def test_llm_exception_yields_one_failed_insufficient_evidence_finding(self, git_repo):
+        llm = _AlwaysLLM(exc=RuntimeError("boom"))
+        out = _review(git_repo, llm, llm_retries=0)
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == "Section review failed for app.py lines 10-12: boom"
+        assert failed.category == "authz" and failed.agent == "authz_reviewer"
+
+    def test_failed_message_names_every_file_in_section_order(self, git_repo):
+        section = _section([_hunk("orders.py", start=5), _hunk("refunds.py", start=40)])
+        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
+        text = out[0].explanation
+        assert text.index("orders.py") < text.index("refunds.py")
+        assert text.endswith(": boom")
+
+    def test_failed_message_uses_old_side_lines_for_deletion_only_sections(self, git_repo):
+        section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
+        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
+        assert out[0].explanation == "Section review failed for app.py lines 20-21: boom"
+
+    def test_unparsable_reply_yields_one_failed_insufficient_evidence_finding(self, git_repo):
+        llm = _AlwaysLLM(content="The change looks fine to me.")
+        out = _review(git_repo, llm)
+        assert len(out) == 1
+        failed = out[0]
+        assert failed.finding_id == "authz:s1:failed"
+        assert failed.verdict == "insufficient_evidence"
+        assert failed.cwe_id == "CWE-862"
+        assert failed.confidence == 0.0
+        assert failed.explanation == (
+            "Section review returned no parsable findings for app.py lines 10-12"
+        )
 
 
 class TestTextToolCalls:
@@ -274,6 +500,259 @@ def test_string_arguments_parsed():
     )
     assert calls and calls[0]["args"] == {"path": "app.py"}
 
+
+OK = '{"verdict": "safe"}'
+
+
+def _call(name, args, id="c1"):
+    return _ai_message("", tool_calls=[{"name": name, "args": args, "id": id}])
+
+
+def _kind(message):
+    return type(message).__name__
+
+
+class TestResilienceConfig:
+    def test_defaults(self):
+        cfg = LGTMConfig()
+        assert cfg.llm_retries == 3
+        assert cfg.llm_backoff_seconds == (2.0, 4.0, 8.0)
+        assert cfg.max_invalid_tool_inputs == 3
+        assert cfg.max_answer_reasks == 3
+
+    def test_from_file_accepts_json_lists(self, tmp_path):
+        path = tmp_path / "c.json"
+        path.write_text('{"llm_backoff_seconds": [1, 2], "llm_retries": 1}', encoding="utf-8")
+        cfg = LGTMConfig.from_file(path)
+        assert list(cfg.llm_backoff_seconds) == [1, 2]
+        assert cfg.llm_retries == 1
+
+
+class TestLlmRetry:
+    def test_retries_then_succeeds_with_backoff(self, sleeps):
+        llm = _RecordingLLM([RuntimeError("x"), RuntimeError("x"), _ai_message(OK)])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert sleeps == [2.0, 4.0]
+
+    def test_gives_up_after_three_retries_and_raises(self, sleeps):
+        llm = _RecordingLLM([RuntimeError("x") for _ in range(4)])
+        with pytest.raises(RuntimeError):
+            run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert sleeps == [2.0, 4.0, 8.0]
+        assert len(llm.seen) == 4
+
+    def test_forced_final_invoke_is_retried(self, git_repo, sleeps):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([
+            _call("read_file", {"path": "app.py"}),
+            RuntimeError("x"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(max_agent_iterations=1)
+        )
+        assert out == OK
+        assert sleeps == [2.0]
+        assert llm.channels == ["bound", "unbound", "unbound"]
+
+    def test_backoff_uses_config_values_and_repeats_last(self, sleeps):
+        llm = _RecordingLLM([RuntimeError("x"), RuntimeError("x"), _ai_message(OK)])
+        cfg = LGTMConfig(llm_retries=2, llm_backoff_seconds=[1.0])
+        out = run_tool_loop(llm, [], "sys", "user", cfg)
+        assert out == OK
+        assert sleeps == [1.0, 1.0]
+
+    def test_zero_retries_raises_immediately(self, sleeps):
+        llm = _RecordingLLM([RuntimeError("x")])
+        with pytest.raises(RuntimeError):
+            run_tool_loop(llm, [], "sys", "user", LGTMConfig(llm_retries=0))
+        assert sleeps == []
+
+    def test_retry_logs_attempt_numbers(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="lgtm.agents.base")
+        llm = _RecordingLLM([RuntimeError("x"), RuntimeError("x"), _ai_message(OK)])
+        run_tool_loop(llm, [], "sys", "user-secret-prompt", LGTMConfig())
+        assert "attempt 1 of 4" in caplog.text
+        assert "attempt 2 of 4" in caplog.text
+        assert "user-secret-prompt" not in caplog.text
+
+
+class TestToolInputValidation:
+    def test_unknown_native_tool_returns_invalid_input_tool_message(self):
+        llm = _RecordingLLM([_call("rm_rf", {}), _ai_message(OK)])
+        run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        last = llm.seen[1][-1]
+        assert _kind(last) == "ToolMessage"
+        assert last.tool_call_id == "c1"
+        assert last.content == (
+            "ERROR: invalid input for tool 'rm_rf': unknown tool; "
+            "available tools: none. Fix the arguments and call the tool again."
+        )
+
+    def test_missing_argument_spends_budget(self, git_repo):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([
+            _call("read_file", {}),
+            _ai_message("no json"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(require_tool_use=True)
+        )
+        assert toolbox.calls_used == 1
+        last = llm.seen[1][-1]
+        assert _kind(last) == "ToolMessage"
+        assert last.content.startswith("ERROR: invalid input for tool 'read_file': path")
+        assert last.content.endswith("Fix the arguments and call the tool again.")
+        assert "call at least one tool" in llm.seen[2][-1].content
+        assert out == OK
+
+    def test_text_call_invalid_args_answered_as_human_message(self, git_repo):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([
+            _ai_message('{"name": "read_file", "arguments": {}}'),
+            _ai_message(OK),
+        ])
+        run_tool_loop(llm, toolbox.build_tools(), "sys", "user", LGTMConfig())
+        last = llm.seen[1][-1]
+        assert _kind(last) == "HumanMessage"
+        assert "ERROR: invalid input for tool 'read_file'" in last.content
+        assert toolbox.calls_used == 1
+
+    def test_third_invalid_input_forces_final_answer(self, caplog):
+        caplog.set_level(logging.WARNING, logger="lgtm.agents.base")
+        llm = _RecordingLLM([
+            _call("bad", {}, id="c1"),
+            _call("bad", {}, id="c2"),
+            _call("bad", {}, id="c3"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert llm.channels == ["bound", "bound", "bound", "unbound"]
+        assert "Produce your final JSON verdict NOW" in llm.seen[3][-1].content
+        assert "Invalid tool input (1 of 3)" in caplog.text
+        assert "(3 of 3)" in caplog.text
+
+    def test_two_invalid_inputs_keep_tools_available(self):
+        llm = _RecordingLLM([
+            _call("bad", {}, id="c1"),
+            _call("bad", {}, id="c2"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert llm.channels == ["bound", "bound", "bound"]
+        for prompt in llm.seen:
+            assert "Produce your final" not in str(
+                [getattr(m, "content", "") for m in prompt]
+            )
+
+    def test_whole_batch_answered_before_forcing_final(self):
+        batch = _ai_message("", tool_calls=[
+            {"name": "bad", "args": {}, "id": "c1"},
+            {"name": "bad", "args": {}, "id": "c2"},
+            {"name": "bad", "args": {}, "id": "c3"},
+        ])
+        llm = _RecordingLLM([batch, _ai_message(OK)])
+        run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert llm.channels == ["bound", "unbound"]
+        prompt = llm.seen[1]
+        tool_messages = [m for m in prompt if _kind(m) == "ToolMessage"]
+        assert [m.tool_call_id for m in tool_messages] == ["c1", "c2", "c3"]
+        assert prompt[-4:-1] == tool_messages
+        assert _kind(prompt[-1]) == "HumanMessage"
+        assert "Produce your final JSON verdict NOW" in prompt[-1].content
+
+    def test_valid_call_after_invalid_still_executes(self, git_repo):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([
+            _call("bad", {}, id="c1"),
+            _call("read_file", {"path": "app.py"}, id="c2"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", LGTMConfig())
+        assert out == OK
+        assert toolbox.calls_used == 2
+
+
+class TestFinalAnswerReask:
+    def test_reasks_with_unbound_llm_until_json(self, caplog):
+        caplog.set_level(logging.WARNING, logger="lgtm.agents.base")
+        llm = _RecordingLLM([_ai_message("not json"), _ai_message("still no"), _ai_message(OK)])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert llm.channels == ["bound", "unbound", "unbound"]
+        assert "not a valid JSON object" in llm.seen[1][-1].content
+        assert "re-asking (1 of 3)" in caplog.text
+        assert "not a valid JSON object" in llm.seen[2][-1].content
+        assert any(m.content == "not json" for m in llm.seen[2])
+        assert any(m.content == "still no" for m in llm.seen[2])
+
+    def test_returns_last_content_after_three_failed_reasks(self):
+        llm = _RecordingLLM([_ai_message(t) for t in "abcd"])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == "d"
+        assert len(llm.seen) == 4
+        assert (
+            parse_agent_output(out, "f").explanation
+            == "Agent did not produce parsable structured output."
+        )
+
+    def test_reasks_do_not_consume_iterations(self):
+        llm = _RecordingLLM([_ai_message("bad"), _ai_message(OK)])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig(max_agent_iterations=1))
+        assert out == OK
+        assert "Produce your final" not in llm.seen[1][-1].content
+
+    def test_forced_final_answer_is_validated(self, git_repo):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([
+            _call("read_file", {"path": "app.py"}),
+            _ai_message("bad"),
+            _ai_message(OK),
+        ])
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(max_agent_iterations=1)
+        )
+        assert out == OK
+        assert llm.channels == ["bound", "unbound", "unbound"]
+
+    def test_non_object_json_is_reasked(self, sleeps):
+        llm = _RecordingLLM([_ai_message("[1, 2]"), RuntimeError("x"), _ai_message(OK)])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert sleeps == [2.0]
+
+    def test_pushback_precedes_reask(self, git_repo):
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _RecordingLLM([_ai_message("no json"), _ai_message(OK)])
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(require_tool_use=True)
+        )
+        assert out == OK
+        assert "call at least one tool" in llm.seen[1][-1].content
+        assert llm.channels == ["bound", "bound"]
+
+    def test_reask_cap_is_configurable(self):
+        llm = _RecordingLLM([_ai_message("a"), _ai_message("b"), _ai_message("c")])
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig(max_answer_reasks=1))
+        assert len(llm.seen) == 2
+        assert out == "b"
+
+
+@pytest.mark.parametrize("module", ["lgtm.review.sections", "lgtm.review.dedup"])
+def test_review_modules_import_in_a_fresh_interpreter(module):
+    import lgtm
+
+    root = str(Path(lgtm.__file__).resolve().parent.parent)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([root, os.environ.get("PYTHONPATH", "")])}
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
 
 def test_build_llm_passes_timeout_and_output_cap(monkeypatch):
     """Regression: llm_timeout existed in config but never reached the client,
