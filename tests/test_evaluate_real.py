@@ -777,13 +777,13 @@ class TestGitLaunchAbortLeavesAResumableRun:
     GIT_NOT_STARTED = 3221225794
 
     @classmethod
-    def _aborted_run(cls, tmp_path, monkeypatch):
+    def _aborted_run(cls, tmp_path, monkeypatch, failing=(1, 2), seeded=()):
         cases = er.fetch.load_cases()
         ids = [c["id"] for c in cases]
         cache, out = tmp_path / "cache", tmp_path / "out"
         for case in cases:
             (cache / er.fetch.project_of(case) / ".git").mkdir(parents=True, exist_ok=True)
-        no_start = [er.fetch.branch(cid, "base") for cid in ids[1:3]]
+        no_start = [er.fetch.branch(ids[i], "base") for i in failing]
         real_run = subprocess.run
 
         def fake_run(argv, *args, **kwargs):
@@ -800,11 +800,20 @@ class TestGitLaunchAbortLeavesAResumableRun:
             [TestGraphMetadataOnRecords._review(meta)], []))
         argv = ["--cache", str(cache), "--output", str(out), "--modes", "llm-only",
                 "--variants", "own"]
+        mode_dir = out / "llm-only"
+        if seeded:
+            mode_dir.mkdir(parents=True)
+            for i in seeded:
+                row = TestResultsAndSummary._result(ids[i], "vulnerable", "TP")
+                (mode_dir / f"{ids[i]}.json").write_text(json.dumps(row), encoding="utf-8")
+            (mode_dir / "summary.json").write_text(
+                json.dumps({"complete": True, "missing": []}), encoding="utf-8")
+            argv.append("--resume")
         try:
-            er.main(argv)
-        except SystemExit:
-            pass
-        return argv, out / "llm-only", ids
+            code = er.main(argv)
+        except SystemExit as exc:
+            code = exc.code
+        return argv, mode_dir, ids, code
 
     @staticmethod
     def _rows(mode_dir):
@@ -814,7 +823,7 @@ class TestGitLaunchAbortLeavesAResumableRun:
     def test_two_consecutive_launch_failures_leave_scored_rows_no_error_rows_and_an_incomplete_summary(
         self, tmp_path, monkeypatch
     ):
-        _argv, mode_dir, ids = self._aborted_run(tmp_path, monkeypatch)
+        _argv, mode_dir, ids, _code = self._aborted_run(tmp_path, monkeypatch)
 
         rows = self._rows(mode_dir)
         summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
@@ -824,8 +833,37 @@ class TestGitLaunchAbortLeavesAResumableRun:
         assert summary["complete"] is False
         assert set(summary["missing"]) == set(ids[1:])
 
+    def test_resumed_run_aborting_on_its_first_two_units_replaces_the_stale_summary_and_a_later_resume_completes(
+        self, tmp_path, monkeypatch
+    ):
+        argv, mode_dir, ids, code = self._aborted_run(tmp_path, monkeypatch, failing=(2, 3), seeded=(0, 1))
+        kept = {i: (mode_dir / f"{ids[i]}.json").read_bytes() for i in (0, 1)}
+
+        rows = self._rows(mode_dir)
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+
+        assert code not in (None, 0)
+        assert set(rows) == {ids[0], ids[1]}
+        assert not [r for r in rows.values() if r.get("error")]
+        assert summary["complete"] is False
+        assert set(summary["missing"]) == set(ids[2:])
+
+        ran: list[str] = []
+
+        def record(case, variant, mode, cache, output, config, index_only=False):
+            ran.append(case["id"])
+            return TestResultsAndSummary._result(case["id"], "vulnerable", "TP")
+
+        monkeypatch.setattr(er, "run_unit", record)
+        er.main(argv)
+
+        summary = json.loads((mode_dir / "summary.json").read_text(encoding="utf-8"))
+        assert ran == ids[2:]
+        assert {i: (mode_dir / f"{ids[i]}.json").read_bytes() for i in (0, 1)} == kept
+        assert summary["complete"] is True and summary["missing"] == []
+
     def test_rerun_resumes_from_the_first_unrecorded_unit_and_keeps_the_scored_row(self, tmp_path, monkeypatch):
-        argv, mode_dir, ids = self._aborted_run(tmp_path, monkeypatch)
+        argv, mode_dir, ids, _code = self._aborted_run(tmp_path, monkeypatch)
         kept = (mode_dir / f"{ids[0]}.json").read_bytes()
         ran: list[str] = []
 
@@ -1126,6 +1164,32 @@ class TestGitAbortDuringIndexOnly:
         assert code != 0
         assert "git" in text and "cannot start" in text
         assert not list(script.out.rglob("*.json"))
+
+
+class TestOsErrorLaunchFailuresAbortTheRun:
+    @pytest.mark.parametrize("error", [FileNotFoundError("git"), PermissionError("git")], ids=type)
+    def test_two_consecutive_os_errors_abort_with_exit_four_and_an_incomplete_summary(
+        self, tmp_path, monkeypatch, capsys, error
+    ):
+        script = _GitScript(tmp_path, monkeypatch, ["ok", "ok", "ok", "ok"])
+        failing = {er.fetch.branch(cid, "base") for cid in script.ids[1:3]}
+
+        def get_pr_diff(clone, base, pr, timeout=None):
+            if base in failing:
+                raise error
+            return []
+
+        monkeypatch.setattr(er, "get_pr_diff", get_pr_diff)
+
+        code, text = script.run(capsys)
+
+        summary = json.loads((script.out / "llm-only" / "summary.json").read_text(encoding="utf-8"))
+        assert code == 4
+        assert "git" in text and "cannot start" in text
+        assert set(script.rows()) == {script.ids[0]}
+        assert summary["complete"] is False
+        assert set(script.ids[1:]) <= set(summary["missing"])
+        assert script.ids[0] not in summary["missing"]
 
 
 class TestOtherGitFailuresKeepTheRunGoing:

@@ -304,25 +304,35 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
 # Summaries
 # ----------------------------------------------------------------------
 def write_dir_summary(out_dir: Path, mode: str, variant: str, expected: set[str],
-                      model: str, extra: dict | None = None) -> dict | None:
-    """Rebuild summary.json from every case JSON in ``out_dir``."""
+                      model: str, extra: dict | None = None,
+                      unrun: frozenset = frozenset()) -> dict | None:
+    """Rebuild summary.json from every case JSON in ``out_dir``.
+
+    ``unrun`` ids count as missing even when an earlier run left a row for them.
+    """
     results = []
     for path in sorted(out_dir.glob("*.json")):
         if path.name in ("summary.json", "run.json"):
             continue
         results.append(json.loads(path.read_text(encoding="utf-8")))
-    if not results:
-        return None
     present = {r["id"] for r in results}
     payload_extra = {
         "split": "real_world", "variant": variant,
         "experiments": {"require_tool_use": False, "static_facts": False,
                         "authz_role_guidance": False},
         "cases_expected": len(expected), "cases_present": len(present),
-        "complete": present >= expected,
-        "missing": sorted(expected - present),
+        "complete": present >= expected and not unrun,
+        "missing": sorted((expected - present) | unrun),
         **(extra or {}),
     }
+    if not results:
+        if not unrun:
+            return None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"mode": mode, **payload_extra}
+        (out_dir / "summary.json").write_text(json.dumps(payload, indent=2),
+                                              encoding="utf-8")
+        return payload
     with contextlib.redirect_stdout(io.StringIO()):  # write_summary prints it all
         evaluate.write_summary(out_dir, results, mode,
                                "none" if mode == "sast-only" else model, payload_extra)
@@ -436,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     done = 0
     held = None  # a git start failure is recorded only once the next unit shows it was not the second in a row
     aborted = False
+    held_at = 0
+    unrun: dict[tuple[str, str], set[str]] = {}
 
     def record(case, variant, mode, result):
         out_dir = out_dir_for(args.output, mode, variant)
@@ -463,14 +475,18 @@ def main(argv: list[str] | None = None) -> int:
             result = error_result(
                 case, mode, variant, exc,
                 pin=run_pin(config, REPO_ROOT, {}))
-            if isinstance(exc, GitError) and any(s in str(exc) for s in GIT_START_FAILURES):
+            if isinstance(exc, OSError) or (
+                    isinstance(exc, GitError) and any(s in str(exc) for s in GIT_START_FAILURES)):
                 if held is not None:
                     print("git cannot start (two units in a row); aborting. Re-run with "
                           "--resume once git works.", file=sys.stderr)
                     held = None
                     aborted = True
+                    for c, v, m in units[held_at - 1:]:
+                        unrun.setdefault((m, v), set()).add(c["id"])
                     break
                 held = (case, variant, mode, result)
+                held_at = i
                 print(f"    ERROR: {scrub(result['error'], scrubs)}")
                 done += 1
                 continue
@@ -498,15 +514,16 @@ def main(argv: list[str] | None = None) -> int:
         record(*held)
     if args.index_only:
         return 4 if aborted else 0
-    targets = touched if not args.summarize_only else {
+    targets = (touched | unrun.keys()) if not args.summarize_only else {
         (m, v) for m in args.modes for v in variants
         if out_dir_for(args.output, m, v).is_dir()}
     for mode, variant in sorted(targets):
         summary = write_dir_summary(
             out_dir_for(args.output, mode, variant), mode, variant,
             expected_ids(all_cases, mode, variant), config.ollama_model,
-            {**env_info, "reasoning": config.reasoning})
-        if summary:
+            {**env_info, "reasoning": config.reasoning},
+            frozenset(unrun.get((mode, variant), ())))
+        if summary and "summary" in summary:
             o = summary["summary"]["overall"]
             print(f"summary {mode}{variant_suffix(variant)}: cases={o['cases']} "
                   f"scored={o['scored']} errors={o['errors']} "

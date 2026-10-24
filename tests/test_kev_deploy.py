@@ -639,7 +639,8 @@ def test_kev_bench_step_receives_its_own_new_output_directory(bench):
     ok(bench.run())
     _, args = bench.py_steps()[0]
     target = option(args, "--out")
-    assert inside(target, bench.out) and not Path(target).exists()
+    assert inside(target, bench.out)
+    assert not Path(target).exists() or [p.name for p in Path(target).iterdir()] == ["judge-eval.json"]
 
 
 def test_judge_eval_step_receives_run_dir_export_labels_and_live_flag(bench):
@@ -814,14 +815,14 @@ def test_cache_holding_every_selected_clone_passes_the_check_and_runs_the_steps(
 def test_judge_eval_report_is_saved_in_the_results_directory(bench):
     bench.results.mkdir()
     ok(bench.run("--results-dir", bench.results.as_posix(), FAKE_MARKER="report-7f3a"))
-    saved = [p for p in bench.results.rglob("*") if p.is_file() and "report-7f3a" in p.read_text(encoding="utf-8")]
-    assert len(saved) == 1
+    assert "report-7f3a" in (bench.results / "judge-eval.json").read_text(encoding="utf-8")
 
 
-def test_judge_eval_report_without_a_results_directory_is_saved_under_the_out_directory(bench):
+def test_judge_eval_report_without_a_results_directory_is_saved_as_judge_eval_json_in_the_run_directory(bench):
     ok(bench.run(FAKE_MARKER="report-9c1d"))
-    saved = [p for p in bench.out.rglob("*") if p.is_file() and "report-9c1d" in p.read_text(encoding="utf-8")]
-    assert len(saved) == 1
+    _, args = bench.py_steps()[0]
+    report = Path(option(args, "--out")) / "judge-eval.json"
+    assert "report-9c1d" in report.read_text(encoding="utf-8")
 
 
 def test_judge_eval_that_judged_nothing_fails_the_step_runs_the_rest_cancels_once_and_exits_non_zero(bench):

@@ -80,7 +80,7 @@ step() {
 run_dir="$out/kev-bench-$(date +%Y%m%dT%H%M%S)"
 resume=() resume_real=()
 [[ -z "$results" ]] || { resume=(--output "$results/evaluate" --resume); resume_real=(--output "$results/evaluate-real" --resume); }
-report="${results:-$out}/judge-eval.json"
+report="${results:-$run_dir}/judge-eval.json"
 
 step kev-bench "$py" "$bench/kev_support/runner.py" --out "$run_dir"
 
