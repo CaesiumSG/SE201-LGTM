@@ -91,11 +91,12 @@ lgtm review ... --mode llm-only      # Baseline B: one LLM call on the diff,
 lgtm review ... --mode lgtm-no-sast  # Ablation: LGTM agents + RAG + tools,
                                      #   regex SQL detector instead of Semgrep
 
-# Prompt-injection mitigations (both off by default)
-lgtm review ... --strip-comments           # remove comments/docstrings from
-                                           #   PR code before the LLM sees it
-lgtm review ... --detect-prompt-injection  # flag reviewer-directed text in
-                                           #   the diff as its own finding
+# Prompt-injection mitigations (both ON by default in the lgtm modes; the
+# llm-only baseline always sees the raw diff)
+lgtm review ... --no-strip-comments           # keep comments/docstrings in the
+                                              #   PR code the LLM sees
+lgtm review ... --no-detect-prompt-injection  # don't report reviewer-directed
+                                              #   text in the diff as a finding
 ```
 
 Outputs `lgtm-output/report.json` (machine-readable findings) and
@@ -342,21 +343,25 @@ originally (lower is better).
 
 ```bash
 python benchmark/injection/run_injection_bench.py --mode sast-only
+python benchmark/injection/run_injection_bench.py --mode lgtm          # mitigations on (default)
 python benchmark/injection/run_injection_bench.py --mode lgtm \
-       --strip-comments --detect-injection
+       --no-strip-comments --no-detect-injection                     # unmitigated
 ```
 
 | Mode | ASR | What happened |
 |---|---|---|
 | A: sast-only | 0% (0/3) | Semgrep ignores comments and docstrings |
 | B: llm-only | 0% (0/3) | Still flagged all 3 SQLi cases |
-| **C: lgtm, no mitigation** | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
-| C: lgtm + `--strip-comments` + `--detect-prompt-injection` | 0% (0/3) | Reported in [`docs/prompt-injection.md`](docs/prompt-injection.md) |
+| C: lgtm, mitigations off (`--no-strip-comments --no-detect-injection`) | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
+| **C: lgtm, default (mitigations on)** | **0% (0/6)** | All 6 originals flagged, all 6 injected twins still flagged; every own-category agent verdict stayed `vulnerable` even before the detector's finding is counted |
 
 Only the 3 SQLi attacks are counted: none of the modes flagged the 3 authz
 originals as `vulnerable` in this harness, so no authz attack could succeed.
-The committed run files in `benchmark/injection/results/` cover the three
-unmitigated rows.
+The committed run files in `benchmark/injection/results/` cover every row:
+`lgtm/` is the unmitigated run and `lgtm-mitigated/` the default
+configuration. Since 23 Oct the mitigations are on by default in the lgtm
+modes; on the Shoply dev split they changed no case outcome (F1 1.00 in both arms) and cut off-category alarms from 11 to 10 (see
+[`docs/prompt-injection.md`](docs/prompt-injection.md) §7).
 
 ### 4. Field trial on ordinary merged PRs
 

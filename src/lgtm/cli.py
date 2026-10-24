@@ -63,8 +63,8 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
 @click.option("--graph/--no-graph", "graph_enabled", default=None, help="Use CodeGraph (npm: @colbymchenry/codegraph) for investigate_* tools when the binary is on PATH (default: on; agents fall back to read_file/grep_repo when it is missing).")
 @click.option("--authz-planner", type=click.Choice(["investigator", "endpoint"]), default=None, help="How the authz review picks what to look at: 'investigator' (default, every changed hunk) or 'endpoint' (checkpoint behaviour: only hunks with a route decorator).")
-@click.option("--strip-comments", is_flag=True, help="Mitigation: strip comments and docstrings from PR code in prompts.")
-@click.option("--detect-prompt-injection", is_flag=True, help="Mitigation: detect reviewer-directed instructions in diff.")
+@click.option("--strip-comments/--no-strip-comments", default=None, help="Mitigation (on by default, LGTM modes only): strip comments and docstrings from PR code before it reaches the LLM.")
+@click.option("--detect-prompt-injection/--no-detect-prompt-injection", default=None, help="Mitigation (on by default, LGTM modes only): report reviewer-directed instructions in the diff as a finding.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def review(
     repo: str,
@@ -80,8 +80,8 @@ def review(
     config_file: str | None,
     graph_enabled: bool | None,
     authz_planner: str | None,
-    strip_comments: bool,
-    detect_prompt_injection: bool,
+    strip_comments: bool | None,
+    detect_prompt_injection: bool | None,
     verbose: bool,
 ) -> None:
     """Run the full security review pipeline on a PR."""
@@ -106,10 +106,10 @@ def review(
         config.graph_enabled = graph_enabled
     if authz_planner is not None:
         config.authz_planner = authz_planner
-    if strip_comments:
-        config.strip_comments = True
-    if detect_prompt_injection:
-        config.detect_prompt_injection = True
+    if strip_comments is not None:
+        config.strip_comments = strip_comments
+    if detect_prompt_injection is not None:
+        config.detect_prompt_injection = detect_prompt_injection
     out = Path(output_dir or config.output_dir)
 
     try:

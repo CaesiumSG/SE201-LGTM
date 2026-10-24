@@ -61,9 +61,12 @@ class LGTMConfig:
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
     authz_role_guidance: bool = False
-    # Prompt injection mitigations (off by default)
-    strip_comments: bool = False
-    detect_prompt_injection: bool = False
+    # Prompt-injection mitigations (on by default since the red-teaming in
+    # docs/prompt-injection.md: unmitigated, PR comments talked the triage
+    # agent out of 3/3 SQLi detections). They apply to the LGTM modes only;
+    # the llm-only baseline keeps the raw diff, as the proposal defines it.
+    strip_comments: bool = True
+    detect_prompt_injection: bool = True
 
     # RAG
     rag_chunk_size: int = 500  # approx tokens per chunk

@@ -67,6 +67,24 @@ SQL_SINK_RE = re.compile(
 )
 
 
+MITIGATED_MODES = ("lgtm", "lgtm-no-sast")
+
+
+def mitigations_apply(mode: str, config: LGTMConfig) -> dict[str, bool]:
+    """Which prompt-injection mitigations are active for this mode.
+
+    The mitigations are part of LGTM, so they apply to ``lgtm`` and its
+    ``lgtm-no-sast`` ablation. The ``llm-only`` baseline is the bare model
+    on the raw diff (proposal, Baseline B) and must stay that way for the
+    comparison to mean anything; ``sast-only`` never prompts a model.
+    """
+    active = mode in MITIGATED_MODES
+    return {
+        "strip_comments": active and config.strip_comments,
+        "detect_prompt_injection": active and config.detect_prompt_injection,
+    }
+
+
 @dataclass
 class ReviewResult:
     findings: list[AgentFinding]
@@ -180,9 +198,10 @@ class ReviewPipeline:
 
         from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
 
-        llm_diffs = sanitize_diffs(diffs) if self.config.strip_comments else diffs
+        mitigate = mitigations_apply(mode, self.config)
+        llm_diffs = sanitize_diffs(diffs) if mitigate["strip_comments"] else diffs
         llm_scan_diffs = (
-            sanitize_diffs(scan_diffs) if self.config.strip_comments else scan_diffs
+            sanitize_diffs(scan_diffs) if mitigate["strip_comments"] else scan_diffs
         )
 
         if mode == "sast-only":
@@ -225,7 +244,7 @@ class ReviewPipeline:
                 round(session.init_seconds, 2) if session is not None else 0.0
             )
 
-        if self.config.detect_prompt_injection:
+        if mitigate["detect_prompt_injection"]:
             findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------

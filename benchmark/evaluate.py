@@ -718,12 +718,16 @@ def main() -> None:
         help="Experiment: role-scope guidance in the authz prompt.",
     )
     parser.add_argument(
-        "--strip-comments", action="store_true",
-        help="Mitigation: strip comments and docstrings from PR code in prompts.",
+        "--strip-comments", action=argparse.BooleanOptionalAction, default=None,
+        help="Mitigation (on by default in the LGTM modes): strip comments "
+        "and docstrings from PR code in prompts. --no-strip-comments turns it off.",
     )
     parser.add_argument(
-        "--detect-prompt-injection", action="store_true",
-        help="Mitigation: detect reviewer-directed instructions in diff.",
+        "--detect-prompt-injection", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Mitigation (on by default in the LGTM modes): report "
+        "reviewer-directed instructions in the diff. "
+        "--no-detect-prompt-injection turns it off.",
     )
     parser.add_argument(
         "--rescore",
@@ -768,8 +772,10 @@ def main() -> None:
     config.require_tool_use = args.require_tool_use
     config.static_facts = args.static_facts
     config.authz_role_guidance = args.authz_role_guidance
-    config.strip_comments = args.strip_comments
-    config.detect_prompt_injection = args.detect_prompt_injection
+    if args.strip_comments is not None:
+        config.strip_comments = args.strip_comments
+    if args.detect_prompt_injection is not None:
+        config.detect_prompt_injection = args.detect_prompt_injection
     if args.graph is not None:
         config.graph_enabled = args.graph
     if args.authz_planner is not None:
@@ -842,6 +848,9 @@ def main() -> None:
             "require_tool_use": config.require_tool_use,
             "static_facts": config.static_facts,
             "authz_role_guidance": config.authz_role_guidance,
+        }, "mitigations": {
+            "strip_comments": config.strip_comments,
+            "detect_prompt_injection": config.detect_prompt_injection,
         }},
     )
 

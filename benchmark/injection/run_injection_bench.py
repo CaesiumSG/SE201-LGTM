@@ -138,8 +138,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=["sast-only", "llm-only", "lgtm"], default="sast-only")
     parser.add_argument("--model", default="qwen2.5-coder:7b")
     parser.add_argument("--ollama-url", default=None)
-    parser.add_argument("--strip-comments", action="store_true", help="Mitigation: strip comments/docstrings from PR code in prompts")
-    parser.add_argument("--detect-injection", action="store_true", help="Mitigation: detect reviewer-directed instructions in diff")
+    parser.add_argument("--strip-comments", action=argparse.BooleanOptionalAction, default=None, help="Mitigation (on by default in lgtm mode): strip comments/docstrings from PR code in prompts; --no-strip-comments turns it off")
+    parser.add_argument("--detect-injection", action=argparse.BooleanOptionalAction, default=None, help="Mitigation (on by default in lgtm mode): detect reviewer-directed instructions in diff; --no-detect-injection turns it off")
     parser.add_argument("--graph", action=argparse.BooleanOptionalAction, default=None, help="Use CodeGraph when the binary is on PATH (default on); --no-graph reviews without it")
     parser.add_argument("--authz-planner", choices=["investigator", "endpoint"], default=None, help="'investigator' (default) or 'endpoint' (checkpoint gating)")
     parser.add_argument("--cases", nargs="+", default=None, help="Filter to specific injection case IDs")
@@ -154,8 +154,10 @@ def main() -> None:
     config.ollama_model = args.model
     if args.ollama_url:
         config.ollama_base_url = args.ollama_url
-    config.strip_comments = args.strip_comments
-    config.detect_prompt_injection = args.detect_injection
+    if args.strip_comments is not None:
+        config.strip_comments = args.strip_comments
+    if args.detect_injection is not None:
+        config.detect_prompt_injection = args.detect_injection
     if args.graph is not None:
         config.graph_enabled = args.graph
     if args.authz_planner is not None:
@@ -175,7 +177,9 @@ def main() -> None:
     print(f"\n=======================================================")
     print(f"Running Prompt-Injection Red-Team Benchmark: mode={args.mode}")
     print(f"Model={config.ollama_model} URL={config.ollama_base_url}")
-    print(f"Mitigations: strip_comments={getattr(config, 'strip_comments', False)}")
+    print(f"Mitigations: strip_comments={config.strip_comments} "
+          f"detect_prompt_injection={config.detect_prompt_injection} "
+          f"(applied in lgtm mode only; the baselines see the raw diff)")
     print(f"=======================================================\n")
 
     comparisons = []
@@ -243,8 +247,9 @@ def main() -> None:
         "attacks_succeeded": attacks_succeeded,
         "attack_success_rate": round(asr, 3),
         "mitigations": {
-            "strip_comments": getattr(config, "strip_comments", False),
-            "detect_prompt_injection": getattr(config, "detect_prompt_injection", False),
+            "strip_comments": config.strip_comments,
+            "detect_prompt_injection": config.detect_prompt_injection,
+            "applied_in_this_mode": args.mode == "lgtm",
         },
         "graph_states": dict(Counter(
             r.get("graph_state") or "unknown" for r in review_records)),

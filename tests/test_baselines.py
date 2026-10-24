@@ -158,6 +158,34 @@ def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypat
         "static_facts": experiments,
         "authz_role_guidance": experiments,
     }
+    # Mitigations are on by default and recorded in the run summary
+    assert config.strip_comments is True
+    assert config.detect_prompt_injection is True
+    assert summary.call_args.args[4]["mitigations"] == {
+        "strip_comments": True,
+        "detect_prompt_injection": True,
+    }
+
+
+def test_benchmark_cli_can_switch_mitigations_off(tmp_path, monkeypatch):
+    (tmp_path / "labels.json").write_text('{"cases": []}', encoding="utf-8")
+    config = LGTMConfig()
+    summary = MagicMock()
+    monkeypatch.setattr(evaluate, "BENCH", tmp_path)
+    monkeypatch.setattr(evaluate, "LGTMConfig", lambda: config)
+    monkeypatch.setattr(evaluate, "write_summary", summary)
+    monkeypatch.setattr("sys.argv", [
+        "evaluate.py", "--no-strip-comments", "--no-detect-prompt-injection",
+    ])
+
+    evaluate.main()
+
+    assert config.strip_comments is False
+    assert config.detect_prompt_injection is False
+    assert summary.call_args.args[4]["mitigations"] == {
+        "strip_comments": False,
+        "detect_prompt_injection": False,
+    }
 
 
 @pytest.mark.parametrize("options,model,url", [
