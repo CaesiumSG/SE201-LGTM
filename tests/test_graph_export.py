@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import io
 import tarfile
@@ -11,9 +12,13 @@ import tarfile
 import pytest
 
 from lgtm.config import LGTMConfig
+from lgtm.graph import exporter
+from lgtm.graph.session import GraphSession
 from lgtm.graph.snapshot import resolve_refs
 from lgtm.graph.exporter import export_snapshot
 from lgtm.graph.format import render_graph, render_read, render_grep
+
+from tests.graph_fakes import FakeGit, FakeRunner
 
 
 SHA = "a" * 40
@@ -1532,3 +1537,72 @@ class TestOwnedRootCleanupContainment:
         finally:
             os.chmod(outside, stat.S_IRWXU)
             os.chmod(keep, stat.S_IRWXU)
+
+
+class TestExportFailureReapsProcesses:
+    SHAS = {"base": "a" * 40, "pr": "b" * 40}
+    FAILURES = [
+        {"inventory": "fail"}, {"inventory": "timeout"}, {"inventory": "create"},
+        {"archive": "fail"}, {"archive": "timeout"}, {"archive": "create"},
+    ]
+
+    @pytest.fixture
+    def scratch_base(self, tmp_path, monkeypatch):
+        base = tmp_path / "scratch"
+        base.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(base))
+        return base
+
+    @pytest.fixture
+    def install(self, monkeypatch):
+        installed = []
+
+        def _install(*plans):
+            fake_git = FakeGit(*plans)
+            installed.append(fake_git)
+            monkeypatch.setattr(exporter, "subprocess", fake_git.namespace)
+            return fake_git
+
+        yield _install
+        for fake_git in installed:
+            fake_git.kill_all()
+
+    def session(self, tmp_path):
+        return GraphSession(
+            tmp_path / "repo", self.SHAS, LGTMConfig(git_timeout=0.3), runner=FakeRunner()
+        )
+
+    @pytest.mark.parametrize("failure", FAILURES, ids=lambda f: "-".join(next(iter(f.items()))))
+    def test_failed_export_leaves_no_process_and_no_scratch_directory(
+        self, tmp_path, scratch_base, install, failure
+    ):
+        fake_git = install(failure)
+
+        with self.session(tmp_path) as session:
+            outcome = session.explore("pr", "q")
+            assert not outcome.ok and outcome.reason == "export_failed"
+            assert session.snapshot("pr") is None
+            assert fake_git.running() == []
+            assert list(scratch_base.rglob("*")) == []
+
+    @pytest.mark.parametrize("failure", FAILURES, ids=lambda f: "-".join(next(iter(f.items()))))
+    @pytest.mark.parametrize("same_session", [True, False], ids=["one-session", "session-per-unit"])
+    def test_later_export_starts_with_no_process_from_the_failed_one(
+        self, tmp_path, scratch_base, install, failure, same_session
+    ):
+        fake_git = install(failure, failure, failure)
+        sessions = []
+        try:
+            for label in ("base", "pr") if same_session else ("pr", "pr", "pr"):
+                if not same_session or not sessions:
+                    sessions.append(self.session(tmp_path))
+                session = sessions[-1]
+                outcome = session.explore(label, "q")
+                assert not outcome.ok and outcome.reason == "export_failed"
+        finally:
+            for session in sessions:
+                session.close()
+
+        starts = fake_git.alive_at_export_start
+        assert len(starts) >= 2 and all(alive == [] for alive in starts)
+        assert fake_git.running() == []
