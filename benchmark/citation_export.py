@@ -65,7 +65,7 @@ def _read_lines(repo: Path, sha: str | None, item: dict) -> str | None:
     lines = item.get("lines")
     if not (sha and SHA_SHAPE.fullmatch(sha) and item.get("file") and lines):
         return None
-    sha = _resolve(repo, sha, item.get("snapshot"))
+    sha = _resolve(repo, sha, item.get("snapshot") or "pr")
     if sha is None:
         return None
     done = subprocess.run(
@@ -86,7 +86,8 @@ def export_run(run_dir: Path, repos: Mapping[str, Path], out_path: Path) -> list
     for record in read_records(Path(run_dir)):
         for uid, finding, item in code_items(record):
             snapshot = item.get("snapshot")
-            sha = record.get(SNAPSHOT_SHA_KEY.get(snapshot, ""))
+            # Null snapshot reads PR head; the unit keeps snapshot null (rejudge lookup key).
+            sha = record.get(SNAPSHOT_SHA_KEY.get(snapshot or "pr", ""))
             code = _read_lines(Path(repos[record["id"]]), sha, item)
             unit = {
                 "unit_id": uid,

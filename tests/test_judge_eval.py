@@ -1485,3 +1485,153 @@ class TestLiveRejudgeSkipsUnreadableUnits:
 
         assert kev["judged"] == 1
         assert sum(kev["not_judged"].values()) == 1
+
+
+def _snapshot_repo(root: Path) -> dict:
+    repo = root / "snap_repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "app.py").write_text(BASE_APP, encoding="utf-8")
+    (repo / "removed.py").write_text("old1\nold2\nold3\n", encoding="utf-8")
+    (repo / "shrunk.py").write_text("s1\ns2\ns3\ns4\ns5\ns6\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "app.py").write_text(PR_APP, encoding="utf-8")
+    (repo / "removed.py").unlink()
+    (repo / "shrunk.py").write_text("s1\ns2\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "pr")
+    pr_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    return {"repo": repo, "base_sha": base_sha, "pr_sha": pr_sha}
+
+
+def _export_and_rejudge(ce, je, tmp_path: Path, evidence_sets: list[list[EvidenceItem]]):
+    case = _snapshot_repo(tmp_path)
+    findings = [
+        {**_recorded_finding(f"F{i}", f"claim {i}", evidence), "supported": None}
+        for i, evidence in enumerate(evidence_sets)
+    ]
+    run_dir = tmp_path / "run"
+    _record_run(run_dir, "case_a", case, findings)
+    path = run_dir / "case_a.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["mode"] = "lgtm"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    export = tmp_path / "export.json"
+    units = ce.export_run(run_dir, {"case_a": case["repo"]}, export)
+    requests: list[dict] = []
+
+    def judge(request):
+        requests.append(request)
+        return _reply()
+
+    records = je.rejudge(run_dir, export, LGTMConfig(), judge)
+    return units, requests, {f["finding_id"]: f for f in records[0]["findings"]}
+
+
+class TestNullSnapshotCitationsAreReadAtPrHead:
+    def test_null_snapshot_citation_is_exported_with_pr_code_and_judged_on_it(self, ce, je, tmp_path):
+        evidence = [EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot=None)]
+
+        units, requests, findings = _export_and_rejudge(ce, je, tmp_path, [evidence])
+
+        assert units[0]["snapshot"] is None
+        assert units[0]["code"].splitlines() == ["pr2", "pr3"]
+        assert not units[0].get("unreadable")
+        assert len(requests) == 1
+        sent = json.dumps(requests)
+        assert "pr2" in sent and "base2" not in sent
+        assert findings["F0"]["judged"] is True
+        assert findings["F0"]["not_judged_reason"] != je.REASON_CODE_UNREADABLE
+
+    @pytest.mark.parametrize("item_fields", [
+        {"file": "removed.py", "lines": [1, 2]},
+        {"file": "shrunk.py", "lines": [4, 6]},
+        {"file": "never_existed.py", "lines": [1, 1]},
+    ], ids=["file-only-at-base", "lines-only-at-base", "file-nowhere"])
+    def test_null_snapshot_citation_unresolved_at_pr_head_is_unreadable_and_not_judged_without_base_fallback(
+        self, ce, je, tmp_path, item_fields
+    ):
+        readable = [EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot=None)]
+        unresolved = [EvidenceItem(content="c", snapshot=None, **item_fields)]
+
+        units, requests, findings = _export_and_rejudge(ce, je, tmp_path, [readable, unresolved])
+
+        assert units[1]["unreadable"] is True
+        assert units[1]["code"] == ""
+        assert len(requests) == 1
+        assert "claim 1" not in json.dumps(requests)
+        assert findings["F1"]["judged"] is False
+        assert findings["F1"]["not_judged_reason"] == je.REASON_CODE_UNREADABLE
+        assert findings["F0"]["judged"] is True
+
+
+class TestExplicitSnapshotsAreExportedAndRejudgedAsBefore:
+    def test_base_and_pr_citations_are_read_at_their_own_snapshot_and_judged(self, ce, je, tmp_path):
+        evidence = [
+            EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot="pr"),
+            EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot="base"),
+        ]
+
+        units, requests, findings = _export_and_rejudge(ce, je, tmp_path, [evidence])
+
+        assert [u["code"].splitlines() for u in units] == [["pr2", "pr3"], ["base2", "base3"]]
+        assert not any(u.get("unreadable") for u in units)
+        assert len(requests) == 1
+        assert findings["F0"]["judged"] is True
+
+    def test_base_citation_missing_at_base_stays_unreadable_and_not_judged(self, ce, je, tmp_path):
+        evidence = [EvidenceItem(file="never_existed.py", lines=[1, 1], content="c", snapshot="base")]
+
+        units, requests, findings = _export_and_rejudge(ce, je, tmp_path, [evidence])
+
+        assert units[0]["unreadable"] is True
+        assert requests == []
+        assert findings["F0"]["not_judged_reason"] == je.REASON_CODE_UNREADABLE
+
+
+class TestNullSnapshotUnitsCarryPrHeadCode:
+    BASE, PR = "a" * 40, "b" * 40
+    FILES = {
+        (BASE, "app.py"): "line1\nbase2\nbase3\nline4\n",
+        (PR, "app.py"): "line1\npr2\npr3\nline4\n",
+    }
+
+    def test_null_snapshot_code_items_carry_the_pr_head_code_and_are_not_unreadable(
+        self, ce, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        def run(args, **_kwargs):
+            if "cat-file" in args:
+                return SimpleNamespace(returncode=0, stdout=b"")
+            text = self.FILES.get(tuple(args[-1].split(":", 1)))
+            if text is None:
+                return SimpleNamespace(returncode=128, stdout=b"")
+            return SimpleNamespace(returncode=0, stdout=text.encode())
+
+        def finding(lines):
+            return {
+                "explanation": "claim",
+                "evidence": [{"type": "code", "file": "app.py", "lines": lines, "snapshot": None}],
+            }
+
+        record = {
+            "id": "case_a", "base_sha": self.BASE, "pr_sha": self.PR,
+            "findings": [finding([2, 3]), finding([4, 4])],
+        }
+        written = []
+        monkeypatch.setattr(ce, "read_records", lambda _run_dir: [record])
+        monkeypatch.setattr(ce, "subprocess", SimpleNamespace(run=run))
+        monkeypatch.setattr(ce, "Path", lambda p: p)
+        out = SimpleNamespace(write_text=lambda text, **_kw: written.append(text))
+
+        units = ce.export_run("run", {"case_a": "repo"}, out)
+
+        assert [u["code"].splitlines() for u in units] == [["pr2", "pr3"], ["line4"]]
+        assert not any(u.get("unreadable") for u in units)
+        assert [u["snapshot"] for u in units] == [None, None]
+        assert json.loads(written[0])["units"] == units
