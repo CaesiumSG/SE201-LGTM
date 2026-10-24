@@ -32,7 +32,7 @@ from tests.test_sections import (
 TOP_KEYS = {
     "planner", "investigator_status", "investigator_error", "investigator_input",
     "investigator_tool_calls", "files_total", "files_in_scope", "hunks_total",
-    "hunks_assigned", "hunks_leftover", "hunks_reviewed", "sections_scheduled",
+    "hunks_assigned", "hunks_leftover", "hunks_gated", "hunks_reviewed", "sections_scheduled",
     "sections_completed", "sections_failed", "sections_coalesced", "complete",
     "exclusions", "invalid_refs", "sections",
 }

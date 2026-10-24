@@ -266,7 +266,11 @@ def test_investigator_uses_its_own_iteration_cap_not_the_section_one(config, too
 
     run(small_diffs(), config, toolbox, llm)
 
-    assert config.investigator_max_iterations < len(llm.seen) < config.max_agent_iterations
+    # The investigator runs on its own limits (here 2 calls / 3 iterations),
+    # not the section reviewer's (9 calls / 10 iterations): it spends its two
+    # calls, then one forced-final turn.
+    assert len(llm.seen) == config.investigator_max_tool_calls + 1
+    assert len(llm.seen) < config.max_agent_iterations
 
 
 @pytest.mark.parametrize("diff_chars", [30000, 100])

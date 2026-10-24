@@ -56,6 +56,7 @@ def build_coverage(
         "hunks_total": plan.hunks_total,
         "hunks_assigned": plan.hunks_assigned,
         "hunks_leftover": plan.hunks_leftover,
+        "hunks_gated": plan.hunks_gated,
         "hunks_reviewed": len(reviewed),
         "sections_scheduled": scheduled,
         "sections_completed": completed,

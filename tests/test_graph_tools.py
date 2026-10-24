@@ -80,6 +80,9 @@ def _text(name, args):
     return _msg(json.dumps({"name": name, "arguments": args}))
 
 
+_SRC_INSERT = f"sys.path.insert(0, {str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'src')!r})\n"
+
+
 class ScriptedLLM:
     def __init__(self, script):
         self.script = list(script)
@@ -205,15 +208,24 @@ def _tool_messages(llm, call_index):
     return [m for m in llm.seen[call_index] if type(m).__name__ == "ToolMessage"]
 
 
+FORCED_MARK = "final JSON verdict NOW"
+
+
+def _loop_stopped_after(llm, n):
+    """Once ``n`` slots are spent the loop ends: the next model turn is the
+    forced-final request, and no later turn is a bound (tool-capable) call."""
+    return FORCED_MARK in llm.seen[n][-1].content and "bound" not in llm.channels[n:]
+
+
 class TestFailedCallsSpendSlots:
-    def test_five_failed_native_calls_then_sixth_gets_budget_error_without_backend(
+    def test_five_failed_native_calls_then_the_loop_stops_without_backend(
         self, run_agent, git_commands
     ):
         script = [_native("read_file", {"path": f"missing{i}.py"}, f"c{i}") for i in range(1, 6)]
         script += [_native("read_file", {"path": "app.py"}, "c6"), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert _loop_stopped_after(llm, 5)
         assert _touched(git_commands, "app.py") == []
         assert result.verdict == "safe"
 
@@ -226,7 +238,9 @@ class TestFailedCallsSpendSlots:
         assert result.tool_calls_used == 5
         for i in (6, 7, 8):
             assert _touched(git_commands, f"missing{i}.py") == []
-        assert [m.content for m in _tool_messages(llm, 8)[-3:]] == [EXHAUSTED] * 3
+        # The loop does not keep taking calls 6-8 and refusing them: it asks
+        # for the verdict as soon as the budget is spent.
+        assert _loop_stopped_after(llm, 5)
         assert len(_touched(git_commands, "missing")) == 5
 
     def test_batched_calls_beyond_five_get_budget_error_without_backend(
@@ -242,16 +256,14 @@ class TestFailedCallsSpendSlots:
         for i in (6, 7, 8):
             assert _touched(git_commands, f"missing{i}.py") == []
 
-    def test_five_failed_text_calls_then_sixth_gets_budget_error_without_backend(
+    def test_five_failed_text_calls_then_the_loop_stops_without_backend(
         self, run_agent, git_commands
     ):
         script = [_text("read_file", {"path": f"missing{i}.py"}) for i in range(1, 6)]
         script += [_text("read_file", {"path": "app.py"}), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert llm.seen[6][-1].content == _text_result(
-            "read_file", {"path": "app.py"}, EXHAUSTED
-        )
+        assert _loop_stopped_after(llm, 5)
         assert _touched(git_commands, "app.py") == []
 
     def test_tagged_text_batch_spends_per_call(self, run_agent):
@@ -280,7 +292,7 @@ class TestFailedCallsSpendSlots:
         result, llm = run_agent(script, retriever=retriever)
         assert result.tool_calls_used == 5
         assert len(retriever.tool_queries) == 5
-        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert _loop_stopped_after(llm, 5)
 
 
 class TestRejectedCallsSpendSlots:
@@ -482,7 +494,7 @@ class TestRejectedCallsAreChargedForPlainToolLists:
         ]
         result, llm = run_agent(script, max_invalid_tool_inputs=0)
         assert result.tool_calls_used == 5
-        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert _loop_stopped_after(llm, 5)
         assert _touched(git_commands, "app.py") == []
 
     def test_unknown_text_request_spends_a_slot(self, run_agent, plain_tools):
@@ -500,13 +512,13 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         [("rm_rf", {}), ("read_file", {}), ("read_file", {"path": 5})],
         ids=["unknown_name", "missing_argument", "wrong_type"],
     )
-    def test_native_sixth_attempt_gets_exhausted_response(
+    def test_native_sixth_attempt_is_never_taken(
         self, run_agent, git_commands, name, args
     ):
         script = self._spend_five() + [_native(name, args, "c6"), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert _tool_messages(llm, 6)[-1].content == EXHAUSTED
+        assert _loop_stopped_after(llm, 5)
         assert len(_touched(git_commands, "missing")) == 5
 
     @pytest.mark.parametrize(
@@ -514,16 +526,16 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         [("rm_rf", {"path": "x"}), ("read_file", {})],
         ids=["unknown_name", "missing_argument"],
     )
-    def test_text_sixth_attempt_gets_exhausted_response(
+    def test_text_sixth_attempt_is_never_taken(
         self, run_agent, git_commands, name, args
     ):
         script = self._spend_five() + [_text(name, args), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert llm.seen[6][-1].content == _text_result(name, args, EXHAUSTED)
+        assert _loop_stopped_after(llm, 5)
         assert len(_touched(git_commands, "missing")) == 5
 
-    def test_rejected_calls_after_saturation_still_trigger_the_invalid_input_stop(
+    def test_rejected_calls_after_saturation_are_answered_without_tools(
         self, run_agent
     ):
         script = self._spend_five()
@@ -532,8 +544,10 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         result, llm = run_agent(script, max_agent_iterations=20)
         assert result.tool_calls_used == 5
         assert result.verdict == "safe"
-        assert llm.channels == ["bound"] * 8 + ["unbound"]
-        assert "Produce your final JSON verdict NOW" in llm.seen[8][-1].content
+        # Five bound turns spend the budget; the forced-final request and the
+        # re-asks that follow the model's refusals are all unbound.
+        assert llm.channels[:5] == ["bound"] * 5 and "bound" not in llm.channels[5:]
+        assert "Produce your final JSON verdict NOW" in llm.seen[5][-1].content
 
 
 # ---------------------------------------------------------------------------
@@ -1254,7 +1268,7 @@ class TestLazyGraph:
 
     def test_legacy_reads_load_no_graph_runtime(self, snap):
         code = (
-            "import sys\n"
+            "import sys\n" + _SRC_INSERT +
             "from lgtm.agents.tools import AgentToolbox\n"
             "toolbox = AgentToolbox(sys.argv[1], 'main')\n"
             "assert toolbox.read_file_impl('app.py').startswith('[READ ')\n"
@@ -1270,7 +1284,7 @@ class TestLazyGraph:
 
     def test_importing_the_agent_modules_does_not_import_the_graph_package(self):
         code = (
-            "import sys\n"
+            "import sys\n" + _SRC_INSERT +
             "import lgtm.agents.tools, lgtm.agents.sast_triage, lgtm.agents.authz_reviewer, lgtm.pipeline\n"
             "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
         )

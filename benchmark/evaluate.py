@@ -411,20 +411,47 @@ def score_case(result: dict) -> dict:
         )
         result.update(case_label=None, case_label_grounded=None)
     else:
+        # Outcome: the same rule as every committed run since round 2 — the
+        # PR is flagged iff any finding in the case's own category says
+        # "vulnerable", wherever in the PR it points. Coverage labels and
+        # the "alarm outside target" count are diagnostics beside it, not a
+        # different scoring rule (a `vulnerable` verdict on another file is
+        # still a false alarm on a safe PR).
         label, grounded_label, targets, gap = derive_case_labels(result)
-        outcome = outcome_for_label(label, result["expected"])
+        predicted = predict_case_verdict(findings, result["category"])
+        predicted_grounded = predict_case_verdict(
+            findings, result["category"], require_grounded=True
+        )
+        outcome = outcome_for(predicted, result["expected"])
         result.update(
             case_label=label,
             case_label_grounded=grounded_label,
             target_sections=targets,
             coverage_gap=gap,
-            predicted=PREDICTED_BY_LABEL.get(label, label),
-            predicted_grounded=PREDICTED_BY_LABEL.get(grounded_label, grounded_label),
+            alarms_outside_target=alarms_outside_target(result),
+            predicted=predicted,
+            predicted_grounded=predicted_grounded,
             outcome=outcome,
-            outcome_grounded=outcome_for_label(grounded_label, result["expected"]),
+            outcome_grounded=outcome_for(predicted_grounded, result["expected"]),
             correct=outcome in ("TP", "TN"),
         )
     return result
+
+
+def alarms_outside_target(row: dict) -> list[str]:
+    """Own-category ``vulnerable`` findings that point outside the case's target files.
+
+    On the single-flaw benchmark these are alarms the labels cannot confirm
+    (the flaw is elsewhere); on a safe PR they are the false alarm itself.
+    """
+    files = _target_files(row)
+    return sorted(
+        f.get("finding_id", "")
+        for f in row.get("findings", [])
+        if f.get("verdict") == "vulnerable"
+        and f.get("category") in (row["category"], "", "sast", None)
+        and f.get("file") and f["file"] not in files
+    )
 
 
 def evaluate_case(case: dict, config: LGTMConfig) -> dict:
@@ -612,6 +639,14 @@ def summarize(results: list[dict]) -> dict:
             if scored else None
         ),
         "off_category_alarms": sorted(r["id"] for r in scored if off_category(r)),
+        # Own-category "vulnerable" findings pointing outside the case's
+        # target files (counted in TP/FP above; listed here so they can be read).
+        "alarms_outside_target_rate": (
+            round(sum(1 for r in scored if r.get("alarms_outside_target")) / len(scored), 3)
+            if scored else None
+        ),
+        "alarms_outside_target": sorted(
+            r["id"] for r in scored if r.get("alarms_outside_target")),
         "evidence_grounding_rate": (
             round(grounded / len(all_findings), 3) if all_findings else None
         ),
@@ -700,6 +735,16 @@ def main() -> None:
         "--resume", action="store_true",
         help="skip cases with a completed (non-error) result JSON; re-run error results",
     )
+    parser.add_argument(
+        "--graph", action=argparse.BooleanOptionalAction, default=None,
+        help="Use CodeGraph when the binary is on PATH (default on); "
+        "--no-graph reviews without it.",
+    )
+    parser.add_argument(
+        "--authz-planner", choices=["investigator", "endpoint"], default=None,
+        help="'investigator' (default: every changed hunk is reviewed) or "
+        "'endpoint' (checkpoint behaviour: only hunks with a route decorator).",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
     if args.gpu_model and (args.gpu_cluster or args.model):
@@ -725,6 +770,10 @@ def main() -> None:
     config.authz_role_guidance = args.authz_role_guidance
     config.strip_comments = args.strip_comments
     config.detect_prompt_injection = args.detect_prompt_injection
+    if args.graph is not None:
+        config.graph_enabled = args.graph
+    if args.authz_planner is not None:
+        config.authz_planner = args.authz_planner
 
     labels_path = Path(args.labels) if args.labels else BENCH / "labels.json"
     labels = json.loads(labels_path.read_text(encoding="utf-8"))

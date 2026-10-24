@@ -20,7 +20,9 @@ class LGTMConfig:
 
     # LLM
     ollama_model: str = "qwen3.8:27b"
-    ollama_base_url: str = "http://127.0.0.1:11435"
+    # Local Ollama by default; --gpu-model / --gpu-cluster switch to the
+    # SCIS cluster tunnel (http://127.0.0.1:11435).
+    ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
     reasoning: bool | None = False  # None leaves the model's default thinking behaviour
@@ -43,6 +45,14 @@ class LGTMConfig:
     investigator_max_sections: int = 12
     section_max_chars: int = 12000
     max_sections: int = 24
+    # How the authorization review decides what to look at:
+    # - "investigator": an LLM groups every changed Python hunk into review
+    #   sections (the default since 24 Oct; reviews the whole PR);
+    # - "endpoint": only hunks that contain a Flask/FastAPI route decorator
+    #   are reviewed, one section per file, no investigator. This reproduces
+    #   the gating of the checkpoint pipeline (docs/evaluation-log.md rounds
+    #   1-7) and is the ablation for what full coverage adds.
+    authz_planner: str = "investigator"
     # Experiments (round 4, off by default — see docs/evaluation-log.md):
     # push back once if an agent answers before using any tool
     require_tool_use: bool = False
@@ -66,6 +76,11 @@ class LGTMConfig:
     # Git
     git_timeout: int = 60
 
+    # CodeGraph (npm: @colbymchenry/codegraph) gives the agents
+    # investigate_base_code / investigate_pr_code. Off, or binary missing:
+    # agents use read_file, grep_repo and search_policy, and verdicts are
+    # never adjusted for the graph's absence.
+    graph_enabled: bool = True
     graph_binary: str = "codegraph"
     graph_init_timeout_s: int = 120
     graph_query_timeout_s: int = 20
@@ -89,6 +104,8 @@ class LGTMConfig:
         for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if self.authz_planner not in ("investigator", "endpoint"):
+            raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
         if self.graph_max_output_chars < 1024:
             raise ValueError("graph_max_output_chars must be at least 1024")
         self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)

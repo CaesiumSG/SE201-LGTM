@@ -445,13 +445,14 @@ class TestNewFormatRecords:
         assert "legacy" not in rec
 
 
-class TestNoGraphSwitch:
+class TestGraphSwitch:
     @pytest.mark.parametrize("module", [ev, inj], ids=["synthetic", "injection"])
-    def test_help_has_no_graph_option(self, module, monkeypatch, capsys):
+    def test_help_has_graph_and_planner_options(self, module, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["prog", "--help"])
         with pytest.raises(SystemExit):
             module.main()
-        assert "graph" not in capsys.readouterr().out.lower()
+        out = capsys.readouterr().out
+        assert "--no-graph" in out and "--authz-planner" in out
 
 
 class TestPostReviewFailureKeepsReviewMetadata:

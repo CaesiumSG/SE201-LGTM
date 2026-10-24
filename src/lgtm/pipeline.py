@@ -43,6 +43,7 @@ from lgtm.review.coverage import (
     build_coverage,
 )
 from lgtm.review.dedup import dedup_findings
+from lgtm.review.endpoints import extract_changed_endpoints, gate_to_endpoint_hunks
 from lgtm.review.sections import ScanPlan, Section, plan_sections
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
 from lgtm.sast.semgrep_runner import (
@@ -104,7 +105,9 @@ class ReviewPipeline:
         from lgtm.graph import snapshot as graph_snapshot
 
         shas = graph_snapshot.resolve_refs(self.repo, base, pr)
-        session = graph_session.GraphSession(self.repo, shas, self.config)
+        session = None
+        if self.config.graph_enabled:
+            session = graph_session.GraphSession(self.repo, shas, self.config)
         try:
             return self._review(
                 base,
@@ -116,7 +119,8 @@ class ReviewPipeline:
                 session=session,
             )
         finally:
-            session.close()
+            if session is not None:
+                session.close()
 
     def _review(
         self,
@@ -207,7 +211,7 @@ class ReviewPipeline:
                 if self.config.static_facts:
                     facts = sql_sink_facts(self._pr_source(pr_rev, sf.path), sf.start_line)
                 finding = triage_agent.triage(sf, fd, facts)
-                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
                 findings.append(finding)
 
             # ---- Stage 3: authorization review -----------------------
@@ -215,8 +219,11 @@ class ReviewPipeline:
                 llm_scan_diffs, semgrep_in_diff, toolbox, llm
             )
             findings.extend(section_stage.findings)
-            meta.graph_state = toolbox.graph_state()
-            meta.graph_index_seconds = round(session.init_seconds, 2)
+            meta.endpoints_reviewed = len(extract_changed_endpoints(diffs))
+            meta.graph_state = toolbox.graph_state() if session is not None else "disabled"
+            meta.graph_index_seconds = (
+                round(session.init_seconds, 2) if session is not None else 0.0
+            )
 
         if self.config.detect_prompt_injection:
             findings.extend(detect_prompt_injections(diffs))
@@ -273,14 +280,23 @@ class ReviewPipeline:
         investigator_error: str | None = None
         investigator_tool_calls = 0
         proposed = None
-        if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
-            investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
-            investigator_status = investigation.status
-            investigator_input = investigation.input_mode
-            investigator_error = investigation.error
-            investigator_tool_calls = investigation.tool_calls
-            proposed = investigation.proposed
-        plan = plan_sections(scan_diffs, proposed, self.config)
+        if self.config.authz_planner == "endpoint":
+            # Checkpoint-era gating: review only hunks that carry a route
+            # decorator, one section per file, no investigator.
+            gated, gated_out = gate_to_endpoint_hunks(scan_diffs)
+            plan = plan_sections(gated, None, self.config)
+            plan.planner = "endpoint"
+            plan.fallback_reason = "endpoint gating"
+            plan.hunks_gated = gated_out
+        else:
+            if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
+                investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
+                investigator_status = investigation.status
+                investigator_input = investigation.input_mode
+                investigator_error = investigation.error
+                investigator_tool_calls = investigation.tool_calls
+                proposed = investigation.proposed
+            plan = plan_sections(scan_diffs, proposed, self.config)
 
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
         results: dict[str, SectionResult] = {}
@@ -298,7 +314,7 @@ class ReviewPipeline:
             )
             reviewed = authz_agent.review_section(scoped, notes)
             for finding in reviewed:
-                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
             failed_id = failed_finding_id(section.section_id)
             results[section.section_id] = self._section_result(reviewed, failed_id)
             for finding in reviewed:

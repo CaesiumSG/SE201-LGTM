@@ -587,7 +587,7 @@ class TestAuthzScanRecords:
         "planner": "investigator", "investigator_status": "ok",
         "investigator_error": None, "investigator_input": "full",
         "investigator_tool_calls": 4, "files_total": 5, "files_in_scope": 3,
-        "hunks_total": 4, "hunks_assigned": 3, "hunks_leftover": 1,
+        "hunks_total": 4, "hunks_assigned": 3, "hunks_leftover": 1, "hunks_gated": 0,
         "hunks_reviewed": 2, "sections_scheduled": 2, "sections_completed": 1,
         "sections_failed": 1, "sections_coalesced": 1, "complete": False,
         "exclusions_total": 3}

@@ -51,21 +51,28 @@ a suggested fix.
 Requirements: Python 3.13+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
 
-Optional: Node.js and the `codegraph` CLI on `PATH` enable the
-`investigate_base_code` and `investigate_pr_code` tools. Without it, only
-`read_file`, `grep_repo` and `search_policy` are offered.
+Optional: [CodeGraph](https://www.npmjs.com/package/@colbymchenry/codegraph)
+on `PATH` enables the `investigate_base_code` / `investigate_pr_code` tools
+(tested with 1.6.2):
+
+```bash
+npm install -g @colbymchenry/codegraph@1.6.2
+codegraph --version
+```
+
+Without it (or with `--no-graph`) the agents use `read_file`, `grep_repo` and
+`search_policy` only; verdicts are never adjusted for the graph's absence.
 
 ```bash
 # 1. Install LGTM (editable) + dev and SAST extras
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" semgrep
 
-# 2. Open the GPU cluster tunnel (default endpoint http://127.0.0.1:11435)
-model/deploy/up.sh              # see model/README.md
+# 2. A model: local Ollama (the default endpoint, http://localhost:11434) ...
+ollama pull qwen3.8:27b         # the default model; any tool-calling model works with --model
+# ... or the SCIS GPU cluster tunnel (see model/README.md), then --gpu-model qwen3.8-27b
+model/deploy/up.sh
 ```
-
-A local Ollama works with `--ollama-url http://localhost:11434` after
-`ollama pull qwen3.8:27b`; any tool-calling model works with `--model`.
 
 ## Usage
 
@@ -108,9 +115,23 @@ Settings are read from a JSON file passed with `--config-file`.
 
 ### CodeGraph
 
-The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found.
-The `sast-only` and `llm-only` baselines never use it. There is no setting
-or CLI flag that turns the graph off.
+The `lgtm` and `lgtm-no-sast` modes use CodeGraph when `graph_enabled` is
+true (the default) and the binary is found. The `sast-only` and `llm-only`
+baselines never use it. `--no-graph` (or `"graph_enabled": false`) reviews
+without it; so does a missing binary, with a warning. In both cases the
+agents keep `read_file`, `grep_repo` and `search_policy`, and no verdict is
+changed because the graph was absent.
+
+### Authorization planner
+
+`authz_planner` (CLI `--authz-planner`) decides what the authorization agent
+looks at: `investigator` (default) has an LLM group every changed Python
+hunk into review sections, so the whole PR is reviewed; `endpoint` reviews
+only hunks that contain a Flask/FastAPI route decorator, one section per
+file, with no investigator. `endpoint` is the checkpoint pipeline's gating,
+kept so the 13 Oct numbers can be reproduced and the two compared on the
+same cases (the real-world evaluation and the field trial showed the gating
+skips most real authorization changes).
 
 | Key | Default | Limits |
 |---|---|---|
@@ -206,7 +227,12 @@ parameterized-but-SAST-triggering controls) and 14 authorization pairs
 (IDOR, missing/incorrect role checks, API-key scope violations —
 invisible to SAST by design).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/evaluate.py --mode lgtm
@@ -272,7 +298,12 @@ projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
 tuned on them. The authz cases also run with a short policy written from
 each project's docs (the `policy` variant).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/real_world/fetch.py --policies          # clone + build case branches
@@ -302,7 +333,12 @@ aimed at the reviewer. **Attack success rate (ASR)** = cases flagged
 `vulnerable` originally but not once injected, out of those flagged
 originally (lower is better).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/injection/run_injection_bench.py --mode sast-only

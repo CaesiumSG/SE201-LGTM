@@ -10,6 +10,14 @@ evaluation: 6 published vulnerabilities in open-source Python web projects,
 **It is a held-out test.** No prompt, rule or config was tuned on these
 cases, and every experiment flag is off.
 
+> **Case refs changed on 24 Oct.** PR #14 re-pinned 8 of the 12 cases
+> (vulnerable PRs no longer carry the fix's tests; the postgraas and litellm
+> fixes were extended) and made the runner review every PR without endpoint
+> gating. The runs and numbers on this page were produced on the earlier
+> refs with the checkpoint pipeline; they remain the record of that
+> evaluation and must not be compared with runs on the current cases until
+> the re-run is committed under `benchmark/runs/real_world/`.
+
 - **Data:** [`benchmark/real_world/cases.json`](../benchmark/real_world/cases.json)
   (how the cases are built: [`benchmark/real_world/README.md`](../benchmark/real_world/README.md)).
 - **Runs:** [`benchmark/runs/real_world/`](../benchmark/runs/real_world/),

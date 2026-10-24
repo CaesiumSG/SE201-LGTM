@@ -60,7 +60,12 @@ Authorization pairs 07–14 (vulnerable case; safe control):
 
 ## Running the evaluation
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](../docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 # From the repository root (install LGTM first: pip install -e .)
@@ -74,11 +79,16 @@ python benchmark/evaluate.py --split dev            # development set only
 python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 python benchmark/evaluate.py --gpu-model qwen3.8-27b
+python benchmark/evaluate.py --mode lgtm --no-graph                # without CodeGraph
+python benchmark/evaluate.py --mode lgtm --authz-planner endpoint  # checkpoint gating (rounds 1-7)
 ```
 
 The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found
-([Configuration](../README.md#configuration)). `evaluate.py` has no
-`--config-file` option, so graph settings use their defaults.
+and `--no-graph` is not given ([Configuration](../README.md#configuration)).
+`--authz-planner endpoint` reviews only hunks with a route decorator, as the
+checkpoint pipeline did; the default `investigator` reviews every changed
+Python hunk. `evaluate.py` has no `--config-file` option, so the other graph
+settings use their defaults.
 
 Use `--gpu-cluster` to connect through the existing tunnel at
 `http://127.0.0.1:11435` with `qwen3.8:27b`. Server and tunnel startup stay
@@ -206,6 +216,16 @@ ranges.
 | `safe` | `explicit_safe` | TN |
 | `safe` | `missing_review`, `scan_failure` | EXCLUDED |
 | `safe` | `possible_vulnerability`, `insufficient_evidence`, `no_candidate` | UNCREDITED |
+
+**Since 24 Oct the outcome does not come from this table.** `outcome` uses
+the rule every committed run has used since round 2: the PR is flagged iff
+any finding in the case's own category says `vulnerable`, wherever in the PR
+it points; `possible` on a safe case is a TN. So UNCREDITED and EXCLUDED no
+longer appear as outcomes. The labels are kept as diagnostics
+(`case_label`, `case_label_grounded`, `coverage_gap`), and
+`alarms_outside_target` lists own-category `vulnerable` findings that point
+outside the case's target files (counted as FP/TP above, listed so they can
+be read). The summary reports `alarms_outside_target_rate`.
 
 `correct` is `true` for TP and TN.
 

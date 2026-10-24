@@ -367,6 +367,55 @@ them as known failures rather than tuning on them.
 
 ---
 
+## Round 8: the section pipeline becomes the default (24 Oct)
+
+**Change (PRs #10, #12, #14, #15, integrated in one PR):** `qwen3.8:27b` is
+the default model; CodeGraph (`@colbymchenry/codegraph`) backs two
+investigate tools; the authorization review covers every changed Python
+hunk through an LLM investigator and section reviewer instead of the
+route-decorator gate; Shoply grows to 52 cases (8 new authz pairs built from
+diff shapes the gate missed); the real-world cases are re-pinned; prompts
+live in `prompts.toml` behind a byte-for-byte lock. The integration added:
+
+- `graph_enabled` (default on) and `authz_planner` (`investigator` default,
+  `endpoint` = the round 1–7 gating) so both pipelines can be run on the
+  same cases;
+- no verdict is changed when the graph is off or the binary missing (the
+  stack downgraded ungrounded `vulnerable` findings to `possible` whenever
+  `codegraph` was not installed);
+- the scorer keeps the round-2 rule (any own-category `vulnerable` finding
+  flags the PR); the coverage labels and `alarms_outside_target` are
+  diagnostics next to it;
+- the tool loop stops once the 5-call budget is spent (the stack's own
+  measurement: a third of all model calls were refused tool calls).
+
+**Evidence so far (local Ollama, this Mac, not the cluster):**
+
+| Check | Result |
+|---|---|
+| sast-only, all 52 Shoply cases | 21 detected / 31 no_candidate (12 TP + 9 FP, as on 36 cases) |
+| lgtm, `authz_01_vulnerable` + `sqli_01_safe`, 27B, no CodeGraph | TP, TN; 350 s/case |
+| lgtm, `authz_01_vulnerable`, 27B, CodeGraph 1.6.2 | TP, grounded, 4 tool calls, graph `ok` |
+| Field trial (#18, checkpoint pipeline) | 10 of 12 ordinary PRs reached no agent: the reason this round exists |
+
+**Not yet measured:** the full re-run of every mode on Shoply (52), the
+re-pinned real-world cases and the injection suite with the new pipeline,
+from one frozen tree on the GPU cluster. Every results table in the README
+carries a "pending re-measurement" note until those runs are committed.
+The numbers PR #14 reports (Shoply 25 TP / 25 TN; real-world 5 TP / 4 TN /
+2 UNCREDITED / 1 FN; 105 s and 196k prompt tokens per case) come from an
+uncommitted run with the stack's own scoring rule, so they are not quoted
+here.
+
+### Learning
+
+> **Ship the pipeline you can reproduce.** Four stacked PRs each carried a
+> number from a different tree, scoring rule and case set. The merge was
+> only possible once the old behaviour was reachable again behind flags and
+> every number was either traceable to a committed run or marked pending.
+
+---
+
 ## Cross-cutting lessons
 
 1. **Audit the evaluator before trusting the system.** Our first headline

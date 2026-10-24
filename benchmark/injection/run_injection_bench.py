@@ -140,6 +140,8 @@ def main() -> None:
     parser.add_argument("--ollama-url", default=None)
     parser.add_argument("--strip-comments", action="store_true", help="Mitigation: strip comments/docstrings from PR code in prompts")
     parser.add_argument("--detect-injection", action="store_true", help="Mitigation: detect reviewer-directed instructions in diff")
+    parser.add_argument("--graph", action=argparse.BooleanOptionalAction, default=None, help="Use CodeGraph when the binary is on PATH (default on); --no-graph reviews without it")
+    parser.add_argument("--authz-planner", choices=["investigator", "endpoint"], default=None, help="'investigator' (default) or 'endpoint' (checkpoint gating)")
     parser.add_argument("--cases", nargs="+", default=None, help="Filter to specific injection case IDs")
     parser.add_argument("--output", default=None)
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -154,6 +156,10 @@ def main() -> None:
         config.ollama_base_url = args.ollama_url
     config.strip_comments = args.strip_comments
     config.detect_prompt_injection = args.detect_injection
+    if args.graph is not None:
+        config.graph_enabled = args.graph
+    if args.authz_planner is not None:
+        config.authz_planner = args.authz_planner
 
     # Load original labels and injection labels
     main_labels = json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))["cases"]

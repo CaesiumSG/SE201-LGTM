@@ -53,8 +53,17 @@ each finding.
 
 ## B. Shoply results
 
-Source: `benchmark/runs/gpu-qwen3.8-27b/shoply/<mode>/summary.json`; sast-only
-from `benchmark/runs/gpu-shared/shoply/sast-only/summary.json`.
+> **Withdrawn (24 Oct).** These Shoply runs were produced with the benchmark's
+> README (which describes every case) copied into the case repository and
+> indexed, so the authz agent could retrieve the case descriptions. The runs
+> were removed from `benchmark/runs/` when the leak was fixed (PR #14); the
+> table stays only to document what was reported at the checkpoint. The
+> real-world runs in section C did not have this problem but were made on
+> case refs that have since been re-pinned (`benchmark/real_world/cases.json`,
+> 8 of 12 cases), so they too await the re-run.
+
+Source (removed): `benchmark/runs/gpu-qwen3.8-27b/shoply/<mode>/summary.json`;
+sast-only from `benchmark/runs/gpu-shared/shoply/sast-only/summary.json`.
 
 | Mode | TP/FP/FN/TN | Precision | Recall | F1 | FPR on safe | Scored | Errors (rate) |
 |---|---|---|---|---|---|---|---|

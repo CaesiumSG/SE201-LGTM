@@ -510,7 +510,8 @@ class TestMetadata:
         assert llm.bound_tool_names and all(
             names == ["read_file", "grep_repo", "search_policy"] for names in llm.bound_tool_names
         )
-        assert _stamps(result) == {"a.py": False, "b.py": False, "c.py": False}
+        # No graph ran, so no finding carries a graph stamp (and none is downgraded).
+        assert _stamps(result) == {"a.py": None, "b.py": None, "c.py": None}
 
     def test_missing_binary_is_reported_even_when_no_section_yields_a_finding(
         self, repo, install_graph, monkeypatch
@@ -623,7 +624,7 @@ class TestSessionLifecycle:
         loaded = {}
         for mode in ("lgtm", "sast-only", "llm-only"):
             done = subprocess.run(
-                [sys.executable, "-I", str(script), mode, str(repo)],
+                [sys.executable, "-I", str(script), mode, str(repo), str(SRC_DIR)],
                 capture_output=True, text=True, timeout=120,
             )
             assert done.returncode == 0, done.stderr
@@ -641,11 +642,14 @@ class TestSessionLifecycle:
             assert (loaded[mode]["base"], loaded[mode]["pr"]) == ("main", "pr")
 
 
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+
 _PROBE = r'''
 import json, sys
 from types import SimpleNamespace
 
-mode, repo = sys.argv[1], sys.argv[2]
+mode, repo, src = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, src)  # -I ignores PYTHONPATH; import this checkout, not an installed lgtm
 import lgtm.pipeline as pipeline
 from lgtm.config import LGTMConfig
 
@@ -890,19 +894,21 @@ class TestCapIntegration:
         assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "degraded:pr:timeout"
 
-    def test_vulnerable_triage_finding_is_capped_when_the_graph_binary_is_missing(
+    def test_vulnerable_triage_finding_is_not_capped_when_the_graph_binary_is_missing(
         self, repo, install_graph, semgrep
     ):
+        # A machine without CodeGraph must score a PR exactly as one with
+        # it would have before the graph ran: the cap applies only when the
+        # graph was running and failed for the PR snapshot.
         install_graph(FakeRunner(available=False))
         llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
 
         result = _review(repo, llm)
 
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
-        assert triage.pr_graph_ok is False
-        assert triage.verdict == "possible"
-        assert triage.explanation.endswith("\n\n" + CAP_MARKER)
-        assert triage.explanation.count(CAP_MARKER) == 1
+        assert triage.pr_graph_ok is None
+        assert triage.verdict == "vulnerable"
+        assert CAP_MARKER not in triage.explanation
         assert result.meta.graph_state == "unavailable:missing"
 
     def test_vulnerable_authz_findings_downgrade_too(self, repo_with_endpoints, install_graph, semgrep):
@@ -1532,17 +1538,20 @@ class TestSectionPipeline:
         assert llm.user_prompts["investigator"] == [] and llm.user_prompts["section"] == []
         assert result.findings == []
 
-    def test_coverage_is_in_the_json_metadata_and_endpoint_counts_are_gone(
+    def test_coverage_is_in_the_json_metadata_and_endpoint_count_is_informational(
         self, repo, install_graph, no_semgrep, tmp_path
     ):
+        from lgtm.review.endpoints import extract_changed_endpoints
+
         install_graph()
 
         result = _review(repo, RoutedLLM(), output_dir=tmp_path / "out")
 
         review = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
         assert review["coverage"]["sections_scheduled"] == 4
-        assert "endpoints_reviewed" not in review
-        assert not hasattr(result.meta, "endpoints_reviewed")
+        # Kept as a diagnostic: how many route decorators the checkpoint
+        # gating would have reviewed. It does not gate anything.
+        assert result.meta.endpoints_reviewed == len(extract_changed_endpoints(result.diffs))
         assert "hunks_total" not in result.md_path.read_text(encoding="utf-8")
 
     def test_llm_only_mode_is_unchanged_and_runs_no_sections(

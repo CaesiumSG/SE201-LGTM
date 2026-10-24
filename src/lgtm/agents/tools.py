@@ -385,6 +385,19 @@ class AgentToolbox:
         self._sync_health()
         return label not in self._health
 
+    def graph_stamp(self, label: str) -> bool | None:
+        """Value for ``AgentFinding.pr_graph_ok``.
+
+        ``None`` when the graph is disabled or the binary is missing: the
+        agents never had graph tools, so a finding must not be judged by
+        them. ``True``/``False`` only when the graph ran and did or did not
+        serve this snapshot (a failure mid-run is what the evidence
+        validator's downgrade is for).
+        """
+        if self.session is None or not self.session.available:
+            return None
+        return self.snapshot_ok(label)
+
     def _warn_latched(self, label: str) -> None:
         if label in self._latch_warned:
             return

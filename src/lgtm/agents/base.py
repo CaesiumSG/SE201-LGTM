@@ -514,9 +514,21 @@ def run_tool_loop(
                 messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
         if cap > 0 and invalid_inputs >= cap:
             break
+        if toolbox is not None and toolbox.calls_used >= toolbox.budget:
+            # The budget is spent: every further tool call would be refused
+            # and still cost a full model call (a third of all calls in the
+            # 24 Oct Shoply run). Ask for the verdict now.
+            budget_spent = True
+            break
+    else:
+        budget_spent = False
+    if cap > 0 and invalid_inputs >= cap:
+        budget_spent = False
 
     if cap > 0 and invalid_inputs >= cap:
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
+    elif budget_spent:
+        logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))

@@ -41,6 +41,9 @@ SCENARIOS = {
 }
 
 
+_SRC_INSERT = f"sys.path.insert(0, {str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'src')!r})\n"
+
+
 class _Msg(SimpleNamespace):
     pass
 
@@ -174,7 +177,7 @@ class TestSharedGuidanceData:
 
     def test_prompt_parts_import_leaves_the_graph_package_unloaded(self):
         code = (
-            "import sys, lgtm.agents.prompt_parts\n"
+            "import sys\n" + _SRC_INSERT + "import lgtm.agents.prompt_parts\n"
             "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
         )
         done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)

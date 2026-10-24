@@ -5,6 +5,7 @@ from __future__ import annotations
 import _thread
 import logging
 import os
+import sys
 import shutil
 import stat
 import subprocess
@@ -216,6 +217,10 @@ class TestRunnerEnvironment:
 
         env = env_of(fake.calls()[0])
         shim_defined = {"PROMPT"} if os.name == "nt" else set()  # cmd.exe injects PROMPT into the .cmd shim's environment
+        if sys.platform == "darwin":
+            # /bin/sh exports PWD and SHLVL into the shim's environment, and
+            # macOS injects __CF_USER_TEXT_ENCODING into every process.
+            shim_defined |= {"PWD", "SHLVL", "__CF_USER_TEXT_ENCODING"}
         extra = {k for k in env if k not in ALLOWED_ENV and not k.startswith("LC_") and k not in shim_defined}
         assert extra == set()
         assert env["PATH"] == os.environ["PATH"]
@@ -975,7 +980,8 @@ class TestScratchRemoval:
             assert stat.S_IMODE(outside.stat().st_mode) == 0o555
             assert keep.read_text(encoding="utf-8") == "precious"
         finally:
-            locked.chmod(0o755)
+            if locked.exists():  # remove_tree may have removed it (it should)
+                locked.chmod(0o755)
             outside.chmod(0o755)
 
 

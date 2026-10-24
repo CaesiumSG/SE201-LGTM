@@ -161,7 +161,7 @@ def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("options,model,url", [
-    ([], "qwen3.8:27b", "http://127.0.0.1:11435"),
+    ([], "qwen3.8:27b", "http://localhost:11434"),
     (["--gpu-cluster"], "qwen3.8:27b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--model", "custom:7b"], "custom:7b", "http://127.0.0.1:11435"),
     (["--gpu-cluster", "--ollama-url", "http://127.0.0.1:12000"],
@@ -1232,9 +1232,13 @@ class TestCaseLabels:
         ("possible_vulnerability", "possible"),
         ("insufficient_evidence", "insufficient_evidence"),
         ("explicit_safe", "safe"),
-        ("missing_review", "missing_review"),
-        ("no_candidate", "no_candidate"),
-        ("scan_failure", "scan_failure"),
+        # predicted comes from the findings (round-2 rule); the label is a
+        # diagnostic next to it, so a failed or missing review with a safe
+        # finding predicts "safe" and a scan failure with a vulnerable one
+        # still predicts "vulnerable".
+        ("missing_review", "safe"),
+        ("no_candidate", "safe"),
+        ("scan_failure", "vulnerable"),
     ])
     def test_predicted_follows_the_label(self, label, predicted, mode):
         row = evaluate.score_case(_case_row(mode=mode, **_scenario(label)))
@@ -1381,7 +1385,7 @@ class TestCaseLabels:
             locations=locations))
         assert sorted(row["target_sections"]) == ["far", "s-target"]
         assert row["case_label"] == "missing_review"
-        assert row["outcome"] == "EXCLUDED"
+        assert row["outcome"] == "TN"  # no vulnerable finding on a safe PR
 
     @pytest.mark.parametrize("locations", [None, []])
     def test_safe_rows_without_locations_are_explicit_safe_when_row_file_reviewed(
@@ -1507,9 +1511,11 @@ class TestFindingsOnlyLabels:
         assert row["case_label"] == label
         assert "coverage" not in row
 
-    def test_no_relevant_finding_on_safe_case_is_never_a_true_negative(self):
+    def test_no_relevant_finding_on_safe_case_is_a_true_negative(self):
+        # The round-2 rule: a safe PR the tool did not flag is a TN, in every mode.
         row = evaluate.score_case(_case_row(expected="safe", findings=[], mode="sast-only"))
-        assert row["outcome"] == "UNCREDITED"
+        assert row["outcome"] == "TN"
+        assert row["case_label"] == "no_candidate"
 
     def test_no_relevant_finding_on_vulnerable_case_is_a_miss(self):
         row = evaluate.score_case(_case_row(expected="vulnerable", findings=[], mode="llm-only"))
@@ -1519,12 +1525,14 @@ class TestFindingsOnlyLabels:
 class TestOutcomeTable:
     @pytest.mark.parametrize("label,vulnerable_outcome,safe_outcome", [
         ("detected_vulnerability", "TP", "FP"),
-        ("possible_vulnerability", "FN", "UNCREDITED"),
-        ("insufficient_evidence", "FN", "UNCREDITED"),
+        ("possible_vulnerability", "FN", "TN"),
+        ("insufficient_evidence", "FN", "TN"),
         ("explicit_safe", "FN", "TN"),
-        ("no_candidate", "FN", "UNCREDITED"),
-        ("missing_review", "FN", "EXCLUDED"),
-        ("scan_failure", "FN", "EXCLUDED"),
+        ("no_candidate", "FN", "TN"),
+        ("missing_review", "FN", "TN"),
+        # scan_failure's scenario carries a vulnerable finding: the finding,
+        # not the label, decides the outcome.
+        ("scan_failure", "TP", "FP"),
     ])
     @pytest.mark.parametrize("mode", COVERAGE_MODES)
     def test_outcome_by_label_and_expectation(
@@ -1539,7 +1547,7 @@ class TestOutcomeTable:
         assert safe["outcome_grounded"] == safe_outcome
 
     @pytest.mark.parametrize("expected,plain,grounded", [
-        ("vulnerable", "TP", "FN"), ("safe", "FP", "UNCREDITED"),
+        ("vulnerable", "TP", "FN"), ("safe", "FP", "TN"),
     ])
     def test_ungrounded_vulnerable_is_downgraded_to_possible_in_grounded_label(
             self, expected, plain, grounded):
@@ -1787,36 +1795,39 @@ class TestSummaryContract:
             error="harness exploded")))
         return rows
 
-    def test_metrics_denominators_exclude_excluded_safe_rows(self):
+    def test_metrics_score_every_non_error_row(self):
+        # s7 (scan failure, vulnerable finding) is an FP; s3-s6 are TNs:
+        # nothing is excluded or uncredited under the round-2 rule.
         overall = evaluate.summarize(self._mixed_rows())["overall"]
         assert (overall["cases"], overall["scored"], overall["errors"]) == (13, 12, 1)
-        assert (overall["tp"], overall["fp"], overall["fn"], overall["tn"]) == (1, 1, 4, 1)
+        assert (overall["tp"], overall["fp"], overall["fn"], overall["tn"]) == (1, 2, 4, 5)
         assert overall["vulnerable_scored"] == 5
-        assert overall["safe_scored"] == 5
+        assert overall["safe_scored"] == 7
         assert overall["abstentions"] == 4
         assert overall["possible_on_safe"] == 1
-        assert overall["excluded_on_safe"] == 2
-        assert overall["false_positive_rate_on_safe"] == 0.2
-        assert overall["accuracy"] == 0.2
-        assert overall["precision"] == 0.5
+        assert overall["excluded_on_safe"] == 0
+        assert overall["false_positive_rate_on_safe"] == 0.286
+        assert overall["accuracy"] == 0.5
+        assert overall["precision"] == 0.333
         assert overall["recall"] == 0.2
 
-    def test_metrics_are_none_when_every_safe_row_is_excluded(self):
+    def test_failed_reviews_are_scored_not_excluded(self):
         rows = [
             evaluate.score_case(_case_row("a", "safe", **_scenario("scan_failure"))),
             evaluate.score_case(_case_row("b", "safe", **_scenario("missing_review"))),
         ]
         overall = evaluate.summarize(rows)["overall"]
-        assert overall["safe_scored"] == 0
-        assert overall["excluded_on_safe"] == 2
-        assert overall["accuracy"] is None
-        assert overall["false_positive_rate_on_safe"] is None
+        assert [r["outcome"] for r in rows] == ["FP", "TN"]
+        assert overall["safe_scored"] == 2
+        assert overall["excluded_on_safe"] == 0
+        assert overall["accuracy"] == 0.5
+        assert overall["false_positive_rate_on_safe"] == 0.5
 
     def test_per_category_and_per_split_use_the_new_metrics(self):
         summary = evaluate.summarize(self._mixed_rows())
-        assert summary["per_split"]["dev"]["excluded_on_safe"] == 2
+        assert summary["per_split"]["dev"]["excluded_on_safe"] == 0
         assert summary["per_split"]["dev"]["abstentions"] == 4
-        assert summary["per_category"]["authz"]["safe_scored"] == 5
+        assert summary["per_category"]["authz"]["safe_scored"] == 7
 
     def test_grounded_only_uses_the_grounded_outcome(self):
         cov = _coverage([_target_section()])
@@ -1848,8 +1859,8 @@ class TestSummaryContract:
         grounded = summary["grounded_only"]["overall"]
         assert (plain["abstentions"], plain["possible_on_safe"]) == (0, 0)
         assert (grounded["abstentions"], grounded["possible_on_safe"]) == (1, 1)
-        assert plain["excluded_on_safe"] == grounded["excluded_on_safe"] == 1
-        assert (plain["safe_scored"], grounded["safe_scored"]) == (1, 1)
+        assert plain["excluded_on_safe"] == grounded["excluded_on_safe"] == 0
+        assert (plain["safe_scored"], grounded["safe_scored"]) == (2, 2)
 
     def test_case_labels_count_each_label_and_legacy_rows(self):
         rows = [
