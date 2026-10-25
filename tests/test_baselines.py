@@ -2109,6 +2109,7 @@ class TestScopeInCaseResults:
             assert (overall["cases"], overall["tp"], overall["fp"]) == (2, 2, 0)
         assert summary["per_category"]["sqli"]["cases"] == 1
         assert summary["per_category"]["authz"]["cases"] == 1
+        assert summary["out_of_scope_cases"] == ["out_sql", "out_sql_safe"]
 
     def test_result_without_scope_key_counts_as_in_scope(self):
         old = _legacy_row()
