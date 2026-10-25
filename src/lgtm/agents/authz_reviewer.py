@@ -75,68 +75,82 @@ def _context_block(pointers: list[ContextPointer]) -> str:
     return registry.render("authz_reviewer.context_block", lines="\n".join(lines))
 
 
-def _hunk_anchor(hunk: HunkRef) -> tuple[str, int] | None:
-    """Snapshot label and line of a hunk's first change; removed-only hunks anchor in the base."""
+def _hunk_lines(hunk: HunkRef) -> list[tuple[str, list[int]]]:
+    """Changed line numbers per snapshot: added lines in the PR, removed lines in the base."""
     added = [c.new_lineno for c in hunk.changes if c.kind == "add" and c.new_lineno]
-    if added:
-        return "pr", min(added)
     removed = [c.old_lineno for c in hunk.changes if c.kind == "del" and c.old_lineno]
-    return ("base", min(removed)) if removed else None
+    return [("pr", added), ("base", removed)]
 
 
-def _enclosing_function(source: str, line: int) -> tuple[int, int] | None:
+def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, str]]:
+    """Innermost function (start, end, name) around each line, in source order."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
-        return None
-    best: tuple[int, int] | None = None
+        return []
+    spans = []
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
-        end = node.end_lineno or node.lineno
-        if start <= line <= end and (best is None or start >= best[0]):
-            best = (start, end)
-    return best
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+            spans.append((start, node.end_lineno or node.lineno, node.name))
+    found: set[tuple[int, int, str]] = set()
+    for line in lines:
+        inside = [s for s in spans if s[0] <= line <= s[1]]
+        if inside:
+            found.add(max(inside, key=lambda s: s[0]))
+    return sorted(found)
+
+
+def _strip_comments(code: str, path: str) -> str:
+    from lgtm.diff.git_diff import FileDiff, Hunk, LineChange
+    from lgtm.diff.sanitizer import sanitize_file_diff
+
+    hunk = Hunk(1, 0, 1, 0, changes=[LineChange("add", text) for text in code.split("\n")])
+    return "\n".join(c.content for c in sanitize_file_diff(FileDiff(path, hunks=[hunk])).hunks[0].changes)
 
 
 def _enclosing_block(toolbox: AgentToolbox, section: Section) -> str:
-    items: list[str] = []
+    found: list[tuple[str, str, str, int, int, str, str]] = []
     seen: set[tuple[str, str, int]] = set()
     cap = toolbox.config.read_file_max_lines
     for hunk in section.hunks:
-        anchor = _hunk_anchor(hunk)
         rel = relative_path(hunk.file)
-        if anchor is None or rel is None or not hunk.file.endswith(".py"):
+        if rel is None or not hunk.file.endswith(".py"):
             continue
-        label, line = anchor
-        if toolbox.shas is None and label == "pr":
-            continue
-        try:
-            sha = toolbox._snapshot_sha(label)
-        except KeyError:
-            continue
-        if sha is None:
-            continue
-        done = read_committed_blob(toolbox.repo, sha, rel, toolbox.config.git_timeout)
-        if done is None or done.returncode != 0:
-            continue
-        span = _enclosing_function(done.stdout, line)
-        if span is None or (label, rel, span[0]) in seen:
-            continue
-        seen.add((label, rel, span[0]))
-        start, end = span
-        code = "\n".join(done.stdout.splitlines()[start - 1 : min(end, start + cap - 1)])
-        items.append(
-            registry.render(
-                "authz_reviewer.enclosing_item",
-                file=prompt_parts.escape_control(hunk.file),
-                start=start,
-                end=end,
-                snapshot=label,
-                code=prompt_parts.code_fence(code, "python"),
-            )
+        for label, lines in _hunk_lines(hunk):
+            if not lines or (toolbox.shas is None and label == "pr"):
+                continue
+            try:
+                sha = toolbox._snapshot_sha(label)
+            except KeyError:
+                continue
+            if sha is None:
+                continue
+            done = read_committed_blob(toolbox.repo, sha, rel, toolbox.config.git_timeout)
+            if done is None or done.returncode != 0:
+                continue
+            source_lines = done.stdout.splitlines()
+            for start, end, name in _enclosing_functions(done.stdout, lines):
+                if (label, rel, start) in seen:
+                    continue
+                seen.add((label, rel, start))
+                code = "\n".join(source_lines[start - 1 : min(end, start + cap - 1)])
+                found.append((label, rel, hunk.file, start, end, name, code))
+    pr_names = {(rel, name) for label, rel, _, _, _, name, _ in found if label == "pr"}
+    items = [
+        registry.render(
+            "authz_reviewer.enclosing_item",
+            file=prompt_parts.escape_control(file),
+            start=start,
+            end=end,
+            snapshot=label,
+            code=prompt_parts.code_fence(
+                _strip_comments(code, file) if toolbox.config.strip_comments else code, "python"
+            ),
         )
+        for label, rel, file, start, end, name, code in found
+        if label == "pr" or (rel, name) not in pr_names
+    ]
     if not items:
         return ""
     return registry.render("authz_reviewer.enclosing_block", items="\n".join(items))

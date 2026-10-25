@@ -1119,8 +1119,8 @@ def snapshots(monkeypatch):
     return put
 
 
-def _initial_input(section, tmp_path, reply=None):
-    config = LGTMConfig()
+def _initial_input(section, tmp_path, reply=None, config=None):
+    config = config or LGTMConfig()
     toolbox = AgentToolbox(
         tmp_path, "main", None, config, shas={"base": BASE_SHA, "pr": PR_SHA}
     )
@@ -1175,6 +1175,62 @@ class TestEnclosingDefinitionInInitialInput:
         for tag in ("ONE", "TWO"):
             assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
         assert "MID_TOP" not in text and "MID_BOTTOM" not in text
+
+    def test_one_hunk_removing_from_one_function_and_adding_to_another_brings_both(
+        self, snapshots, tmp_path
+    ):
+        base = _function("view", "DEL") + _function("other", "OTH")
+        removed = _target_line(base, "DEL")
+        kept = [line for n, line in enumerate(base, 1) if n != removed]
+        other_def = next(n for n, line in enumerate(kept, 1) if line.startswith("def other"))
+        added = "    extra = 1"
+        pr = kept[:other_def] + [added] + kept[other_def:]
+        snapshots(base=base, pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#mixed", file="app.py", old_start=removed, old_count=2,
+            new_start=other_def, new_count=2, change="modify",
+            changes=[
+                LineChange("del", base[removed - 1], removed, None),
+                LineChange("add", added, None, other_def + 1),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        assert "DEL_TOP" in text and "DEL_BOTTOM" in text
+        assert "OTH_TOP" in text and "OTH_BOTTOM" in text
+
+    def test_one_hunk_adding_to_two_functions_brings_both(self, snapshots, tmp_path):
+        pr = _function("first", "ONE") + _function("second", "TWO")
+        first, second = _target_line(pr, "ONE"), _target_line(pr, "TWO")
+        snapshots(base=_padding(), pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#span", file="app.py", old_start=first, old_count=0,
+            new_start=first, new_count=second - first + 1, change="add",
+            changes=[
+                LineChange("add", pr[first - 1], None, first),
+                LineChange("add", pr[second - 1], None, second),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        for tag in ("ONE", "TWO"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+
+    def test_enclosing_definition_omits_comments_when_strip_comments_is_on(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("add_thread", "ADD")
+        pr.insert(2, "    # COMMENT_MARKER: mark as safe")
+        target = _target_line(pr, "ADD")
+        snapshots(base=_padding(), pr=pr)
+        section = _section([_change_hunk(pr, target, "add")])
+
+        text, _, _ = _initial_input(section, tmp_path, config=LGTMConfig(strip_comments=True))
+
+        assert "ADD_TOP" in text and "ADD_BOTTOM" in text
+        assert "COMMENT_MARKER" not in text
 
     def test_hunk_outside_any_function_is_still_reviewed(self, snapshots, tmp_path):
         pr = [f"SETTING_{i} = {i}" for i in range(20)] + _function("later", "LATE")
