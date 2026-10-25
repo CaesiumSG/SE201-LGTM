@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_GREP_RESULTS = 30
-MAX_READ_LINES = 200
 MAX_OUTPUT_CHARS = 8000
+READ_CHARS_PER_LINE = 160
 
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DRIVE = re.compile(r"[A-Za-z]:")
@@ -250,10 +250,11 @@ class AgentToolbox:
         end = min(total, end_line) if end_line and end_line > 0 else total
         if end < start:
             end = total
-        if end - start + 1 > MAX_READ_LINES:
-            end = start + MAX_READ_LINES - 1
+        cap = self.config.read_file_max_lines
+        if end - start + 1 > cap:
+            end = start + cap - 1
         body = "\n".join(lines[start - 1 : end])
-        return render_read(label, sha, rel, start, end, body, MAX_OUTPUT_CHARS)
+        return render_read(label, sha, rel, start, end, body, max(MAX_OUTPUT_CHARS, cap * READ_CHARS_PER_LINE))
 
     def grep_repo_impl(
         self, pattern: str, file_glob: str | None = None, snapshot: str = "base"

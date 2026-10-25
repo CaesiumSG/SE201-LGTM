@@ -1044,3 +1044,169 @@ class TestGuardrailExemptions:
         llm = _SequenceLLM(_authz_reply(_finding(evidence=[policy_only]), _finding(evidence=[])))
         out = _authz_agent(git_repo, llm).review_section(_section())
         assert len(out) == 2 and llm.calls == 1
+
+
+BASE_SHA, PR_SHA = "a" * 40, "b" * 40
+
+
+def _function(name, tag):
+    """A function whose changed line sits more than three lines from both ends."""
+    lines = [f"def {name}():", f'    top = "{tag}_TOP"']
+    lines += [f"    before_{i} = {i}" for i in range(10)]
+    lines += [f'    target = "{tag}_TARGET"']
+    lines += [f"    after_{i} = {i}" for i in range(10)]
+    lines += [f'    bottom = "{tag}_BOTTOM"', "    return None", ""]
+    return lines
+
+
+def _padding():
+    return [f"def pad_{i}(): return {i}" for i in range(14)]
+
+
+def _target_line(lines, tag):
+    return next(n for n, text in enumerate(lines, 1) if f"{tag}_TARGET" in text)
+
+
+def _change_hunk(lines, target, kind, file="app.py"):
+    """Hunk around line ``target`` of ``lines`` with three context lines on each side.
+
+    ``lines`` is the base file for a removal and the PR file for an addition.
+    """
+    before = [(n, lines[n - 1]) for n in range(target - 3, target)]
+    after = [(n, lines[n - 1]) for n in range(target + 1, target + 4)]
+    changes = [LineChange("context", text, n, n) for n, text in before]
+    if kind == "del":
+        changes.append(LineChange("del", lines[target - 1], target, None))
+        changes += [LineChange("context", text, n, n - 1) for n, text in after]
+        old_count, new_count = 7, 6
+    else:
+        changes.append(LineChange("add", lines[target - 1], None, target))
+        changes += [LineChange("context", text, n, n) for n, text in after]
+        old_count, new_count = 6, 7
+    return HunkRef(
+        hunk_id=f"{file}#{target}", file=file, old_start=target - 3, old_count=old_count,
+        new_start=target - 3, new_count=new_count,
+        change="delete" if kind == "del" else "add", changes=changes,
+    )
+
+
+@pytest.fixture
+def snapshots(monkeypatch):
+    """Committed file contents per snapshot SHA, served through the toolbox's git runner."""
+    files: dict[tuple[str, str], str] = {}
+
+    def fake_run_git(repo, args, timeout):
+        if args[:2] == ["cat-file", "blob"]:
+            sha, _, rel = args[2].partition(":")
+            if (sha, rel) in files:
+                return subprocess.CompletedProcess(args, 0, stdout=files[(sha, rel)], stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr("lgtm.agents.tools.run_git", fake_run_git)
+
+    def put(base=None, pr=None, path="app.py"):
+        for sha, lines in ((BASE_SHA, base), (PR_SHA, pr)):
+            if lines is not None:
+                files[(sha, path)] = "\n".join(lines) + "\n"
+
+    return put
+
+
+def _initial_input(section, tmp_path, reply=None):
+    config = LGTMConfig()
+    toolbox = AgentToolbox(
+        tmp_path, "main", None, config, shas={"base": BASE_SHA, "pr": PR_SHA}
+    )
+    llm = _RecordingLLM([reply or _reply()])
+    agent = AuthzReviewerAgent(toolbox, config, llm=llm)
+    findings = agent.review_section(section)
+    text = "\n".join(str(getattr(m, "content", "")) for m in llm.seen[0])
+    return text, findings, agent
+
+
+class TestEnclosingDefinitionInInitialInput:
+    def test_removed_only_hunk_brings_the_whole_enclosing_function_from_the_base_snapshot(
+        self, snapshots, tmp_path
+    ):
+        base = _function("delete_thread", "DEL") + _function("neighbour", "NEAR")
+        target = _target_line(base, "DEL")
+        pr = _padding() + [line for n, line in enumerate(base, 1) if n != target]
+        snapshots(base=base, pr=pr)
+        section = _section([_change_hunk(base, target, "del")])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        assert "DEL_TOP" in text and "DEL_BOTTOM" in text
+        assert "NEAR_TOP" not in text and "NEAR_BOTTOM" not in text
+
+    def test_added_hunk_brings_the_whole_enclosing_function_from_the_pr_snapshot(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("add_thread", "ADD") + _function("neighbour", "NEAR")
+        target = _target_line(pr, "ADD")
+        base = _padding() + [line for n, line in enumerate(pr, 1) if n != target]
+        snapshots(base=base, pr=pr)
+        section = _section([_change_hunk(pr, target, "add")])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        assert "ADD_TOP" in text and "ADD_BOTTOM" in text
+        assert "NEAR_TOP" not in text and "NEAR_BOTTOM" not in text
+
+    def test_each_hunk_of_a_section_brings_its_own_enclosing_function(self, snapshots, tmp_path):
+        pr = (
+            _function("first", "ONE") + _function("untouched", "MID") + _function("last", "TWO")
+        )
+        snapshots(base=_padding(), pr=pr)
+        section = _section([
+            _change_hunk(pr, _target_line(pr, "ONE"), "add"),
+            _change_hunk(pr, _target_line(pr, "TWO"), "add"),
+        ])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        for tag in ("ONE", "TWO"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+        assert "MID_TOP" not in text and "MID_BOTTOM" not in text
+
+    def test_hunk_outside_any_function_is_still_reviewed(self, snapshots, tmp_path):
+        pr = [f"SETTING_{i} = {i}" for i in range(20)] + _function("later", "LATE")
+        snapshots(base=_padding(), pr=pr)
+        hunk = _change_hunk(pr, 10, "add")
+
+        text, findings, agent = _initial_input(
+            _section([hunk]), tmp_path, reply=_reply(_finding(line=10))
+        )
+
+        assert "SETTING_9" in text
+        assert "LATE_TOP" not in text
+        assert [f.line for f in findings] == [10]
+        assert agent.errors == []
+
+    def test_unreadable_snapshot_file_does_not_stop_the_review(self, snapshots, tmp_path):
+        pr = _function("add_thread", "ADD")
+        hunk = _change_hunk(pr, _target_line(pr, "ADD"), "add")
+
+        text, findings, agent = _initial_input(
+            _section([hunk]), tmp_path, reply=_reply(_finding())
+        )
+
+        assert "ADD_TARGET" in text
+        assert len(findings) == 1
+        assert agent.errors == []
+
+
+class TestDeletionOnlyNonSecurityChange:
+    def test_removing_non_security_code_yields_no_finding_and_no_review_error(
+        self, snapshots, tmp_path
+    ):
+        base = _function("format_banner", "BANNER")
+        target = _target_line(base, "BANNER")
+        snapshots(base=base, pr=[line for n, line in enumerate(base, 1) if n != target])
+        section = _section([_change_hunk(base, target, "del")])
+
+        text, findings, agent = _initial_input(section, tmp_path)
+
+        assert "-" + base[target - 1] in text
+        assert findings == []
+        assert agent.errors == []

@@ -45,8 +45,8 @@ def meta() -> ReviewMetadata:
 
 
 NEW_CONFIG_DEFAULTS = {
-    "investigator_max_tool_calls": 12,
-    "investigator_max_iterations": 16,
+    "investigator_max_tool_calls": 24,
+    "investigator_max_iterations": 32,
     "investigator_diff_chars": 30000,
     "investigator_max_sections": 12,
     "section_max_chars": 12000,

@@ -803,19 +803,20 @@ class TestGitOnlyReads:
         assert "get_user" in r.call("grep_repo", pattern="get_user")
         assert r.exports == [] and r.runner.calls == []
 
-    def test_read_is_capped_at_200_lines(self, rig):
+    def test_read_without_a_range_returns_the_whole_file_within_the_configured_cap(self, rig):
         r = rig()
         out = r.call("read_file", path="big.txt")
-        assert _lines(out)[0].endswith("path=big.txt lines=1-200]")
-        assert "200: row 200" in out and "201: row 201" not in out
-        capped = r.call("read_file", path="big.txt", start_line=100, end_line=300)
-        assert _lines(capped)[0].endswith("lines=100-299]")
+        assert _lines(out)[0].endswith("path=big.txt lines=1-300]")
+        assert "300: row 300" in out
+        ranged = r.call("read_file", path="big.txt", start_line=100, end_line=300)
+        assert _lines(ranged)[0].endswith("lines=100-300]")
         tail = r.call("read_file", path="big.txt", start_line=250, end_line=300)
         assert _lines(tail)[0].endswith("lines=250-300]")
 
-    def test_read_output_is_capped_at_8000_characters_with_end_marker(self, rig):
-        out = rig().call("read_file", path="wide.txt")
-        assert len(out) <= 8000
+    def test_read_output_is_bounded_by_the_line_cap_character_limit_with_end_marker(self, rig):
+        # 60 lines at 160 characters per line is a 9600-character limit; wide.txt is about 19500.
+        out = rig(read_file_max_lines=60).call("read_file", path="wide.txt")
+        assert 8000 < len(out) <= 9600
         assert out.startswith("[READ snapshot=base ") and out.endswith("[END READ]")
 
     def test_read_beyond_end_keeps_the_existing_envelope(self, rig):
@@ -846,7 +847,7 @@ class TestGitOnlyReads:
         assert reversed_range == r.call("read_file", path="shift.py", start_line=2)
         assert _lines(reversed_range)[0].endswith("lines=2-3]")
         capped = r.call("read_file", path="big.txt", start_line=5, end_line=2)
-        assert _lines(capped)[0].endswith("path=big.txt lines=5-204]")
+        assert _lines(capped)[0].endswith("path=big.txt lines=5-300]")
 
     def test_leading_dash_path_is_a_plain_absent_file(self, rig, snap):
         assert rig().call("read_file", path="-x") == (
@@ -1611,3 +1612,48 @@ def test_sast_triage_is_not_given_graph_tools(rig):
     prompt = "\n".join(str(m.content) for m in llm.seen[0])
     assert "investigate_" not in prompt
     assert r.toolbox.call_log == []
+
+
+READ_SHA = "c" * 40
+
+
+def _read_toolbox(monkeypatch, line_count, **config):
+    source = "\n".join(f"v{i} = {i}" for i in range(1, line_count + 1)) + "\n"
+
+    def fake_run_git(repo, args, timeout):
+        code = 0 if args[:2] == ["cat-file", "blob"] else 1
+        return subprocess.CompletedProcess(args, code, stdout=source, stderr="")
+
+    monkeypatch.setattr("lgtm.agents.tools.run_git", fake_run_git)
+    return AgentToolbox(
+        "repo", "main", None, LGTMConfig(**config), shas={"base": READ_SHA, "pr": READ_SHA}
+    )
+
+
+def _numbered(out):
+    return [int(line.split(":")[0]) for line in out.splitlines() if line[:1].isdigit()]
+
+
+class TestReadFileLineCap:
+    def test_one_read_returns_a_function_longer_than_the_previous_cap_without_truncation(
+        self, monkeypatch
+    ):
+        toolbox = _read_toolbox(monkeypatch, 260)
+
+        assert _numbered(toolbox.read_file_impl("app.py", 1, 260)) == list(range(1, 261))
+
+    def test_read_without_a_range_returns_a_whole_file_beyond_the_previous_cap(self, monkeypatch):
+        toolbox = _read_toolbox(monkeypatch, 260)
+
+        assert _numbered(toolbox.read_file_impl("app.py")) == list(range(1, 261))
+
+    def test_read_stops_at_the_configured_cap(self, monkeypatch):
+        cap = LGTMConfig().read_file_max_lines
+        toolbox = _read_toolbox(monkeypatch, cap + 50)
+
+        assert _numbered(toolbox.read_file_impl("app.py", 1, cap + 50)) == list(range(1, cap + 1))
+
+    def test_lowering_the_configured_cap_shortens_a_read(self, monkeypatch):
+        toolbox = _read_toolbox(monkeypatch, 260, read_file_max_lines=30)
+
+        assert _numbered(toolbox.read_file_impl("app.py")) == list(range(1, 31))

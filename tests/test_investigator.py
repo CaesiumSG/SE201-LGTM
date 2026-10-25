@@ -466,3 +466,26 @@ def test_context_pointers_that_name_missing_files_are_returned_without_a_second_
     assert result.status == "ok"
     assert [p.path for p in result.proposed[0].context] == ["ghost.py"]
     assert len(llm.seen) == 1
+
+
+PREVIOUS_INVESTIGATOR_TOOL_CALLS = 12
+PREVIOUS_INVESTIGATOR_ITERATIONS = 16
+PREVIOUS_READ_FILE_LINE_CAP = 200
+
+
+def test_default_investigator_budgets_and_read_cap_exceed_their_previous_values():
+    defaults = LGTMConfig()
+
+    assert defaults.investigator_max_tool_calls > PREVIOUS_INVESTIGATOR_TOOL_CALLS
+    assert defaults.investigator_max_iterations > PREVIOUS_INVESTIGATOR_ITERATIONS
+    assert defaults.read_file_max_lines > PREVIOUS_READ_FILE_LINE_CAP
+
+
+def test_default_investigator_tool_budget_is_applied_to_the_run(tmp_path):
+    defaults = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    toolbox = AgentToolbox(tmp_path, "main", None, defaults)
+
+    run(small_diffs(), defaults, toolbox, ScriptedLLM([answer(sections_json("app.py#0"))]))
+
+    assert toolbox.budget == defaults.investigator_max_tool_calls
+    assert toolbox.budget > PREVIOUS_INVESTIGATOR_TOOL_CALLS

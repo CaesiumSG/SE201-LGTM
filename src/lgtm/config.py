@@ -42,8 +42,9 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
-    investigator_max_tool_calls: int = 12
-    investigator_max_iterations: int = 16
+    investigator_max_tool_calls: int = 24
+    investigator_max_iterations: int = 32
+    read_file_max_lines: int = 600
     investigator_diff_chars: int = 30000
     investigator_max_sections: int = 12
     section_max_chars: int = 12000
@@ -82,6 +83,7 @@ class LGTMConfig:
         positive_fields = (
             "investigator_max_tool_calls",
             "investigator_max_iterations",
+            "read_file_max_lines",
             "investigator_diff_chars",
             "investigator_max_sections",
             "section_max_chars",

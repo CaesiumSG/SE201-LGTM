@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -474,6 +475,34 @@ def _toolbox_of(tools) -> Any:
     return None
 
 
+@dataclass
+class RunRecord:
+    """What one agent run did: tool calls, final answer text, and the budget it hit."""
+
+    section: str
+    tool_calls: list[dict] = field(default_factory=list)
+    raw_answer: str = ""
+    limit_hit: Literal["tool_calls", "steps"] | None = None
+
+
+def _close_run(toolbox: Any, answer: str, steps_exhausted: bool) -> str:
+    if toolbox is not None:
+        toolbox.steps_exhausted = steps_exhausted
+    return answer
+
+
+def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
+    """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
+    record.raw_answer = answer
+    record.tool_calls = list(toolbox.call_log)
+    over_budget = len(toolbox.call_log) > toolbox.budget
+    if getattr(toolbox, "steps_exhausted", False):
+        record.limit_hit = "steps"
+    else:
+        record.limit_hit = "tool_calls" if over_budget else None
+    return answer
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -520,7 +549,8 @@ def run_tool_loop(
                         )
                     )
                     continue
-                return request_valid_answer(llm, messages, content, config, is_json_object)
+                answer = request_valid_answer(llm, messages, content, config, is_json_object)
+                return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
             name = call.get("name")
@@ -560,11 +590,13 @@ def run_tool_loop(
         if cap > 0 and invalid_inputs >= cap:
             break
 
-    if cap > 0 and invalid_inputs >= cap:
-        logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
-    else:
+    steps_exhausted = not (cap > 0 and invalid_inputs >= cap)
+    if steps_exhausted:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
+    else:
+        logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
-    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    return _close_run(toolbox, answer, steps_exhausted)

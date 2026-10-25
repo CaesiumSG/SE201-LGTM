@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
-from lgtm.agents.base import AgentFinding, build_llm
+from lgtm.agents.base import AgentFinding, RunRecord, build_llm
 from lgtm.agents.investigator import run_investigator
 from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
@@ -76,6 +76,7 @@ class ReviewResult:
     json_path: Path | None = None
     md_path: Path | None = None
     diffs: list[FileDiff] = field(default_factory=list)
+    run_records: list[RunRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +89,7 @@ class _SectionStage:
     investigator_input: InvestigatorInput
     investigator_tool_calls: int
     errors: list[dict[str, str]]
+    run_records: list[RunRecord] = field(default_factory=list)
 
 
 class ReviewPipeline:
@@ -284,6 +286,7 @@ class ReviewPipeline:
             json_path=json_path,
             md_path=md_path,
             diffs=diffs,
+            run_records=section_stage.run_records if section_stage is not None else [],
         )
 
     # ------------------------------------------------------------------
@@ -299,6 +302,7 @@ class ReviewPipeline:
         investigator_error: str | None = None
         investigator_tool_calls = 0
         proposed = None
+        run_records: list[RunRecord] = []
         if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
             investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
             investigator_status = investigation.status
@@ -306,6 +310,7 @@ class ReviewPipeline:
             investigator_error = investigation.error
             investigator_tool_calls = investigation.tool_calls
             proposed = investigation.proposed
+            run_records.append(investigation.run_record)
         plan = plan_sections(scan_diffs, proposed, self.config)
 
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
@@ -343,6 +348,7 @@ class ReviewPipeline:
             investigator_error=investigator_error,
             investigator_input=investigator_input,
             investigator_tool_calls=investigator_tool_calls,
+            run_records=run_records + authz_agent.run_records,
         )
 
     @staticmethod

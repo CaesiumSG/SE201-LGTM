@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from lgtm.agents import prompt_parts, registry
-from lgtm.agents.base import run_tool_loop
+from lgtm.agents.base import RunRecord, fill_record, run_tool_loop
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
@@ -35,6 +35,7 @@ class InvestigatorResult:
     error: str | None
     input_mode: InputMode
     tool_calls: int
+    run_record: RunRecord = field(default_factory=lambda: RunRecord("investigator"))
 
 
 def run_investigator(
@@ -54,6 +55,7 @@ def run_investigator(
     input_mode: InputMode = "manifest_only" if manifest_only else "full"
 
     logger.info("Investigator: %d hunks, input %s", len(refs), input_mode)
+    record = RunRecord("investigator")
     try:
         toolbox.reset_budget(config.investigator_max_tool_calls)
         tools = toolbox.build_tools()
@@ -79,7 +81,9 @@ def run_investigator(
         investigator_config = replace(
             config, max_agent_iterations=config.investigator_max_iterations
         )
-        raw = run_tool_loop(llm, tools, system, user, investigator_config)
+        raw = fill_record(
+            record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
+        )
         proposed = parse_investigator_output(raw)
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)
@@ -89,6 +93,7 @@ def run_investigator(
             error=str(exc) or type(exc).__name__,
             input_mode=input_mode,
             tool_calls=toolbox.calls_used,
+            run_record=record,
         )
     return InvestigatorResult(
         proposed=proposed,
@@ -96,6 +101,7 @@ def run_investigator(
         error=None,
         input_mode=input_mode,
         tool_calls=toolbox.calls_used,
+        run_record=record,
     )
 
 

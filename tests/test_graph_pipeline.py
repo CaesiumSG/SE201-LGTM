@@ -1988,3 +1988,104 @@ def test_judge_request_carries_the_code_at_the_cited_revision_and_not_the_agent_
     assert cited_code in states[0]
     assert other_revision_code not in states[0]
     assert agent_snippet not in states[0].partition("Cited item:")[2]
+
+
+SECTION_IDS = {"fallback:a.py", "fallback:b.py", "fallback:c.py", "fallback:app.py"}
+
+
+class _RoutedLLM(ScriptedLLM):
+    """Asks for ``rounds[route]`` read_file calls on a route, then answers like ScriptedLLM."""
+
+    def __init__(self, rounds):
+        super().__init__()
+        self.rounds = rounds
+        self.invocations = {}
+
+    def invoke(self, messages):
+        route = _route(messages)
+        n = self.invocations[route] = self.invocations.get(route, 0) + 1
+        if n <= self.rounds.get(route, 0):
+            return _call("read_file", {"path": "a.py"}, f"{route}-{n}")
+        return super().invoke(messages)
+
+
+def _attr(record, name):
+    return record[name] if isinstance(record, dict) else getattr(record, name)
+
+
+def _records(result):
+    return {_attr(r, "section"): r for r in result.run_records}
+
+
+def _run(repo, install_graph, rounds, **config):
+    install_graph()
+    return _review(repo, _RoutedLLM(rounds), mode="lgtm-no-sast", **config)
+
+
+class TestSectionRunRecords:
+    def test_result_carries_one_record_for_the_investigator_and_one_per_section(
+        self, repo, install_graph
+    ):
+        result = _run(repo, install_graph, {"investigator": 1})
+
+        records = _records(result)
+        assert len(result.run_records) == len(records) == 1 + len(SECTION_IDS)
+        assert set(records) == {"investigator", *SECTION_IDS}
+
+    def test_record_exposes_tool_calls_raw_answer_and_no_limit_when_none_was_hit(
+        self, repo, install_graph
+    ):
+        records = _records(_run(repo, install_graph, {"investigator": 1}))
+
+        investigator = records["investigator"]
+        [call] = _attr(investigator, "tool_calls")
+        assert call["tool"] == "read_file" and call["args"]["path"] == "a.py"
+        assert _attr(investigator, "raw_answer") == _no_sections()
+        assert _attr(investigator, "limit_hit") is None
+        section = records["fallback:a.py"]
+        assert _attr(section, "tool_calls") == []
+        assert _attr(section, "raw_answer") == _findings()
+        assert _attr(section, "limit_hit") is None
+
+    def test_investigator_that_exhausts_its_tool_budget_records_tool_calls(
+        self, repo, install_graph
+    ):
+        records = _records(
+            _run(repo, install_graph, {"investigator": 4}, investigator_max_tool_calls=2)
+        )
+
+        assert _attr(records["investigator"], "limit_hit") == "tool_calls"
+        assert {_attr(r, "limit_hit") for s, r in records.items() if s != "investigator"} == {None}
+
+    def test_investigator_that_exhausts_its_step_budget_records_steps(self, repo, install_graph):
+        records = _records(
+            _run(
+                repo, install_graph, {"investigator": 2},
+                investigator_max_iterations=2, investigator_max_tool_calls=50,
+            )
+        )
+
+        assert _attr(records["investigator"], "limit_hit") == "steps"
+        assert {_attr(r, "limit_hit") for s, r in records.items() if s != "investigator"} == {None}
+
+    def test_section_that_exhausts_the_tool_budget_records_tool_calls_for_that_section_only(
+        self, repo, install_graph
+    ):
+        records = _records(_run(repo, install_graph, {"section": 3}, max_tool_calls=1))
+
+        limits = {s: _attr(r, "limit_hit") for s, r in records.items()}
+        assert list(limits.values()).count("tool_calls") == 1
+        assert limits["investigator"] is None
+        assert set(limits.values()) == {None, "tool_calls"}
+
+    def test_section_that_exhausts_the_step_budget_records_steps_for_that_section_only(
+        self, repo, install_graph
+    ):
+        records = _records(
+            _run(repo, install_graph, {"section": 2}, max_agent_iterations=2, max_tool_calls=50)
+        )
+
+        limits = {s: _attr(r, "limit_hit") for s, r in records.items()}
+        assert list(limits.values()).count("steps") == 1
+        assert limits["investigator"] is None
+        assert set(limits.values()) == {None, "steps"}

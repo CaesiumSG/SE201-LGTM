@@ -9,6 +9,7 @@ policy to detect authorization flaws:
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -16,18 +17,20 @@ from typing import TYPE_CHECKING
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
+    RunRecord,
     answer_until_resolved,
     build_llm,
     extract_json_object,
+    fill_record,
     parse_agent_output,
     run_tool_loop,
 )
-from lgtm.agents.tools import AgentToolbox
+from lgtm.agents.tools import AgentToolbox, read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
 
 if TYPE_CHECKING:
     # Circular import: lgtm.review.sections imports lgtm.agents.base.
-    from lgtm.review.sections import ContextPointer, Section
+    from lgtm.review.sections import ContextPointer, HunkRef, Section
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,73 @@ def _context_block(pointers: list[ContextPointer]) -> str:
         for p in pointers
     ]
     return registry.render("authz_reviewer.context_block", lines="\n".join(lines))
+
+
+def _hunk_anchor(hunk: HunkRef) -> tuple[str, int] | None:
+    """Snapshot label and line of a hunk's first change; removed-only hunks anchor in the base."""
+    added = [c.new_lineno for c in hunk.changes if c.kind == "add" and c.new_lineno]
+    if added:
+        return "pr", min(added)
+    removed = [c.old_lineno for c in hunk.changes if c.kind == "del" and c.old_lineno]
+    return ("base", min(removed)) if removed else None
+
+
+def _enclosing_function(source: str, line: int) -> tuple[int, int] | None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    best: tuple[int, int] | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        end = node.end_lineno or node.lineno
+        if start <= line <= end and (best is None or start >= best[0]):
+            best = (start, end)
+    return best
+
+
+def _enclosing_block(toolbox: AgentToolbox, section: Section) -> str:
+    items: list[str] = []
+    seen: set[tuple[str, str, int]] = set()
+    cap = toolbox.config.read_file_max_lines
+    for hunk in section.hunks:
+        anchor = _hunk_anchor(hunk)
+        rel = relative_path(hunk.file)
+        if anchor is None or rel is None or not hunk.file.endswith(".py"):
+            continue
+        label, line = anchor
+        if toolbox.shas is None and label == "pr":
+            continue
+        try:
+            sha = toolbox._snapshot_sha(label)
+        except KeyError:
+            continue
+        if sha is None:
+            continue
+        done = read_committed_blob(toolbox.repo, sha, rel, toolbox.config.git_timeout)
+        if done is None or done.returncode != 0:
+            continue
+        span = _enclosing_function(done.stdout, line)
+        if span is None or (label, rel, span[0]) in seen:
+            continue
+        seen.add((label, rel, span[0]))
+        start, end = span
+        code = "\n".join(done.stdout.splitlines()[start - 1 : min(end, start + cap - 1)])
+        items.append(
+            registry.render(
+                "authz_reviewer.enclosing_item",
+                file=prompt_parts.escape_control(hunk.file),
+                start=start,
+                end=end,
+                snapshot=label,
+                code=prompt_parts.code_fence(code, "python"),
+            )
+        )
+    if not items:
+        return ""
+    return registry.render("authz_reviewer.enclosing_block", items="\n".join(items))
 
 
 def _changed_span(section: Section) -> tuple[int, int]:
@@ -117,6 +187,7 @@ class AuthzReviewerAgent:
         self.toolbox = toolbox
         self.llm = llm or build_llm(self.config)
         self.errors: list[dict[str, str]] = []
+        self.run_records: list[RunRecord] = []
 
     def review_section(
         self, section: Section, semgrep_notes: str = ""
@@ -148,6 +219,7 @@ class AuthzReviewerAgent:
             files=prompt_parts.escape_control(", ".join(section.files)),
             context_block=_context_block(section.context),
             semgrep_context=_semgrep_block(semgrep_notes),
+            enclosing_block=_enclosing_block(self.toolbox, section),
             section_text=render_section(section),
         )
         user = registry.render(
@@ -193,9 +265,15 @@ class AuthzReviewerAgent:
             return findings
 
         logger.info("Authz section review: %s", section.section_id)
+        record = RunRecord(section.section_id)
+        self.run_records.append(record)
         try:
             findings = answer_until_resolved(
-                lambda: run_tool_loop(self.llm, tools, system, user, self.config),
+                lambda: fill_record(
+                    record,
+                    self.toolbox,
+                    run_tool_loop(self.llm, tools, system, user, self.config),
+                ),
                 parse,
                 self.toolbox,
             )
