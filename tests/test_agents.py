@@ -8,13 +8,20 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
-from lgtm.agents.base import extract_json_object, parse_agent_output, run_tool_loop
+from lgtm.agents.base import (
+    RunRecord,
+    extract_json_object,
+    fill_record,
+    parse_agent_output,
+    run_tool_loop,
+)
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import LineChange
@@ -1210,3 +1217,20 @@ class TestDeletionOnlyNonSecurityChange:
         assert "-" + base[target - 1] in text
         assert findings == []
         assert agent.errors == []
+
+
+class TestFillRecordToolCallBudget:
+    @pytest.mark.parametrize(
+        ("calls", "expected"), [(2, None), (3, None), (4, "tool_calls")]
+    )
+    def test_limit_hit_only_when_calls_exceed_budget(self, calls, expected):
+        toolbox = SimpleNamespace(
+            call_log=[{"name": "read_file"} for _ in range(calls)],
+            budget=3,
+            steps_exhausted=False,
+        )
+        record = RunRecord(section="s")
+
+        fill_record(record, toolbox, "{}")
+
+        assert record.limit_hit == expected

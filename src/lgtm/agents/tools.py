@@ -143,6 +143,7 @@ class AgentToolbox:
         self.session = session
         self.budget = self.config.max_tool_calls
         self.calls_used = 0
+        self.steps_exhausted = False
         self.call_log: list[dict] = []
         self._legacy_base_sha: str | None = None
         self._missing_binary_warned = False
@@ -160,6 +161,7 @@ class AgentToolbox:
     def reset_budget(self, max_calls: int | None = None) -> None:
         self.budget = self.config.max_tool_calls if max_calls is None else max_calls
         self.calls_used = 0
+        self.steps_exhausted = False
         self.call_log = []
 
     def charge(self, tool_name: str, args: dict) -> bool:

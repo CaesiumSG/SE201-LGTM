@@ -496,7 +496,7 @@ def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
     record.raw_answer = answer
     record.tool_calls = list(toolbox.call_log)
     over_budget = len(toolbox.call_log) > toolbox.budget
-    if getattr(toolbox, "steps_exhausted", False):
+    if toolbox.steps_exhausted:
         record.limit_hit = "steps"
     else:
         record.limit_hit = "tool_calls" if over_budget else None
