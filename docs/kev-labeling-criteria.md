@@ -3,6 +3,10 @@
 Labels for judge candidates (`benchmark/kev_model_labels.json`). Each unit is one cited code item
 of a candidate finding.
 
+Labelers are given the claim, the quoted code, and the enclosing function with its decorators from
+the reviewed code. A unit whose quote is not present in the reviewed code is `undetermined` and
+excluded from accuracy.
+
 ## supported
 
 `yes` when the cited code, read alone, shows the behavior the candidate's claim describes.

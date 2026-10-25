@@ -85,7 +85,7 @@ def confidence_agreement(labels: dict, outcomes: list[dict]) -> dict:
     by_label: dict[str, list[float]] = {label: [] for label in LABELS}
     for o in outcomes:
         entry = units.get(o["unit_id"])
-        if o["judged"] and entry:
+        if o["judged"] and entry and entry.get("verdict") != UNDETERMINED:
             by_label[entry["supports"]].append(o["provenance_confidence"])
     return {label: {"mean": _mean(v), "n": len(v)} for label, v in by_label.items()}
 
@@ -100,6 +100,8 @@ def supported_agreement(labels: dict, outcomes: list[dict]) -> dict:
         if not entry:
             unlabelled += 1
             continue
+        if entry.get("verdict") == UNDETERMINED:
+            continue
         n += 1
         agree += o["supported"] == (entry["supports"] == "yes")
     return {
@@ -112,6 +114,7 @@ def supported_agreement(labels: dict, outcomes: list[dict]) -> dict:
 STALE_CASES = ("sqli_04_safe", "sqli_07_safe", "sqli_11_safe")
 STALE_REASON = "cited text predates the regenerated Shoply patches"
 QUOTE_ABSENCE_CASES = ("authz_10_vulnerable", "authz_12_vulnerable")
+UNDETERMINED = "undetermined"
 AGENT_TO_KEV = {"vulnerable": "real", "safe": "not_real"}
 
 
@@ -119,12 +122,17 @@ def _case_of(unit_id: str) -> str:
     return unit_id.split("/")[0]
 
 
+def _undetermined(labels: dict) -> set[str]:
+    return {uid for uid, e in labels.get("units", {}).items() if e.get("verdict") == UNDETERMINED}
+
+
 def _labelled_judged(labels: dict, outcomes: list[dict]):
-    """(outcome, label) pairs of judged, labelled units outside the stale cases."""
+    """(outcome, label) pairs of judged, labelled units outside the stale cases; undetermined units left out."""
     units = labels.get("units", {})
     return [
         (o, units[o["unit_id"]]) for o in outcomes
         if o["judged"] and o["unit_id"] in units and _case_of(o["unit_id"]) not in STALE_CASES
+        and units[o["unit_id"]].get("verdict") != UNDETERMINED
     ]
 
 
@@ -142,10 +150,12 @@ def kev_accuracy(labels: dict, outcomes: list[dict]) -> dict:
     }
 
 
-def kev_agreement(outcomes: list[dict]) -> dict:
+def kev_agreement(outcomes: list[dict], labels: dict | None = None) -> dict:
+    skipped = _undetermined(labels or {})
     judged = [
         o for o in outcomes
         if o["judged"] and o.get("kev_verdict") and _case_of(o["unit_id"]) not in STALE_CASES
+        and o["unit_id"] not in skipped
     ]
     disagree = sum(bool(o["supported"]) != (o["kev_verdict"] == "real") for o in judged)
     mapped = [(AGENT_TO_KEV.get(o.get("agent_verdict")), o["kev_verdict"]) for o in judged]
@@ -172,8 +182,7 @@ def label_summary(labels: dict) -> dict:
         "n": len(labels.get("units", {})),
         "origins": dict(Counter(e.get("origin") for e in labels.get("units", {}).values())),
         "source": "model",
-        "labeling_model": model,
-    }
+        "labeling_model": model,    }
 
 
 def supported_by_kind(labels: dict, outcomes: list[dict]) -> dict:
@@ -509,13 +518,14 @@ def report(
         "run": run_measures(judge_records, modes.pop() if len(modes) == 1 else "mixed"),
         "kev": kev_report(records),
         "kev_accuracy": kev_accuracy(labels, outcomes),
-        "kev_agreement": kev_agreement(outcomes),
+        "kev_agreement": kev_agreement(outcomes, labels),
         "labels": label_summary(labels) if labels.get("labeling_model") else None,
         "supported_by_kind": supported_by_kind(labels, outcomes),
         "safe_case_acceptance": safe_case_acceptance(
             labels, outcomes, {r["id"] for r in records if r.get("expected") == "safe"}
         ),
         "stale": stale_candidates(outcomes),
+        "undetermined": sorted(_undetermined(labels)),
     }
 
 

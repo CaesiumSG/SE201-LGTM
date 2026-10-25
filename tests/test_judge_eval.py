@@ -2022,10 +2022,61 @@ class TestStoredLabelsAndCriteria:
         units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
 
         assert units
-        assert all(u["supports"] in ("yes", "no") and u["verdict"] in ("real", "not_real") for u in units.values())
+        assert all(u["supports"] in ("yes", "no") and u["verdict"] in ("real", "not_real", "undetermined") for u in units.values())
         assert all(u.get("kind") and u.get("origin") in ("shoply", "real_world") for u in units.values())
 
     def test_stored_labels_leave_out_the_stale_shoply_candidates(self):
         units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
 
         assert not [uid for uid in units if uid.split("/")[0] in STALE_CASES]
+
+
+class TestUndeterminedLabels:
+    LABELS = _kl(
+        a=("yes", "real", "high"),
+        b=("no", "undetermined", None),
+        c=("yes", "undetermined", None),
+    )
+
+    def test_kev_accuracy_leaves_undetermined_units_out_of_the_verdict_measure(self, je):
+        outcomes = [_ko("a", True, "real"), _ko("b", True, "real"), _ko("c", False, "not_real")]
+
+        verdict = je.kev_accuracy(self.LABELS, outcomes)["verdict"]
+
+        assert (verdict["n"], verdict["correct"], verdict["accuracy"]) == (1, 1, 1.0)
+
+    def test_kev_agreement_leaves_undetermined_units_out_of_the_verdict_measures(self, je):
+        outcomes = [
+            _ko("a", True, "real", agent_verdict="vulnerable"),
+            _ko("b", True, "not_real", agent_verdict="vulnerable"),
+            _ko("c", False, "real", agent_verdict="safe"),
+        ]
+
+        agreement = je.kev_agreement(outcomes, self.LABELS)
+
+        assert (agreement["verdict_vs_supported"]["n"], agreement["verdict_vs_supported"]["disagree"]) == (1, 0)
+        assert (agreement["verdict_vs_agent"]["n"], agreement["verdict_vs_agent"]["equal"]) == (1, 1)
+
+    def test_report_lists_the_undetermined_units(self, je, tmp_path):
+        evidence = [{"type": "code", "file": "a.py", "lines": [1, 2], "snapshot": "pr"}]
+        finding = {**_kf(True, "real", verdict="vulnerable"), "kev_severity": "high",
+                   "provenance_confidence": 0.9, "evidence": evidence}
+        run = tmp_path / "run"
+        run.mkdir()
+        for cid in ("authz_01_vulnerable", "authz_02_vulnerable"):
+            (run / f"{cid}.json").write_text(json.dumps(_row(cid, "vulnerable", [finding])), encoding="utf-8")
+        export = tmp_path / "export.json"
+        export.write_text(json.dumps({"units": [
+            {"unit_id": "authz_01_vulnerable/0.0"}, {"unit_id": "authz_02_vulnerable/0.0"},
+        ]}), encoding="utf-8")
+        labels = tmp_path / "labels.json"
+        labels.write_text(json.dumps(_kl(**{
+            "authz_01_vulnerable/0.0": ("yes", "real", "high", {"kind": "live_shaped", "origin": "shoply"}),
+            "authz_02_vulnerable/0.0": ("no", "undetermined", None, {"kind": "live_shaped", "origin": "shoply"}),
+        })), encoding="utf-8")
+
+        report = je.report(run, export, labels)
+
+        assert report["undetermined"] == ["authz_02_vulnerable/0.0"]
+        assert report["kev_accuracy"]["verdict"]["n"] == 1
+        assert report["kev_agreement"]["verdict_vs_supported"]["n"] == 1

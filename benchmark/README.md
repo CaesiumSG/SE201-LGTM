@@ -438,6 +438,7 @@ not human-reviewed. `judge_eval.py` adds these report keys:
 - `kev_agreement`: `verdict_vs_supported` (rate of disagreement) and `verdict_vs_agent`
   (rate of equality with the agent's `vulnerable`/`safe` verdict, empty verdicts left out).
 - `labels`: label count per origin and the labeling model.
+- `undetermined`: sorted unit ids labelled `undetermined` (cited quote absent from the reviewed code); accuracy, agreement and acceptance leave them out.
 - `supported_by_kind`: supported accuracy per candidate kind.
 - `safe_case_acceptance`: share of safe-case candidates Kev supports, per origin.
 - `stale`: `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe` candidates cite text that predates the
