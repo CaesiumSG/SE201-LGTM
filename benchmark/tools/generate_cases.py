@@ -281,16 +281,18 @@ CASES.append(Case(
 def run_maintenance():
     """Purge audit-log entries for a user (maintenance procedure)."""
     user_id = request.args.get("user_id", "")
+    table = "audit_log"
     conn = get_engine().raw_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM audit_log WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM %s WHERE user_id = ?" % table, (user_id,))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"status": "maintenance complete"})
 ''',
-    description="Same maintenance procedure with a DB-API placeholder.",
+    description="Same maintenance procedure: the table name is a fixed "
+                "constant and the user id is a DB-API placeholder.",
 ))
 
 # --- Pair 5: search endpoint injection vs proper binding -------------------
@@ -473,11 +475,12 @@ CASES.append(Case(
 def export_orders():
     """Export orders filtered by the X-Report-Filter header."""
     status_filter = request.headers.get("X-Report-Filter", "shipped")
+    order_column = "id"
     conn = get_engine().raw_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, user_id, status, total FROM orders WHERE status = ?",
+            f"SELECT id, user_id, status, total FROM orders WHERE status = ? ORDER BY {order_column}",
             (status_filter,),
         )
         rows = cursor.fetchall()
@@ -485,7 +488,8 @@ def export_orders():
         conn.close()
     return jsonify([list(r) for r in rows])
 ''',
-    description="Same header-driven export with a DB-API placeholder.",
+    description="Same header-driven export: the sort column is a fixed "
+                "constant and the filter is a DB-API placeholder.",
 ))
 
 # --- Pair 8: cookie source -> f-string -> SQLAlchemy text ------------------
@@ -706,17 +710,18 @@ def purge_user_data():
     """Purge a departed user's orders (data-erasure request)."""
     payload = request.get_json(silent=True) or {}
     username = payload.get("username", "")
+    table = "orders"
     engine = get_engine()
     with engine.connect() as conn:
         conn.exec_driver_sql(
-            "DELETE FROM orders WHERE user_id = "
-            "(SELECT id FROM users WHERE username = ?)",
+            "DELETE FROM %s WHERE user_id = (SELECT id FROM users WHERE username = ?)" % table,
             (username,),
         )
         conn.commit()
     return jsonify({"status": "purged"})
 ''',
-    description="Same purge using a driver-level placeholder parameter.",
+    description="Same purge: the table name is a fixed constant and the "
+                "username is a driver-level placeholder parameter.",
 ))
 
 # --- Pair 12: parameter map -> WHERE-clause builder -------------------------

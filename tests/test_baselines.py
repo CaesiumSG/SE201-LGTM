@@ -2074,3 +2074,183 @@ class TestReferenceGuardrailExemptions:
         assert [(e.file, list(e.lines), e.content) for e in finding.evidence] == [
             ("ghost.py", [40, 41], "ghost.execute(sql)")
         ]
+
+
+def _scored(cid, category="authz", mode="lgtm", expected="vulnerable", findings=None, **extra):
+    if findings is None:
+        findings = [_f(category, "vulnerable" if expected == "vulnerable" else "safe")]
+    return evaluate.score_case(
+        _case_row(cid, expected, findings=findings, mode=mode, category=category, **extra))
+
+
+class TestScopeInCaseResults:
+    def test_no_sast_sql_injection_row_is_out_of_scope(self):
+        assert _scored("a", "sqli", "lgtm-no-sast")["scope"] == "out"
+
+    @pytest.mark.parametrize("category,mode", [
+        ("authz", "lgtm-no-sast"), ("sqli", "lgtm"), ("authz", "lgtm"),
+    ])
+    def test_other_rows_stay_in_scope(self, category, mode):
+        assert _scored("a", category, mode)["scope"] == "in"
+
+    def test_out_of_scope_row_keeps_its_own_outcome(self):
+        assert _scored("a", "sqli", "lgtm-no-sast")["outcome"] == "TP"
+
+    def test_headline_counts_only_in_scope_rows(self):
+        rows = [
+            _scored("out_sql", "sqli", "lgtm-no-sast"),
+            _scored("out_sql_safe", "sqli", "lgtm-no-sast", expected="safe",
+                    findings=[_f("sqli", "vulnerable")]),
+            _scored("in_authz", "authz", "lgtm-no-sast"),
+            _scored("in_sql", "sqli", "lgtm"),
+        ]
+        summary = evaluate.summarize(rows)
+        for overall in (summary["overall"], summary["grounded_only"]["overall"]):
+            assert (overall["cases"], overall["tp"], overall["fp"]) == (2, 2, 0)
+        assert summary["per_category"]["sqli"]["cases"] == 1
+        assert summary["per_category"]["authz"]["cases"] == 1
+
+    def test_result_without_scope_key_counts_as_in_scope(self):
+        old = _legacy_row()
+        old.pop("scope", None)
+        overall = evaluate.summarize([old])["overall"]
+        assert (overall["cases"], overall["tn"]) == (1, 1)
+
+
+def _find_key(obj, name):
+    """First value stored under ``name`` anywhere in a JSON-like object."""
+    if isinstance(obj, dict):
+        if name in obj:
+            return obj[name]
+        for value in obj.values():
+            if (found := _find_key(value, name)) is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            if (found := _find_key(value, name)) is not None:
+                return found
+    return None
+
+
+def _off(category, verdict, fid):
+    return {**_f(category, verdict), "finding_id": fid}
+
+
+class TestOffCategoryFindings:
+    @pytest.mark.parametrize("mode", ["llm-only", "lgtm"])
+    def test_case_result_lists_other_category_findings_by_id(self, mode):
+        row = _scored("a", "authz", mode, expected="safe", findings=[
+            _off("authz", "safe", "authz:1"), _off("sqli", "vulnerable", "sqli:7")])
+        assert row["off_category"] == ["sqli:7"]
+
+    def test_same_category_and_uncategorized_findings_are_not_off_category(self):
+        row = _scored("a", "authz", "llm-only", findings=[
+            _off("authz", "vulnerable", "authz:1"), _off("sast", "vulnerable", "sast:1")])
+        assert row["off_category"] == []
+
+    def test_off_category_finding_does_not_change_the_outcome(self):
+        safe = _scored("a", "authz", "llm-only", expected="safe", findings=[
+            _off("authz", "safe", "authz:1"), _off("sqli", "vulnerable", "sqli:7")])
+        assert (safe["outcome"], safe["predicted"]) == ("TN", "safe")
+        vulnerable = _scored("b", "authz", "llm-only",
+                             findings=[_off("sqli", "vulnerable", "sqli:7")])
+        assert vulnerable["outcome"] == "FN"
+
+    def test_summary_lists_the_off_category_finding(self):
+        rows = [
+            _scored("a", "authz", "llm-only", expected="safe", findings=[
+                _off("authz", "safe", "authz:2"), _off("sqli", "vulnerable", "sqli:7")]),
+            _scored("b", "authz", "llm-only", findings=[_off("authz", "vulnerable", "authz:1")]),
+        ]
+        summary = evaluate.summarize(rows)
+        listed = json.dumps(_find_key(summary, "off_category"))
+        assert "sqli:7" in listed
+        assert "authz:1" not in listed
+        assert (summary["overall"]["tp"], summary["overall"]["tn"]) == (1, 1)
+
+
+class TestRunRecordsInCaseResults:
+    RECORDS = [
+        {"section": "s-1", "raw_answer": "answer one",
+         "tool_calls": [{"tool": "read_file", "args": {"path": "app.py"}}]},
+        {"section": "s-2", "raw_answer": "partial", "limit_hit": "tool_calls",
+         "tool_calls": [{"tool": "grep", "args": {"pattern": "owner"}}] * 3},
+        {"section": "investigator", "raw_answer": "", "limit_hit": "steps"},
+    ]
+
+    @staticmethod
+    def _evaluate(monkeypatch, records):
+        from lgtm.agents.base import RunRecord
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                return SimpleNamespace(
+                    findings=[], meta=ReviewMetadata(),
+                    run_records=[RunRecord(**r) for r in records])
+
+        monkeypatch.setattr(evaluate, "build_case_repo", lambda tmp, patch: None)
+        monkeypatch.setattr(evaluate, "index_repo_docs", lambda tmp, cfg: 0)
+        monkeypatch.setattr(evaluate, "run_pin", lambda *a, **k: {"code_sha": "abc"})
+        monkeypatch.setattr(evaluate, "ReviewPipeline", Pipeline)
+        monkeypatch.setattr(evaluate, "record_input_tokens", lambda p, c: {})
+        case = {"id": "c", "category": "authz", "split": "dev",
+                "expected_verdict": "safe", "patch_file": "x.patch"}
+        return evaluate.evaluate_case(case, LGTMConfig(mode="lgtm"))
+
+    def test_each_section_run_keeps_tool_calls_and_raw_answer(self, monkeypatch):
+        row = self._evaluate(monkeypatch, self.RECORDS)
+        runs = {r["section"]: r for r in row["run_records"]}
+        assert set(runs) == {"s-1", "s-2", "investigator"}
+        assert runs["s-1"]["tool_calls"] == [{"tool": "read_file", "args": {"path": "app.py"}}]
+        assert runs["s-1"]["raw_answer"] == "answer one"
+        assert len(runs["s-2"]["tool_calls"]) == 3
+
+    def test_limit_hit_names_the_limit_and_the_section(self, monkeypatch):
+        row = self._evaluate(monkeypatch, self.RECORDS)
+        hits = {r["section"]: r["limit_hit"] for r in row["run_records"]}
+        assert hits == {"s-1": None, "s-2": "tool_calls", "investigator": "steps"}
+
+    def test_run_records_are_plain_json_objects(self, monkeypatch):
+        row = self._evaluate(monkeypatch, self.RECORDS)
+        assert json.loads(json.dumps(row))["run_records"] == row["run_records"]
+
+    def test_existing_keys_are_kept(self, monkeypatch):
+        row = self._evaluate(monkeypatch, self.RECORDS)
+        for key in ("id", "category", "expected", "findings", "mode", "pin", "coverage",
+                    "outcome", "case_label", "semgrep_findings_total", "graph_state"):
+            assert key in row
+
+
+class TestRescoreOfResultsWrittenBeforeScope:
+    def test_rescore_succeeds_and_counts_rows_without_scope_as_in_scope(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            evaluate, "run_pin", lambda *a, **k: pytest.fail("no pin on rescore"))
+        out = tmp_path / "run"
+        out.mkdir()
+        cases = [
+            {"id": "a", "category": "authz", "split": "dev", "expected_verdict": "vulnerable",
+             "file": ROW_FILE, "vulnerable_locations": [LOCATION], "diff_shape": "single_hunk"},
+            {"id": "b", "category": "authz", "split": "dev", "expected_verdict": "safe"},
+        ]
+        old = _case_row("a", "vulnerable", findings=[_f("authz", "vulnerable")],
+                        coverage=_coverage([_target_section()]), mode="lgtm-no-sast")
+        (out / "a.json").write_text(json.dumps(old), encoding="utf-8")
+        (out / "b.json").write_text(json.dumps({
+            "id": "b", "category": "authz", "expected": "safe",
+            "findings": [_f("authz", "safe")], "latency_seconds": 1, "est_tokens": 1,
+        }), encoding="utf-8")
+        (out / "summary.json").write_text(json.dumps({
+            "mode": "lgtm-no-sast", "model": "m",
+            "outcomes": {"a": "TP", "b": "TN"}, "summary": {},
+        }), encoding="utf-8")
+
+        evaluate.rescore(out, cases, "lgtm-no-sast")
+
+        saved = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        overall = saved["summary"]["overall"]
+        assert (overall["cases"], overall["tp"], overall["tn"]) == (2, 1, 1)
+        assert saved["outcomes"] == {"a": "TP", "b": "TN"}

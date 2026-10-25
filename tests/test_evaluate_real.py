@@ -1215,3 +1215,157 @@ class TestOtherGitFailuresKeepTheRunGoing:
         assert set(rows) == set(script.ids)
         errored = {cid for cid, kind in zip(script.ids, outcomes) if kind != "ok"}
         assert {cid for cid, row in rows.items() if row["outcome"] == "ERROR"} == errored
+
+
+class TestScopeAndTraceOnRealWorldRecords:
+    OUT_OF_SCOPE = ["alerta_sqli_vulnerable", "alerta_sqli_safe", "postgraas_sqli_safe"]
+    IN_SCOPE = ["postgraas_sqli_vulnerable", "pyload_sqli_vulnerable", "pyload_sqli_safe"]
+
+    @staticmethod
+    def _case(cid):
+        return next(c for c in er.fetch.load_cases() if c["id"] == cid)
+
+    @staticmethod
+    def _finding(category="sqli", verdict="safe", fid="sqli:1"):
+        class Finding:
+            def model_dump(self, exclude=None):
+                return {"finding_id": fid, "category": category, "verdict": verdict,
+                        "supported": verdict == "vulnerable", "judged": True,
+                        "explanation": "ok"}
+
+        return Finding()
+
+    def _run(self, monkeypatch, tmp_path, cid, mode, semgrep_in_diff, findings=(),
+             run_records=()):
+        from lgtm.agents.base import RunRecord
+
+        meta = type("Meta", (), {"semgrep_findings_in_diff": semgrep_in_diff})()
+        review = type("Result", (), {
+            "findings": list(findings), "meta": meta,
+            "run_records": [RunRecord(**r) for r in run_records]})()
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                return review
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {
+            "seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er.evaluate, "record_input_tokens", lambda p, c: {})
+        return er.run_unit(self._case(cid), "own", mode, tmp_path / "cache",
+                           tmp_path / "out", er.LGTMConfig())
+
+    @pytest.mark.parametrize("mode", ["sast-only", "llm-only", "lgtm"])
+    @pytest.mark.parametrize("cid", OUT_OF_SCOPE)
+    def test_sql_case_without_in_diff_semgrep_warning_is_out_of_scope(
+            self, monkeypatch, tmp_path, cid, mode):
+        rec = self._run(monkeypatch, tmp_path, cid, mode, 0, [self._finding()])
+        assert rec["scope"] == "out"
+
+    @pytest.mark.parametrize("mode", ["sast-only", "lgtm"])
+    @pytest.mark.parametrize("cid", IN_SCOPE)
+    def test_sql_case_with_in_diff_semgrep_warning_is_in_scope(
+            self, monkeypatch, tmp_path, cid, mode):
+        rec = self._run(monkeypatch, tmp_path, cid, mode, 2, [self._finding()])
+        assert rec["scope"] == "in"
+
+    def test_authz_case_without_semgrep_warning_is_in_scope(self, monkeypatch, tmp_path):
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "lgtm", 0,
+                        [self._finding("authz", fid="authz:1")])
+        assert rec["scope"] == "in"
+
+    @pytest.mark.parametrize("cid,scope", [
+        ("pyload_sqli_vulnerable", "out"), ("aegra_authz_safe", "in")])
+    def test_no_sast_mode_runs_and_scopes_sql_rows_out(
+            self, monkeypatch, tmp_path, cid, scope):
+        category = self._case(cid)["category"]
+        rec = self._run(monkeypatch, tmp_path, cid, "lgtm-no-sast", 3,
+                        [self._finding(category, fid=f"{category}:1")])
+        assert rec["outcome"] != "ERROR"
+        assert rec["scope"] == scope
+
+    def test_out_of_scope_rows_are_left_out_of_the_headline_and_the_count(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        rows = {
+            "alerta_sqli_vulnerable": {"scope": "out", "outcome": "FN"},
+            "postgraas_sqli_safe": {"scope": "out", "outcome": "FP"},
+            "pyload_sqli_vulnerable": {"scope": "in", "outcome": "TP"},
+            "aegra_authz_safe": {"scope": "in", "outcome": "TN"},
+        }
+        for cid, extra in rows.items():
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", extra["outcome"]),
+                   "scope": extra["scope"]}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        overall = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")["summary"]["overall"]
+        assert (overall["tp"], overall["fp"], overall["fn"], overall["tn"]) == (1, 0, 0, 1)
+        assert overall["cases"] == 2
+
+    def test_summary_reports_how_many_sql_cases_semgrep_warns_on(self, tmp_path):
+        out = tmp_path / "sast-only"
+        out.mkdir()
+        rows = [("a", "sqli", 3), ("b", "sqli", 0), ("c", "sqli", 1), ("d", "authz", 5)]
+        for cid, category, warned in rows:
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP", category),
+                   "semgrep_findings_in_diff": warned}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        payload = er.write_dir_summary(out, "sast-only", "own", {r[0] for r in rows}, "m")
+        counts = [v for k, v in _flatten(payload) if "semgrep" in k and "sql" in k]
+        assert counts == [2]
+
+    def test_main_writes_case_results_and_summary_with_the_existing_keys(
+            self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda case, variant, mode, *a, **k: {
+            **TestResultsAndSummary._result(case["id"], "safe", "TN"),
+            "scope": "in", "off_category": []})
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text("utf-8"))
+        summary = json.loads((out / "lgtm" / "summary.json").read_text("utf-8"))
+        assert saved["outcome"] == "TN" and saved["scope"] == "in"
+        for key in ("mode", "variant", "complete", "cases_expected", "cases_present",
+                    "missing", "outcomes", "summary"):
+            assert key in summary
+        assert summary["summary"]["overall"]["tn"] == 1
+
+    def test_each_section_run_and_limit_hit_reach_the_case_result(self, monkeypatch, tmp_path):
+        records = [
+            {"section": "s-1", "raw_answer": "answer one",
+             "tool_calls": [{"tool": "read_file", "args": {"path": "a.py"}}]},
+            {"section": "s-2", "raw_answer": "cut off", "limit_hit": "tool_calls"},
+            {"section": "investigator", "raw_answer": "", "limit_hit": "steps"},
+        ]
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "lgtm", 0,
+                        [self._finding("authz", fid="authz:1")], records)
+        runs = {r["section"]: r for r in rec["run_records"]}
+        assert runs["s-1"]["tool_calls"] == [{"tool": "read_file", "args": {"path": "a.py"}}]
+        assert runs["s-1"]["raw_answer"] == "answer one"
+        assert {s: r["limit_hit"] for s, r in runs.items()} == {
+            "s-1": None, "s-2": "tool_calls", "investigator": "steps"}
+
+    def test_off_category_findings_are_listed_without_changing_the_outcome(
+            self, monkeypatch, tmp_path):
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "llm-only", 0, [
+            self._finding("authz", "safe", "authz:1"),
+            self._finding("sqli", "vulnerable", "sqli:9")])
+        assert rec["off_category"] == ["sqli:9"]
+        assert rec["outcome"] == "TN"
+
+
+def _flatten(obj, prefix=""):
+    """(lowercased key, value) pairs of every dict entry in a JSON-like object."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield str(key).lower(), value
+            yield from _flatten(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _flatten(value)

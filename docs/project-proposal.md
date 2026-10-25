@@ -20,6 +20,9 @@
 3. **Existing practice improved**  
    Pre-merge security review. Static analysis can produce high false-positive rates (over 76% reported at Tencent). PatchTrace adds an LLM agent that triages SAST findings and checks changes against repository-specific rules. 
 
+**Scope**  
+LGTM does two jobs: triage of Semgrep SQL injection warnings, and authorization (authz) bugs that Semgrep cannot see. Every other vulnerability class is out of scope.
+
 ## **3\. Justification for Using AI**
 
 **Conventional alternative:** A traditional approach would use SAST tools such as Semgrep together with manual developer review. This is effective for deterministic, known vulnerability patterns, but still depends heavily on predefined rules and human interpretation. Current SAST tools suffer from high false positive rates[^1], and lack of detection for business logic vulnerabilities.

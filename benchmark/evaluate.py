@@ -31,6 +31,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
@@ -93,8 +94,29 @@ def mark_error(result: dict, message: str) -> dict:
         error=message,
         case_label="scan_failure",
         case_label_grounded="scan_failure",
+        **scope_fields(result),
     )
     return result
+
+
+def scope_fields(result: dict) -> dict:
+    """Headline scope and off-category finding ids of one case result.
+
+    SQL injection rows are out of scope in ``lgtm-no-sast`` and for cases
+    flagged ``case_scope: out`` (no in-diff Semgrep warning on either side).
+    """
+    out = result.get("category") == "sqli" and (
+        result.get("mode") == "lgtm-no-sast" or result.get("case_scope") == "out")
+    judged = is_judged_row(result)
+    return {
+        "scope": "out" if out else "in",
+        "off_category": [
+            f.get("finding_id") or "unknown"
+            for f in result.get("findings") or []
+            if finding_verdict(f, judged) == "vulnerable"
+            and f.get("category") not in (result.get("category"), "", "sast", None)
+        ],
+    }
 
 
 def graph_fields(review=None) -> dict:
@@ -106,6 +128,10 @@ def graph_fields(review=None) -> dict:
         "base_sha": getattr(meta, "base_sha", ""),
         "pr_sha": getattr(meta, "pr_sha", ""),
     }
+
+
+def run_record_fields(review=None) -> list[dict]:
+    return [asdict(r) for r in getattr(review, "run_records", None) or []]
 
 
 def sast_fields(review=None) -> dict:
@@ -492,6 +518,7 @@ def score_case(result: dict) -> dict:
             outcome_grounded=outcome_for_label(grounded_label, result["expected"]),
             correct=outcome in ("TP", "TN"),
         )
+    result.update(scope_fields(result))
     return result
 
 
@@ -533,6 +560,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             "latency_seconds": round(latency, 2),
             "est_tokens": est_tokens,
             "findings": findings,
+            "run_records": run_record_fields(result),
             "mode": config.mode,
             "pin": pin,
             **case_fields(case),
@@ -593,6 +621,7 @@ def summarize(results: list[dict]) -> dict:
         {"id": r["id"], "not_judged": n} for r in results if (n := not_judged_count(r))
     ]
     results = [r for r in results if not not_judged_count(r)]
+    headline = [r for r in results if r.get("scope", "in") == "in"]
 
     def metrics(
         rows: list[dict], key: str = "outcome", label_key: str = "case_label"
@@ -652,12 +681,7 @@ def summarize(results: list[dict]) -> dict:
         # A "vulnerable" verdict in the category the case does NOT test. The
         # benchmark PRs are single-flaw, so these are unlabelled (and, on
         # inspection, spurious) alarms that case-level scoring cannot see.
-        judged = is_judged_row(r)
-        return any(
-            finding_verdict(f, judged) == "vulnerable"
-            and f.get("category") not in (r["category"], "", "sast", None)
-            for f in r["findings"]
-        )
+        return bool(scope_fields(r)["off_category"])
 
     scored: list[dict] = []
     errs: list[dict] = []
@@ -672,14 +696,18 @@ def summarize(results: list[dict]) -> dict:
 
     def by(field: str, key: str = "outcome", label_key: str = "case_label") -> dict:
         return {
-            val: metrics([r for r in results if r.get(field) == val], key, label_key)
-            for val in sorted({r.get(field) for r in results if r.get(field)})
+            val: metrics([r for r in headline if r.get(field) == val], key, label_key)
+            for val in sorted({r.get(field) for r in headline if r.get(field)})
         }
 
     case_labels = Counter(r.get("case_label") or "legacy" for r in results)
 
     return {
-        "overall": metrics(results),
+        "overall": metrics(headline),
+        "out_of_scope_cases": sorted(r["id"] for r in results if r.get("scope", "in") != "in"),
+        "off_category": {
+            r["id"]: ids for r in results if (ids := scope_fields(r)["off_category"])
+        },
         "per_category": by("category"),
         "per_split": by("split"),
         "graph_states": dict(Counter(
@@ -687,7 +715,7 @@ def summarize(results: list[dict]) -> dict:
         # Same scoring in judged modes; legacy verdict rows count a detection
         # only when the finding is supported.
         "grounded_only": {
-            "overall": metrics(results, "outcome_grounded", "case_label_grounded"),
+            "overall": metrics(headline, "outcome_grounded", "case_label_grounded"),
             "per_category": by("category", "outcome_grounded", "case_label_grounded"),
             "per_split": by("split", "outcome_grounded", "case_label_grounded"),
         },
