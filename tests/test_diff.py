@@ -203,6 +203,32 @@ class TestParseUnifiedDiff:
         assert deleted == [21]
 
 
+class TestRemovedText:
+    def test_removed_text_holds_only_deleted_lines(self):
+        diffs = parse_unified_diff(SAMPLE_DIFF)
+        assert diffs[0].removed_text == "    old_line = True"
+
+    def test_removed_text_joins_deletions_across_hunks(self):
+        two_removals = MULTI_HUNK_DIFF.replace(" b = 2", " b = 2").replace(
+            "+b = 2\n c = 3", "-c = 3\n+b = 2"
+        )
+        diffs = parse_unified_diff(two_removals)
+        assert diffs[0].removed_text == "c = 3\n    y = 2"
+
+    def test_deleted_file_removed_text_is_its_content(self):
+        assert parse_unified_diff(DELETED_DIFF)[0].removed_text == "y = 1"
+
+    def test_removed_text_is_empty_without_deletions(self):
+        assert parse_unified_diff(SAMPLE_DIFF)[1].removed_text == ""
+        assert parse_unified_diff(BINARY_DIFF)[0].removed_text == ""
+        assert parse_unified_diff(RENAME_DIFF)[0].removed_text == ""
+
+    def test_added_text_is_unchanged_by_removed_text_access(self):
+        diffs = parse_unified_diff(SAMPLE_DIFF)
+        assert "old_line" not in diffs[0].added_text
+        assert "new_line = True" in diffs[0].added_text
+
+
 class TestGitIntegration:
     def test_get_pr_diff(self, git_repo):
         diffs = get_pr_diff(git_repo, "main", "pr")

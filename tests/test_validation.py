@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
-from lgtm.diff.git_diff import get_pr_diff
+from lgtm.diff.git_diff import get_pr_diff, parse_unified_diff
 from lgtm.validation.evidence import EvidenceValidator
 
 
@@ -17,6 +17,17 @@ def make_finding(**kwargs) -> AgentFinding:
 
 PR_SNIPPET = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
 BASE_SNIPPET = 'cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))'
+
+
+REMOVAL_DIFF = (
+    "diff --git a/app.py b/app.py\n"
+    "--- a/app.py\n"
+    "+++ b/app.py\n"
+    "@@ -1,3 +1,2 @@\n"
+    " def get_user(cursor, user_id):\n"
+    f"-    {BASE_SNIPPET}\n"
+    "     return cursor.fetchone()\n"
+)
 
 
 def _frozen_validator(git_repo):
@@ -45,6 +56,23 @@ class TestValidationStageOnlyAnnotatesPrGrounding:
         validator.validate(finding)
 
         assert [i.grounded_in_pr for i in finding.evidence] == [True, False, False]
+
+    def test_evidence_citing_only_removed_lines_is_grounded_in_the_pr(self, git_repo):
+        diffs = parse_unified_diff(REMOVAL_DIFF)
+        validator = EvidenceValidator(git_repo, "main", diffs)
+        finding = make_finding(
+            verdict="vulnerable",
+            evidence=[
+                EvidenceItem(type="code", file="app.py", lines=[2, 2], content=BASE_SNIPPET),
+                EvidenceItem(type="code", file="app.py", lines=[1, 1], content="def get_user(cursor, user_id):"),
+                EvidenceItem(type="code", file="app.py", lines=[3, 3], content="return cursor.fetchone()"),
+            ],
+        )
+
+        validator.validate(finding)
+
+        assert [i.grounded_in_pr for i in finding.evidence] == [True, False, False]
+        assert finding.verdict == "vulnerable"
 
     def test_validated_finding_carries_no_validator_flags(self, git_repo):
         validator = EvidenceValidator(git_repo, "main")
