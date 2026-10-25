@@ -83,16 +83,25 @@ def _hunk_lines(hunk: HunkRef) -> list[tuple[str, list[int]]]:
 
 
 def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, str]]:
-    """Innermost function (start, end, name) around each line, in source order."""
+    """Innermost function (start, end, qualified name such as "A.get") around each line, in source order."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return []
-    spans = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
-            spans.append((start, node.end_lineno or node.lineno, node.name))
+    spans: list[tuple[int, int, str]] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qualified = f"{prefix}{child.name}"
+                if not isinstance(child, ast.ClassDef):
+                    start = min([child.lineno, *(d.lineno for d in child.decorator_list)])
+                    spans.append((start, child.end_lineno or child.lineno, qualified))
+                visit(child, f"{qualified}.")
+            else:
+                visit(child, prefix)
+
+    visit(tree, "")
     found: set[tuple[int, int, str]] = set()
     for line in lines:
         inside = [s for s in spans if s[0] <= line <= s[1]]

@@ -1200,6 +1200,30 @@ class TestEnclosingDefinitionInInitialInput:
         assert "DEL_TOP" in text and "DEL_BOTTOM" in text
         assert "OTH_TOP" in text and "OTH_BOTTOM" in text
 
+    def test_same_named_methods_of_two_classes_both_reach_the_input(self, snapshots, tmp_path):
+        def method(tag):
+            return ["    " + line if line else line for line in _function("get", tag)[:-1]]
+
+        base = ["class A:"] + method("AAA") + ["class B:"] + method("BBB")
+        a_target = _target_line(base, "AAA")
+        b_target = _target_line(base, "BBB")
+        added = "        extra = 1"
+        pr = base[:a_target] + [added] + base[a_target:b_target - 1] + base[b_target:]
+        snapshots(base=base, pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#same-name", file="app.py", old_start=a_target, old_count=b_target,
+            new_start=a_target, new_count=b_target, change="modify",
+            changes=[
+                LineChange("add", added, None, a_target + 1),
+                LineChange("del", base[b_target - 1], b_target, None),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        for tag in ("AAA", "BBB"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+
     def test_one_hunk_adding_to_two_functions_brings_both(self, snapshots, tmp_path):
         pr = _function("first", "ONE") + _function("second", "TWO")
         first, second = _target_line(pr, "ONE"), _target_line(pr, "TWO")
