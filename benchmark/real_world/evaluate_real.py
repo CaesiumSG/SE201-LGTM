@@ -62,13 +62,14 @@ evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 fetch = _load("lgtm_rw_fetch", HERE / "fetch.py")
 
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
-from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
+from lgtm.diff.git_diff import GitError, get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
 
 MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
 DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
+GIT_START_FAILURES = ("exit 3221225794", "git executable not found")
 DEFAULT_OUTPUT = BENCH / "results" / "real_world"
 INFRA_PREFIXES = evaluate.INFRA_PREFIXES
 
@@ -242,6 +243,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     diffs = [d for d in get_pr_diff(clone, base_b, pr_b, cfg.git_timeout)
              if d.status != "deleted"]
     pipeline = ReviewPipeline(clone, cfg)
+    tokens = evaluate.record_input_tokens(pipeline, cfg) if mode in evaluate.JUDGED_MODES else None
 
     extra: dict = {
         "project": fetch.project_of(case), "mode": mode, "variant": variant,
@@ -273,8 +275,11 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     pin = run_pin(cfg, REPO_ROOT, {"base": graph["base_sha"], "pr": graph["pr_sha"]})
     extra["pin"] = pin
     try:
+        judged = mode in evaluate.JUDGED_MODES
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        grounded = [f for f in findings if f.get("evidence_valid")]
+        est_tokens = evaluate.estimate_tokens(findings, {})
+        findings = evaluate.with_kev_fields(findings, result.findings, judged, tokens)
+        grounded = [f for f in findings if f.get("supported")]
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
         if mode in DOC_MODES:
             coverage = getattr(result.meta, "coverage", None)
@@ -283,11 +288,11 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         return evaluate.score_case({
             "id": cid, "category": case["category"], "split": "real_world",
             "expected": case["expected_verdict"], "n_findings": len(findings),
-            "verdicts": [f["verdict"] for f in findings], "grounded": len(grounded),
+            "verdicts": [evaluate.finding_verdict(f, judged) for f in findings], "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),
-            "est_tokens": evaluate.estimate_tokens(findings, {}),
+            "est_tokens": est_tokens,
             "findings": findings, **extra, **graph, **evaluate.sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
@@ -299,25 +304,35 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
 # Summaries
 # ----------------------------------------------------------------------
 def write_dir_summary(out_dir: Path, mode: str, variant: str, expected: set[str],
-                      model: str, extra: dict | None = None) -> dict | None:
-    """Rebuild summary.json from every case JSON in ``out_dir``."""
+                      model: str, extra: dict | None = None,
+                      unrun: frozenset = frozenset()) -> dict | None:
+    """Rebuild summary.json from every case JSON in ``out_dir``.
+
+    ``unrun`` ids count as missing even when an earlier run left a row for them.
+    """
     results = []
     for path in sorted(out_dir.glob("*.json")):
         if path.name in ("summary.json", "run.json"):
             continue
         results.append(json.loads(path.read_text(encoding="utf-8")))
-    if not results:
-        return None
     present = {r["id"] for r in results}
     payload_extra = {
         "split": "real_world", "variant": variant,
         "experiments": {"require_tool_use": False, "static_facts": False,
                         "authz_role_guidance": False},
         "cases_expected": len(expected), "cases_present": len(present),
-        "complete": present >= expected,
-        "missing": sorted(expected - present),
+        "complete": present >= expected and not unrun,
+        "missing": sorted((expected - present) | unrun),
         **(extra or {}),
     }
+    if not results:
+        if not unrun:
+            return None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"mode": mode, **payload_extra}
+        (out_dir / "summary.json").write_text(json.dumps(payload, indent=2),
+                                              encoding="utf-8")
+        return payload
     with contextlib.redirect_stdout(io.StringIO()):  # write_summary prints it all
         evaluate.write_summary(out_dir, results, mode,
                                "none" if mode == "sast-only" else model, payload_extra)
@@ -406,9 +421,6 @@ def main(argv: list[str] | None = None) -> int:
     scrubs = path_replacements(args.cache, args.output)
     args.output.mkdir(parents=True, exist_ok=True)
 
-    # Also for --summarize-only: every summary.json records the environment it
-    # was built in, and a rebuild must not drop those fields.
-    env_info = preflight(args.modes, config)
     if not args.summarize_only:
         missing = [fetch.project_of(c) for c in cases
                    if not (args.cache / fetch.project_of(c) / ".git").is_dir()]
@@ -417,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"no clone for {sorted(set(missing))} under {args.cache}; "
                 "run benchmark/real_world/fetch.py --policies first"
             )
+    # Runs for --summarize-only too; every summary.json records this environment.
+    env_info = preflight(args.modes, config)
 
     units = list(pending_units(work_units(cases, args.modes, variants),
                                args.output, args.resume and not args.index_only))
@@ -430,6 +444,18 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     touched: set[tuple[str, str]] = set()
     done = 0
+    held = None  # a git start failure is recorded only once the next unit shows it was not the second in a row
+    aborted = False
+    held_at = 0
+    unrun: dict[tuple[str, str], set[str]] = {}
+
+    def record(case, variant, mode, result):
+        out_dir = out_dir_for(args.output, mode, variant)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{case['id']}.json").write_text(
+            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
+        touched.add((mode, variant))
+
     for i, (case, variant, mode) in enumerate(units, 1):
         if args.summarize_only:
             break
@@ -449,16 +475,31 @@ def main(argv: list[str] | None = None) -> int:
             result = error_result(
                 case, mode, variant, exc,
                 pin=run_pin(config, REPO_ROOT, {}))
+            if isinstance(exc, OSError) or (
+                    isinstance(exc, GitError) and any(s in str(exc) for s in GIT_START_FAILURES)):
+                if held is not None:
+                    print("git cannot start (two units in a row); aborting. Re-run with "
+                          "--resume once git works.", file=sys.stderr)
+                    held = None
+                    aborted = True
+                    for c, v, m in units[held_at - 1:]:
+                        unrun.setdefault((m, v), set()).add(c["id"])
+                    break
+                held = (case, variant, mode, result)
+                held_at = i
+                print(f"    ERROR: {scrub(result['error'], scrubs)}")
+                done += 1
+                continue
+        if held is not None:
+            if not args.index_only:
+                record(*held)
+            held = None
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
         if result is None or args.index_only:
             continue  # an index-only failure is printed, never a case result
-        out_dir = out_dir_for(args.output, mode, variant)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{case['id']}.json").write_text(
-            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
-        touched.add((mode, variant))
+        record(case, variant, mode, result)
         if not evaluate.result_is_error(result):
             if result.get("index_seconds") is not None:
                 index_note = f"index {result['index_seconds']}s"
@@ -469,23 +510,26 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result['predicted']}; review {result['latency_seconds']}s, "
                   f"{index_note}; {result['n_findings']} finding(s))")
 
+    if held is not None and not args.index_only:
+        record(*held)
     if args.index_only:
-        return 0
-    targets = touched if not args.summarize_only else {
+        return 4 if aborted else 0
+    targets = (touched | unrun.keys()) if not args.summarize_only else {
         (m, v) for m in args.modes for v in variants
         if out_dir_for(args.output, m, v).is_dir()}
     for mode, variant in sorted(targets):
         summary = write_dir_summary(
             out_dir_for(args.output, mode, variant), mode, variant,
             expected_ids(all_cases, mode, variant), config.ollama_model,
-            {**env_info, "reasoning": config.reasoning})
-        if summary:
+            {**env_info, "reasoning": config.reasoning},
+            frozenset(unrun.get((mode, variant), ())))
+        if summary and "summary" in summary:
             o = summary["summary"]["overall"]
             print(f"summary {mode}{variant_suffix(variant)}: cases={o['cases']} "
                   f"scored={o['scored']} errors={o['errors']} "
                   f"tp={o['tp']} fp={o['fp']} fn={o['fn']} tn={o['tn']} "
                   f"f1={o['f1']} complete={summary['complete']}")
-    return 0
+    return 4 if aborted else 0
 
 
 if __name__ == "__main__":

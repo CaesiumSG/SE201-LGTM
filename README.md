@@ -39,12 +39,11 @@ while an evidence validator keeps the LLM honest.
 The investigator groups the PR's changed hunks into sections. Hunks it does
 not place, and investigator failures, fall back to per-file sections. Every
 Python hunk is reviewed, including deletions. Each section gets one authz
-review that can return several findings. Findings with the `safe` verdict are
-dropped, overlapping duplicates are merged, and the evidence is validated.
+review that can return several findings. Overlapping duplicates are merged
+and the Kev-4B judge decides whether the cited code supports each finding.
 
-Verdicts per finding: `vulnerable` · `safe` · `possible` ·
-`insufficient_evidence`, each with confidence, CWE, evidence citations, and
-a suggested fix.
+Each candidate is reported as supported, unsupported or not judged, with
+the judge confidence, CWE, evidence citations, and a suggested fix.
 
 ## Setup
 
@@ -100,8 +99,12 @@ lgtm review ... --no-detect-prompt-injection  # don't report reviewer-directed
 ```
 
 Outputs `lgtm-output/report.json` (machine-readable findings) and
-`lgtm-output/report.md` (human-readable review). Exit code 1 signals
-confirmed `vulnerable` findings (CI-friendly).
+`lgtm-output/report.md` (human-readable review). Both list supported,
+unsupported and not judged candidates, supported first.
+
+Exit code of `lgtm review`: 1 if any candidate is supported, or a baseline
+mode reports a vulnerable finding; otherwise 2 if
+any candidate is not judged or any agent errored; otherwise 0 (CI-friendly).
 
 `--gpu-model qwen3.8-27b` connects through the existing GPU cluster
 tunnel at `http://127.0.0.1:11435` with the model `qwen3.8:27b` and
@@ -184,14 +187,9 @@ are ignored with an `Ignoring unknown config keys` warning.
   tool runs. Invalid calls return an error to the agent and count toward the
   tool-call budget. The third invalid call in a run forces the final answer.
 - Final answers that are not valid JSON are **re-requested** up to 3 times.
-- Every citation is **validated** post-hoc; ungrounded findings are flagged
-  with `evidence_valid: false`. A citation labelled `base` or `pr` must name a
-  file in that committed snapshot, and any line range must be ordered,
-  positive and inside the file. The snippet must appear in that file.
-- A `vulnerable` verdict is **downgraded to `possible`** when the PR graph was
-  unavailable for the finding and no valid code citation validated against the
-  PR snapshot or the PR diff. Any one such citation is enough to keep the
-  verdict.
+- Every code citation is **annotated** post-hoc with `grounded_in_pr`. A
+  citation labelled `base` or `pr` must name a file in that committed
+  snapshot, and any line range must be ordered, positive and inside the file.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.
 
 ## Benchmarks

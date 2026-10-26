@@ -9,7 +9,7 @@ Verifies that every claim an agent made is grounded in reality:
 Code evidence labelled with a snapshot is checked only against the committed
 blob at that snapshot's frozen commit, with exact matching.
 
-Findings get ``evidence_valid`` and a list of ``evidence_issues``.
+Validation annotates each cited code item with ``grounded_in_pr``.
 """
 
 from __future__ import annotations
@@ -28,10 +28,6 @@ from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
 logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 0.75
-PR_GROUNDING_CAP_MARKER = (
-    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
-    "for this finding and no cited evidence validated against the PR snapshot or the diff.]"
-)
 
 
 def _normalize(text: str) -> str:
@@ -253,6 +249,18 @@ class EvidenceValidator:
                 )
         return issues
 
+    def resolves(self, item: EvidenceItem) -> bool:
+        """Whether a code item resolves at its snapshot; unlabelled items resolve at pr, then base."""
+        if self._shas is None:
+            return True
+        if item.snapshot is None and not item.snapshot_conflict:
+            return any(
+                not self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                for label in ("pr", "base")
+                if label in self._shas
+            )
+        return not self._validate_code_item(item)
+
     def _validate_policy_item(self, item: EvidenceItem) -> list[str]:
         issues: list[str] = []
         source = item.source or item.file
@@ -284,37 +292,30 @@ class EvidenceValidator:
             item.content, self._diff_added[item.file]
         )
 
+    def read_cited_code(self, item: EvidenceItem) -> str:
+        """Code at the cited location; empty when it cannot be read."""
+        if not item.file:
+            return ""
+        lines: list[str] | None = None
+        if self._shas is None:
+            lines = self._read_base_file(self._resolve_path(item.file))
+        else:
+            for label in [item.snapshot] if item.snapshot else ["pr", "base"]:
+                if label in self._shas:
+                    lines = self._snapshot_lines(label, item.file)
+                if lines is not None:
+                    break
+        if lines is None:
+            return ""
+        if item.lines is not None and _is_ordered_positive_range(item.lines):
+            lines = lines[item.lines[0] - 1 : item.lines[1]]
+        return "\n".join(lines)
+
     def validate(self, finding: AgentFinding) -> AgentFinding:
-        """Validate one finding in place and return it.
-
-        The PR-graph cap runs here, after validation, so it applies once per
-        finding however the caller reaches this method.
-        """
-        issues: list[str] = []
-        grounded = False
+        """Annotate ``grounded_in_pr`` on each cited code item in place and return the finding."""
         for item in finding.evidence:
-            if item.type == "policy":
-                item_issues = self._validate_policy_item(item)
-            else:
-                item_issues = self._validate_code_item(item)
-                grounded = grounded or self._grounds_pr(item, item_issues)
-            issues.extend(item_issues)
-
-        strong_verdict = finding.verdict in ("vulnerable", "safe")
-        if strong_verdict and not finding.evidence:
-            issues.append(
-                f"verdict '{finding.verdict}' provided without any evidence"
-            )
-
-        finding.evidence_issues = issues
-        finding.evidence_valid = not issues
-        if finding.pr_graph_ok is False and finding.verdict == "vulnerable" and not grounded:
-            finding.verdict = "possible"
-            finding.explanation = f"{finding.explanation}\n\n{PR_GROUNDING_CAP_MARKER}"
-        if issues:
-            logger.info(
-                "Evidence issues for %s: %s", finding.finding_id, "; ".join(issues)
-            )
+            if item.type != "policy":
+                item.grounded_in_pr = self._grounds_pr(item, self._validate_code_item(item))
         return finding
 
     def validate_all(self, findings: list[AgentFinding]) -> list[AgentFinding]:

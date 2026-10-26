@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -16,9 +17,7 @@ from lgtm.config import LGTMConfig
 
 logger = logging.getLogger(__name__)
 
-Verdict = Literal["vulnerable", "safe", "possible", "insufficient_evidence"]
-
-VALID_VERDICTS = {"vulnerable", "safe", "possible", "insufficient_evidence"}
+PARSE_RETRIES = 3
 
 SNAPSHOT_LABELS = ("base", "pr")
 
@@ -36,6 +35,7 @@ class EvidenceItem(BaseModel):
     content: str = ""
     snapshot: Literal["base", "pr"] | None = None
     snapshot_conflict: bool = False
+    grounded_in_pr: bool | None = None
     raw_snapshot: Any = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
@@ -70,35 +70,32 @@ class EvidenceItem(BaseModel):
 
 class AgentFinding(BaseModel):
     finding_id: str
-    verdict: str = "insufficient_evidence"
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     cwe_id: str = ""
     explanation: str = ""
     evidence: list[EvidenceItem] = Field(default_factory=list)
     suggested_fix: str = ""
+    semgrep_rule_id: str = ""
+    semgrep_severity: str = ""
+    semgrep_message: str = ""
+    # Result fields: left unset by agents, written by validation.
+    verdict: str = ""  # baseline modes only
+    severity: str = ""
+    supported: bool | None = None
+    provenance_confidence: float | None = None
+    kev_verdict: str | None = Field(default=None, exclude=True)
+    kev_severity: str | None = Field(default=None, exclude=True)
+    judged: bool = False
+    not_judged_reason: str = ""
+    unsupported_reason: str = ""
     # Filled in by the pipeline / validator:
     category: str = ""  # "sqli" | "authz"
     agent: str = ""  # which agent produced this
     file: str = ""  # primary file under review
     line: int = 0  # primary line under review
     tool_calls_used: int = 0
-    evidence_valid: bool | None = None
-    evidence_issues: list[str] = Field(default_factory=list)
     # Set by the pipeline from graph session health; never read from model JSON.
     pr_graph_ok: bool | None = None
     raw_response: str = ""
-
-    def normalized(self) -> "AgentFinding":
-        """Clamp verdict/confidence into the allowed ranges."""
-        if self.verdict not in VALID_VERDICTS:
-            logger.warning(
-                "Invalid verdict %r for %s; downgrading to insufficient_evidence",
-                self.verdict,
-                self.finding_id,
-            )
-            self.verdict = "insufficient_evidence"
-        self.confidence = min(1.0, max(0.0, self.confidence))
-        return self
 
 
 def repair_json(candidate: str) -> str:
@@ -217,15 +214,15 @@ def parse_agent_output(
 ) -> AgentFinding:
     """Parse an agent's final response into an AgentFinding.
 
-    Falls back to ``insufficient_evidence`` when the output is unparsable,
-    so a malformed LLM response never crashes the pipeline.
+    The model's verdict and confidence are ignored. Unparsable output yields
+    a placeholder candidate, so a malformed LLM response never crashes the
+    pipeline.
     """
     data = extract_json_object(text)
     if data is None:
         logger.warning("Agent output for %s contained no JSON", finding_id)
         return AgentFinding(
             finding_id=finding_id,
-            verdict="insufficient_evidence",
             cwe_id=default_cwe,
             explanation=registry.entry("shared.unparsable_explanation"),
             raw_response=text[:2000],
@@ -263,23 +260,79 @@ def parse_agent_output(
         except ValidationError:
             continue
 
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    confidence = min(1.0, max(0.0, confidence))
-
-    finding = AgentFinding(
+    return AgentFinding(
         finding_id=str(data.get("finding_id") or finding_id),
-        verdict=str(data.get("verdict", "insufficient_evidence")).strip().lower(),
-        confidence=confidence,
         cwe_id=str(data.get("cwe_id", default_cwe) or default_cwe),
         explanation=str(data.get("explanation", "")),
         evidence=evidence,
         suggested_fix=str(data.get("suggested_fix", "") or ""),
         raw_response=text[:2000],
     )
-    return finding.normalized()
+
+
+def answer_until_parsed(
+    ask: Callable[[], str],
+    parse: Callable[[str], Any | None],
+    stop: Callable[[], bool] = lambda: False,
+) -> Any | None:
+    """Run ``ask`` until ``parse`` accepts its answer, retrying PARSE_RETRIES times.
+
+    Exceptions from ``ask`` propagate unretried; None means every answer failed to parse.
+    ``stop`` is checked after each failed parse and ends the retries.
+    """
+    for _ in range(PARSE_RETRIES + 1):
+        result = parse(ask())
+        if result is not None:
+            return result
+        if stop():
+            break
+    return None
+
+
+def answer_until_resolved(
+    ask: Callable[[], str],
+    parse: Callable[[str], AgentFinding | list[AgentFinding] | None],
+    toolbox: Any,
+) -> list[AgentFinding] | None:
+    """Like ``answer_until_parsed``, but an answer citing code that does not resolve at the
+    toolbox snapshots counts as a parse failure.
+
+    After the budget the last such answer is returned with unresolved items dropped and
+    candidates left without valid code evidence removed (logged); None means no answer parsed.
+    """
+    from lgtm.validation.evidence import EvidenceValidator
+
+    validator = EvidenceValidator(
+        toolbox.repo, toolbox.base_ref, config=toolbox.config, shas=toolbox.shas
+    )
+    pruned: list[AgentFinding] | None = None
+    dropped: list[AgentFinding] = []
+
+    def check(raw: str) -> list[AgentFinding] | None:
+        nonlocal pruned, dropped
+        result = parse(raw)
+        if result is None:
+            return None
+        findings = result if isinstance(result, list) else [result]
+        bad = {
+            id(f): [i for i in f.evidence if i.type != "policy" and not validator.resolves(i)]
+            for f in findings
+        }
+        if not any(bad.values()):
+            return findings
+        pruned, dropped = [], []
+        for f in findings:
+            f.evidence = [i for i in f.evidence if i not in bad[id(f)]]
+            emptied = bad[id(f)] and not any(i.type != "policy" for i in f.evidence)
+            (dropped if emptied else pruned).append(f)
+        return None
+
+    answer = answer_until_parsed(ask, check, lambda: getattr(toolbox, "budget_spent", False))
+    if answer is not None:
+        return answer
+    for f in dropped:
+        logger.warning("Dropped candidate %s: no cited code resolves", f.finding_id)
+    return pruned
 
 
 def build_llm(config: LGTMConfig):
@@ -429,6 +482,35 @@ def _toolbox_of(tools) -> Any:
     return None
 
 
+@dataclass
+class RunRecord:
+    """What one agent run did: tool calls, final answer text, and the budget it hit."""
+
+    section: str
+    tool_calls: list[dict] = field(default_factory=list)
+    raw_answer: str = ""
+    limit_hit: Literal["tool_calls", "steps"] | None = None
+
+
+def _close_run(toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False) -> str:
+    if toolbox is not None:
+        toolbox.steps_exhausted = steps_exhausted
+        toolbox.budget_spent = budget_spent
+    return answer
+
+
+def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
+    """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
+    record.raw_answer = answer
+    record.tool_calls = list(toolbox.call_log)
+    over_budget = getattr(toolbox, "budget_spent", False) or len(toolbox.call_log) > toolbox.budget
+    if toolbox.steps_exhausted:
+        record.limit_hit = "steps"
+    else:
+        record.limit_hit = "tool_calls" if over_budget else None
+    return answer
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -475,7 +557,8 @@ def run_tool_loop(
                         )
                     )
                     continue
-                return request_valid_answer(llm, messages, content, config, is_json_object)
+                answer = request_valid_answer(llm, messages, content, config, is_json_object)
+                return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
             name = call.get("name")
@@ -525,7 +608,8 @@ def run_tool_loop(
     if cap > 0 and invalid_inputs >= cap:
         budget_spent = False
 
-    if cap > 0 and invalid_inputs >= cap:
+    invalid_capped = cap > 0 and invalid_inputs >= cap
+    if invalid_capped:
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
     elif budget_spent:
         logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
@@ -534,4 +618,7 @@ def run_tool_loop(
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
-    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    return _close_run(
+        toolbox, answer, steps_exhausted=not (invalid_capped or budget_spent), budget_spent=budget_spent
+    )

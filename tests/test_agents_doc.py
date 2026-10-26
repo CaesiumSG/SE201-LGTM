@@ -72,7 +72,7 @@ def code_tools(agent: str, cond: dict) -> set[str]:
 
     def record(llm, tools, system, user, config):
         handed.append(tools)
-        return "{}"
+        return '{"findings": []}' if agent == "authz_reviewer" else "{}"
 
     box = AgentToolbox(".", "HEAD", shas=cond["shas"], session=cond["session"])
     original = module.run_tool_loop

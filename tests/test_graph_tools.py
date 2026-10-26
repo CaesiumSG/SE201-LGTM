@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lgtm.agents import registry
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
@@ -189,9 +190,15 @@ def run_agent(request, git_repo):
             )
             result = SASTTriageAgent(toolbox, config, llm=llm).triage(finding, None)
         else:
-            result = AuthzReviewerAgent(toolbox, config, llm=llm).review_section(
-                _section(), ""
-            )[0]
+            agent = AuthzReviewerAgent(toolbox, config, llm=llm)
+            findings = agent.review_section(_section(), "")
+            if findings:
+                result = findings[0]
+            else:
+                assert agent.errors
+                result = SimpleNamespace(
+                    tool_calls_used=toolbox.calls_used, verdict=None
+                )
         return result, llm
 
     return run
@@ -200,7 +207,7 @@ def run_agent(request, git_repo):
 def _text_result(name, args, result):
     return (
         f"Result of {name}({json.dumps(args)}):\n{result}\n\n"
-        "Call another tool, or give your final JSON verdict."
+        "Call another tool, or give your final JSON answer."
     )
 
 
@@ -208,7 +215,7 @@ def _tool_messages(llm, call_index):
     return [m for m in llm.seen[call_index] if type(m).__name__ == "ToolMessage"]
 
 
-FORCED_MARK = "final JSON verdict NOW"
+FORCED_MARK = registry.entry("shared.forced_final")
 
 
 def _loop_stopped_after(llm, n):
@@ -227,7 +234,7 @@ class TestFailedCallsSpendSlots:
         assert result.tool_calls_used == 5
         assert _loop_stopped_after(llm, 5)
         assert _touched(git_commands, "app.py") == []
-        assert result.verdict == "safe"
+        assert not result.verdict
 
     def test_eight_failed_native_calls_saturate_at_five_with_no_extra_backend_work(
         self, run_agent, git_commands
@@ -339,7 +346,7 @@ class TestRejectedCallsSpendSlots:
         script = [_text("rm_rf", {"path": "x"}), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 1
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 2
         assert "ERROR" in llm.seen[1][-1].content
 
@@ -347,7 +354,7 @@ class TestRejectedCallsSpendSlots:
         tagged = '<tool_call>{"name": "shell", "arguments": {"cmd": "ls"}}</tool_call>'
         result, llm = run_agent([_msg(tagged), _msg(SAFE)])
         assert result.tool_calls_used == 1
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 2
 
     def test_text_call_with_invalid_schema_spends_a_slot(self, run_agent):
@@ -361,8 +368,8 @@ class TestRejectedCallsSpendSlots:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 3
         assert llm.channels == ["bound", "bound", "bound", "unbound"]
-        assert "Produce your final JSON verdict NOW" in llm.seen[3][-1].content
-        assert result.verdict == "safe"
+        assert "Produce your final JSON answer NOW" in llm.seen[3][-1].content
+        assert not result.verdict
 
 
 class TestNonToolOutputsAreNotCalls:
@@ -373,7 +380,7 @@ class TestNonToolOutputsAreNotCalls:
         )
         result, llm = run_agent([_msg(verdict)])
         assert result.tool_calls_used == 0
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert len(llm.seen) == 1
 
     def test_prose_mentioning_a_tool_is_not_a_tool_call(self, run_agent):
@@ -381,15 +388,18 @@ class TestNonToolOutputsAreNotCalls:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 0
         assert "not a valid JSON object" in llm.seen[1][-1].content
-        assert result.verdict == "safe"
+        assert not result.verdict
 
 
     @pytest.mark.parametrize(
         "payload",
         [
-            {"name": "x", "explanation": "no verdict here"},
-            {"name": "rm_rf", "explanation": "unregistered, no arguments"},
-            {"name": "finding-7", "confidence": 0.4},
+            {"name": "x", "explanation": "no verdict here",
+             "findings": [{"explanation": "no verdict here"}]},
+            {"name": "rm_rf", "explanation": "unregistered, no arguments",
+             "findings": [{"explanation": "unregistered, no arguments"}]},
+            {"name": "finding-7", "confidence": 0.4,
+             "findings": [{"confidence": 0.4}]},
         ],
         ids=["named_object", "unregistered_name", "named_finding"],
     )
@@ -437,7 +447,7 @@ class TestSuccessfulCallsAndResilience:
         script += [_msg("prose"), _msg("more prose"), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert result.verdict == "safe"
+        assert not result.verdict
         assert "not a valid JSON object" in llm.seen[-1][-1].content
 
     @pytest.mark.parametrize("agent", ["sast_triage", "authz_reviewer"])
@@ -543,11 +553,11 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         script.append(_msg(SAFE))
         result, llm = run_agent(script, max_agent_iterations=20)
         assert result.tool_calls_used == 5
-        assert result.verdict == "safe"
+        assert not result.verdict
         # Five bound turns spend the budget; the forced-final request and the
         # re-asks that follow the model's refusals are all unbound.
         assert llm.channels[:5] == ["bound"] * 5 and "bound" not in llm.channels[5:]
-        assert "Produce your final JSON verdict NOW" in llm.seen[5][-1].content
+        assert "Produce your final JSON answer NOW" in llm.seen[5][-1].content
 
 
 # ---------------------------------------------------------------------------
@@ -814,19 +824,20 @@ class TestGitOnlyReads:
         assert "get_user" in r.call("grep_repo", pattern="get_user")
         assert r.exports == [] and r.runner.calls == []
 
-    def test_read_is_capped_at_200_lines(self, rig):
+    def test_read_without_a_range_returns_the_whole_file_within_the_configured_cap(self, rig):
         r = rig()
         out = r.call("read_file", path="big.txt")
-        assert _lines(out)[0].endswith("path=big.txt lines=1-200]")
-        assert "200: row 200" in out and "201: row 201" not in out
-        capped = r.call("read_file", path="big.txt", start_line=100, end_line=300)
-        assert _lines(capped)[0].endswith("lines=100-299]")
+        assert _lines(out)[0].endswith("path=big.txt lines=1-300]")
+        assert "300: row 300" in out
+        ranged = r.call("read_file", path="big.txt", start_line=100, end_line=300)
+        assert _lines(ranged)[0].endswith("lines=100-300]")
         tail = r.call("read_file", path="big.txt", start_line=250, end_line=300)
         assert _lines(tail)[0].endswith("lines=250-300]")
 
-    def test_read_output_is_capped_at_8000_characters_with_end_marker(self, rig):
-        out = rig().call("read_file", path="wide.txt")
-        assert len(out) <= 8000
+    def test_read_output_is_bounded_by_the_line_cap_character_limit_with_end_marker(self, rig):
+        # 60 lines at 160 characters per line is a 9600-character limit; wide.txt is about 19500.
+        out = rig(read_file_max_lines=60).call("read_file", path="wide.txt")
+        assert 8000 < len(out) <= 9600
         assert out.startswith("[READ snapshot=base ") and out.endswith("[END READ]")
 
     def test_read_beyond_end_keeps_the_existing_envelope(self, rig):
@@ -857,7 +868,7 @@ class TestGitOnlyReads:
         assert reversed_range == r.call("read_file", path="shift.py", start_line=2)
         assert _lines(reversed_range)[0].endswith("lines=2-3]")
         capped = r.call("read_file", path="big.txt", start_line=5, end_line=2)
-        assert _lines(capped)[0].endswith("path=big.txt lines=5-204]")
+        assert _lines(capped)[0].endswith("path=big.txt lines=5-300]")
 
     def test_leading_dash_path_is_a_plain_absent_file(self, rig, snap):
         assert rig().call("read_file", path="-x") == (
@@ -1622,3 +1633,48 @@ def test_sast_triage_is_not_given_graph_tools(rig):
     prompt = "\n".join(str(m.content) for m in llm.seen[0])
     assert "investigate_" not in prompt
     assert r.toolbox.call_log == []
+
+
+READ_SHA = "c" * 40
+
+
+def _read_toolbox(monkeypatch, line_count, **config):
+    source = "\n".join(f"v{i} = {i}" for i in range(1, line_count + 1)) + "\n"
+
+    def fake_run_git(repo, args, timeout):
+        code = 0 if args[:2] == ["cat-file", "blob"] else 1
+        return subprocess.CompletedProcess(args, code, stdout=source, stderr="")
+
+    monkeypatch.setattr("lgtm.agents.tools.run_git", fake_run_git)
+    return AgentToolbox(
+        "repo", "main", None, LGTMConfig(**config), shas={"base": READ_SHA, "pr": READ_SHA}
+    )
+
+
+def _numbered(out):
+    return [int(line.split(":")[0]) for line in out.splitlines() if line[:1].isdigit()]
+
+
+class TestReadFileLineCap:
+    def test_one_read_returns_a_function_longer_than_the_previous_cap_without_truncation(
+        self, monkeypatch
+    ):
+        toolbox = _read_toolbox(monkeypatch, 260)
+
+        assert _numbered(toolbox.read_file_impl("app.py", 1, 260)) == list(range(1, 261))
+
+    def test_read_without_a_range_returns_a_whole_file_beyond_the_previous_cap(self, monkeypatch):
+        toolbox = _read_toolbox(monkeypatch, 260)
+
+        assert _numbered(toolbox.read_file_impl("app.py")) == list(range(1, 261))
+
+    def test_read_stops_at_the_configured_cap(self, monkeypatch):
+        cap = LGTMConfig().read_file_max_lines
+        toolbox = _read_toolbox(monkeypatch, cap + 50)
+
+        assert _numbered(toolbox.read_file_impl("app.py", 1, cap + 50)) == list(range(1, cap + 1))
+
+    def test_lowering_the_configured_cap_shortens_a_read(self, monkeypatch):
+        toolbox = _read_toolbox(monkeypatch, 260, read_file_max_lines=30)
+
+        assert _numbered(toolbox.read_file_impl("app.py")) == list(range(1, 31))

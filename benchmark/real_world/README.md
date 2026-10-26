@@ -113,3 +113,7 @@ every miss are explained in [`docs/real-world-eval.md`](../../docs/real-world-ev
 `policies/<project>.md` are short access-control policies written only from
 each project's public documentation; they are what the policy variant adds
 as `security-policy.md`.
+
+The lgtm and lgtm-no-sast records carry `kev_verdict` and `kev_severity` per finding, and each
+`summary.json` carries the `kev` metrics described in [`benchmark/README.md`](../README.md).
+`--resume` runs a lgtm or lgtm-no-sast unit again when its judged candidates lack `kev_verdict`.

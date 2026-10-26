@@ -381,7 +381,7 @@ class TestSectionReviewPrompt:
     def test_prompt_says_a_missing_rule_is_not_a_confirmed_violation(self, git_repo):
         text = _flat(_section_prompt(git_repo, _section()))
         assert re.search(r"lack of an explicit rule", text, re.I)
-        assert re.search(r"\bpossible\b", text)
+        assert not re.search(r"\b(vulnerable|possible|insufficient_evidence)\b", text, re.I)
 
 
 def _user_prompt(git_repo, section, notes=""):

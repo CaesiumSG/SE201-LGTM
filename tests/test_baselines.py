@@ -12,8 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lgtm.agents import registry
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
-from lgtm.agents.plain_reviewer import DEFAULT_CWE
+from lgtm.agents.plain_reviewer import DEFAULT_CWE, VERDICTS
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import parse_unified_diff
 from lgtm.pipeline import ReviewPipeline
@@ -64,14 +65,20 @@ ASSESSMENTS = json.dumps({
 class TestPlainReviewer:
     def test_parses_one_finding_per_category(self):
         findings = PlainLLMReviewer._parse(ASSESSMENTS)
-        assert [(f.category, f.verdict) for f in findings] == [
-            ("sqli", "vulnerable"), ("authz", "safe"),
-        ]
+        assert [f.category for f in findings] == ["sqli", "authz"]
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
         assert findings[0].line == 6 and findings[0].agent == "plain_llm"
 
     def test_category_inferred_from_cwe(self):
         raw = json.dumps({"assessments": [{"verdict": "vulnerable", "cwe_id": "CWE-89"}]})
         assert PlainLLMReviewer._parse(raw)[0].category == "sqli"
+        assert PlainLLMReviewer._parse(raw)[0].verdict == "vulnerable"
+
+    def test_prompt_asks_for_the_verdict_the_parser_reads(self):
+        prompt = registry.entry("plain_reviewer.system_prompt")
+        assert '"verdict"' in prompt
+        for verdict in VERDICTS:
+            assert verdict in prompt
 
     def test_unparsable_output_degrades(self):
         findings = PlainLLMReviewer._parse("I think it is fine.")
@@ -88,11 +95,24 @@ class TestPlainReviewer:
         assert "find_user" in prompt  # the diff is the only context
         sqli = [f for f in result.findings if f.category == "sqli"][0]
         assert sqli.verdict == "vulnerable"
-        assert sqli.evidence_valid is True  # snippet is in the PR's added lines
+        assert sqli.judged is False
 
 
-def _f(category, verdict, valid=True):
-    return {"category": category, "verdict": verdict, "evidence_valid": valid}
+def _f(category, verdict, valid=None):
+    """Baseline-form finding; `_case_row` turns it into a judged-form one for judged modes.
+
+    `valid` sets `supported`, the flag grounded scoring reads on baseline-form findings.
+    """
+    finding = {"category": category, "verdict": verdict}
+    if valid is not None:
+        finding["supported"] = valid
+    return finding
+
+
+def _s(category, supported):
+    return {"category": category, "supported": supported, "judged": True,
+            "provenance_confidence": 0.9,
+            "kev_verdict": "real" if supported else "not_real", "kev_severity": "medium"}
 
 
 class TestCaseScoring:
@@ -104,25 +124,17 @@ class TestCaseScoring:
     def test_uncategorized_findings_count_for_any_category(self):
         assert evaluate.predict_case_verdict([_f("sast", "vulnerable")], "sqli") == "vulnerable"
 
-    def test_grounded_scoring_discounts_unvalidated_detections(self):
-        findings = [_f("authz", "vulnerable", valid=False)]
-        assert evaluate.predict_case_verdict(findings, "authz") == "vulnerable"
-        assert (
-            evaluate.predict_case_verdict(findings, "authz", require_grounded=True)
-            == "possible"
-        )
-
     def test_score_case_and_summary_splits(self):
         rows = [
             evaluate.score_case({"id": "a", "category": "authz", "split": "dev",
                                  "expected": "vulnerable",
-                                 "findings": [_f("authz", "vulnerable", valid=False)],
+                                 "findings": [_f("authz", "vulnerable")],
                                  "latency_seconds": 1.0, "est_tokens": 10}),
             evaluate.score_case({"id": "b", "category": "authz", "split": "eval",
                                  "expected": "safe", "findings": [_f("authz", "safe")],
                                  "latency_seconds": 1.0, "est_tokens": 10}),
         ]
-        assert rows[0]["outcome"] == "TP" and rows[0]["outcome_grounded"] == "FN"
+        assert rows[0]["outcome"] == "TP"
         summary = evaluate.summarize(rows)
         assert set(summary["per_split"]) == {"dev", "eval"}
         assert summary["overall"]["recall"] == 1.0
@@ -396,7 +408,7 @@ def test_benchmark_gpu_model_conflicts(tmp_path, monkeypatch, conflict):
 def _infra_finding(finding_id="authz:1", explanation="Agent execution failed: boom"):
     return {
         "finding_id": finding_id, "category": "authz",
-        "verdict": "insufficient_evidence", "evidence_valid": False,
+        "verdict": "insufficient_evidence",
         "explanation": explanation,
     }
 
@@ -550,7 +562,8 @@ class TestErrorAccounting:
         legacy = self._tp("b", findings=[])
         legacy["predicted"] = "error"
         assert legacy["outcome_grounded"] == "FN"
-        summary = evaluate.summarize([self._tp("a"), legacy])
+        flagged = [dict(_f("authz", "vulnerable"), supported=True)]
+        summary = evaluate.summarize([self._tp("a", findings=flagged), legacy])
         grounded = summary["grounded_only"]
         assert grounded["overall"]["fn"] == 0
         assert grounded["overall"]["scored"] == 1
@@ -1100,9 +1113,8 @@ class TestPlainReviewerResilience:
         assert sleeps == [2.0]
         assert len(findings) == 2
         assert llm.calls == 2
-        assert [(f.category, f.verdict) for f in findings] == [
-            ("sqli", "vulnerable"), ("authz", "safe"),
-        ]
+        assert [f.category for f in findings] == ["sqli", "authz"]
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
 
     def test_failure_after_retries_reports_llm_call_failed(self, sleeps):
         llm = _ScriptedPlainLLM([RuntimeError("down")] * 4)
@@ -1118,9 +1130,8 @@ class TestPlainReviewerResilience:
         llm = _ScriptedPlainLLM(["I think it is fine.", ASSESSMENTS])
         findings = self._review(llm)
         assert llm.calls == 2
-        assert [(f.category, f.verdict) for f in findings] == [
-            ("sqli", "vulnerable"), ("authz", "safe"),
-        ]
+        assert [f.category for f in findings] == ["sqli", "authz"]
+        assert [f.verdict for f in findings] == ["vulnerable", "safe"]
         assert all(f.finding_id != "plain:unparsable" for f in findings)
 
     def test_gives_up_after_three_reasks(self):
@@ -1156,7 +1167,7 @@ def _section(section_id, hunks, status="completed"):
         "section_id": section_id, "origin": "planner", "title": section_id,
         "files": sorted({h["file"] for h in hunks}), "split": False,
         "partial_hunk": False, "hunks": hunks, "status": status,
-        "verdicts": [], "finding_ids": [], "error": None,
+        "supported": [], "finding_ids": [], "error": None,
     }
 
 
@@ -1184,13 +1195,29 @@ ROW_FILE = "app/orders.py"
 LOCATION = {"file": ROW_FILE, "old_range": None, "new_range": [10, 14]}
 
 
+JUDGED_MODES = ("lgtm", "lgtm-no-sast")
+
+
+def _as_judged(finding):
+    """Judged modes carry `supported`, never the verdict; only "vulnerable" stands for supported."""
+    if "verdict" not in finding:
+        return finding
+    judged = {k: v for k, v in finding.items() if k != "verdict"}
+    supported = finding["verdict"] == "vulnerable"
+    return {**judged, "supported": supported, "judged": True, "provenance_confidence": 0.9,
+            "kev_verdict": "real" if supported else "not_real", "kev_severity": "medium"}
+
+
 def _case_row(cid="c", expected="vulnerable", findings=(), coverage="absent",
               mode="lgtm", locations="default", file=ROW_FILE, split="dev",
-              **extra):
-    """`locations=None` omits the vulnerable_locations key."""
+              raw=False, **extra):
+    """`locations=None` omits the vulnerable_locations key; `raw` keeps verdict-form findings in any mode."""
+    findings = copy.deepcopy(list(findings))
+    if mode in JUDGED_MODES and not raw:
+        findings = [_as_judged(f) for f in findings]
     row = {
         "id": cid, "category": "authz", "split": split, "expected": expected,
-        "findings": copy.deepcopy(list(findings)), "latency_seconds": 1.0,
+        "findings": findings, "latency_seconds": 1.0,
         "est_tokens": 10, "mode": mode, "file": file,
         "pin": {"code_sha": "abc"}, **extra,
     }
@@ -1221,9 +1248,9 @@ def _scenario(label):
         "detected_vulnerability": dict(
             findings=[_f("authz", "vulnerable")], coverage=complete),
         "possible_vulnerability": dict(
-            findings=[_f("authz", "possible")], coverage=complete),
+            findings=[_f("authz", "possible")], mode="llm-only"),
         "insufficient_evidence": dict(
-            findings=[_f("authz", "insufficient_evidence")], coverage=complete),
+            findings=[_f("authz", "insufficient_evidence")], mode="llm-only"),
         "explicit_safe": dict(findings=[_f("authz", "safe")], coverage=complete),
         "missing_review": dict(
             findings=[_f("authz", "safe")],
@@ -1240,9 +1267,10 @@ def _label(**kw):
 
 
 COVERAGE_MODES = ["lgtm", "lgtm-no-sast"]
+BASELINE_ONLY_LABELS = ["possible_vulnerability", "insufficient_evidence"]
 ALL_LABELS = [
-    "detected_vulnerability", "possible_vulnerability", "insufficient_evidence",
-    "explicit_safe", "missing_review", "no_candidate", "scan_failure",
+    "detected_vulnerability", "explicit_safe", "missing_review", "no_candidate",
+    "scan_failure",
 ]
 
 
@@ -1257,8 +1285,6 @@ class TestCaseLabels:
     @pytest.mark.parametrize("mode", COVERAGE_MODES)
     @pytest.mark.parametrize("label,predicted", [
         ("detected_vulnerability", "vulnerable"),
-        ("possible_vulnerability", "possible"),
-        ("insufficient_evidence", "insufficient_evidence"),
         ("explicit_safe", "safe"),
         # predicted comes from the findings (round-2 rule); the label is a
         # diagnostic next to it, so a failed or missing review with a safe
@@ -1359,12 +1385,11 @@ class TestCaseLabels:
         assert _label(findings=[_f("authz", "safe")], coverage=cov) == "missing_review"
 
     @pytest.mark.parametrize("findings,label", [
-        ([_f("authz", "possible"), _f("authz", "insufficient_evidence"),
-          _f("authz", "safe")], "possible_vulnerability"),
-        ([_f("authz", "insufficient_evidence"), _f("authz", "safe")], "explicit_safe"),
+        ([_s("authz", False), _s("authz", False)], "explicit_safe"),
+        ([_s("authz", False), _s("authz", True)], "detected_vulnerability"),
     ])
     @pytest.mark.parametrize("mode", COVERAGE_MODES)
-    def test_non_vulnerable_verdict_precedence_in_coverage_modes(
+    def test_supported_candidate_decides_the_label_in_judged_modes(
             self, mode, findings, label):
         cov = _coverage([_target_section()])
         assert _label(mode=mode, findings=findings, coverage=cov) == label
@@ -1553,8 +1578,6 @@ class TestFindingsOnlyLabels:
 class TestOutcomeTable:
     @pytest.mark.parametrize("label,vulnerable_outcome,safe_outcome", [
         ("detected_vulnerability", "TP", "FP"),
-        ("possible_vulnerability", "FN", "TN"),
-        ("insufficient_evidence", "FN", "TN"),
         ("explicit_safe", "FN", "TN"),
         ("no_candidate", "FN", "TN"),
         ("missing_review", "FN", "TN"),
@@ -1574,39 +1597,49 @@ class TestOutcomeTable:
         assert safe["outcome"] == safe_outcome
         assert safe["outcome_grounded"] == safe_outcome
 
-    @pytest.mark.parametrize("expected,plain,grounded", [
-        ("vulnerable", "TP", "FN"), ("safe", "FP", "TN"),
+    @pytest.mark.parametrize("label,vulnerable_outcome,safe_outcome", [
+        ("possible_vulnerability", "FN", "TN"),
+        ("insufficient_evidence", "FN", "TN"),
     ])
-    def test_ungrounded_vulnerable_is_downgraded_to_possible_in_grounded_label(
-            self, expected, plain, grounded):
-        row = evaluate.score_case(_case_row(
-            expected=expected, coverage=_coverage([_target_section()]),
-            findings=[_f("authz", "vulnerable", valid=False)]))
-        assert row["case_label"] == "detected_vulnerability"
-        assert row["case_label_grounded"] == "possible_vulnerability"
-        assert row["outcome"] == plain
-        assert row["outcome_grounded"] == grounded
+    def test_baseline_only_labels_score_as_before(
+            self, label, vulnerable_outcome, safe_outcome):
+        vuln = evaluate.score_case(_case_row(expected="vulnerable", **_scenario(label)))
+        safe = evaluate.score_case(_case_row(expected="safe", **_scenario(label)))
+        assert (vuln["outcome"], safe["outcome"]) == (vulnerable_outcome, safe_outcome)
 
-    def test_grounded_label_stays_detected_with_one_valid_vulnerable_finding(self):
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    @pytest.mark.parametrize("expected,outcome", [("vulnerable", "TP"), ("safe", "FP")])
+    def test_one_supported_candidate_among_unsupported_is_a_detection(
+            self, mode, expected, outcome):
         row = evaluate.score_case(_case_row(
-            coverage=_coverage([_target_section()]),
-            findings=[_f("authz", "vulnerable"), _f("authz", "vulnerable", valid=False)]))
+            expected=expected, mode=mode, coverage=_coverage([_target_section()]),
+            findings=[_s("authz", False), _s("authz", True)]))
         assert row["case_label"] == "detected_vulnerability"
-        assert row["case_label_grounded"] == "detected_vulnerability"
-        assert row["outcome_grounded"] == "TP"
+        assert row["outcome"] == outcome
+        assert row["outcome_grounded"] == outcome
 
-    def test_grounded_label_prefers_a_valid_possible_over_an_invalid_vulnerable(self):
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_judged_modes_ignore_a_verdict_and_key_on_supported(self, mode):
+        stale = dict(_s("authz", False), verdict="vulnerable")
         row = evaluate.score_case(_case_row(
-            coverage=_coverage([_target_section()]),
-            findings=[_f("authz", "vulnerable", valid=False), _f("authz", "possible")]))
-        assert row["case_label"] == "detected_vulnerability"
-        assert row["case_label_grounded"] == "possible_vulnerability"
+            mode=mode, coverage=_coverage([_target_section()]), findings=[stale],
+            raw=True))
+        assert row["case_label"] == "explicit_safe"
+        assert row["outcome"] == "FN"
 
-    def test_grounded_downgrade_applies_in_findings_only_modes(self):
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_supported_candidate_in_another_category_is_not_a_detection(self, mode):
         row = evaluate.score_case(_case_row(
-            mode="llm-only", findings=[_f("authz", "vulnerable", valid=False)]))
+            mode=mode, coverage=_coverage([_target_section()]),
+            findings=[_s("sqli", True)]))
+        assert row["case_label"] == "explicit_safe"
+
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_baselines_key_on_verdict_not_on_supported(self, mode):
+        row = evaluate.score_case(_case_row(
+            mode=mode, findings=[dict(_f("authz", "vulnerable"), supported=False)]))
         assert row["case_label"] == "detected_vulnerability"
-        assert row["case_label_grounded"] == "possible_vulnerability"
+        assert row["outcome"] == "TP"
 
 
 @pytest.fixture
@@ -1659,6 +1692,12 @@ class TestCoverageRowErrors:
         assert summary["errors"] == 0
         assert summary["error_cases"] == []
         assert summary["overall"]["errors"] == 0
+
+    @pytest.mark.parametrize("reason,done", [("judge-failed", False), ("request-too-large", True)])
+    def test_is_done_reruns_rows_whose_judge_call_failed(self, stored, reason, done):
+        row = _case_row(findings=[{"category": "authz", "judged": False, "not_judged_reason": reason}], raw=True)
+        stored(row)
+        assert evaluate.is_done(Path("row.json")) is done
 
     def test_is_done_is_false_for_scan_failure_rows(self, stored):
         stored(evaluate.score_case(_case_row(**_scenario("scan_failure"))))
@@ -1724,16 +1763,9 @@ class TestNonAuthzCoverageRows:
         location = {"file": "app/db.py", "old_range": None, "new_range": [1, 3]}
         row = evaluate.score_case(_case_row(
             category="sqli", locations=[location],
-            findings=[dict(_f("sqli", "possible"), file="app/db.py")],
-            coverage=_coverage([_target_section()])))
-        assert row["case_label"] == "possible_vulnerability"
-
-    def test_sqli_grounded_label_downgrades_an_ungrounded_detection(self):
-        row = evaluate.score_case(_case_row(
-            category="sqli", findings=[_f("sqli", "vulnerable", valid=False)],
+            findings=[dict(_s("sqli", True), file="app/db.py")],
             coverage=_coverage([_target_section()])))
         assert row["case_label"] == "detected_vulnerability"
-        assert row["case_label_grounded"] == "possible_vulnerability"
 
     def test_sqli_row_without_coverage_is_a_scan_failure(self):
         row = evaluate.score_case(_case_row(
@@ -1752,6 +1784,21 @@ class TestSastErrorRows:
         assert row["outcome"] == "ERROR"
         assert row["error"] == "SAST failed: semgrep timed out after 60s"
         assert row["case_label"] == "scan_failure"
+
+    def test_row_with_a_failed_sast_triage_is_an_error_not_a_miss(self):
+        row = evaluate.score_case(_case_row(
+            mode="lgtm", category="sqli", findings=[],
+            coverage=_coverage([_target_section()]), triage_errors=1))
+        assert evaluate.result_is_error(row)
+        assert row["outcome"] == "ERROR"
+        assert row["error"] == "SAST triage failed for 1 hit(s)"
+
+    def test_triage_errors_count_only_sast_triage_agent_errors(self):
+        meta = SimpleNamespace(agent_errors=[
+            {"source": "r:app.py:3", "message": "x", "stage": "sast_triage"},
+            {"source": "s1", "message": "y"},
+        ])
+        assert evaluate.sast_fields(SimpleNamespace(meta=meta))["triage_errors"] == 1
 
     def test_sast_error_rows_are_excluded_from_metrics_and_rerun(self, stored):
         failed = evaluate.score_case(_case_row(
@@ -1777,12 +1824,12 @@ class TestSastErrorRows:
         review = SimpleNamespace(meta=ReviewMetadata(
             sast_error="semgrep exited 2", semgrep_findings_total=0))
         assert evaluate.sast_fields(review) == {
-            "sast_error": "semgrep exited 2", "semgrep_findings_total": 0}
+            "sast_error": "semgrep exited 2", "semgrep_findings_total": 0, "triage_errors": 0}
 
     @pytest.mark.parametrize("review", [None, SimpleNamespace(meta=SimpleNamespace())])
     def test_sast_fields_default_for_missing_metadata(self, review):
         assert evaluate.sast_fields(review) == {
-            "sast_error": None, "semgrep_findings_total": None}
+            "sast_error": None, "semgrep_findings_total": None, "triage_errors": 0}
 
     def test_error_record_carries_the_sast_fields(self):
         review = SimpleNamespace(meta=ReviewMetadata(
@@ -1823,6 +1870,37 @@ class TestSummaryContract:
             error="harness exploded")))
         return rows
 
+    def test_grounded_only_uses_the_grounded_outcome(self):
+        rows = [
+            evaluate.score_case(_case_row(
+                "v", "vulnerable", mode="llm-only",
+                findings=[_f("authz", "vulnerable", valid=False)])),
+            evaluate.score_case(_case_row(
+                "s", "safe", mode="llm-only",
+                findings=[_f("authz", "vulnerable", valid=False)])),
+        ]
+        summary = evaluate.summarize(rows)
+        assert (summary["overall"]["tp"], summary["overall"]["fp"]) == (1, 1)
+        grounded = summary["grounded_only"]["overall"]
+        assert (grounded["tp"], grounded["fp"], grounded["fn"]) == (0, 0, 1)
+
+    def test_grounded_only_metrics_use_the_grounded_label(self):
+        rows = [
+            evaluate.score_case(_case_row(
+                "s", "safe", mode="llm-only", coverage=_coverage([_target_section()]),
+                findings=[_f("authz", "vulnerable", valid=False)])),
+            evaluate.score_case(_case_row(
+                "m", "safe", coverage=_failed_target_coverage(),
+                findings=[_f("authz", "safe")])),
+        ]
+        summary = evaluate.summarize(rows)
+        plain = summary["overall"]
+        grounded = summary["grounded_only"]["overall"]
+        assert (plain["abstentions"], plain["possible_on_safe"]) == (0, 0)
+        assert (grounded["abstentions"], grounded["possible_on_safe"]) == (1, 1)
+        assert plain["excluded_on_safe"] == grounded["excluded_on_safe"] == 0
+        assert (plain["safe_scored"], grounded["safe_scored"]) == (2, 2)
+
     def test_metrics_score_every_non_error_row(self):
         # s7 (scan failure, vulnerable finding) is an FP; s3-s6 are TNs:
         # nothing is excluded or uncredited under the round-2 rule.
@@ -1856,39 +1934,6 @@ class TestSummaryContract:
         assert summary["per_split"]["dev"]["excluded_on_safe"] == 0
         assert summary["per_split"]["dev"]["abstentions"] == 4
         assert summary["per_category"]["authz"]["safe_scored"] == 7
-
-    def test_grounded_only_uses_the_grounded_outcome(self):
-        cov = _coverage([_target_section()])
-        rows = [
-            evaluate.score_case(_case_row(
-                "v", "vulnerable", coverage=cov,
-                findings=[_f("authz", "vulnerable", valid=False)])),
-            evaluate.score_case(_case_row(
-                "s", "safe", coverage=cov,
-                findings=[_f("authz", "vulnerable", valid=False)])),
-        ]
-        summary = evaluate.summarize(rows)
-        assert (summary["overall"]["tp"], summary["overall"]["fp"]) == (1, 1)
-        grounded = summary["grounded_only"]["overall"]
-        assert (grounded["tp"], grounded["fp"], grounded["fn"]) == (0, 0, 1)
-
-    def test_grounded_only_metrics_use_the_grounded_label(self):
-        cov = _coverage([_target_section()])
-        rows = [
-            evaluate.score_case(_case_row(
-                "s", "safe", coverage=cov,
-                findings=[_f("authz", "vulnerable", valid=False)])),
-            evaluate.score_case(_case_row(
-                "m", "safe", coverage=_failed_target_coverage(),
-                findings=[_f("authz", "safe")])),
-        ]
-        summary = evaluate.summarize(rows)
-        plain = summary["overall"]
-        grounded = summary["grounded_only"]["overall"]
-        assert (plain["abstentions"], plain["possible_on_safe"]) == (0, 0)
-        assert (grounded["abstentions"], grounded["possible_on_safe"]) == (1, 1)
-        assert plain["excluded_on_safe"] == grounded["excluded_on_safe"] == 0
-        assert (plain["safe_scored"], grounded["safe_scored"]) == (2, 2)
 
     def test_case_labels_count_each_label_and_legacy_rows(self):
         rows = [
@@ -1929,14 +1974,11 @@ class TestSummaryContract:
             evaluate.score_case(_case_row(
                 "fp", "safe", coverage=gappy, findings=[_f("authz", "vulnerable")])),
             evaluate.score_case(_case_row(
-                "ungrounded", "safe", coverage=gappy,
-                findings=[_f("authz", "vulnerable", valid=False)])),
-            evaluate.score_case(_case_row(
                 "tn", "safe", coverage=gappy, findings=[_f("authz", "safe")])),
             evaluate.score_case(_case_row(
                 "clean", "safe", **_scenario("detected_vulnerability"))),
         ]
-        assert evaluate.summarize(rows)["coverage"]["detected_with_gap"] == 3
+        assert evaluate.summarize(rows)["coverage"]["detected_with_gap"] == 2
 
     def test_legacy_rows_count_in_outcome_metrics_but_not_label_metrics(self):
         safe = evaluate.score_case({
@@ -1957,7 +1999,7 @@ class TestSummaryContract:
     def test_row_with_mode_and_coverage_but_no_pin_is_legacy(self):
         raw = _case_row(
             expected="vulnerable", coverage=_coverage([_target_section()]),
-            findings=[_f("authz", "vulnerable")])
+            findings=[_f("authz", "vulnerable")], raw=True)
         del raw["pin"]
         row = evaluate.score_case(raw)
         assert row["legacy"] is True
@@ -2066,3 +2108,45 @@ class TestSummaryContract:
             "e", "safe", coverage=_coverage([_target_section()]), error="boom"))
         assert row["target_sections"] == []
         assert row["coverage_gap"] is False
+
+
+UNRESOLVABLE_ASSESSMENTS = json.dumps({
+    "assessments": [{
+        "category": "sqli", "verdict": "vulnerable", "cwe_id": "CWE-89", "file": "ghost.py",
+        "line": 40, "explanation": "invented sink",
+        "evidence": [{"type": "code", "file": "ghost.py", "lines": [40, 41],
+                      "content": "ghost.execute(sql)", "snapshot": "pr"}],
+    }]
+})
+
+
+class TestReferenceGuardrailExemptions:
+    def test_llm_only_keeps_a_finding_whose_references_do_not_resolve_without_a_second_call(
+        self, git_repo
+    ):
+        llm = _NoToolsLLM(UNRESOLVABLE_ASSESSMENTS)
+        result = ReviewPipeline(git_repo, LGTMConfig(mode="llm-only"), llm=llm).run("main", "pr")
+        sqli = [f for f in result.findings if f.category == "sqli"][0]
+        assert llm.calls == 1
+        assert sqli.explanation == "invented sink"
+        assert [(e.file, list(e.lines), e.content) for e in sqli.evidence] == [
+            ("ghost.py", [40, 41], "ghost.execute(sql)")
+        ]
+
+    def test_plain_reviewer_parse_leaves_unresolvable_evidence_unchanged(self):
+        [finding] = PlainLLMReviewer._parse(UNRESOLVABLE_ASSESSMENTS)[:1]
+        assert [(e.file, list(e.lines)) for e in finding.evidence] == [("ghost.py", [40, 41])]
+
+    def test_sast_only_candidate_keeps_its_semgrep_citation_when_the_file_is_absent(self):
+        from lgtm.sast.semgrep_runner import SemgrepFinding
+
+        hit = SemgrepFinding(
+            rule_id="py.sqli", path="ghost.py", start_line=40, end_line=41,
+            message="SQL built from input", severity="ERROR", cwe=["CWE-89"],
+            matched_code="ghost.execute(sql)",
+        )
+        finding = ReviewPipeline._sast_finding_to_agent_finding(hit)
+        assert (finding.verdict, finding.judged) == ("vulnerable", False)
+        assert [(e.file, list(e.lines), e.content) for e in finding.evidence] == [
+            ("ghost.py", [40, 41], "ghost.execute(sql)")
+        ]

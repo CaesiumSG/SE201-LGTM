@@ -161,8 +161,6 @@ def detect_prompt_injections(diffs: Sequence[FileDiff]) -> list[AgentFinding]:
                         findings.append(
                             AgentFinding(
                                 finding_id=finding_id,
-                                verdict="vulnerable",
-                                confidence=0.95,
                                 cwe_id="CWE-862",  # Authorization bypass / review subversion
                                 explanation=(
                                     f"Potential prompt injection detected: added line contains "
@@ -182,7 +180,7 @@ def detect_prompt_injections(diffs: Sequence[FileDiff]) -> list[AgentFinding]:
                                 agent="injection_detector",
                                 file=fd.path,
                                 line=lineno,
-                                evidence_valid=True,
+                                verdict="vulnerable",
                             )
                         )
                         break

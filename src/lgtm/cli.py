@@ -65,6 +65,9 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--authz-planner", type=click.Choice(["investigator", "endpoint"]), default=None, help="How the authz review picks what to look at: 'investigator' (default, every changed hunk) or 'endpoint' (checkpoint behaviour: only hunks with a route decorator).")
 @click.option("--strip-comments/--no-strip-comments", default=None, help="Mitigation (on by default, LGTM modes only): strip comments and docstrings from PR code before it reaches the LLM.")
 @click.option("--detect-prompt-injection/--no-detect-prompt-injection", default=None, help="Mitigation (on by default, LGTM modes only): report reviewer-directed instructions in the diff as a finding.")
+@click.option("--judge-endpoint", default=None, help="Kev-4B judge base URL (default: config).")
+@click.option("--judge-model", default=None, help="Kev-4B judge model name (default: config).")
+@click.option("--judge-timeout", type=click.FloatRange(min=0, min_open=True), default=None, help="Seconds per judge call (default: config).")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def review(
     repo: str,
@@ -82,9 +85,19 @@ def review(
     authz_planner: str | None,
     strip_comments: bool | None,
     detect_prompt_injection: bool | None,
+    judge_endpoint: str | None,
+    judge_model: str | None,
+    judge_timeout: float | None,
     verbose: bool,
 ) -> None:
-    """Run the full security review pipeline on a PR."""
+    """Run the full security review pipeline on a PR.
+
+    \b
+    Exit codes:
+      1  at least one candidate is supported, or a baseline mode reports a vulnerable finding
+      2  no candidate is supported, but a candidate is not judged or an agent errored
+      0  otherwise
+    """
     setup_logging(verbose)
     if gpu_model and (gpu_cluster or model):
         raise click.UsageError("--gpu-model cannot be combined with --gpu-cluster or --model.")
@@ -98,6 +111,9 @@ def review(
         ollama_model=model,
         ollama_base_url=ollama_url,
         semgrep_config=semgrep_config,
+        judge_endpoint=judge_endpoint,
+        judge_model=judge_model,
+        judge_timeout=judge_timeout,
     )
     if gpu_model:
         apply_gpu_model(config, gpu_model, base_url=ollama_url)
@@ -120,19 +136,20 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
-    vulnerable = sum(1 for f in result.findings if f.verdict == "vulnerable")
-    possible = sum(1 for f in result.findings if f.verdict == "possible")
+    supported = sum(1 for f in result.findings if f.supported is True or f.verdict == "vulnerable")
+    not_judged = sum(1 for f in result.findings if f.not_judged_reason)
     click.echo("")
     click.echo(f"Review complete in {result.meta.duration_seconds:.1f}s")
     click.echo(
         f"  Findings: {len(result.findings)} "
-        f"(vulnerable: {vulnerable}, possible: {possible})"
+        f"(supported: {supported}, not judged: {not_judged})"
     )
     if result.json_path:
         click.echo(f"  JSON report:     {result.json_path}")
         click.echo(f"  Markdown report: {result.md_path}")
-    # Exit code 1 signals confirmed findings (useful in CI)
-    sys.exit(1 if vulnerable else 0)
+    if supported:
+        sys.exit(1)
+    sys.exit(2 if not_judged or result.meta.agent_errors else 0)
 
 
 if __name__ == "__main__":

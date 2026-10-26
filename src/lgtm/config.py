@@ -32,6 +32,11 @@ class LGTMConfig:
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
 
+    # Judge (Kev-4B, base URL; the client appends /v1/systemone)
+    judge_endpoint: str = "http://127.0.0.1:8008"
+    judge_model: str = "jaredpalmer/kev-4b"
+    judge_timeout: float = 60.0  # seconds per judge call
+
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules
     semgrep_timeout: int = 300  # seconds for the whole semgrep run
@@ -39,8 +44,9 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
-    investigator_max_tool_calls: int = 12
-    investigator_max_iterations: int = 16
+    investigator_max_tool_calls: int = 24
+    investigator_max_iterations: int = 32
+    read_file_max_lines: int = 600
     investigator_diff_chars: int = 30000
     investigator_max_sections: int = 12
     section_max_chars: int = 12000
@@ -95,6 +101,7 @@ class LGTMConfig:
         positive_fields = (
             "investigator_max_tool_calls",
             "investigator_max_iterations",
+            "read_file_max_lines",
             "investigator_diff_chars",
             "investigator_max_sections",
             "section_max_chars",
@@ -109,6 +116,10 @@ class LGTMConfig:
                 raise ValueError(f"{key} must be positive")
         if self.authz_planner not in ("investigator", "endpoint"):
             raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
+        if not self.judge_model:
+            raise ValueError("judge_model must not be empty")
+        if self.judge_timeout <= 0:
+            raise ValueError("judge_timeout must be positive")
         if self.graph_max_output_chars < 1024:
             raise ValueError("graph_max_output_chars must be at least 1024")
         self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)
