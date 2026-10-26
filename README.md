@@ -111,9 +111,12 @@ Outputs `lgtm-output/report.json` (machine-readable findings) and
 `lgtm-output/report.md` (human-readable review). Both list supported,
 unsupported and not judged candidates, supported first.
 
-Exit code of `lgtm review`: 1 if any candidate is supported, or a baseline
-mode reports a vulnerable finding; otherwise 2 if
-any candidate is not judged or any agent errored; otherwise 0 (CI-friendly).
+Exit code of `lgtm review`: 1 if any candidate is supported and the judge's
+verdict for it is not `not_real`, or a baseline mode reports a vulnerable
+finding; otherwise 2 if any candidate is not judged or any agent errored;
+otherwise 0 (CI-friendly). A supported candidate with verdict `not_real` is
+not a vulnerability: it is listed as "not real" in the reports and does not
+set exit code 1.
 
 `--gpu-model qwen3.8-27b` connects through the existing GPU cluster
 tunnel at `http://127.0.0.1:11435` with the model `qwen3.8:27b` and

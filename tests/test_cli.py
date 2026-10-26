@@ -308,6 +308,8 @@ def _finding(kind: str) -> AgentFinding:
         "no-source": {"supported": False, "judged": True, "unsupported_reason": "no-cited-source"},
         "not-judged": {"not_judged_reason": "judge-unreachable"},
         "too-large": {"not_judged_reason": "request-too-large"},
+        "supported-real": {"supported": True, "judged": True, "kev_verdict": "real"},
+        "supported-not-real": {"supported": True, "judged": True, "kev_verdict": "not_real"},
         "baseline-vulnerable": {"verdict": "vulnerable"},
         "baseline-safe": {"verdict": "safe"},
     }[kind]
@@ -340,6 +342,12 @@ def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=()):
     ([], [], 0),
     (["baseline-vulnerable", "baseline-safe"], [], 1),
     (["baseline-safe"], [], 0),
+    (["supported-real"], [], 1),
+    (["supported-not-real"], [], 0),
+    (["supported-not-real", "unsupported"], [], 0),
+    (["supported-not-real", "supported-real"], [], 1),
+    (["supported-not-real", "not-judged"], [], 2),
+    (["supported-not-real"], ["sec-2"], 2),
 ])
 def test_exit_code_is_1_if_any_supported_else_2_if_not_judged_or_agent_error_else_0(
     tmp_path, monkeypatch, kinds, agent_errors, expected
@@ -371,3 +379,7 @@ def test_cli_help_states_exit_codes_1_2_and_0_and_when_each_applies():
 
 def test_readme_states_exit_codes_1_2_and_0_and_when_each_applies():
     _assert_documents_exit_codes(README.read_text(encoding="utf-8"))
+
+
+def test_readme_exit_code_rule_covers_a_supported_candidate_the_verdict_rules_not_real():
+    assert re.search(r"not[_ ]real", _exit_code_text(README.read_text(encoding="utf-8")))

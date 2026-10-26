@@ -435,7 +435,7 @@ finding, `null` for a candidate that was not judged. The `kev` summary key count
 candidates with a Kev answer, `judged`, `verdicts`, `severities` and `provenance_confidence_mean`;
 `not_judged` counts the other candidates per reason, and `requests_over_8192_input_tokens` counts
 findings whose `input_tokens` exceeds 8192. Gating and the other summary keys read `supported`
-only. `input_tokens` is read from a finding when present and skipped when absent.
+and `kev_verdict`: a supported candidate with verdict `not_real` is not a vulnerability. `input_tokens` is read from a finding when present and skipped when absent.
 
 `judge_eval.py` reports the same `kev` metrics plus `candidates`, one entry per judged unit with
 `kev_verdict`, `kev_severity` and `provenance_confidence`. `perturbation_report` adds
@@ -446,3 +446,24 @@ the export, and reports on those answers:
 ```bash
 python benchmark/judge_eval.py RUN_DIR export.json labels.json --live
 ```
+
+### Kev measurement against model labels
+
+`kev_model_labels.json` holds labels written by a model under `docs/kev-labeling-criteria.md`:
+`labeling_model`, `criteria`, and per unit (`case_id/finding.evidence`) `supports`, `verdict`,
+optional `severity`, `kind` and `origin` (`shoply` or `real_world`). The labels are model-generated,
+not human-reviewed. `judge_eval.py` adds these report keys:
+
+- `kev_accuracy`: `supported`, `verdict` and `severity` each with `n`, `correct`, `accuracy`.
+- `kev_agreement`: `verdict_vs_supported` (rate of disagreement) and `verdict_vs_agent`
+  (rate of equality with the agent's `vulnerable`/`safe` verdict, empty verdicts left out).
+- `labels`: label count per origin and the labeling model.
+- `undetermined`: sorted unit ids labelled `undetermined` (cited quote absent from the reviewed code); accuracy, agreement and acceptance leave them out.
+- `supported_by_kind`: supported accuracy per candidate kind.
+- `safe_case_acceptance`: share of safe-case candidates Kev supports, per origin.
+- `stale`: `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe` candidates cite text that predates the
+  regenerated Shoply patches. Labels, accuracy and agreement leave them out; benchmark scoring keeps them.
+
+The `quote_absence` report key lists, for `authz_10_vulnerable` and `authz_12_vulnerable`, each cited code quote
+absent from the PR file, with cause `repository_mismatch` (file unreadable or cited lines outside it)
+or `agent_quote`.

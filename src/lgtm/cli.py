@@ -94,7 +94,7 @@ def review(
 
     \b
     Exit codes:
-      1  at least one candidate is supported, or a baseline mode reports a vulnerable finding
+      1  at least one candidate is supported and not ruled not_real by the judge, or a baseline mode reports a vulnerable finding
       2  no candidate is supported, but a candidate is not judged or an agent errored
       0  otherwise
     """
@@ -136,7 +136,10 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
-    supported = sum(1 for f in result.findings if f.supported is True or f.verdict == "vulnerable")
+    supported = sum(
+        1 for f in result.findings
+        if f.kev_verdict != "not_real" and (f.supported is True or f.verdict == "vulnerable")
+    )
     not_judged = sum(1 for f in result.findings if f.not_judged_reason)
     click.echo("")
     click.echo(f"Review complete in {result.meta.duration_seconds:.1f}s")

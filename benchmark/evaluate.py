@@ -323,7 +323,7 @@ def kev_metrics(findings: list[dict]) -> dict:
 
 def finding_verdict(f: dict, judged: bool) -> str | None:
     if judged:
-        return "vulnerable" if f.get("supported") else "safe"
+        return "vulnerable" if f.get("supported") and f.get("kev_verdict") != "not_real" else "safe"
     return f.get("verdict")
 
 

@@ -226,14 +226,29 @@ def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benc
     assert judge_eval.not_judged_by_reason(report["findings"]) == {"request-too-large": 1}
 
 
+def _answer_with(verdict: str, severity: str):
+    def respond(request: dict) -> Reply:
+        claim = next(c for c in KEV_ANSWERS if c in request["state"])
+        payload = _kev_payload(request, supported=KEV_ANSWERS[claim][0], confidence=KEV_ANSWERS[claim][1])
+        payload["answers"]["verdict"]["choice"] = verdict
+        payload["answers"]["severity"]["choice"] = severity
+        return Reply(200, json.dumps(payload).encode())
+
+    return respond
+
+
 @pytest.mark.usefixtures("one_semgrep_hit")
-def test_review_report_and_exit_code_do_not_change_with_kev_verdict_and_severity(
+def test_review_report_and_exit_code_change_with_the_kev_verdict_only_when_it_rules_a_supported_candidate_not_real(
     repo, tmp_path, monkeypatch, start_kev
 ):
-    outcomes = []
-    for variant in (0, 1):
-        kev = start_kev(_answer_by_claim(variant))
-        workdir = tmp_path / f"variant{variant}"
+    outcomes = {}
+    for name, (verdict, severity) in {
+        "real_low": ("real", "low"),
+        "real_critical": ("real", "critical"),
+        "not_real_low": ("not_real", "low"),
+    }.items():
+        kev = start_kev(_answer_with(verdict, severity))
+        workdir = tmp_path / name
         workdir.mkdir()
 
         done, report, markdown = _review_cli(repo, workdir, monkeypatch, _two_agent_llm(), kev.url)
@@ -244,18 +259,25 @@ def test_review_report_and_exit_code_do_not_change_with_kev_verdict_and_severity
         assert set(found) == set(KEV_ANSWERS)
         for f in found.values():
             assert not {"kev_verdict", "kev_severity", "input_tokens"} & set(f)
-        outcomes.append((
-            done.exit_code,
-            {c: (f["supported"], f["judged"], f["provenance_confidence"], f.get("severity")) for c, f in found.items()},
-            {c: set(f) for c, f in found.items()},
-            sorted(re.findall(r"\*\*Provenance confidence:\*\* (\d+)%", markdown)),
-        ))
+        outcomes[name] = {
+            "exit": done.exit_code,
+            "supported_count": report["stats"]["supported"],
+            "flagged": "[SUPPORTED]" in markdown,
+            "findings": {c: (f["supported"], f["judged"], f["provenance_confidence"], f.get("severity")) for c, f in found.items()},
+            "keys": {c: set(f) for c, f in found.items()},
+            "confidence": sorted(re.findall(r"\*\*Provenance confidence:\*\* (\d+)%", markdown)),
+        }
 
-    assert outcomes[0] == outcomes[1]
-    assert outcomes[0][0] == 1
-    assert {c: v[:2] for c, v in outcomes[0][1].items()} == {
+    assert outcomes["real_critical"] == outcomes["real_low"]
+    assert (outcomes["real_low"]["exit"], outcomes["real_low"]["supported_count"], outcomes["real_low"]["flagged"]) == (1, 2, True)
+    assert {c: v[:2] for c, v in outcomes["real_low"]["findings"].items()} == {
         c: (supported, True) for c, (supported, _) in KEV_ANSWERS.items()
     }
+    ruled_out = outcomes["not_real_low"]
+    assert (ruled_out["exit"], ruled_out["supported_count"], ruled_out["flagged"]) == (0, 0, False)
+    assert ruled_out["findings"] == outcomes["real_low"]["findings"]
+    assert ruled_out["keys"] == outcomes["real_low"]["keys"]
+    assert ruled_out["confidence"] == outcomes["real_low"]["confidence"]
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
