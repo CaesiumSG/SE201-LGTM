@@ -61,11 +61,11 @@ def _resolve(repo: Path, sha: str, snapshot: str | None) -> str | None:
     return None
 
 
-def _read_lines(repo: Path, sha: str | None, item: dict) -> str | None:
+def _read_lines(repo: Path, sha: str | None, item: dict, snapshot: str | None = None) -> str | None:
     lines = item.get("lines")
     if not (sha and SHA_SHAPE.fullmatch(sha) and item.get("file") and lines):
         return None
-    sha = _resolve(repo, sha, item.get("snapshot") or "pr")
+    sha = _resolve(repo, sha, snapshot or item.get("snapshot") or "pr")
     if sha is None:
         return None
     done = subprocess.run(
@@ -81,14 +81,27 @@ def _read_lines(repo: Path, sha: str | None, item: dict) -> str | None:
     return "\n".join(text[start - 1 : end])
 
 
+def _norm(text: str | None) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _holds(code: str | None, item: dict) -> bool:
+    return code is not None and _norm(item.get("content")) in _norm(code)
+
+
 def export_run(run_dir: Path, repos: Mapping[str, Path], out_path: Path) -> list[dict]:
     units = []
     for record in read_records(Path(run_dir)):
         for uid, finding, item in code_items(record):
             snapshot = item.get("snapshot")
-            # Null snapshot reads PR head; the unit keeps snapshot null (rejudge lookup key).
-            sha = record.get(SNAPSHOT_SHA_KEY.get(snapshot or "pr", ""))
-            code = _read_lines(Path(repos[record["id"]]), sha, item)
+            # Null snapshot reads PR head, or base when only base holds the cited content at the cited lines;
+            # the unit keeps snapshot null (rejudge lookup key).
+            repo = Path(repos[record["id"]])
+            code = _read_lines(repo, record.get(SNAPSHOT_SHA_KEY.get(snapshot or "pr", "")), item)
+            if snapshot is None and _norm(item.get("content")) and not _holds(code, item):
+                base = _read_lines(repo, record.get("base_sha"), item, "base")
+                if _holds(base, item):
+                    code = base
             unit = {
                 "unit_id": uid,
                 "claim": finding.get("explanation", ""),

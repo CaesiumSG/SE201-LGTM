@@ -30,6 +30,16 @@ PR_SHORT = ["def get(thread, user):", "    thread = load(thread)"]
 REMOVED = "if thread.owner_id != user.id: raise Forbidden()"
 REMOVED_CODE = BASE[2:4]
 
+SIBLING_BASE = [
+    *BASE,
+    "def delete(thread, user):",
+    "    if thread.owner_id != user.id:",
+    "        raise Forbidden()",
+    "    thread.delete()",
+]
+SIBLING_PR = [*BASE, "def delete(thread, user):", "    thread.delete()", ""]
+SIBLING_REMOVED_CODE = SIBLING_BASE[6:8]
+
 
 def _validator(monkeypatch, files: dict[str, list[str]]) -> EvidenceValidator:
     def blob_lines(repo, sha, path, timeout):
@@ -52,6 +62,13 @@ class TestReadCitedCodeRemovedLines:
         item = EvidenceItem(file="app.py", lines=[3, 4], content=REMOVED)
 
         assert validator.read_cited_code(item).splitlines() == REMOVED_CODE
+
+    def test_removed_line_citation_whose_text_survives_elsewhere_in_pr_returns_base_lines(self, monkeypatch):
+        files = {f"{BASE_SHA}:app.py": SIBLING_BASE, f"{PR_SHA}:app.py": SIBLING_PR}
+        validator = _validator(monkeypatch, files)
+        item = EvidenceItem(file="app.py", lines=[7, 8], content=REMOVED)
+
+        assert validator.read_cited_code(item).splitlines() == SIBLING_REMOVED_CODE
 
     def test_unlabelled_added_line_citation_returns_pr_code(self, monkeypatch):
         validator = _validator(monkeypatch, _snapshots(PR))
@@ -96,8 +113,8 @@ def ce():
 
 @pytest.fixture
 def export(ce, monkeypatch, tmp_path):
-    def run(pr: list[str], evidence: dict) -> dict:
-        files = {f"{BASE_SHA}:app.py": BASE, f"{PR_SHA}:app.py": pr}
+    def run(pr: list[str], evidence: dict, base: list[str] = BASE) -> dict:
+        files = {f"{BASE_SHA}:app.py": base, f"{PR_SHA}:app.py": pr}
 
         def fake_run(cmd, **kwargs):
             text = files.get(cmd[-1]) if "show" in cmd else None
@@ -132,6 +149,20 @@ class TestCitationExportRemovedLines:
         unit = export(PR, {"file": "app.py", "lines": [3, 3], "content": "nowhere in either file"})
 
         assert unit["code"] == "    return thread"
+
+    @pytest.mark.parametrize("pr", [PR, PR_SHORT], ids=["pr-lines-exist", "pr-lines-past-end"])
+    def test_unlabelled_removed_line_citation_exports_base_code(self, export, pr):
+        unit = export(pr, {"file": "app.py", "lines": [3, 4], "content": REMOVED})
+
+        assert unit["code"].splitlines() == REMOVED_CODE
+        assert unit["snapshot"] is None
+        assert not unit.get("unreadable")
+
+    def test_removed_line_citation_whose_text_survives_elsewhere_in_pr_exports_base_code(self, export):
+        unit = export(SIBLING_PR, {"file": "app.py", "lines": [7, 8], "content": REMOVED}, SIBLING_BASE)
+
+        assert unit["code"].splitlines() == SIBLING_REMOVED_CODE
+        assert unit["snapshot"] is None
 
     def test_labelled_base_citation_exports_base_code(self, export):
         unit = export(PR, {"file": "app.py", "lines": [3, 4], "content": REMOVED, "snapshot": "base"})

@@ -298,6 +298,14 @@ class EvidenceValidator:
             texts.append(self._diff_added[item.file])
         return any(self._snippet_in_text(item.content, t) for t in texts)
 
+    def _content_at_lines(self, item: EvidenceItem, label: str) -> bool:
+        lines = self._snapshot_lines(label, item.file)
+        if lines is None or not item.lines or not item.content.strip():
+            return False
+        if not _is_ordered_positive_range(item.lines):
+            return False
+        return _normalize(item.content) in _normalize("\n".join(lines[item.lines[0] - 1 : item.lines[1]]))
+
     def read_cited_code(self, item: EvidenceItem) -> str:
         """Code at the cited location; empty when it cannot be read."""
         if not item.file:
@@ -310,13 +318,15 @@ class EvidenceValidator:
             if item.snapshot:
                 labels = [item.snapshot]
             elif not item.snapshot_conflict:
-                # Removed or shifted lines resolve only at base; read where the citation validates.
-                labels = [
+                # Prefer the snapshot holding the content at the cited lines (removed or shifted code),
+                # then any snapshot where the citation validates.
+                valid = [
                     label
                     for label in labels
                     if label in self._shas
                     and not self._validate_code_item(item.model_copy(update={"snapshot": label}))
-                ] or labels
+                ]
+                labels = [label for label in valid if self._content_at_lines(item, label)] or valid or labels
             for label in labels:
                 if label in self._shas:
                     lines = self._snapshot_lines(label, item.file)
