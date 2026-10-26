@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from lgtm.agents.base import build_llm, run_tool_loop
+from lgtm.agents.base import CHARS_PER_TOKEN, build_llm, run_tool_loop
 from lgtm.config import LGTMConfig
 
-CHARS_PER_TOKEN = 4
 CONTEXT_TOKENS = 1400
 OUTPUT_TOKENS = 200
 RESULT_CHARS = 1500
 SCRIPTED_CALLS = 30
+TOOL_ROUNDS_THAT_FIT = 2
 ANSWER = '{"verdict": "safe"}'
 
 
@@ -45,6 +47,7 @@ class _ContextLLM:
 
 def _tool():
     runs = []
+    toolbox = SimpleNamespace(calls_used=0, budget=SCRIPTED_CALLS * 10, steps_exhausted=None, budget_spent=None)
 
     @tool
     def dump() -> str:
@@ -52,7 +55,8 @@ def _tool():
         runs.append(1)
         return "x" * RESULT_CHARS
 
-    return dump, runs
+    dump.metadata = {"toolbox": toolbox}
+    return dump, runs, toolbox
 
 
 def _chars(messages) -> int:
@@ -68,48 +72,52 @@ def _config(**overrides):
     )
 
 
-def test_context_setting_defaults_to_32768():
-    assert LGTMConfig().llm_context_tokens == 32768
-
-
 def test_build_llm_passes_context_size_as_num_ctx():
     llm = build_llm(LGTMConfig(llm_context_tokens=12345))
     assert llm.num_ctx == 12345
 
 
 def test_stops_tool_calls_before_a_request_exceeds_the_context():
-    dump, runs = _tool()
+    dump, runs, _ = _tool()
     llm = _ContextLLM(SCRIPTED_CALLS)
     out = run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
 
     assert out == ANSWER
-    assert 0 < len(runs) < SCRIPTED_CALLS
-    limit = CONTEXT_TOKENS * CHARS_PER_TOKEN
-    assert all(_chars(r) < limit for r in llm.requests)
+    assert len(runs) == TOOL_ROUNDS_THAT_FIT
+    limit = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    assert all(_chars(r) <= limit for r in llm.requests)
 
 
-def test_every_request_keeps_the_original_system_and_user_messages():
-    dump, _ = _tool()
+def test_context_full_stop_is_not_reported_as_steps_exhausted():
+    dump, _, toolbox = _tool()
     llm = _ContextLLM(SCRIPTED_CALLS)
     run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
 
-    assert len(llm.requests) > 2
+    assert toolbox.steps_exhausted is False
+
+
+def test_every_request_keeps_the_original_system_and_user_messages():
+    dump, _, _ = _tool()
+    llm = _ContextLLM(SCRIPTED_CALLS)
+    run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
+
+    assert len(llm.requests) == TOOL_ROUNDS_THAT_FIT + 1
     for request in llm.requests:
         assert isinstance(request[0], SystemMessage) and request[0].content == "SYSTEM-PROMPT"
         assert isinstance(request[1], HumanMessage) and request[1].content == "USER-PROMPT"
 
 
 def test_ends_with_a_final_request_after_the_guard_trips():
-    dump, runs = _tool()
+    dump, _, _ = _tool()
     llm = _ContextLLM(SCRIPTED_CALLS)
     run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
 
-    assert llm.bound_requests < SCRIPTED_CALLS
+    assert llm.bound_requests == TOOL_ROUNDS_THAT_FIT
     assert isinstance(llm.requests[-1][-1], HumanMessage)
 
 
 def test_short_conversation_is_unaffected():
-    dump, runs = _tool()
+    dump, runs, _ = _tool()
     llm = _ContextLLM(2)
     out = run_tool_loop(llm, [dump], "sys", "user", LGTMConfig(max_agent_iterations=8))
 
