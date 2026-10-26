@@ -1,0 +1,7 @@
+# edit: package benchmark
+- benchmark/evaluate.py: `scope_fields()` sets `scope` and `off_category` on every result (score_case and mark_error). Scope is "out" for sqli when mode is lgtm-no-sast or the case's `case_scope` is "out"; missing scope reads "in". `off_category` lists vulnerable findings in another category (excluding ""/sast/None); TP/FP/FN/TN unchanged. `run_record_fields()` adds `run_records` (section, tool_calls, raw_answer, limit_hit). `summarize` counts only "in" rows in overall, grounded_only.overall, per_category, per_split; adds `out_of_scope_cases` and `off_category`; existing keys kept.
+- benchmark/real_world/evaluate_real.py: `case_scope` from the case's `scope` field in run_unit and error_result; `run_records` in run_unit; `write_dir_summary` adds `sql_cases_semgrep_warns_on`.
+- benchmark/real_world/cases.json: `"scope": "out"` on alerta_sqli_vulnerable, alerta_sqli_safe, postgraas_sqli_safe.
+- benchmark/tools/generate_cases.py: sqli_04_safe, sqli_07_safe, sqli_11_safe build SQL with `%`/f-string on a fixed constant and bind the user value; regenerated benchmark/labels.json and benchmark/cases/sqli/case_{04,07,11}_safe.patch with the generator.
+- README.md, docs/project-proposal.md, benchmark/README.md: scope statements; benchmark/README.md adds Scope and Run records sections.
+- Deviation from test-report assumptions: real-world sqli scope comes from the cases.json flag, not measured `semgrep_findings_in_diff == 0` (that count is always 0 in llm-only and lgtm-no-sast).

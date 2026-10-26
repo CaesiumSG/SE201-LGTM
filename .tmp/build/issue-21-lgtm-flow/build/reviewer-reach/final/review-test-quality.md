@@ -1,0 +1,21 @@
+# Test-quality review: reviewer-reach (Unit tier), 7f642e1..012fe4b
+
+Verdict: 0 High, 4 Medium, 3 Low. Suite passes (599 passed on the four touched test files, 313 s). Core AC-S2-1/-2/-5 tests are sound (distinct snapshots, whole-function and neighbour-exclusion checks).
+
+## Medium
+1. fault detection / coverage: limit-hit boundary. tests/test_graph_pipeline.py TestSectionRunRecords. Mutation `len(call_log) > budget` -> `>=` in base.fill_record: 6/6 record tests still pass (reproduced). Tests use 3-4 requested calls vs budget 1-2, never exactly the budget. A run that uses exactly its budget and finishes would be reported as limit_hit=tool_calls. Add: budget=N, N calls, then answer -> limit_hit None; N+1 -> "tool_calls".
+2. fault detection: invalid-input-cap path. Mutation forcing steps_exhausted=True when the invalid-tool-input cap ended the loop: all pass (reproduced). Decision needed: what limit_hit should that ending report (contract allows only null/tool_calls/steps). Add test once decided. Also untested: both tool budget exceeded and steps exhausted (precedence), and a per-section record's section id for the limit case (tests only count `== 1`, never assert which section, though CT-reviewer-reach-1 and AC-S2-3 are about naming the section).
+3. coverage: enclosing-definition edge cases, all reproduced as surviving mutants (14 Enclosing/Deletion tests pass each): (a) removing the `read_file_max_lines` truncation of the enclosing block; (b) removing the dedupe of two hunks in the same function (prompt gets the function twice, wasting section budget); (c) removing the `.py` filter; (d) choosing outermost instead of innermost definition for a nested function/method (test_agents Enclosing, 5 passed). Add: two hunks in one function -> one occurrence; method inside class -> method, not class; function longer than cap -> truncated; non-.py file -> no block; syntax-error snapshot -> review continues; async def; hunk on the `def` line / decorator.
+4. fault detection: AC-S1-4 test (TestDeletionOnlyNonSecurityChange) asserts `findings == []` where the fake LLM is scripted to reply empty, so it only proves no crash and that the removed line is rendered. It would pass if production ignored deletions' semantics entirely. This is the best a Unit test can do (real behaviour is INTEGRATE, DEC-9); rename/narrow the claim or add a hand-off note, and add a case where the scripted model reports a finding grounded only in a removed line to show it is not dropped by the section path (note grounding rules are out of scope: pr-scoped-review).
+
+## Low
+5. independence: tests/test_graph_pipeline.py `_attr` accepts dict or object records, so it passes whichever shape ships; the CT says "record with section, tool_calls, raw_answer, limit_hit". Pick one shape and assert it (consumers: benchmark-scope-trace). Also assert tool_calls entries have exactly tool and args.
+6. coverage: read_file_max_lines validation (positive_fields) has no test (0/negative rejected); investigator step-budget default test covers only "greater than previous", fine per AC-S2-5.
+7. reliability/duplication: test_graph_pipeline run-record tests derive limit expectations through the full pipeline (4-5 s each); the three section/investigator limit tests could be unit tests on run_tool_loop + fill_record directly (smaller boundary), which would also make items 1-2 cheap. Full touched-file runs cost ~5 min, hindering mutation checks.
+
+## Not defects
+- Changed expectations in test_graph_tools (200 -> 300/600 cap, 8000 -> cap*160 chars) match AC-S2-2/-5; test_report/test_graph_export one-line edits and expected.json regeneration follow from the new prompt block and are justified by the slice.
+- Tier: all tests use fake LLMs and monkeypatched git runner; no real I/O found. Mocking `lgtm.agents.tools.run_git` is a boundary patch, acceptable.
+
+## Coverage statement
+Tier: Unit. Inspected: slice, ACs, DEC-9, full src diff, changed tests. Ran: 4 touched test files (599 pass); 7 targeted mutations (4 survived as above; the steps/tool_calls label swap was killed). Not verified: package reports/log.md content, test_sections/test_coverage/test_diff (not changed in diff), live-model behaviour (INTEGRATE). Worktree restored clean at 012fe4b; no tmp folder created.

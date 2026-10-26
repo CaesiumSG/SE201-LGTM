@@ -1,0 +1,10 @@
+# solution-architect: hand-off resolutions
+
+1. AC-S1-3 vs AC-S3-4: same file (src/lgtm/validation/evidence.py) and same outcome (removed-line evidence is accepted as grounded, not rejected for lacking added-line evidence). AC-S1-3 moved to pr-scoped-review, package removed-line-grounding (Unit); removed from reviewer-reach citation line and package reach. Story-planner note: AC-S1-3 and AC-S3-4 are near-duplicates; no wording change made, merging them is the story planner call. AC-S1-1 (INTEGRATE) still depends on this fix, which lands in pr-scoped-review.
+2. Held-out rule removed from kev-judge-measurement Owns and from pr-scoped-review Owns (AC-S6-6 and AC-S3-7 are INTEGRATE-only); kev Out of scope now names AC-S6-6.
+3. Added CT-benchmark-scope-trace-1 (Provides of benchmark-scope-trace): existing keys kept; per-case result and summary.json add scope ("in" or "out") and off_category; headline metrics count scope "in" only; older results read as "in". Cited in kev-judge-measurement Prerequisites and Consumes, and in architecture.md.
+4. Live Kev judge-eval run: INTEGRATE, resource "Kev judge server (live)" strategy defer, recorded in architecture.md and the kev Resources row. Kev unit tests use the simulated server. Kev Setup still has one live lgtm run under lease llm-endpoint to collect Shoply candidates for labeling (labels come from the build agent, not Kev); that is a reviewer run, not a Kev run. Risk: if stored runs under benchmark/runs/ already contain Shoply candidates the live run is unneeded; the technical planner can drop it.
+5. AC-S4-1 and AC-S4-2: review-only in INTEGRATE (smaller than a brittle text-assertion test); docs package row marked "review in INTEGRATE", INTEGRATE whole-feature check lists both.
+
+Files changed: slices/reviewer-reach.md, pr-scoped-review.md, benchmark-scope-trace.md, kev-judge-measurement.md, INTEGRATE.md, plan/architecture.md.
+Not checked: the Checks sections of the slice files were not reworded (the pr-scoped-review Checks already cover tests/test_validation.py through its pytest line).
