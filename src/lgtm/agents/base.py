@@ -349,6 +349,7 @@ def build_llm(config: LGTMConfig):
         # runaway generation with no stop token blocked a benchmark run for
         # over an hour before either existed.
         num_predict=config.llm_max_output_tokens,
+        num_ctx=config.llm_context_tokens,
         client_kwargs={"timeout": config.llm_timeout},
         **kwargs,
     )
@@ -511,6 +512,13 @@ def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
     return answer
 
 
+CHARS_PER_TOKEN = 3
+
+
+def _message_chars(messages: list) -> int:
+    return sum(len(str(m.content)) for m in messages)
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -535,9 +543,13 @@ def run_tool_loop(
     pushed_back = False
     invalid_inputs = 0
     budget_spent = False
+    context_full = False
     cap = config.max_invalid_tool_inputs
+    window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+    final_chars = len(registry.entry("shared.forced_final"))
 
     for iteration in range(config.max_agent_iterations):
+        round_start = _message_chars(messages)
         response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
@@ -604,9 +616,16 @@ def run_tool_loop(
             # 24 Oct Shoply run). Ask for the verdict now.
             budget_spent = True
             break
+        used = _message_chars(messages)
+        # Another round as large as this one, plus the final-answer prompt, would not fit.
+        if used + (used - round_start) + final_chars > window_chars:
+            context_full = True
+            break
 
     invalid_capped = cap > 0 and invalid_inputs >= cap
-    if invalid_capped:
+    if context_full:
+        logger.warning("Agent history nears the context window; asking for the final answer")
+    elif invalid_capped:
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
     elif budget_spent:
         logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
@@ -617,5 +636,8 @@ def run_tool_loop(
     messages.append(response)
     answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
     return _close_run(
-        toolbox, answer, steps_exhausted=not (invalid_capped or budget_spent), budget_spent=budget_spent
+        toolbox,
+        answer,
+        steps_exhausted=not (invalid_capped or budget_spent or context_full),
+        budget_spent=budget_spent,
     )

@@ -31,6 +31,7 @@ class LGTMConfig:
     max_invalid_tool_inputs: int = 3
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
+    llm_context_tokens: int = 32768  # num_ctx: the context window served to the model
 
     # Judge (Kev-4B, base URL; the client appends /v1/systemone)
     judge_endpoint: str = "http://127.0.0.1:8008"
