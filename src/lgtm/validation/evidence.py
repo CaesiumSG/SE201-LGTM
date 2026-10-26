@@ -91,8 +91,10 @@ class EvidenceValidator:
         self._snapshot_cache: dict[tuple[str, str], list[str] | None] = {}
         # Content added by the PR, by file — snippets may legitimately cite it.
         self._diff_added: dict[str, str] = {}
+        self._diff_removed: dict[str, str] = {}
         for fd in diffs or []:
             self._diff_added[fd.path] = _normalize(fd.added_text)
+            self._diff_removed[fd.path] = _normalize(fd.removed_text)
 
     # ------------------------------------------------------------------
     def _read_base_file(self, path: str) -> list[str] | None:
@@ -286,11 +288,15 @@ class EvidenceValidator:
         """Whether a code item on its own grounds a vulnerable verdict in the PR."""
         if item.type != "code" or issues or not item.content.strip():
             return False
-        if self._shas is not None and item.snapshot is not None:
-            return item.snapshot == "pr"
-        return item.file in self._diff_added and self._snippet_in_text(
-            item.content, self._diff_added[item.file]
-        )
+        labelled = self._shas is not None and item.snapshot is not None
+        if labelled and item.snapshot == "pr":
+            return True
+        if item.file not in self._diff_added:
+            return False
+        texts = [self._diff_removed[item.file]]
+        if not labelled:
+            texts.append(self._diff_added[item.file])
+        return any(self._snippet_in_text(item.content, t) for t in texts)
 
     def read_cited_code(self, item: EvidenceItem) -> str:
         """Code at the cited location; empty when it cannot be read."""

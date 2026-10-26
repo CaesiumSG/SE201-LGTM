@@ -577,7 +577,10 @@ def _evidence_kinds():
     return {
         "none": ([], False),
         "valid-pr": ([_item("added.py", [1, 3], "return token", "pr")], True),
-        "valid-base": ([_item("deleted.py", [1, 2], "def removed():", "base")], False),
+        "valid-base": ([_item("deleted.py", [1, 2], "def removed():", "base")], True),
+        "valid-base-unchanged": (
+            [_item("unchanged.py", [2, 4], "cleaned = value.strip()", "base")], False,
+        ),
         "valid-policy": (
             [EvidenceItem(type="policy", source="policy.md", content="bound parameters")], False,
         ),
@@ -668,8 +671,41 @@ class TestPerItemPrGrounding:
             _item("ghost.py", [1, 1], "x", "pr"),
         )
 
-        assert [i.grounded_in_pr for i in finding.evidence] == [True, False, False]
+        assert [i.grounded_in_pr for i in finding.evidence] == [True, True, False]
         assert finding.resolved is False
+
+    @pytest.mark.parametrize(
+        ("file", "lines", "content", "snapshot", "grounded"),
+        [
+            ("deleted.py", [1, 2], "def removed():", "base", True),
+            ("shifted.py", [3, 3], "legacy_helper(config, retries=3, verbose=True)", "base", True),
+            ("shifted.py", [1, 1], "import os", "base", False),
+            ("shifted.py", [4, 4], "return compute(arg)", "base", False),
+            ("unchanged.py", [3, 3], "cleaned = value.strip()", "base", False),
+            ("shifted.py", [3, 3], "legacy_helper(config, retries=3, verbose=True)", None, True),
+            ("shifted.py", [4, 4], "return compute(arg)", None, False),
+            ("deleted.py", [1, 2], "def removed():", "pr", False),
+            ("deleted.py", [1, 1], "os.system('rm -rf /') invented", "base", False),
+        ],
+    )
+    def test_removed_line_evidence_is_grounded_only_when_the_pr_removed_that_text(
+        self, snap, file, lines, content, snapshot, grounded
+    ):
+        finding = _check(_validator(snap), _item(file, lines, content, snapshot))
+
+        assert finding.evidence[0].grounded_in_pr is grounded
+
+    def test_removed_only_evidence_is_not_rejected_or_downgraded(self, snap):
+        finding = _check(
+            _validator(snap),
+            _item("deleted.py", [1, 2], "def removed():", "base"),
+            explanation="Original explanation.",
+        )
+
+        assert finding.resolved is True
+        assert finding.evidence[0].grounded_in_pr is True
+        assert not finding.verdict
+        assert finding.explanation == "Original explanation."
 
     def test_policy_item_is_never_grounded_in_the_pr(self, snap):
         finding = _check(
