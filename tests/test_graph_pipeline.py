@@ -1552,19 +1552,15 @@ class TestSectionPipeline:
         assert result.findings == []
 
     def test_coverage_is_in_the_json_metadata_and_endpoint_count_is_informational(
-        self, repo, install_graph, no_semgrep, tmp_path
+        self, repo_with_endpoints, install_graph, no_semgrep, tmp_path
     ):
-        from lgtm.review.endpoints import extract_changed_endpoints
-
         install_graph()
 
-        result = _review(repo, RoutedLLM(), output_dir=tmp_path / "out")
+        result = _review(repo_with_endpoints, RoutedLLM(), output_dir=tmp_path / "out")
 
         review = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
-        assert review["coverage"]["sections_scheduled"] == 4
-        # Kept as a diagnostic: how many route decorators the checkpoint
-        # gating would have reviewed. It does not gate anything.
-        assert result.meta.endpoints_reviewed == len(extract_changed_endpoints(result.diffs))
+        assert review["coverage"]["sections_scheduled"] == 5
+        assert result.meta.endpoints_reviewed == 2
         assert "hunks_total" not in result.md_path.read_text(encoding="utf-8")
 
     def test_llm_only_mode_is_unchanged_and_runs_no_sections(

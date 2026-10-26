@@ -193,11 +193,12 @@ def run_agent(request, git_repo):
             agent = AuthzReviewerAgent(toolbox, config, llm=llm)
             findings = agent.review_section(_section(), "")
             if findings:
+                assert agent.errors == []
                 result = findings[0]
             else:
                 assert agent.errors
                 result = SimpleNamespace(
-                    tool_calls_used=toolbox.calls_used, verdict=None
+                    tool_calls_used=toolbox.calls_used, explanation=None
                 )
         return result, llm
 
@@ -234,7 +235,7 @@ class TestFailedCallsSpendSlots:
         assert result.tool_calls_used == 5
         assert _loop_stopped_after(llm, 5)
         assert _touched(git_commands, "app.py") == []
-        assert not result.verdict
+        assert result.explanation == "ok"
 
     def test_eight_failed_native_calls_saturate_at_five_with_no_extra_backend_work(
         self, run_agent, git_commands
@@ -346,7 +347,7 @@ class TestRejectedCallsSpendSlots:
         script = [_text("rm_rf", {"path": "x"}), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 1
-        assert not result.verdict
+        assert result.explanation == "ok"
         assert len(llm.seen) == 2
         assert "ERROR" in llm.seen[1][-1].content
 
@@ -354,7 +355,7 @@ class TestRejectedCallsSpendSlots:
         tagged = '<tool_call>{"name": "shell", "arguments": {"cmd": "ls"}}</tool_call>'
         result, llm = run_agent([_msg(tagged), _msg(SAFE)])
         assert result.tool_calls_used == 1
-        assert not result.verdict
+        assert result.explanation == "ok"
         assert len(llm.seen) == 2
 
     def test_text_call_with_invalid_schema_spends_a_slot(self, run_agent):
@@ -369,7 +370,7 @@ class TestRejectedCallsSpendSlots:
         assert result.tool_calls_used == 3
         assert llm.channels == ["bound", "bound", "bound", "unbound"]
         assert "Produce your final JSON answer NOW" in llm.seen[3][-1].content
-        assert not result.verdict
+        assert result.explanation == "ok"
 
 
 class TestNonToolOutputsAreNotCalls:
@@ -380,7 +381,7 @@ class TestNonToolOutputsAreNotCalls:
         )
         result, llm = run_agent([_msg(verdict)])
         assert result.tool_calls_used == 0
-        assert not result.verdict
+        assert result.explanation == "x"
         assert len(llm.seen) == 1
 
     def test_prose_mentioning_a_tool_is_not_a_tool_call(self, run_agent):
@@ -388,7 +389,7 @@ class TestNonToolOutputsAreNotCalls:
         result, llm = run_agent(script)
         assert result.tool_calls_used == 0
         assert "not a valid JSON object" in llm.seen[1][-1].content
-        assert not result.verdict
+        assert result.explanation == "ok"
 
 
     @pytest.mark.parametrize(
@@ -447,7 +448,7 @@ class TestSuccessfulCallsAndResilience:
         script += [_msg("prose"), _msg("more prose"), _msg(SAFE)]
         result, llm = run_agent(script)
         assert result.tool_calls_used == 5
-        assert not result.verdict
+        assert result.explanation == "ok"
         assert "not a valid JSON object" in llm.seen[-1][-1].content
 
     @pytest.mark.parametrize("agent", ["sast_triage", "authz_reviewer"])
@@ -553,7 +554,7 @@ class TestRejectedAttemptAfterBudgetIsSpent:
         script.append(_msg(SAFE))
         result, llm = run_agent(script, max_agent_iterations=20)
         assert result.tool_calls_used == 5
-        assert not result.verdict
+        assert result.explanation == "ok"
         # Five bound turns spend the budget; the forced-final request and the
         # re-asks that follow the model's refusals are all unbound.
         assert llm.channels[:5] == ["bound"] * 5 and "bound" not in llm.channels[5:]

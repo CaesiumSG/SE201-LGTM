@@ -17,6 +17,7 @@ from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.base import (
     RunRecord,
+    answer_until_parsed,
     extract_json_object,
     fill_record,
     parse_agent_output,
@@ -1314,3 +1315,112 @@ class TestFillRecordToolCallBudget:
         fill_record(record, toolbox, "{}")
 
         assert record.limit_hit == expected
+
+
+class TestAnswerUntilParsedStop:
+    @staticmethod
+    def _run(stop, parses=()):
+        asked = []
+        outcomes = iter(parses)
+
+        def ask():
+            asked.append(1)
+            return "raw"
+
+        result = answer_until_parsed(ask, lambda raw: next(outcomes, None), stop)
+        return result, len(asked)
+
+    def test_a_stop_after_the_first_failed_parse_ends_the_retries(self):
+        assert self._run(lambda: True) == (None, 1)
+
+    def test_without_a_stop_every_attempt_is_made(self):
+        assert self._run(lambda: False) == (None, 4)
+
+    def test_stop_is_not_consulted_before_the_first_ask_and_never_discards_a_parse(self):
+        assert self._run(lambda: True, parses=["ok"]) == ("ok", 1)
+
+    def test_stop_that_turns_true_after_the_second_failure_ends_at_two_asks(self):
+        checks = []
+
+        def stop():
+            checks.append(1)
+            return len(checks) >= 2
+
+        assert self._run(stop) == (None, 2)
+
+
+class _ToolThenUnparsableLLM:
+    """First turn calls read_file; every later turn is an unparsable answer."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            return _ai_message(
+                "", tool_calls=[{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}]
+            )
+        return _ai_message(UNPARSABLE)
+
+
+class TestBudgetSpentStopsTheAnswerRetries:
+    CONFIG = dict(NO_RETRY_CONFIG, max_tool_calls=1)
+
+    def _toolbox(self, git_repo):
+        return _snapshot_toolbox(git_repo, LGTMConfig(**self.CONFIG))
+
+    def test_authz_does_not_rerun_the_loop_after_the_budget_is_spent(self, git_repo):
+        llm = _ToolThenUnparsableLLM()
+        out = _review(git_repo, llm, toolbox=self._toolbox(git_repo), **self.CONFIG)
+        assert not out
+        assert llm.calls == 2  # one bound turn plus the forced final answer
+
+    def test_sast_triage_does_not_rerun_the_loop_after_the_budget_is_spent(self, git_repo):
+        llm = _ToolThenUnparsableLLM()
+        config = LGTMConfig(**self.CONFIG)
+        agent = SASTTriageAgent(self._toolbox(git_repo), config, llm=llm)
+        assert agent.triage(SEMGREP_HIT, None) is None
+        assert llm.calls == 2
+
+
+class TestLimitHitOutcomes:
+    @staticmethod
+    def _loop(git_repo, replies, **config):
+        toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig(**config))
+        llm = _FakeLLM(replies)
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
+        record = RunRecord(section="s")
+        fill_record(record, toolbox, out)
+        return record, toolbox
+
+    @staticmethod
+    def _read(call_id):
+        return _ai_message(
+            "", tool_calls=[{"name": "read_file", "args": {"path": "app.py"}, "id": call_id}]
+        )
+
+    def test_a_budget_stop_records_tool_calls_and_marks_the_toolbox_budget_spent(self, git_repo):
+        record, toolbox = self._loop(
+            git_repo, [self._read("c1"), _ai_message('{"verdict": "safe"}')], max_tool_calls=1
+        )
+        assert record.limit_hit == "tool_calls"
+        assert toolbox.budget_spent is True
+
+    def test_the_iteration_cap_records_steps(self, git_repo):
+        record, toolbox = self._loop(
+            git_repo,
+            [self._read("c1"), self._read("c2"), _ai_message('{"verdict": "safe"}')],
+            max_agent_iterations=2, max_tool_calls=10,
+        )
+        assert record.limit_hit == "steps"
+        assert toolbox.budget_spent is False
+
+    def test_an_answer_within_budget_and_steps_records_no_limit(self, git_repo):
+        record, _ = self._loop(
+            git_repo, [self._read("c1"), _ai_message('{"verdict": "safe"}')], max_tool_calls=5
+        )
+        assert record.limit_hit is None

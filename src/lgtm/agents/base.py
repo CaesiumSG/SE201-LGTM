@@ -327,7 +327,7 @@ def answer_until_resolved(
             (dropped if emptied else pruned).append(f)
         return None
 
-    answer = answer_until_parsed(ask, check, lambda: getattr(toolbox, "budget_spent", False))
+    answer = answer_until_parsed(ask, check, lambda: toolbox.budget_spent)
     if answer is not None:
         return answer
     for f in dropped:
@@ -534,6 +534,7 @@ def run_tool_loop(
     tools_used = 0
     pushed_back = False
     invalid_inputs = 0
+    budget_spent = False
     cap = config.max_invalid_tool_inputs
 
     for iteration in range(config.max_agent_iterations):
@@ -603,10 +604,6 @@ def run_tool_loop(
             # 24 Oct Shoply run). Ask for the verdict now.
             budget_spent = True
             break
-    else:
-        budget_spent = False
-    if cap > 0 and invalid_inputs >= cap:
-        budget_spent = False
 
     invalid_capped = cap > 0 and invalid_inputs >= cap
     if invalid_capped:

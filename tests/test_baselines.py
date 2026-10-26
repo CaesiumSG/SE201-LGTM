@@ -124,6 +124,14 @@ class TestCaseScoring:
     def test_uncategorized_findings_count_for_any_category(self):
         assert evaluate.predict_case_verdict([_f("sast", "vulnerable")], "sqli") == "vulnerable"
 
+    def test_grounded_scoring_discounts_unvalidated_detections(self):
+        findings = [_f("authz", "vulnerable", valid=False)]
+        assert evaluate.predict_case_verdict(findings, "authz") == "vulnerable"
+        assert (
+            evaluate.predict_case_verdict(findings, "authz", require_grounded=True)
+            == "possible"
+        )
+
     def test_score_case_and_summary_splits(self):
         rows = [
             evaluate.score_case({"id": "a", "category": "authz", "split": "dev",
@@ -1575,6 +1583,61 @@ class TestFindingsOnlyLabels:
         assert row["outcome"] == "FN"
 
 
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("findings,label", [
+        ([_f("authz", "possible"), _f("authz", "insufficient_evidence"),
+          _f("authz", "safe")], "possible_vulnerability"),
+        ([_f("authz", "insufficient_evidence"), _f("authz", "safe")], "explicit_safe"),
+        ([_f("authz", "insufficient_evidence"), _f("authz", "insufficient_evidence")],
+         "insufficient_evidence"),
+    ])
+    def test_non_vulnerable_verdict_precedence(self, mode, findings, label):
+        assert _label(mode=mode, findings=findings) == label
+
+    @pytest.mark.parametrize("expected,plain,grounded", [
+        ("vulnerable", "TP", "FN"), ("safe", "FP", "TN"),
+    ])
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_ungrounded_vulnerable_is_downgraded_to_possible_in_grounded_label(
+            self, mode, expected, plain, grounded):
+        row = evaluate.score_case(_case_row(
+            expected=expected, mode=mode,
+            findings=[_f("authz", "vulnerable", valid=False)]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+        assert row["outcome"] == plain
+        assert row["outcome_grounded"] == grounded
+
+    def test_grounded_label_stays_detected_with_one_valid_vulnerable_finding(self):
+        row = evaluate.score_case(_case_row(
+            mode="llm-only",
+            findings=[_f("authz", "vulnerable", valid=True),
+                      _f("authz", "vulnerable", valid=False)]))
+        assert row["case_label_grounded"] == "detected_vulnerability"
+        assert row["outcome_grounded"] == "TP"
+
+    def test_grounded_label_prefers_a_valid_possible_over_an_invalid_vulnerable(self):
+        row = evaluate.score_case(_case_row(
+            mode="llm-only",
+            findings=[_f("authz", "vulnerable", valid=False), _f("authz", "possible")]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+
+    def test_sqli_grounded_label_downgrades_an_ungrounded_detection(self):
+        row = evaluate.score_case(_case_row(
+            category="sqli", mode="llm-only",
+            findings=[_f("sqli", "vulnerable", valid=False)]))
+        assert row["case_label"] == "detected_vulnerability"
+        assert row["case_label_grounded"] == "possible_vulnerability"
+
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_judged_modes_have_no_grounded_downgrade(self, mode):
+        row = evaluate.score_case(_case_row(
+            mode=mode, coverage=_coverage([_target_section()]),
+            findings=[_s("authz", True)]))
+        assert row["case_label"] == row["case_label_grounded"] == "detected_vulnerability"
+
+
 class TestOutcomeTable:
     @pytest.mark.parametrize("label,vulnerable_outcome,safe_outcome", [
         ("detected_vulnerability", "TP", "FP"),
@@ -1928,6 +1991,32 @@ class TestSummaryContract:
         assert overall["excluded_on_safe"] == 0
         assert overall["accuracy"] == 0.5
         assert overall["false_positive_rate_on_safe"] == 0.5
+
+    @staticmethod
+    def _excluded(cid):
+        row = evaluate.score_case(_case_row(cid, "safe", **_scenario("explicit_safe")))
+        row["outcome"] = row["outcome_grounded"] = "EXCLUDED"
+        return row
+
+    def test_metrics_denominators_exclude_excluded_safe_rows(self):
+        rows = [
+            evaluate.score_case(_case_row("tn", "safe", **_scenario("explicit_safe"))),
+            evaluate.score_case(_case_row("fp", "safe", **_scenario("detected_vulnerability"))),
+            self._excluded("x1"), self._excluded("x2"),
+        ]
+        overall = evaluate.summarize(rows)["overall"]
+        assert (overall["tn"], overall["fp"]) == (1, 1)
+        assert overall["safe_scored"] == 2
+        assert overall["excluded_on_safe"] == 2
+        assert overall["false_positive_rate_on_safe"] == 0.5
+        assert overall["accuracy"] == 0.5
+
+    def test_metrics_are_none_when_every_safe_row_is_excluded(self):
+        overall = evaluate.summarize([self._excluded("x1"), self._excluded("x2")])["overall"]
+        assert overall["safe_scored"] == 0
+        assert overall["excluded_on_safe"] == 2
+        assert overall["accuracy"] is None
+        assert overall["false_positive_rate_on_safe"] is None
 
     def test_per_category_and_per_split_use_the_new_metrics(self):
         summary = evaluate.summarize(self._mixed_rows())
@@ -2331,3 +2420,44 @@ class TestRescoreOfResultsWrittenBeforeScope:
         overall = saved["summary"]["overall"]
         assert (overall["cases"], overall["tp"], overall["tn"]) == (2, 1, 1)
         assert saved["outcomes"] == {"a": "TP", "b": "TN"}
+
+
+class TestIsJudgedRow:
+    @staticmethod
+    def _row(findings, mode="lgtm", pin=True):
+        row = {"mode": mode, "findings": findings}
+        if pin:
+            row["pin"] = {"code_sha": "abc"}
+        return row
+
+    def test_row_without_a_pin_is_not_judged(self):
+        assert evaluate.is_judged_row(self._row([_s("authz", True)], pin=False)) is False
+
+    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    def test_baseline_modes_are_not_judged(self, mode):
+        assert evaluate.is_judged_row(self._row([_s("authz", True)], mode=mode)) is False
+
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_verdict_only_findings_on_a_pinned_row_are_not_judged(self, mode):
+        findings = [_f("authz", "vulnerable"), _f("authz", "safe")]
+        row = self._row(findings, mode=mode)
+        assert evaluate.is_judged_row(row) is False
+        assert evaluate.score_case(dict(row, category="authz", expected="vulnerable",
+                                        latency_seconds=1.0, est_tokens=1))["outcome"] == "TP"
+
+    @pytest.mark.parametrize("mode", COVERAGE_MODES)
+    def test_supported_and_judged_findings_are_judged(self, mode):
+        assert evaluate.is_judged_row(self._row([_s("authz", True), _s("authz", False)], mode=mode))
+
+    @pytest.mark.parametrize("findings", [
+        [{"category": "authz", "supported": False}],
+        [{"category": "authz", "verdict": "vulnerable", "judged": False}],
+    ])
+    def test_a_finding_with_supported_or_judged_keeps_the_row_judged(self, findings):
+        assert evaluate.is_judged_row(self._row(findings))
+
+    def test_empty_findings_on_a_pinned_judged_row_stay_judged(self):
+        assert evaluate.is_judged_row(self._row([])) is True
+
+    def test_one_verdict_only_finding_among_judged_ones_makes_the_row_not_judged(self):
+        assert evaluate.is_judged_row(self._row([_s("authz", True), _f("authz", "vulnerable")])) is False
