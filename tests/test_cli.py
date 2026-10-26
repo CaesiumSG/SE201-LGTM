@@ -312,17 +312,20 @@ def _finding(kind: str) -> AgentFinding:
         "supported-not-real": {"supported": True, "judged": True, "kev_verdict": "not_real"},
         "baseline-vulnerable": {"verdict": "vulnerable"},
         "baseline-safe": {"verdict": "safe"},
+        "injection": {"verdict": "vulnerable"},
+        "injection-not-judged": {"verdict": "vulnerable", "not_judged_reason": "judge-unreachable"},
     }[kind]
     return AgentFinding(finding_id=kind, file="a.py", line=1, **fields)
 
 
-def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=()):
+def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=(), mode="lgtm"):
     pipeline = _mock_pipeline(monkeypatch)
     run_result = pipeline.return_value.run.return_value
     run_result.findings = [_finding(kind) for kind in kinds]
     run_result.meta.agent_errors = [{"source": s, "message": "failed"} for s in agent_errors]
     result = CliRunner().invoke(main, [
         "review", "--repo", str(tmp_path), "--base", "main", "--pr", "feature",
+        "--mode", mode,
     ])
     return result.exit_code
 
@@ -340,7 +343,6 @@ def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=()):
     (["no-source"], [], 0),
     (["unsupported", "no-source"], [], 0),
     ([], [], 0),
-    (["baseline-vulnerable", "baseline-safe"], [], 1),
     (["baseline-safe"], [], 0),
     (["supported-real"], [], 1),
     (["supported-not-real"], [], 0),
@@ -353,6 +355,35 @@ def test_exit_code_is_1_if_any_supported_else_2_if_not_judged_or_agent_error_els
     tmp_path, monkeypatch, kinds, agent_errors, expected
 ):
     assert _exit_code(tmp_path, monkeypatch, kinds, agent_errors) == expected
+
+
+@pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+@pytest.mark.parametrize("kinds,agent_errors,expected", [
+    (["baseline-vulnerable", "baseline-safe"], [], 1),
+    (["baseline-vulnerable"], ["sec-2"], 1),
+    (["baseline-safe"], [], 0),
+    (["baseline-safe"], ["sec-2"], 2),
+])
+def test_baseline_modes_exit_1_on_a_vulnerable_verdict(
+    tmp_path, monkeypatch, mode, kinds, agent_errors, expected
+):
+    assert _exit_code(tmp_path, monkeypatch, kinds, agent_errors, mode) == expected
+
+
+@pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+@pytest.mark.parametrize("kinds,agent_errors,expected", [
+    (["injection"], [], 0),
+    (["injection-not-judged"], [], 2),
+    (["injection"], ["sec-2"], 2),
+    (["injection", "supported"], [], 1),
+    (["baseline-vulnerable"], [], 0),
+    (["supported"], [], 1),
+    (["unsupported"], ["sec-2"], 2),
+])
+def test_judged_modes_ignore_a_vulnerable_verdict_without_a_supported_judgement(
+    tmp_path, monkeypatch, mode, kinds, agent_errors, expected
+):
+    assert _exit_code(tmp_path, monkeypatch, kinds, agent_errors, mode) == expected
 
 
 def _exit_code_text(text: str) -> str:

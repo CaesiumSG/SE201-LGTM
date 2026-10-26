@@ -136,9 +136,11 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
+    baseline = config.mode not in ("lgtm", "lgtm-no-sast")
     supported = sum(
         1 for f in result.findings
-        if f.kev_verdict != "not_real" and (f.supported is True or f.verdict == "vulnerable")
+        if f.kev_verdict != "not_real"
+        and (f.supported is True or (baseline and f.verdict == "vulnerable"))
     )
     not_judged = sum(1 for f in result.findings if f.not_judged_reason)
     click.echo("")

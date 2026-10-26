@@ -306,7 +306,18 @@ class EvidenceValidator:
         if self._shas is None:
             lines = self._read_base_file(self._resolve_path(item.file))
         else:
-            for label in [item.snapshot] if item.snapshot else ["pr", "base"]:
+            labels = ["pr", "base"]
+            if item.snapshot:
+                labels = [item.snapshot]
+            elif not item.snapshot_conflict:
+                # Removed or shifted lines resolve only at base; read where the citation validates.
+                labels = [
+                    label
+                    for label in labels
+                    if label in self._shas
+                    and not self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                ] or labels
+            for label in labels:
                 if label in self._shas:
                     lines = self._snapshot_lines(label, item.file)
                 if lines is not None:
