@@ -47,6 +47,41 @@ def test_summary_counts_crashes_and_flags():
     assert [p["id"] for p in s["per_case"]] == ["a", "b", "c"]
 
 
+def test_summary_counts_review_reach_and_graph_state():
+    mod = _load()
+    cov = {"planner": "investigator", "investigator_status": "ok", "hunks_total": 4,
+           "hunks_reviewed": 4, "sections_scheduled": 2, "sections_completed": 2,
+           "sections_failed": 0, "complete": True, "sections": [{"section_id": "s1"}]}
+    brief = mod.coverage_brief(cov)
+    assert brief["sections_completed"] == 2 and brief["complete"] is True
+    assert "sections" not in brief
+    assert mod.coverage_brief(None) is None
+
+    records = [
+        {"id": "a", "crashed": False, "latency_seconds": 1.0, "graph_state": "ok",
+         "coverage": brief, "judged": {"supported": 1, "unsupported": 0, "not_judged": 1}},
+        {"id": "b", "crashed": False, "latency_seconds": 1.0, "graph_state": "unavailable:missing",
+         "coverage": mod.coverage_brief({**cov, "sections_completed": 0, "sections_failed": 2,
+                                         "hunks_reviewed": 0, "complete": False})},
+        {"id": "c", "crashed": False, "latency_seconds": 1.0, "graph_state": None, "coverage": None},
+    ]
+    s = mod.summarize(records)
+    assert s["prs_reviewed_by_agent"] == 1
+    assert s["prs_coverage_complete"] == 1
+    assert s["sections_failed_total"] == 2
+    assert s["graph_states"] == {"ok": 1, "unavailable:missing": 1, "none": 1}
+    assert s["judge"] == {"supported": 1, "unsupported": 0, "not_judged": 1}
+    assert s["per_case"][0]["sections_completed"] == 2
+    assert s["per_case"][2]["graph_state"] is None
+
+
+def test_judge_counts_only_when_findings_carry_a_judge_result():
+    mod = _load()
+    assert mod.judge_counts([{"verdict": "safe"}]) is None
+    counts = mod.judge_counts([{"supported": True}, {"supported": False}, {"supported": None}])
+    assert counts == {"supported": 1, "unsupported": 1, "not_judged": 1}
+
+
 def test_scrub_replaces_cache_paths():
     mod = _load()
     out = mod.scrub({"x": ["/Users/me/cache/repo/file.py"]}, ["/Users/me/cache"])
