@@ -379,6 +379,34 @@ Each metrics block (`overall`, `per_category`, `per_split`, and the
 - `possible_on_safe`: safe rows labelled `possible_vulnerability`.
 - `excluded_on_safe`: safe rows with outcome EXCLUDED.
 
+### Scope
+
+Each case result has `scope` (`in` or `out`) and `off_category` (ids of
+findings with a `vulnerable` verdict in a category other than the case's). A
+result without `scope` counts as `in`. `overall`, `per_category`, `per_split`
+and the `grounded_only` blocks of `summary.json` count only `in` rows;
+`out_of_scope_cases` lists the others and `off_category` maps case ids to their
+off-category finding ids. Off-category findings do not change the outcome.
+
+Out-of-scope cases and modes:
+
+- `lgtm-no-sast`: SQL injection rows are `out` (the mode removes the Semgrep
+  signal that SQL injection triage depends on); authz rows stay `in`.
+- Real-world SQL injection cases with no in-diff Semgrep warning on either
+  side: `alerta_sqli_vulnerable`, `alerta_sqli_safe` and `postgraas_sqli_safe`
+  (`"scope": "out"` in `real_world/cases.json`).
+
+The Shoply safe SQL cases `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe`
+trigger a Semgrep warning in the diff and stay in the headline metrics.
+The real-world `summary.json` reports `sql_cases_semgrep_warns_on`, the number
+of SQL injection rows with an in-diff Semgrep warning.
+
+### Run records
+
+`lgtm` and `lgtm-no-sast` case results carry `run_records`: one entry per
+section run (and the investigator) with `section`, `tool_calls` (name and
+arguments), `raw_answer`, and `limit_hit` (`tool_calls`, `steps` or `null`).
+
 ### Run manifest and `--resume`
 
 `run.json` stores `model`, `ollama_base_url`, `reasoning`, `mode` and `pin`.

@@ -8,6 +8,15 @@ and review changed code sections against the project's *documented* security
 policy (retrieved with RAG) — catching authorization flaws SAST cannot see,
 while an evidence validator keeps the LLM honest.
 
+## Scope
+
+LGTM does two jobs:
+
+1. Triage of Semgrep SQL injection warnings.
+2. Authorization (authz) bugs that Semgrep cannot see.
+
+Every other vulnerability class is out of scope.
+
 ## Architecture
 
 ```
