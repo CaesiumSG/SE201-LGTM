@@ -216,7 +216,9 @@ class TestRunnerEnvironment:
         make_runner(fake).init(root)
 
         env = env_of(fake.calls()[0])
-        shim_defined = {"PROMPT"} if os.name == "nt" else set()  # cmd.exe injects PROMPT into the .cmd shim's environment
+        # cmd.exe injects PROMPT into the .cmd shim's environment; a POSIX
+        # /bin/sh (dash on Linux too) exports PWD into the shim's.
+        shim_defined = {"PROMPT"} if os.name == "nt" else {"PWD"}
         if sys.platform == "darwin":
             # /bin/sh exports PWD and SHLVL into the shim's environment, and
             # macOS injects __CF_USER_TEXT_ENCODING into every process.
