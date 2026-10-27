@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_GREP_RESULTS = 30
-MAX_READ_LINES = 200
 MAX_OUTPUT_CHARS = 8000
+READ_CHARS_PER_LINE = 160
 
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DRIVE = re.compile(r"[A-Za-z]:")
@@ -143,6 +143,8 @@ class AgentToolbox:
         self.session = session
         self.budget = self.config.max_tool_calls
         self.calls_used = 0
+        self.steps_exhausted = False
+        self.budget_spent = False
         self.call_log: list[dict] = []
         self._legacy_base_sha: str | None = None
         self._missing_binary_warned = False
@@ -160,6 +162,8 @@ class AgentToolbox:
     def reset_budget(self, max_calls: int | None = None) -> None:
         self.budget = self.config.max_tool_calls if max_calls is None else max_calls
         self.calls_used = 0
+        self.steps_exhausted = False
+        self.budget_spent = False
         self.call_log = []
 
     def charge(self, tool_name: str, args: dict) -> bool:
@@ -250,10 +254,11 @@ class AgentToolbox:
         end = min(total, end_line) if end_line and end_line > 0 else total
         if end < start:
             end = total
-        if end - start + 1 > MAX_READ_LINES:
-            end = start + MAX_READ_LINES - 1
+        cap = self.config.read_file_max_lines
+        if end - start + 1 > cap:
+            end = start + cap - 1
         body = "\n".join(lines[start - 1 : end])
-        return render_read(label, sha, rel, start, end, body, MAX_OUTPUT_CHARS)
+        return render_read(label, sha, rel, start, end, body, max(MAX_OUTPUT_CHARS, cap * READ_CHARS_PER_LINE))
 
     def grep_repo_impl(
         self, pattern: str, file_glob: str | None = None, snapshot: str = "base"
@@ -384,6 +389,19 @@ class AgentToolbox:
             return False
         self._sync_health()
         return label not in self._health
+
+    def graph_stamp(self, label: str) -> bool | None:
+        """Value for ``AgentFinding.pr_graph_ok``.
+
+        ``None`` when the graph is disabled or the binary is missing: the
+        agents never had graph tools, so a finding must not be judged by
+        them. ``True``/``False`` only when the graph ran and did or did not
+        serve this snapshot (a failure mid-run is what the evidence
+        validator's downgrade is for).
+        """
+        if self.session is None or not self.session.available:
+            return None
+        return self.snapshot_ok(label)
 
     def _warn_latched(self, label: str) -> None:
         if label in self._latch_warned:

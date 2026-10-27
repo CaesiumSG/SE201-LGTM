@@ -54,15 +54,17 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--base", required=True, help="Base branch (trusted).")
 @click.option("--pr", required=True, help="PR branch (untrusted changes).")
 @click.option("--model", default=None, help="Ollama model name (default: qwen3.8:27b).")
-@click.option("--ollama-url", default=None, help="Ollama base URL (default: http://127.0.0.1:11435, the GPU cluster tunnel).")
+@click.option("--ollama-url", default=None, help="Ollama base URL (default: http://localhost:11434, a local Ollama; --gpu-model switches to the cluster tunnel).")
 @click.option("--gpu-cluster", is_flag=True, help="Use the existing GPU cluster tunnel at http://127.0.0.1:11435 with qwen3.8:27b. Does not start the server or tunnel.")
 @click.option("--gpu-model", type=click.Choice(sorted(GPU_MODELS)), default=None, help="Use the GPU cluster tunnel at http://127.0.0.1:11435 with a registered model (thinking off). Cannot be combined with --gpu-cluster or --model; --ollama-url overrides the URL.")
 @click.option("--output", "output_dir", default=None, type=click.Path(file_okay=False), help="Output directory (default: lgtm-output).")
 @click.option("--mode", type=click.Choice(["lgtm", "sast-only", "llm-only", "lgtm-no-sast"]), default="lgtm", show_default=True, help="Pipeline mode (for benchmarking baselines).")
 @click.option("--semgrep-config", default=None, help="Semgrep config ('auto' or rules path).")
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
-@click.option("--strip-comments", is_flag=True, help="Mitigation: strip comments and docstrings from PR code in prompts.")
-@click.option("--detect-prompt-injection", is_flag=True, help="Mitigation: detect reviewer-directed instructions in diff.")
+@click.option("--graph/--no-graph", "graph_enabled", default=None, help="Use CodeGraph (npm: @colbymchenry/codegraph) for investigate_* tools when the binary is on PATH (default: on; agents fall back to read_file/grep_repo when it is missing).")
+@click.option("--authz-planner", type=click.Choice(["investigator", "endpoint"]), default=None, help="How the authz review picks what to look at: 'investigator' (default, every changed hunk) or 'endpoint' (checkpoint behaviour: only hunks with a route decorator).")
+@click.option("--strip-comments/--no-strip-comments", default=None, help="Mitigation (on by default, LGTM modes only): strip comments and docstrings from PR code before it reaches the LLM.")
+@click.option("--detect-prompt-injection/--no-detect-prompt-injection", default=None, help="Mitigation (on by default, LGTM modes only): report reviewer-directed instructions in the diff as a finding.")
 @click.option("--judge-endpoint", default=None, help="Kev-4B judge base URL (default: config).")
 @click.option("--judge-model", default=None, help="Kev-4B judge model name (default: config).")
 @click.option("--judge-timeout", type=click.FloatRange(min=0, min_open=True), default=None, help="Seconds per judge call (default: config).")
@@ -79,8 +81,10 @@ def review(
     mode: str,
     semgrep_config: str | None,
     config_file: str | None,
-    strip_comments: bool,
-    detect_prompt_injection: bool,
+    graph_enabled: bool | None,
+    authz_planner: str | None,
+    strip_comments: bool | None,
+    detect_prompt_injection: bool | None,
     judge_endpoint: str | None,
     judge_model: str | None,
     judge_timeout: float | None,
@@ -90,7 +94,7 @@ def review(
 
     \b
     Exit codes:
-      1  at least one candidate is supported, or a baseline mode reports a vulnerable finding
+      1  at least one candidate is supported and not ruled not_real by the judge, or a baseline mode reports a vulnerable finding
       2  no candidate is supported, but a candidate is not judged or an agent errored
       0  otherwise
     """
@@ -114,10 +118,14 @@ def review(
     if gpu_model:
         apply_gpu_model(config, gpu_model, base_url=ollama_url)
     config.mode = mode
-    if strip_comments:
-        config.strip_comments = True
-    if detect_prompt_injection:
-        config.detect_prompt_injection = True
+    if graph_enabled is not None:
+        config.graph_enabled = graph_enabled
+    if authz_planner is not None:
+        config.authz_planner = authz_planner
+    if strip_comments is not None:
+        config.strip_comments = strip_comments
+    if detect_prompt_injection is not None:
+        config.detect_prompt_injection = detect_prompt_injection
     out = Path(output_dir or config.output_dir)
 
     try:
@@ -128,7 +136,12 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
-    supported = sum(1 for f in result.findings if f.supported is True or f.verdict == "vulnerable")
+    baseline = config.mode not in ("lgtm", "lgtm-no-sast")
+    supported = sum(
+        1 for f in result.findings
+        if f.kev_verdict != "not_real"
+        and (f.supported is True or (baseline and f.verdict == "vulnerable"))
+    )
     not_judged = sum(1 for f in result.findings if f.not_judged_reason)
     click.echo("")
     click.echo(f"Review complete in {result.meta.duration_seconds:.1f}s")

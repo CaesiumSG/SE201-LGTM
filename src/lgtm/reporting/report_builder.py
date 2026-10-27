@@ -13,12 +13,14 @@ from lgtm.agents.base import AgentFinding
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_EMOJI = {"supported": "🔴", "unsupported": "🟢", "not judged": "⚪"}
+SUPPORT_EMOJI = {"supported": "🔴", "not real": "🟡", "unsupported": "🟢", "not judged": "⚪"}
 
 
 def _support_label(finding: AgentFinding) -> str:
     if finding.supported is None:
         return "not judged"
+    if finding.supported and finding.kev_verdict == "not_real":
+        return "not real"
     return "supported" if finding.supported else "unsupported"
 
 
@@ -73,6 +75,7 @@ class ReportBuilder:
             "stats": {
                 "total_findings": len(self.findings),
                 "supported": counts["supported"],
+                "not_real": counts["not real"],
                 "unsupported": counts["unsupported"],
                 "not_judged": counts["not judged"],
                 "by_cwe": dict(Counter(f.cwe_id for f in self.findings if f.cwe_id)),
@@ -191,7 +194,7 @@ class ReportBuilder:
                             add(f"  {snippet_line}")
                         add("  ```")
                 add("")
-            if f.suggested_fix and f.supported is not False:
+            if f.suggested_fix and label in ("supported", "not judged"):
                 add(f"**Suggested fix:** {f.suggested_fix}")
                 add("")
             add("---")

@@ -10,5 +10,3 @@ Each format was evaluated on 30 incorrect findings (6 for each of 5 kinds) and 1
 | short_claim | 12 | 27 | 0 | 0 | 0 | 45 |
 | code_first | 12 | 27 | 0 | 2 | 0 | 45 |
 | code_only | 12 | 21 | 0 | 3 | 0 | 45 |
-
-Production default: `current`.

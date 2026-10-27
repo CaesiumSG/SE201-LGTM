@@ -16,18 +16,14 @@ specification:
 The detailed experiment history, with every failure we hit and how we fixed
 it, is in [`evaluation-log.md`](evaluation-log.md). The evaluation on
 published CVEs in real open-source projects is in
-[`real-world-eval.md`](real-world-eval.md), the prompt-injection
-red-teaming is in [`prompt-injection.md`](prompt-injection.md), and the run
-with `qwen3.8:27b` on the GPU cluster is in
-[`gpu-model-eval.md`](gpu-model-eval.md).
+[`real-world-eval.md`](real-world-eval.md), and the prompt-injection
+red-teaming is in [`prompt-injection.md`](prompt-injection.md).
 
 ## Summary
 
 - **Status:** all architecture components are built, connected and
   evaluated on three separate benchmarks: synthetic (Shoply), real-world
-  CVEs, and prompt-injection attacks. LGTM now uses `qwen3.8:27b` on the
-  SCIS GPU cluster by default; the earlier results used `qwen2.5-coder:7b`
-  on a laptop.
+  CVEs, and prompt-injection attacks.
 - **Three benchmarks, reported separately.** Each answers a different
   question with its own script and metric, so we don't pool them into one
   score: Shoply's dev split was used for tuning while the other sets were
@@ -42,31 +38,28 @@ with `qwen3.8:27b` on the GPU cluster is in
 - **Results on the synthetic benchmark** (Shoply, 36 cases; held-out eval
   split in brackets):
 
-  | Mode | F1, qwen2.5-coder:7b | F1, qwen3.8:27b |
-  |---|---|---|
-  | **LGTM** | **0.94** (0.89) | **1.00** (1.00) |
-  | LLM-only baseline | 0.75 (0.75) | 0.94 (0.89) |
-  | SAST-only baseline | 0.62 (0.63) | 0.62 (0.63) |
+  | Mode | F1 |
+  |---|---|
+  | **LGTM** | **0.94** (0.89) |
+  | LLM-only baseline | 0.75 (0.75) |
+  | SAST-only baseline | 0.62 (0.63) |
 
 - **Results on real-world CVEs** (6 published advisories in open-source
   Python projects, 12 cases, held out, nothing tuned on them):
 
-  | Mode | F1, qwen2.5-coder:7b | F1, qwen3.8:27b |
-  |---|---|---|
-  | LGTM | 0.44 | 0.67 |
-  | **LLM-only baseline** | **0.80** | **1.00** |
-  | SAST-only baseline | 0.44 | 0.44 |
+  | Mode | F1 |
+  |---|---|
+  | LGTM | 0.44 |
+  | **LLM-only baseline** | **0.80** |
+  | SAST-only baseline | 0.44 |
 
-  **LGTM did not reproduce its synthetic result on real code, with either
-  model.** With the 7B model, SQL injection triage carried over (SQLi F1
-  0.80 vs 0.67 for SAST alone) but authorization detection did not (F1
-  0.00): in 4 of 6 cases our pattern-based endpoint detector never sent the
-  code to the agent. The 27B model got both langflow cases right (authz F1
-  0.50) but still misses three vulnerable cases that the 7B model also
-  missed; one of them never reaches an agent. See §3a and §3b.
-- **Results on prompt injection** (6 attack cases, `qwen2.5-coder:7b`;
-  attack success rate, lower is better; only the 3 SQLi attacks count,
-  because no mode flagged the authz originals):
+  **LGTM did not reproduce its synthetic result on real code.** SQL
+  injection triage carried over (SQLi F1 0.80 vs 0.67 for SAST alone).
+  Authorization detection did not (F1 0.00): in 4 of 6 cases our
+  pattern-based endpoint detector never sent the code to the agent. See §3a.
+- **Results on prompt injection** (6 attack cases; attack success rate,
+  lower is better; only the 3 SQLi attacks count, because no mode flagged
+  the authz originals):
 
   | Mode | Attack success rate |
   |---|---|
@@ -79,25 +72,18 @@ with `qwen3.8:27b` on the GPU cluster is in
   three SQLi detections; with the mitigations, none succeeded. See §6 and
   [`prompt-injection.md`](prompt-injection.md).
 - **What the AI adds (synthetic benchmark):**
-  - Without the security policy, the bare 7B LLM catches 0 of 6
-    authorization flaws; LGTM catches all 6. The bare 27B LLM catches 5 of
-    6.
+  - Without the security policy, the bare LLM catches 0 of 6
+    authorization flaws; LGTM catches all 6.
   - Semgrep wrongly flags 75% of safe parameterized SQL; LGTM's triage
-    brings that to 0% with both models.
+    brings that to 0%.
 - **What doesn't work yet:**
   - On real projects the agents only run where a regex-style detector
     fires, and they see only the changed file, so authorization checks that
-    live elsewhere are invisible to them. The larger model did not change
-    this.
-  - Tool use depends on the model. The 7B model made 0 tool calls on all 54
-    real-world findings, and on Shoply forcing tool use cost 6.6× latency
-    for no gain. The 27B model averages 6.6 tool calls per Shoply finding,
-    but 25 of 36 Shoply LGTM cases hit the 8-iteration cap.
-  - With the 27B model, real-world evidence grounding fell (LGTM 0.83 →
-    0.50).
-  - In the 7B run, the authz agent raises ownership warnings on 22 of 24
-    endpoints in the Shoply SQLi cases, which case-level scoring doesn't
-    count.
+    live elsewhere are invisible to them.
+  - The 7B model doesn't use its tools: 0 tool calls on all 54 real-world
+    findings, and on Shoply forcing tool use cost 6.6× latency for no gain.
+  - The authz agent raises ownership warnings on 22 of 24 endpoints in the
+    Shoply SQLi cases, which case-level scoring doesn't count.
   - Verdicts can flip on irrelevant prompt changes.
 
 
@@ -125,22 +111,16 @@ make through the read-only tools. Compared with the proposal's diagram
 | Baselines | `--mode sast-only` (A), `--mode llm-only` (B), plus ablation `--mode lgtm-no-sast` | ✅ working |
 | Benchmark harness | `benchmark/evaluate.py` — 36 cases, dev/eval split, all proposal metrics | ✅ working |
 | Real-world benchmark | `benchmark/real_world/` — 12 cases from 6 published CVEs; `fetch.py` rebuilds them from the upstream fix commits, `evaluate_real.py` scores them with the same metrics | ✅ working |
-| Model server | `model/` — serves `qwen3.8:27b` (default) from the SCIS GPU cluster and tunnels it to `http://127.0.0.1:11435`, LGTM's default endpoint; `--gpu-model qwen3.8-27b` on `lgtm review` and both benchmark runners | ✅ working; used for the qwen3.8:27b benchmark run (§3b) |
-| Agent resilience | `agents/base.py` — LLM call retries with backoff, tool-input validation, re-asks for non-JSON answers; the benchmark runners count errors apart from verdicts, and `evaluate.py --resume` re-runs them | ✅ working; the retry path was not triggered in the qwen3.8:27b run |
+| Model server (optional) | `model/` — serves the Ollama model from the SCIS GPU cluster and tunnels it to the laptop; LGTM uses it via `--ollama-url` | ✅ working; not yet used for a benchmark run |
 
 ### Simplified or stubbed components (honest list)
 
-- **Tool use depends on the model.** The tools work: they are unit-tested,
-  and we fixed a parsing bug so that text-form tool calls are executed.
+- **Tool use is effectively unused.** The tools work: they are unit-tested,
+  and we fixed a parsing bug so that text-form tool calls are executed. But
   `qwen2.5-coder:7b` answers from the pre-retrieved context and almost never
   calls them. We tested forcing tool use as an experiment (see the evaluation
   log). On the real-world cases it made 0 tool calls across 54 findings.
-  `qwen3.8:27b` calls them in every LGTM mode: 6.6 calls per finding on
-  Shoply and 8.7 on the real-world cases, counting calls refused after the
-  5-call budget. It often reaches the 8-iteration cap (25 of 36 Shoply LGTM
-  cases), and a final tool-less call then gives the verdict.
-- **A JSON answer without a `verdict` field** is scored
-  `insufficient_evidence`. It is not re-asked and not counted as an error.
+  The "agentic workflow" claim should be read with this in mind.
 - **SAST is SQL-injection only**, using 4 hand-written pattern rules. These
   are not Semgrep taint-mode rules, and not the Semgrep registry, so the tool
   works offline.
@@ -174,10 +154,6 @@ lgtm index --repo /path/to/repo
 lgtm review --repo /path/to/repo --base main --pr feature --output lgtm-output
 ```
 
-By default `lgtm review` asks `qwen3.8:27b`, with thinking off, at
-`http://127.0.0.1:11435`, the GPU cluster tunnel that `model/deploy/up.sh`
-opens. `--ollama-url` and `--model` select a local Ollama instead.
-
 The exit code is 1 when a `vulnerable` finding is reported, so the tool can
 gate CI. Sample outputs for every benchmark case (all findings, verdicts,
 evidence and validation results) are committed in `benchmark/runs/`.
@@ -195,8 +171,7 @@ evidence and validation results) are committed in `benchmark/runs/`.
 - **Structured output + guardrails:** every finding is JSON with a verdict
   from four options, a CWE, evidence and a fix. Malformed model JSON is
   repaired. Every citation is validated after the fact.
-- **Tool calling:** used by `qwen3.8:27b`, almost never by
-  `qwen2.5-coder:7b` (see §1).
+- **Tool calling:** implemented, but under-used (see §1).
 
 ## 3a. Real-world evaluation
 
@@ -251,50 +226,9 @@ our pre-retrieval design worked. On real projects, the context the reviewer
 needs is spread across files, which is the scenario where the agent should
 fetch code itself. It didn't: our detectors skip the agent before it can
 use its tools, and the 7B model doesn't call them anyway. Next steps are to
-let the agent run when no endpoint is detected in the diff, and to put the
-relevant callees in its context. §3b tests a larger model.
-
-## 3b. Larger model on the GPU cluster (qwen3.8:27b)
-
-We re-ran both suites with `qwen3.8:27b` (Q4_K_M, thinking off,
-32768-token context, fully in GPU memory) on one RTX 3090 on the SCIS
-cluster, at commit `a9b380b`. Full write-up:
-[`gpu-model-eval.md`](gpu-model-eval.md); data:
-[`benchmark/runs/gpu-qwen3.8-27b/`](../benchmark/runs/gpu-qwen3.8-27b/).
-All runs finished with 0 errors in 1.41 GPU-hours.
-
-| Suite | Mode | TP/FP/FN/TN | Precision | Recall | F1 | F1, 7B |
-|---|---|---|---|---|---|---|
-| Shoply | lgtm | 18/0/0/18 | 1.00 | 1.00 | 1.00 | 0.94 |
-| Shoply | lgtm-no-sast | 18/0/0/18 | 1.00 | 1.00 | 1.00 | 0.92 |
-| Shoply | llm-only | 17/1/1/17 | 0.94 | 0.94 | 0.94 | 0.75 |
-| Shoply | sast-only | 12/9/6/9 | 0.57 | 0.67 | 0.62 | 0.62 |
-| Real-world | lgtm | 3/0/3/6 | 1.00 | 0.50 | 0.67 | 0.44 |
-| Real-world | lgtm-no-sast | 3/0/3/6 | 1.00 | 0.50 | 0.67 | 0.44 |
-| Real-world | llm-only | 6/0/0/6 | 1.00 | 1.00 | 1.00 | 0.80 |
-| Real-world | sast-only | 2/1/4/5 | 0.67 | 0.33 | 0.44 | 0.44 |
-
-- **Improved:** on Shoply, LGTM's false alarm (`authz_06_safe`) and miss
-  (`sqli_04_vulnerable`) are gone, and the bare LLM's authz F1 rose from
-  0.00 to 0.83. On real code, both langflow cases moved to correct.
-- **Unchanged:** LGTM still misses `aegra_authz_vulnerable`,
-  `alerta_sqli_vulnerable` and `litellm_authz_vulnerable`. The aegra case is
-  skipped before any agent runs (0 endpoints detected, 0 Semgrep findings).
-- **Worse:** real-world evidence grounding fell (LGTM 0.83 → 0.50,
-  lgtm-no-sast 0.75 → 0.67), and grounded-only F1 fell for lgtm-no-sast
-  (0.44 → 0.29) and the policy variants (0.50 → 0.00).
-- **Cost:** median Shoply latency per case is 41.9 s for LGTM and 8.7 s
-  for the bare LLM, including repo build and indexing.
-- **Caveats:** the 7B runs used older code. UTF-8 diff decoding, error
-  accounting, retries and re-asks landed in between, so model and code
-  effects are not separated. Each mode ran once. The real-world LLM-only
-  score is still inflated by how the vulnerable cases are built (§3a,
-  point 6).
-
-**Learning.** The larger model uses its tools and clears the Shoply
-errors, but the real-world misses come from the detectors and the
-single-file context, which a model change does not fix. LGTM now uses
-this model by default (§5).
+let the agent run when no endpoint is detected in the diff, to put the
+relevant callees in its context, and to test a larger model (via the GPU
+model server) to see whether tool use improves.
 
 ## 4. Progress against the proposal's checkpoint targets
 
@@ -307,9 +241,9 @@ this model by default (§5).
 | Evidence validation | ✅ Met | Two validator bugs found and fixed during evaluation |
 | Connected architecture, stubs documented | ✅ Met | §1 above |
 | Benchmark: base repo + ≥4 seeded cases | ✅ Exceeded | 36 cases (18 pairs), balanced dev/eval split |
-| Initial evaluation round | ✅ Exceeded | Five rounds + a final clean run on Shoply (`evaluation-log.md`), a held-out real-world run (§3a), and a `qwen3.8:27b` run on both suites (§3b) |
+| Initial evaluation round | ✅ Exceeded | Five rounds + a final clean run on Shoply (`evaluation-log.md`), plus a held-out real-world run (§3a) |
 | README + setup instructions | ✅ Met | `README.md` |
-| Contribution history from all five members | ✅ Met | Jia Jun (pipeline, benchmark, evaluation), Kai Zhe (real-world benchmark and evaluation), Jin Rae (GPU model server, `qwen3.8:27b` evaluation), Hsu (diff reader hardening), Brian (prompt-injection red-teaming and mitigations) |
+| Contribution history from all five members | ✅ Met | Jia Jun (pipeline, benchmark, evaluation), Kai Zhe (real-world benchmark and evaluation), Jin Rae (GPU model server), Hsu (diff reader hardening), Brian (prompt-injection red-teaming and mitigations) |
 | Progress / scope-change notes | ✅ Met | This document |
 | AI-use disclosure log | ✅ Met | [`ai-use-log.md`](ai-use-log.md), collated by area of work; reproduced in Appendix A |
 
@@ -322,14 +256,12 @@ this model by default (§5).
 | Held-out set grew from "4 pairs" to a **balanced 9 vulnerable + 9 safe eval split** | Instructor feedback; a fixed dev/eval protocol to stop us tuning on test data |
 | Added a `search_code` tool (semantic RAG over the source) | Instructor feedback: retrieve code, not only docs |
 | **ChromaDB** chosen over FAISS; embedding model `all-MiniLM-L6-v2` | Persistent local store with metadata (line numbers) for citations |
-| Model was **`qwen2.5-coder:7b`** (proposal: "Qwen via Ollama") | Best local tool-capable model on our hardware; `qwen2.5:7b` was not available |
-| Default model is now **`qwen3.8:27b`** on the GPU cluster, thinking off, 32768-token context | Higher F1 than the 7B model on both suites (§3b); fits fully in a 24 GB RTX 3090 at that context |
+| Model is **`qwen2.5-coder:7b`** (proposal: "Qwen via Ollama") | Best local tool-capable model on our hardware; `qwen2.5:7b` was not available |
 | Flask only (proposal: Flask/FastAPI) | One benchmark app was enough; the endpoint extractor still recognises FastAPI routes |
 | **LLM-only baseline rebuilt** (13 Oct) to match the proposal: no SAST, no RAG, no tools | The first version gave the baseline the same RAG and tools as LGTM, so the comparison could not show what they add. The old setup is kept as the ablation `lgtm-no-sast` |
 | Added "grounded" metrics and an off-category false-alarm metric | Proposal success criterion 3 requires detections *with appropriate evidence*; case-level scoring was hiding authz false alarms on SQLi cases |
 | Added experimental flags `static_facts` and `require_tool_use` | Fixes for failures found in evaluation (see the evaluation log) |
-| Added a **GPU-cluster model server** (`model/`); its tunnel `http://127.0.0.1:11435` is now LGTM's default endpoint | Laptop runs of the 7B model were slow (about 5 tokens/s in the real-world run), and the cluster lets us try larger models (28.5 tokens/s for `qwen3.8:27b` on an RTX 3090) |
-| Added **agent resilience and error accounting**: LLM retries, tool-input validation, re-asks for non-JSON answers, errors reported apart from verdicts, `--resume` | Long GPU runs must survive transient failures without scoring them as verdicts |
+| Added an optional **GPU-cluster model server** (`model/`, `--ollama-url`) | Laptop runs of the 7B model were slow (about 5 tokens/s in the real-world run), and the cluster lets us try larger models |
 | Hardened the git diff reader | Real repositories contain non-UTF-8 files and paths that git quotes, which crashed reviews |
 | Added **prompt-injection mitigations** behind flags (`--strip-comments`, `--detect-prompt-injection`, both off by default) | Red-teaming showed comments and docstrings in a PR could talk the LGTM agents out of a correct `vulnerable` verdict (§6) |
 
@@ -337,10 +269,10 @@ this model by default (§5).
 
 | Risk | Mitigation in LGTM | Residual risk observed |
 |---|---|---|
-| Hallucinated evidence | Evidence validator checks every cited file, line, snippet and policy quote; results are reported with and without ungrounded findings | The model still invents policy file names (e.g. `security_policy.md`) and documentation URLs; the validator cannot check *relevance*, only existence. On real projects, irrelevant but real text (a link sentence, a rule about a different resource) passed validation and was cited as the governing rule. With `qwen3.8:27b`, real-world evidence grounding fell (LGTM 0.83 → 0.50) |
+| Hallucinated evidence | Evidence validator checks every cited file, line, snippet and policy quote; results are reported with and without ungrounded findings | The model still invents policy file names (e.g. `security_policy.md`) and documentation URLs; the validator cannot check *relevance*, only existence. On real projects, irrelevant but real text (a link sentence, a rule about a different resource) passed validation and was cited as the governing rule |
 | Over-confident verdicts | Four-way verdict scheme including `possible` / `insufficient_evidence` | With context, the model almost never hedges (0 `possible` in LGTM runs) |
 | Prompt injection from PR content | PR diff labelled untrusted; tools read base branch only; mitigations strip comments/docstrings before LLM prompt (`strip_comments`) and detect reviewer-directed instructions (`detect_prompt_injection`) | Adversarially tested with 6-case injection suite (see `docs/prompt-injection.md`): unmitigated LGTM was bypassed by comments (downgraded to `possible`) and docstrings (flipped to `safe`); `strip_comments` and injection detector neutralize text-based vectors; adversarial variable renaming remains a residual risk |
-| Privacy / IP | The default model runs on the university's SCIS GPU cluster, reached through an SSH tunnel; `--ollama-url` selects a local Ollama | By default, reviewed code leaves the laptop for the cluster, though it stays on university infrastructure. None for local use |
+| Privacy / IP | Model runs locally via Ollama, so no code leaves the machine | None for local use |
 | Automation bias | LGTM reports and never auto-fixes; a human decides | Users may still over-trust a confident "safe" |
 | Non-determinism | Temperature 0; identical prompts gave identical verdicts across runs | Verdicts flip when *irrelevant* prompt text changes (a file path in a rule ID flipped one); see the evaluation log |
 
@@ -355,15 +287,10 @@ this model by default (§5).
 3. **Reduce off-category authz false alarms** (open problem in the
    evaluation log): input scoping or a second-pass verifier, tuned on dev
    only.
-4. **Address the real-world failures** (§3a, §3b): run the agent when no
-   endpoint is detected, and give it the relevant callees. The larger model
-   alone did not fix them.
-5. **Separate model from code effects** (§3b): re-run `qwen2.5-coder:7b`
-   on the current code and the same GPU, and repeat each mode to measure
-   variance.
-6. **Fix the `qwen3.8:27b` gaps**: re-ask JSON answers without a verdict,
-   and find why real-world evidence grounding fell.
-7. **Grow the benchmark**: more OWASP-derived and real-world cases, so one
+4. **Address the real-world failures** (§3a): run the agent when no
+   endpoint is detected, give it the relevant callees, and test a larger
+   model on the GPU server.
+5. **Grow the benchmark**: more OWASP-derived and real-world cases, so one
    flipped verdict no longer moves F1 by about 0.05.
 
 ## 8. Challenges, lessons, and what we do going forward
@@ -399,9 +326,8 @@ through a pull request reviewed by a team member before reaching `main`.
 | 4 | 13 Oct | GPU model server | GitHub Copilot | Slurm job scripts, deploy scripts, Ollama server helper | Jobs run on the cluster; endpoint tested through the tunnel |
 | 5 | 15 Oct | Real-world CVE benchmark | Claude Code | `cases.json`, `fetch.py`, project policies, `evaluate_real.py`, tests, first draft of the write-up | Advisory ids and SHAs read from the GitHub API, re-verified on every run; all numbers generated by script; each miss read from the case JSON before explaining it |
 | 6 | 17 Oct | Diff reader hardening | Claude Code | UTF-8 decoding with replacement; unquoting of git-quoted paths | New tests in `tests/test_diff.py`; full suite green |
-| 7 | 13–18 Oct | Documentation | Claude Code | Drafts of README, this report, evaluation log, AI use log | Team review; all figures traced to committed run files |
+| 7 | 13–17 Oct | Documentation | Claude Code | Drafts of README, this report, evaluation log, AI use log | Team review; all figures traced to committed run files |
 | 8 | 18 Oct | Prompt-injection red-teaming | Google Antigravity | Threat model, 6-case injection benchmark and generator, evaluation harness, comment stripper and injection detector, Windows Semgrep lookup fix, tests | Full test suite run; Semgrep execution checked on Windows |
-| 9 | 17–18 Oct | Larger model on the GPU cluster | Claude Code | `--gpu-model` registry, error accounting and `--resume`, LLM retries, tool-input validation and re-asks, 32k-context deployment settings, `qwen3.8:27b` as the default, first draft of `gpu-model-eval.md` | Unit tests (315 passing); model placement checked with Ollama's `/api/ps`; every number in the write-up generated from committed `summary.json` and `run-stats.json` files |
 
 Decisions made by the team without AI: project scope, the choice of CVEs,
 the dev/eval protocol, and which results to report. What we learned from

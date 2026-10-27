@@ -8,6 +8,15 @@ and review changed code sections against the project's *documented* security
 policy (retrieved with RAG) — catching authorization flaws SAST cannot see,
 while an evidence validator keeps the LLM honest.
 
+## Scope
+
+LGTM does two jobs:
+
+1. Triage of Semgrep SQL injection warnings.
+2. Authorization (authz) bugs that Semgrep cannot see.
+
+Every other vulnerability class is out of scope.
+
 ## Architecture
 
 ```
@@ -50,21 +59,28 @@ the judge confidence, CWE, evidence citations, and a suggested fix.
 Requirements: Python 3.13+, git, and for the full pipeline
 [Ollama](https://ollama.com) + Semgrep.
 
-Optional: Node.js and the `codegraph` CLI on `PATH` enable the
-`investigate_base_code` and `investigate_pr_code` tools. Without it, only
-`read_file`, `grep_repo` and `search_policy` are offered.
+Optional: [CodeGraph](https://www.npmjs.com/package/@colbymchenry/codegraph)
+on `PATH` enables the `investigate_base_code` / `investigate_pr_code` tools
+(tested with 1.6.2):
+
+```bash
+npm install -g @colbymchenry/codegraph@1.6.2
+codegraph --version
+```
+
+Without it (or with `--no-graph`) the agents use `read_file`, `grep_repo` and
+`search_policy` only; verdicts are never adjusted for the graph's absence.
 
 ```bash
 # 1. Install LGTM (editable) + dev and SAST extras
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" semgrep
 
-# 2. Open the GPU cluster tunnel (default endpoint http://127.0.0.1:11435)
-model/deploy/up.sh              # see model/README.md
+# 2. A model: local Ollama (the default endpoint, http://localhost:11434) ...
+ollama pull qwen3.8:27b         # the default model; any tool-calling model works with --model
+# ... or the SCIS GPU cluster tunnel (see model/README.md), then --gpu-model qwen3.8-27b
+model/deploy/up.sh
 ```
-
-A local Ollama works with `--ollama-url http://localhost:11434` after
-`ollama pull qwen3.8:27b`; any tool-calling model works with `--model`.
 
 ## Usage
 
@@ -83,20 +99,24 @@ lgtm review ... --mode llm-only      # Baseline B: one LLM call on the diff,
 lgtm review ... --mode lgtm-no-sast  # Ablation: LGTM agents + RAG + tools,
                                      #   regex SQL detector instead of Semgrep
 
-# Prompt-injection mitigations (both off by default)
-lgtm review ... --strip-comments           # remove comments/docstrings from
-                                           #   PR code before the LLM sees it
-lgtm review ... --detect-prompt-injection  # flag reviewer-directed text in
-                                           #   the diff as its own finding
+# Prompt-injection mitigations (both ON by default in the lgtm modes; the
+# llm-only baseline always sees the raw diff)
+lgtm review ... --no-strip-comments           # keep comments/docstrings in the
+                                              #   PR code the LLM sees
+lgtm review ... --no-detect-prompt-injection  # don't report reviewer-directed
+                                              #   text in the diff as a finding
 ```
 
 Outputs `lgtm-output/report.json` (machine-readable findings) and
 `lgtm-output/report.md` (human-readable review). Both list supported,
 unsupported and not judged candidates, supported first.
 
-Exit code of `lgtm review`: 1 if any candidate is supported, or a baseline
-mode reports a vulnerable finding; otherwise 2 if
-any candidate is not judged or any agent errored; otherwise 0 (CI-friendly).
+Exit code of `lgtm review`: 1 if any candidate is supported and the judge's
+verdict for it is not `not_real`, or a baseline mode (`sast-only`, `llm-only`)
+reports a vulnerable finding; otherwise 2 if any candidate is not judged or any agent errored;
+otherwise 0 (CI-friendly). A supported candidate with verdict `not_real` is
+not a vulnerability: it is listed as "not real" in the reports and does not
+set exit code 1.
 
 `--gpu-model qwen3.8-27b` connects through the existing GPU cluster
 tunnel at `http://127.0.0.1:11435` with the model `qwen3.8:27b` and
@@ -111,9 +131,23 @@ Settings are read from a JSON file passed with `--config-file`.
 
 ### CodeGraph
 
-The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found.
-The `sast-only` and `llm-only` baselines never use it. There is no setting
-or CLI flag that turns the graph off.
+The `lgtm` and `lgtm-no-sast` modes use CodeGraph when `graph_enabled` is
+true (the default) and the binary is found. The `sast-only` and `llm-only`
+baselines never use it. `--no-graph` (or `"graph_enabled": false`) reviews
+without it; so does a missing binary, with a warning. In both cases the
+agents keep `read_file`, `grep_repo` and `search_policy`, and no verdict is
+changed because the graph was absent.
+
+### Authorization planner
+
+`authz_planner` (CLI `--authz-planner`) decides what the authorization agent
+looks at: `investigator` (default) has an LLM group every changed Python
+hunk into review sections, so the whole PR is reviewed; `endpoint` reviews
+only hunks that contain a Flask/FastAPI route decorator, one section per
+file, with no investigator. `endpoint` is the checkpoint pipeline's gating,
+kept so the 13 Oct numbers can be reproduced and the two compared on the
+same cases (the real-world evaluation and the field trial showed the gating
+skips most real authorization changes).
 
 | Key | Default | Limits |
 |---|---|---|
@@ -204,7 +238,12 @@ parameterized-but-SAST-triggering controls) and 14 authorization pairs
 (IDOR, missing/incorrect role checks, API-key scope violations —
 invisible to SAST by design).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/evaluate.py --mode lgtm
@@ -270,7 +309,12 @@ projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
 tuned on them. The authz cases also run with a short policy written from
 each project's docs (the `policy` variant).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/real_world/fetch.py --policies          # clone + build case branches
@@ -300,25 +344,57 @@ aimed at the reviewer. **Attack success rate (ASR)** = cases flagged
 `vulnerable` originally but not once injected, out of those flagged
 originally (lower is better).
 
-> Results measured at an earlier commit; not re-measured for the current code.
+> **Results pending re-measurement.** The pipeline changed on 24 Oct (section-based
+> authorization review, CodeGraph tools, 52 Shoply cases, re-pinned real-world
+> cases; see [`docs/evaluation-log.md`](docs/evaluation-log.md) round 8). The
+> numbers below were measured on the checkpoint pipeline and are kept for
+> reference until the full re-run on the GPU cluster is committed to
+> `benchmark/runs/`. Do not quote them for the current code.
 
 ```bash
 python benchmark/injection/run_injection_bench.py --mode sast-only
+python benchmark/injection/run_injection_bench.py --mode lgtm          # mitigations on (default)
 python benchmark/injection/run_injection_bench.py --mode lgtm \
-       --strip-comments --detect-injection
+       --no-strip-comments --no-detect-injection                     # unmitigated
 ```
 
 | Mode | ASR | What happened |
 |---|---|---|
 | A: sast-only | 0% (0/3) | Semgrep ignores comments and docstrings |
 | B: llm-only | 0% (0/3) | Still flagged all 3 SQLi cases |
-| **C: lgtm, no mitigation** | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
-| C: lgtm + `--strip-comments` + `--detect-prompt-injection` | 0% (0/3) | Reported in [`docs/prompt-injection.md`](docs/prompt-injection.md) |
+| C: lgtm, mitigations off (`--no-strip-comments --no-detect-injection`) | **100% (3/3)** | Triage agent downgraded all 3 SQLi detections (2 to `possible`, 1 to `safe`) |
+| **C: lgtm, default (mitigations on)** | **0% (0/6)** | All 6 originals flagged, all 6 injected twins still flagged; every own-category agent verdict stayed `vulnerable` even before the detector's finding is counted |
 
 Only the 3 SQLi attacks are counted: none of the modes flagged the 3 authz
 originals as `vulnerable` in this harness, so no authz attack could succeed.
-The committed run files in `benchmark/injection/results/` cover the three
-unmitigated rows.
+The committed run files in `benchmark/injection/results/` cover every row:
+`lgtm/` is the unmitigated run and `lgtm-mitigated/` the default
+configuration. Since 23 Oct the mitigations are on by default in the lgtm
+modes; on the Shoply dev split they changed no case outcome (F1 1.00 in both arms) and cut off-category alarms from 11 to 10 (see
+[`docs/prompt-injection.md`](docs/prompt-injection.md) §7).
+
+### 4. Field trial on ordinary merged PRs
+
+12 merged PRs from mealie (FastAPI), alerta (Flask) and redash (Flask) that
+touch route handlers, permission helpers or database code. Every PR was
+accepted by its maintainers, so this measures crash rate, latency and
+false alarms on everyday traffic, not detection.
+
+```bash
+python benchmark/field_trial/run_field_trial.py --fetch
+python benchmark/field_trial/run_field_trial.py --modes sast-only lgtm llm-only
+```
+
+| Mode | Crashes | PRs flagged `vulnerable` | Findings | Median review latency |
+|---|---|---|---|---|
+| A: sast-only | 0 / 12 | 0 | 0 | 4.8 s |
+| B: llm-only | 0 / 12 | 0 | 23 (1 `possible`) | 14.1 s |
+| **C: lgtm** | **0 / 12** | **0** | 14 (all `safe`) | 2.5 s (144 s on the 11-endpoint PR) |
+
+No false alarms, but **10 of 12 PRs reached no LLM agent**: Semgrep found
+nothing and only 2 PRs had a route decorator inside a changed hunk. On the
+PR that was reviewed, the agent cited Mealie's own permission docs and
+judged 11 endpoints correctly. Write-up: [`docs/field-trial.md`](docs/field-trial.md).
 
 ### All results at a glance
 

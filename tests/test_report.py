@@ -45,8 +45,8 @@ def meta() -> ReviewMetadata:
 
 
 NEW_CONFIG_DEFAULTS = {
-    "investigator_max_tool_calls": 12,
-    "investigator_max_iterations": 16,
+    "investigator_max_tool_calls": 24,
+    "investigator_max_iterations": 32,
     "investigator_diff_chars": 30000,
     "investigator_max_sections": 12,
     "section_max_chars": 12000,
@@ -496,3 +496,29 @@ class TestAgentErrors:
         md = ReportBuilder([], m).build_markdown()
         assert "sec-2" in md
         assert "passed all configured checks" not in md
+
+
+class TestSupportedButNotReal:
+    @staticmethod
+    def _finding(finding_id: str, kev_verdict: str | None) -> AgentFinding:
+        finding = judged_finding(finding_id, True)
+        finding.kev_verdict = kev_verdict
+        return finding
+
+    def test_json_stats_do_not_count_it_as_supported(self):
+        findings = [self._finding("nr-1", "not_real"), self._finding("r-1", "real"), self._finding("old-1", None)]
+
+        stats = ReportBuilder(findings, meta()).build_json()["stats"]
+
+        assert stats["supported"] == 2
+        assert stats["total_findings"] == 3
+
+    def test_markdown_does_not_flag_it_as_a_supported_finding(self):
+        md = ReportBuilder([self._finding("nr-1", "not_real")], meta()).build_markdown()
+
+        assert "[SUPPORTED]" not in md
+
+    def test_markdown_still_flags_a_real_supported_finding(self):
+        md = ReportBuilder([self._finding("r-1", "real")], meta()).build_markdown()
+
+        assert "[SUPPORTED]" in md

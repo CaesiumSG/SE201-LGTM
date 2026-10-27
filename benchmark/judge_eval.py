@@ -85,7 +85,7 @@ def confidence_agreement(labels: dict, outcomes: list[dict]) -> dict:
     by_label: dict[str, list[float]] = {label: [] for label in LABELS}
     for o in outcomes:
         entry = units.get(o["unit_id"])
-        if o["judged"] and entry:
+        if o["judged"] and entry and entry.get("verdict") != UNDETERMINED:
             by_label[entry["supports"]].append(o["provenance_confidence"])
     return {label: {"mean": _mean(v), "n": len(v)} for label, v in by_label.items()}
 
@@ -100,6 +100,8 @@ def supported_agreement(labels: dict, outcomes: list[dict]) -> dict:
         if not entry:
             unlabelled += 1
             continue
+        if entry.get("verdict") == UNDETERMINED:
+            continue
         n += 1
         agree += o["supported"] == (entry["supports"] == "yes")
     return {
@@ -107,6 +109,153 @@ def supported_agreement(labels: dict, outcomes: list[dict]) -> dict:
         "not_judged": sum(1 for o in outcomes if not o["judged"]),
         "agreement": agree / n if n else None,
     }
+
+
+STALE_CASES = ("sqli_04_safe", "sqli_07_safe", "sqli_11_safe")
+STALE_REASON = "cited text predates the regenerated Shoply patches"
+QUOTE_ABSENCE_CASES = ("authz_10_vulnerable", "authz_12_vulnerable")
+UNDETERMINED = "undetermined"
+AGENT_TO_KEV = {"vulnerable": "real", "safe": "not_real", "": "real"}  # "": lgtm candidates carry no verdict
+
+
+def _case_of(unit_id: str) -> str:
+    return unit_id.split("/")[0]
+
+
+def _undetermined(labels: dict) -> set[str]:
+    return {uid for uid, e in labels.get("units", {}).items() if e.get("verdict") == UNDETERMINED}
+
+
+def stale_cases_for(run_dir: Path | None) -> tuple[str, ...]:
+    """Stale cases of a run: STALE_CASES for the stored run6-final export, none otherwise."""
+    if run_dir is None or Path(run_dir).resolve() == (BENCH / "runs" / "run6-final" / "lgtm").resolve():
+        return STALE_CASES
+    return ()
+
+
+def _labelled_judged(labels: dict, outcomes: list[dict], stale: tuple[str, ...] = STALE_CASES):
+    """(outcome, label) pairs of judged, labelled units outside the stale cases; undetermined units left out."""
+    units = labels.get("units", {})
+    return [
+        (o, units[o["unit_id"]]) for o in outcomes
+        if o["judged"] and o["unit_id"] in units and _case_of(o["unit_id"]) not in stale
+        and units[o["unit_id"]].get("verdict") != UNDETERMINED
+    ]
+
+
+def _tally(n: int, correct: int) -> dict:
+    return {"n": n, "correct": correct, "accuracy": correct / n if n else None}
+
+
+def kev_accuracy(labels: dict, outcomes: list[dict], stale: tuple[str, ...] = STALE_CASES) -> dict:
+    pairs = _labelled_judged(labels, outcomes, stale)
+    with_severity = [(o, e) for o, e in pairs if e.get("severity")]
+    return {
+        "supported": _tally(len(pairs), sum(o["supported"] == (e["supports"] == "yes") for o, e in pairs)),
+        "verdict": _tally(len(pairs), sum(o["kev_verdict"] == e.get("verdict") for o, e in pairs)),
+        "severity": _tally(len(with_severity), sum(o["kev_severity"] == e["severity"] for o, e in with_severity)),
+    }
+
+
+def kev_agreement(outcomes: list[dict], labels: dict | None = None, stale: tuple[str, ...] = STALE_CASES) -> dict:
+    skipped = _undetermined(labels or {})
+    judged = [
+        o for o in outcomes
+        if o["judged"] and o.get("kev_verdict") and _case_of(o["unit_id"]) not in stale
+        and o["unit_id"] not in skipped
+    ]
+    disagree = sum(bool(o["supported"]) != (o["kev_verdict"] == "real") for o in judged)
+    mapped = [(AGENT_TO_KEV.get(o.get("agent_verdict")), o["kev_verdict"]) for o in judged]
+    mapped = [(agent, kev) for agent, kev in mapped if agent]
+    equal = sum(agent == kev for agent, kev in mapped)
+    return {
+        "verdict_vs_supported": {
+            "n": len(judged), "disagree": disagree, "rate": disagree / len(judged) if judged else None,
+        },
+        "verdict_vs_agent": {"n": len(mapped), "equal": equal, "rate": equal / len(mapped) if mapped else None},
+    }
+
+
+def stale_candidates(outcomes: list[dict], stale: tuple[str, ...] = STALE_CASES) -> list[dict]:
+    present = dict.fromkeys(_case_of(o["unit_id"]) for o in outcomes)
+    return [{"case_id": case, "reason": STALE_REASON} for case in stale if case in present]
+
+
+def label_summary(labels: dict) -> dict:
+    model = labels.get("labeling_model")
+    if not model:
+        raise ValueError("labels file records no labeling_model")
+    return {
+        "n": len(labels.get("units", {})),
+        "origins": dict(Counter(e.get("origin") for e in labels.get("units", {}).values())),
+        "source": "model",
+        "labeling_model": model,    }
+
+
+def supported_by_kind(labels: dict, outcomes: list[dict], stale: tuple[str, ...] = STALE_CASES) -> dict:
+    kinds = {e.get("kind"): [0, 0] for e in labels.get("units", {}).values()}
+    for o, e in _labelled_judged(labels, outcomes, stale):
+        tally = kinds[e.get("kind")]
+        tally[0] += 1
+        tally[1] += o["supported"] == (e["supports"] == "yes")
+    return {kind: _tally(n, correct) for kind, (n, correct) in kinds.items()}
+
+
+def safe_case_acceptance(
+    labels: dict, outcomes: list[dict], safe_cases: set[str], stale: tuple[str, ...] = STALE_CASES,
+) -> dict:
+    tally = {"shoply": [0, 0], "real_world": [0, 0]}
+    for o, e in _labelled_judged(labels, outcomes, stale):
+        if _case_of(o["unit_id"]) in safe_cases and e.get("origin") in tally:
+            tally[e["origin"]][0] += 1
+            tally[e["origin"]][1] += bool(o["supported"])
+    return {
+        origin: {"n": n, "accepted": accepted, "share": accepted / n if n else None}
+        for origin, (n, accepted) in tally.items()
+    }
+
+
+def quote_absence(
+    records: list[dict], read_pr_file: Callable[[str, str], str | None],
+    case_ids: Sequence[str] = QUOTE_ABSENCE_CASES,
+) -> list[dict]:
+    rows = []
+    for record in records:
+        if record["id"] not in case_ids:
+            continue
+        for finding in record["findings"]:
+            for item in finding.get("evidence") or []:
+                if item.get("type", "code") != "code":
+                    continue
+                text = read_pr_file(record["id"], item["file"])
+                lines = item.get("lines")
+                if text is None or (lines and lines[0] > len(text.splitlines())):
+                    cause = "repository_mismatch"
+                elif (item.get("content") or "") in text:
+                    cause = None
+                else:
+                    cause = "agent_quote"
+                rows.append({
+                    "case_id": record["id"], "file": item["file"], "lines": lines,
+                    "absent": cause is not None, "cause": cause,
+                })
+    return rows
+
+
+def _pr_file_reader(tmp: Path) -> Callable[[str, str], str | None]:
+    patches = {c["id"]: c["patch_file"] for c in json.loads((BENCH / "labels.json").read_text(encoding="utf-8"))["cases"]}
+
+    def read(case_id: str, file: str) -> str | None:
+        if case_id not in patches:
+            return None
+        repo = tmp / case_id
+        if not repo.exists():
+            repo.mkdir()
+            evaluate.build_case_repo(repo, BENCH / patches[case_id])
+        done = citation_export._git(repo, "show", f"pr:{file}")
+        return done.stdout.decode("utf-8", "replace") if done.returncode == 0 else None
+
+    return read
 
 
 def not_judged_by_reason(findings: list[dict]) -> dict:
@@ -334,6 +483,7 @@ def run_outcomes(run_dir: Path) -> list[dict]:
             "provenance_confidence": finding.get("provenance_confidence"),
             "kev_verdict": finding.get("kev_verdict"),
             "kev_severity": finding.get("kev_severity"),
+            "agent_verdict": finding.get("verdict"),
             "input_tokens": finding.get("input_tokens"),
             "not_judged_reason": finding.get("not_judged_reason"),
         }
@@ -343,9 +493,12 @@ def run_outcomes(run_dir: Path) -> list[dict]:
 
 
 def report(
-    run_dir: Path, export_path: Path, labels_path: Path, judge_records_path: Path | None = None
+    run_dir: Path, export_path: Path, labels_path: Path, judge_records_path: Path | None = None,
+    read_pr_file: Callable[[str, str], str | None] | None = None,
+    source_run: Path | None = None,
 ) -> dict:
     run_dir = Path(run_dir)
+    stale = stale_cases_for(source_run or run_dir)
     unit_ids = [u["unit_id"] for u in json.loads(Path(export_path).read_text(encoding="utf-8"))["units"]]
     labels = json.loads(Path(labels_path).read_text(encoding="utf-8"))
     outcomes = run_outcomes(run_dir)
@@ -359,7 +512,13 @@ def report(
             {"judged": bool(f.get("judged")), "latency_seconds": None, "unsupported_reason": f.get("unsupported_reason")}
             for f in findings
         ]
+    if read_pr_file or not any(r["id"] in QUOTE_ABSENCE_CASES for r in records):
+        absence = quote_absence(records, read_pr_file or (lambda *_: None))
+    else:
+        with tempfile.TemporaryDirectory(prefix="lgtm-quotes-", dir=BENCH.parent, ignore_cleanup_errors=True) as tmp:
+            absence = quote_absence(records, _pr_file_reader(Path(tmp)))
     return {
+        "quote_absence": absence,
         "citation_support": citation_support(unit_ids, labels, outcomes),
         "confidence_agreement": confidence_agreement(labels, outcomes),
         "supported_agreement": supported_agreement(labels, outcomes),
@@ -369,6 +528,15 @@ def report(
         ),
         "run": run_measures(judge_records, modes.pop() if len(modes) == 1 else "mixed"),
         "kev": kev_report(records),
+        "kev_accuracy": kev_accuracy(labels, outcomes, stale),
+        "kev_agreement": kev_agreement(outcomes, labels, stale),
+        "labels": label_summary(labels) if labels.get("labeling_model") else None,
+        "supported_by_kind": supported_by_kind(labels, outcomes, stale),
+        "safe_case_acceptance": safe_case_acceptance(
+            labels, outcomes, {r["id"] for r in records if r.get("expected") == "safe"}, stale
+        ),
+        "stale": stale_candidates(outcomes, stale),
+        "undetermined": sorted(_undetermined(labels)),
     }
 
 
@@ -451,7 +619,8 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="lgtm-judge-live-") as tmp:
         for n, record in enumerate(rejudge(args.run_dir, args.export, LGTMConfig())):
             (Path(tmp) / f"{n}.json").write_text(json.dumps(record), encoding="utf-8")
-        print(json.dumps(report(Path(tmp), args.export, args.labels, args.judge_records), indent=2))
+        print(json.dumps(report(Path(tmp), args.export, args.labels, args.judge_records,
+                                 source_run=args.run_dir), indent=2))
 
 
 if __name__ == "__main__":

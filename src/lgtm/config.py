@@ -20,7 +20,9 @@ class LGTMConfig:
 
     # LLM
     ollama_model: str = "qwen3.8:27b"
-    ollama_base_url: str = "http://127.0.0.1:11435"
+    # Local Ollama by default; --gpu-model / --gpu-cluster switch to the
+    # SCIS cluster tunnel (http://127.0.0.1:11435).
+    ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.0
     llm_timeout: int = 180  # seconds per LLM call
     reasoning: bool | None = False  # None leaves the model's default thinking behaviour
@@ -29,6 +31,7 @@ class LGTMConfig:
     max_invalid_tool_inputs: int = 3
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
+    llm_context_tokens: int = 32768  # num_ctx: the context window served to the model
 
     # Judge (Kev-4B, base URL; the client appends /v1/systemone)
     judge_endpoint: str = "http://127.0.0.1:8008"
@@ -42,12 +45,21 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
-    investigator_max_tool_calls: int = 12
-    investigator_max_iterations: int = 16
+    investigator_max_tool_calls: int = 24
+    investigator_max_iterations: int = 32
+    read_file_max_lines: int = 600
     investigator_diff_chars: int = 30000
     investigator_max_sections: int = 12
     section_max_chars: int = 12000
     max_sections: int = 24
+    # How the authorization review decides what to look at:
+    # - "investigator": an LLM groups every changed Python hunk into review
+    #   sections (the default since 24 Oct; reviews the whole PR);
+    # - "endpoint": only hunks that contain a Flask/FastAPI route decorator
+    #   are reviewed, one section per file, no investigator. This reproduces
+    #   the gating of the checkpoint pipeline (docs/evaluation-log.md rounds
+    #   1-7) and is the ablation for what full coverage adds.
+    authz_planner: str = "investigator"
     # Experiments (round 4, off by default — see docs/evaluation-log.md):
     # push back once if an agent answers before using any tool
     require_tool_use: bool = False
@@ -56,9 +68,12 @@ class LGTMConfig:
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
     authz_role_guidance: bool = False
-    # Prompt injection mitigations (off by default)
-    strip_comments: bool = False
-    detect_prompt_injection: bool = False
+    # Prompt-injection mitigations (on by default since the red-teaming in
+    # docs/prompt-injection.md: unmitigated, PR comments talked the triage
+    # agent out of 3/3 SQLi detections). They apply to the LGTM modes only;
+    # the llm-only baseline keeps the raw diff, as the proposal defines it.
+    strip_comments: bool = True
+    detect_prompt_injection: bool = True
 
     # RAG
     rag_chunk_size: int = 500  # approx tokens per chunk
@@ -71,6 +86,11 @@ class LGTMConfig:
     # Git
     git_timeout: int = 60
 
+    # CodeGraph (npm: @colbymchenry/codegraph) gives the agents
+    # investigate_base_code / investigate_pr_code. Off, or binary missing:
+    # agents use read_file, grep_repo and search_policy, and verdicts are
+    # never adjusted for the graph's absence.
+    graph_enabled: bool = True
     graph_binary: str = "codegraph"
     graph_init_timeout_s: int = 120
     graph_query_timeout_s: int = 20
@@ -82,6 +102,7 @@ class LGTMConfig:
         positive_fields = (
             "investigator_max_tool_calls",
             "investigator_max_iterations",
+            "read_file_max_lines",
             "investigator_diff_chars",
             "investigator_max_sections",
             "section_max_chars",
@@ -94,6 +115,8 @@ class LGTMConfig:
         for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if self.authz_planner not in ("investigator", "endpoint"):
+            raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
         if not self.judge_model:
             raise ValueError("judge_model must not be empty")
         if self.judge_timeout <= 0:

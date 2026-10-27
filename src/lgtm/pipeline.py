@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
-from lgtm.agents.base import AgentFinding, build_llm
+from lgtm.agents.base import AgentFinding, RunRecord, build_llm
 from lgtm.agents.investigator import run_investigator
 from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
@@ -43,6 +43,7 @@ from lgtm.review.coverage import (
     build_coverage,
 )
 from lgtm.review.dedup import dedup_findings
+from lgtm.review.endpoints import extract_changed_endpoints, gate_to_endpoint_hunks
 from lgtm.review.sections import ScanPlan, Section, plan_sections
 from lgtm.reporting.report_builder import ReportBuilder, ReviewMetadata
 from lgtm.sast.semgrep_runner import (
@@ -69,6 +70,24 @@ SQL_SINK_RE = re.compile(
 )
 
 
+MITIGATED_MODES = ("lgtm", "lgtm-no-sast")
+
+
+def mitigations_apply(mode: str, config: LGTMConfig) -> dict[str, bool]:
+    """Which prompt-injection mitigations are active for this mode.
+
+    The mitigations are part of LGTM, so they apply to ``lgtm`` and its
+    ``lgtm-no-sast`` ablation. The ``llm-only`` baseline is the bare model
+    on the raw diff (proposal, Baseline B) and must stay that way for the
+    comparison to mean anything; ``sast-only`` never prompts a model.
+    """
+    active = mode in MITIGATED_MODES
+    return {
+        "strip_comments": active and config.strip_comments,
+        "detect_prompt_injection": active and config.detect_prompt_injection,
+    }
+
+
 @dataclass
 class ReviewResult:
     findings: list[AgentFinding]
@@ -76,6 +95,7 @@ class ReviewResult:
     json_path: Path | None = None
     md_path: Path | None = None
     diffs: list[FileDiff] = field(default_factory=list)
+    run_records: list[RunRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +108,7 @@ class _SectionStage:
     investigator_input: InvestigatorInput
     investigator_tool_calls: int
     errors: list[dict[str, str]]
+    run_records: list[RunRecord] = field(default_factory=list)
 
 
 class ReviewPipeline:
@@ -115,7 +136,9 @@ class ReviewPipeline:
         from lgtm.graph import snapshot as graph_snapshot
 
         shas = graph_snapshot.resolve_refs(self.repo, base, pr)
-        session = graph_session.GraphSession(self.repo, shas, self.config)
+        session = None
+        if self.config.graph_enabled:
+            session = graph_session.GraphSession(self.repo, shas, self.config)
         try:
             return self._review(
                 base,
@@ -127,7 +150,8 @@ class ReviewPipeline:
                 session=session,
             )
         finally:
-            session.close()
+            if session is not None:
+                session.close()
 
     def _review(
         self,
@@ -187,9 +211,10 @@ class ReviewPipeline:
 
         from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
 
-        llm_diffs = sanitize_diffs(diffs) if self.config.strip_comments else diffs
+        mitigate = mitigations_apply(mode, self.config)
+        llm_diffs = sanitize_diffs(diffs) if mitigate["strip_comments"] else diffs
         llm_scan_diffs = (
-            sanitize_diffs(scan_diffs) if self.config.strip_comments else scan_diffs
+            sanitize_diffs(scan_diffs) if mitigate["strip_comments"] else scan_diffs
         )
 
         if mode == "sast-only":
@@ -220,7 +245,7 @@ class ReviewPipeline:
                 finding = triage_agent.triage(sf, fd, facts)
                 if finding is None:
                     continue
-                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
                 findings.append(finding)
             meta.agent_errors.extend({**e, "stage": "sast_triage"} for e in triage_agent.errors)
 
@@ -230,10 +255,13 @@ class ReviewPipeline:
             )
             findings.extend(section_stage.findings)
             meta.agent_errors.extend(section_stage.errors)
-            meta.graph_state = toolbox.graph_state()
-            meta.graph_index_seconds = round(session.init_seconds, 2)
+            meta.endpoints_reviewed = len(extract_changed_endpoints(diffs))
+            meta.graph_state = toolbox.graph_state() if session is not None else "disabled"
+            meta.graph_index_seconds = (
+                round(session.init_seconds, 2) if session is not None else 0.0
+            )
 
-        if self.config.detect_prompt_injection:
+        if mitigate["detect_prompt_injection"]:
             findings.extend(detect_prompt_injections(diffs))
 
         # ---- Stage 4: evidence validation ----------------------------
@@ -284,6 +312,7 @@ class ReviewPipeline:
             json_path=json_path,
             md_path=md_path,
             diffs=diffs,
+            run_records=section_stage.run_records if section_stage is not None else [],
         )
 
     # ------------------------------------------------------------------
@@ -299,14 +328,25 @@ class ReviewPipeline:
         investigator_error: str | None = None
         investigator_tool_calls = 0
         proposed = None
-        if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
-            investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
-            investigator_status = investigation.status
-            investigator_input = investigation.input_mode
-            investigator_error = investigation.error
-            investigator_tool_calls = investigation.tool_calls
-            proposed = investigation.proposed
-        plan = plan_sections(scan_diffs, proposed, self.config)
+        run_records: list[RunRecord] = []
+        if self.config.authz_planner == "endpoint":
+            # Checkpoint-era gating: review only hunks that carry a route
+            # decorator, one section per file, no investigator.
+            gated, gated_out = gate_to_endpoint_hunks(scan_diffs)
+            plan = plan_sections(gated, None, self.config)
+            plan.planner = "endpoint"
+            plan.fallback_reason = "endpoint gating"
+            plan.hunks_gated = gated_out
+        else:
+            if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
+                investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
+                investigator_status = investigation.status
+                investigator_input = investigation.input_mode
+                investigator_error = investigation.error
+                investigator_tool_calls = investigation.tool_calls
+                proposed = investigation.proposed
+                run_records.append(investigation.run_record)
+            plan = plan_sections(scan_diffs, proposed, self.config)
 
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
         results: dict[str, SectionResult] = {}
@@ -323,14 +363,11 @@ class ReviewPipeline:
             )
             seen_errors = len(authz_agent.errors)
             reviewed = authz_agent.review_section(scoped, notes)
-            for finding in reviewed:
-                finding.pr_graph_ok = toolbox.snapshot_ok("pr")
             error = authz_agent.errors[seen_errors:]
-            results[section.section_id] = SectionResult(
-                status="failed" if error else "completed",
-                supported=[f.supported for f in reviewed],
-                finding_ids=[f.finding_id for f in reviewed],
-                error=error[0]["message"] if error else None,
+            for finding in reviewed:
+                finding.pr_graph_ok = toolbox.graph_stamp("pr")
+            results[section.section_id] = self._section_result(
+                reviewed, error[0]["message"] if error else None
             )
             section_findings.extend(reviewed)
 
@@ -343,6 +380,16 @@ class ReviewPipeline:
             investigator_error=investigator_error,
             investigator_input=investigator_input,
             investigator_tool_calls=investigator_tool_calls,
+            run_records=run_records + authz_agent.run_records,
+        )
+
+    @staticmethod
+    def _section_result(findings: list[AgentFinding], error: str | None) -> SectionResult:
+        return SectionResult(
+            status="failed" if error else "completed",
+            supported=[f.supported for f in findings],
+            finding_ids=[f.finding_id for f in findings],
+            error=error,
         )
 
     @staticmethod

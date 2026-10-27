@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -269,15 +270,22 @@ def parse_agent_output(
     )
 
 
-def answer_until_parsed(ask: Callable[[], str], parse: Callable[[str], Any | None]) -> Any | None:
+def answer_until_parsed(
+    ask: Callable[[], str],
+    parse: Callable[[str], Any | None],
+    stop: Callable[[], bool] = lambda: False,
+) -> Any | None:
     """Run ``ask`` until ``parse`` accepts its answer, retrying PARSE_RETRIES times.
 
     Exceptions from ``ask`` propagate unretried; None means every answer failed to parse.
+    ``stop`` is checked after each failed parse and ends the retries.
     """
     for _ in range(PARSE_RETRIES + 1):
         result = parse(ask())
         if result is not None:
             return result
+        if stop():
+            break
     return None
 
 
@@ -319,7 +327,7 @@ def answer_until_resolved(
             (dropped if emptied else pruned).append(f)
         return None
 
-    answer = answer_until_parsed(ask, check)
+    answer = answer_until_parsed(ask, check, lambda: toolbox.budget_spent)
     if answer is not None:
         return answer
     for f in dropped:
@@ -341,6 +349,7 @@ def build_llm(config: LGTMConfig):
         # runaway generation with no stop token blocked a benchmark run for
         # over an hour before either existed.
         num_predict=config.llm_max_output_tokens,
+        num_ctx=config.llm_context_tokens,
         client_kwargs={"timeout": config.llm_timeout},
         **kwargs,
     )
@@ -474,6 +483,42 @@ def _toolbox_of(tools) -> Any:
     return None
 
 
+@dataclass
+class RunRecord:
+    """What one agent run did: tool calls, final answer text, and the budget it hit."""
+
+    section: str
+    tool_calls: list[dict] = field(default_factory=list)
+    raw_answer: str = ""
+    limit_hit: Literal["tool_calls", "steps"] | None = None
+
+
+def _close_run(toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False) -> str:
+    if toolbox is not None:
+        toolbox.steps_exhausted = steps_exhausted
+        toolbox.budget_spent = budget_spent
+    return answer
+
+
+def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
+    """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
+    record.raw_answer = answer
+    record.tool_calls = list(toolbox.call_log)
+    over_budget = getattr(toolbox, "budget_spent", False) or len(toolbox.call_log) > toolbox.budget
+    if toolbox.steps_exhausted:
+        record.limit_hit = "steps"
+    else:
+        record.limit_hit = "tool_calls" if over_budget else None
+    return answer
+
+
+CHARS_PER_TOKEN = 3
+
+
+def _message_chars(messages: list) -> int:
+    return sum(len(str(m.content)) for m in messages)
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -497,9 +542,14 @@ def run_tool_loop(
     tools_used = 0
     pushed_back = False
     invalid_inputs = 0
+    budget_spent = False
+    context_full = False
     cap = config.max_invalid_tool_inputs
+    window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+    final_chars = len(registry.entry("shared.forced_final"))
 
     for iteration in range(config.max_agent_iterations):
+        round_start = _message_chars(messages)
         response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
@@ -520,7 +570,8 @@ def run_tool_loop(
                         )
                     )
                     continue
-                return request_valid_answer(llm, messages, content, config, is_json_object)
+                answer = request_valid_answer(llm, messages, content, config, is_json_object)
+                return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
             name = call.get("name")
@@ -559,12 +610,34 @@ def run_tool_loop(
                 messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
         if cap > 0 and invalid_inputs >= cap:
             break
+        if toolbox is not None and toolbox.calls_used >= toolbox.budget:
+            # The budget is spent: every further tool call would be refused
+            # and still cost a full model call (a third of all calls in the
+            # 24 Oct Shoply run). Ask for the verdict now.
+            budget_spent = True
+            break
+        used = _message_chars(messages)
+        # Another round as large as this one, plus the final-answer prompt, would not fit.
+        if used + (used - round_start) + final_chars > window_chars:
+            context_full = True
+            break
 
-    if cap > 0 and invalid_inputs >= cap:
+    invalid_capped = cap > 0 and invalid_inputs >= cap
+    if context_full:
+        logger.warning("Agent history nears the context window; asking for the final answer")
+    elif invalid_capped:
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
+    elif budget_spent:
+        logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
-    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    return _close_run(
+        toolbox,
+        answer,
+        steps_exhausted=not (invalid_capped or budget_spent or context_full),
+        budget_spent=budget_spent,
+    )

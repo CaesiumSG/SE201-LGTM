@@ -222,6 +222,7 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
         "mode": mode, "variant": variant,
         "project": fetch.project_of(case), "infra_failures": 0,
+        "case_scope": case.get("scope", "in"),
         **evaluate.case_fields(case), "pin": pin,
         **evaluate.graph_fields(review),
         **evaluate.sast_fields(review),
@@ -247,6 +248,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
 
     extra: dict = {
         "project": fetch.project_of(case), "mode": mode, "variant": variant,
+        "case_scope": case.get("scope", "in"),
         **evaluate.case_fields(case),
         **diff_stats(diffs),
         "index_seconds": None, "index_chunks": None, "index_reused": None,
@@ -293,7 +295,8 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),
             "est_tokens": est_tokens,
-            "findings": findings, **extra, **graph, **evaluate.sast_fields(result),
+            "findings": findings, "run_records": evaluate.run_record_fields(result),
+            **extra, **graph, **evaluate.sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
         kept = {k: extra[k] for k in ("coverage", "coverage_summary") if k in extra}
@@ -323,6 +326,9 @@ def write_dir_summary(out_dir: Path, mode: str, variant: str, expected: set[str]
         "cases_expected": len(expected), "cases_present": len(present),
         "complete": present >= expected and not unrun,
         "missing": sorted((expected - present) | unrun),
+        "sql_cases_semgrep_warns_on": sum(
+            1 for r in results
+            if r.get("category") == "sqli" and (r.get("semgrep_findings_in_diff") or 0) > 0),
         **(extra or {}),
     }
     if not results:
@@ -429,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"no clone for {sorted(set(missing))} under {args.cache}; "
                 "run benchmark/real_world/fetch.py --policies first"
             )
-    # Runs for --summarize-only too; every summary.json records this environment.
+    # Also runs for --summarize-only; every summary.json records this environment.
     env_info = preflight(args.modes, config)
 
     units = list(pending_units(work_units(cases, args.modes, variants),

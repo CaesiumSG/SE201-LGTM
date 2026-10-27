@@ -104,6 +104,9 @@ and base/PR SHAs) and `file`. The lgtm and lgtm-no-sast records also carry
 `exclusions_total`. Each output root holds a `run.json` manifest that carries
 `pin`; `--resume` refuses to continue a root produced with a different model
 or reasoning setting.
+`evaluate_real.py` exits 4 when git cannot start for two units in a row; it
+stops and lists the units it did not run, and `--resume` continues them once
+git works. Otherwise it exits 0.
 `--gpu-model qwen3.8-27b` selects the GPU tunnel model with thinking disabled
 and cannot be combined with `--model`. Results go to
 `benchmark/results/real_world/` (git-ignored); curated runs are in
