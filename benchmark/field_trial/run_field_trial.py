@@ -123,6 +123,31 @@ def scrub(obj, needles: list[str]):
     return obj
 
 
+COVERAGE_KEYS = (
+    "planner", "investigator_status", "hunks_total", "hunks_reviewed",
+    "sections_scheduled", "sections_completed", "sections_failed", "complete",
+)
+
+
+def coverage_brief(coverage: dict | None) -> dict | None:
+    """The coverage counts that show whether an agent reviewed the PR, without the per-section rows."""
+    if coverage is None:
+        return None
+    return {k: coverage.get(k) for k in COVERAGE_KEYS}
+
+
+def judge_counts(findings: list[dict]) -> dict | None:
+    """Supported / unsupported / not judged counts, or None when the pipeline has no judge."""
+    if not any("supported" in f for f in findings):
+        return None
+    flags = [f.get("supported") for f in findings]
+    return {
+        "supported": sum(1 for s in flags if s is True),
+        "unsupported": sum(1 for s in flags if s is False),
+        "not_judged": sum(1 for s in flags if s is None),
+    }
+
+
 def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
     clone = cache / project_of(case)
     base, pr = ensure_case(case, cache)
@@ -161,6 +186,9 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "semgrep_findings_total": result.meta.semgrep_findings_total,
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
         "endpoints_reviewed": result.meta.endpoints_reviewed,
+        "graph_state": result.meta.graph_state,
+        "coverage": coverage_brief(result.meta.coverage),
+        "judged": judge_counts(findings),
         "n_findings": len(findings),
         "verdicts": dict(Counter(f["verdict"] for f in findings)),
         "vulnerable_findings": [
@@ -181,6 +209,8 @@ def summarize(records: list[dict]) -> dict:
     ran = [r for r in records if not r.get("crashed")]
     lat = [r["latency_seconds"] for r in ran]
     flagged = [r for r in ran if r.get("verdicts", {}).get("vulnerable")]
+    covered = [r["coverage"] for r in ran if r.get("coverage")]
+    judged = [r["judged"] for r in ran if r.get("judged")]
     return {
         "cases": len(records),
         "crashed": sum(1 for r in records if r.get("crashed")),
@@ -191,6 +221,12 @@ def summarize(records: list[dict]) -> dict:
             1 for r in ran for f in r.get("vulnerable_findings", []) if f["evidence_valid"]),
         "semgrep_in_diff_total": sum(r.get("semgrep_findings_in_diff", 0) for r in ran),
         "endpoints_reviewed_total": sum(r.get("endpoints_reviewed", 0) for r in ran),
+        "prs_reviewed_by_agent": sum(1 for c in covered if (c.get("sections_completed") or 0) > 0),
+        "prs_coverage_complete": sum(1 for c in covered if c.get("complete")),
+        "sections_failed_total": sum(c.get("sections_failed") or 0 for c in covered),
+        "graph_states": dict(Counter(r.get("graph_state") or "none" for r in ran)),
+        "judge": ({k: sum(j[k] for j in judged) for k in ("supported", "unsupported", "not_judged")}
+                  if judged else None),
         "latency_median_seconds": round(statistics.median(lat), 1) if lat else None,
         "latency_max_seconds": max(lat) if lat else None,
         "index_seconds_total": round(sum(r.get("index_seconds", 0) for r in ran), 1),
@@ -198,7 +234,9 @@ def summarize(records: list[dict]) -> dict:
             {"id": r["id"], "crashed": r.get("crashed"), "error": r.get("error"),
              "latency_seconds": r.get("latency_seconds"),
              "n_findings": r.get("n_findings"), "verdicts": r.get("verdicts"),
-             "vulnerable": len(r.get("vulnerable_findings", []))}
+             "vulnerable": len(r.get("vulnerable_findings", [])),
+             "graph_state": r.get("graph_state"),
+             "sections_completed": (r.get("coverage") or {}).get("sections_completed")}
             for r in records
         ],
     }
