@@ -1,0 +1,488 @@
+{
+  "id": "authz_09_vulnerable",
+  "category": "authz",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 86.49,
+  "est_tokens": 1052,
+  "findings": [
+    {
+      "finding_id": "authz:orders-mine-ownership:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removed the ownership scoping filter from the GET /orders/mine handler. Base code filtered with `.filter(Order.user_id == g.current_user.id)` (app/routes/orders.py:43); the PR replaces it with `.filter(Order.status != \"cancelled\")` (app/routes/orders.py:43), so the query now returns every non-cancelled order in the database regardless of the requester. The only remaining check is `@require_auth` (app/auth.py:55-66), which authenticates the caller and sets g.current_user but performs no ownership verification. This violates security-policy.md \u00a73 ('A user may view ONLY their own orders') and api-spec.md ('/orders/mine | GET | any authenticated user (own orders only)'). Because Order.to_dict() exposes user_id, total, and shipping_address (app/models.py:55-62), any authenticated user can now read other users' order data \u2014 a classic IDOR / broken object-level authorization.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            36,
+            47
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/mine\", methods=[\"GET\"])\n@require_auth\ndef my_orders():\n    \"\"\"List the authenticated user's own orders.\"\"\"\n    session = get_session()\n    orders = (\n        session.query(Order)\n        .filter(Order.status != \"cancelled\")\n        .order_by(Order.created_at.desc())\n        .all()\n    )\n    return jsonify([o.to_dict() for o in orders])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            43,
+            43
+          ],
+          "source": null,
+          "content": "        .filter(Order.status != \"cancelled\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            55,
+            62
+          ],
+          "source": null,
+          "content": "    def to_dict(self) -> dict:\n        return {\n            \"id\": self.id,\n            \"user_id\": self.user_id,\n            \"status\": self.status,\n            \"total\": self.total,\n            \"shipping_address\": self.shipping_address,\n        }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/mine` | GET | any authenticated user (own orders only) |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the ownership scoping so the query only returns the requester's orders, e.g. `.filter(Order.user_id == g.current_user.id, Order.status != \"cancelled\")`. If admins should be able to list all orders here, gate that with `is_owner_or_admin`/role logic, but the default path must remain scoped to the authenticated user's own orders.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9174,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 43,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1129
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "users may view only their own orders authorization"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "class Order",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 43,
+            "end_line": 75,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "my_orders|/mine",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.md",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancel",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancel",
+            "file_glob": "*.md",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancel",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancel",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "refund",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "refund",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "refund",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "refund",
+            "file_glob": "*.md",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "```json\n{\n  \"sections\": [\n    {\n      \"id\": \"orders-mine-ownership\",\n      \"title\": \"my_orders endpoint drops the per-user ownership filter\",\n      \"rationale\": \"The single changed hunk replaces the ownership predicate `Order.user_id == g.current_user.id` with a status predicate `Order.status != \\\"cancelled\\\"` in the `my_orders` handler (GET /orders/mine). This is the only authorization-relevant change in the diff: it removes the per-user scoping that security-policy.md \u00a73 and api-spec.md require for this endpoint (\\\"any authenticated user (own orders only)\\\"), so any authenticated user can now list every non-cancelled order in the system. The change is a single concern (loss of ownership scoping on one endpoint), so it forms one section. The `@require_auth` decorator still authenticates the caller but no longer enforces ownership, and the new status filter is unrelated to authorization (no \\\"cancelled\\\" status is defined anywhere in the codebase or policy).\",\n      \"hunks\": [\"app/routes/orders.py#0\"],\n      \"context\": [\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"pr\", \"why\": \"The changed handler; PR version filters only on Order.status != 'cancelled' with no user_id scoping, while base filtered on Order.user_id == g.current_user.id.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Decorator on my_orders; authenticates the caller and sets g.current_user but performs no ownership check, so the removed filter was the only authorization enforcement.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The policy-mandated ownership helper (security-policy.md \u00a73) that is not used to scope this list query.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Defines Order.user_id (the ownership column that was filtered in base) and Order.status (the column now filtered); to_dict exposes user_id, total, shipping_address, confirming cross-user data exposure.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"base\", \"why\": \"Registers orders_bp at url_prefix /orders, confirming the changed handler is the live GET /orders/mine endpoint.\"}\n      ]\n    }\n  ]\n}\n```",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-mine-ownership",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "orders mine own orders only listing another user's orders"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 36,
+            "end_line": 47,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removed the ownership scoping filter from the GET /orders/mine handler. Base code filtered with `.filter(Order.user_id == g.current_user.id)` (app/routes/orders.py:43); the PR replaces it with `.filter(Order.status != \\\"cancelled\\\")` (app/routes/orders.py:43), so the query now returns every non-cancelled order in the database regardless of the requester. The only remaining check is `@require_auth` (app/auth.py:55-66), which authenticates the caller and sets g.current_user but performs no ownership verification. This violates security-policy.md \u00a73 ('A user may view ONLY their own orders') and api-spec.md ('/orders/mine | GET | any authenticated user (own orders only)'). Because Order.to_dict() exposes user_id, total, and shipping_address (app/models.py:55-62), any authenticated user can now read other users' order data \u2014 a classic IDOR / broken object-level authorization.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [36, 47], \"content\": \"@orders_bp.route(\\\"/mine\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef my_orders():\\n    \\\"\\\"\\\"List the authenticated user's own orders.\\\"\\\"\\\"\\n    session = get_session()\\n    orders = (\\n        session.query(Order)\\n        .filter(Order.status != \\\"cancelled\\\")\\n        .order_by(Order.created_at.desc())\\n        .all()\\n    )\\n    return jsonify([o.to_dict() for o in orders])\"},\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [43, 43], \"content\": \"        .filter(Order.status != \\\"cancelled\\\")\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n\\n    return wrapper\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [55, 62], \"content\": \"    def to_dict(self) -> dict:\\n        return {\\n            \\\"id\\\": self.id,\\n            \\\"user_id\\\": self.user_id,\\n            \\\"status\\\": self.status,\\n            \\\"total\\\": self.total,\\n            \\\"shipping_address\\\": self.shipping_address,\\n        }\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 3. Order data access rules\\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\\n- Listing another user's orders is restricted to that user themselves and administrators.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/mine` | GET | any authenticated user (own orders only) |\"}\n      ],\n      \"suggested_fix\": \"Restore the ownership scoping so the query only returns the requester's orders, e.g. `.filter(Order.user_id == g.current_user.id, Order.status != \\\"cancelled\\\")`. If admins should be able to list all orders here, gate that with `is_owner_or_admin`/role logic, but the default path must remain scoped to the authenticated user's own orders.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 43\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "93f52ff64c61167b88ca9d091ce5c2473779f2c2",
+    "pr_sha": "6223659c3236e80d53f30769bf0247c8d66c75ab",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/routes/orders.py",
+      "old_range": [
+        43,
+        43
+      ],
+      "new_range": [
+        43,
+        43
+      ]
+    }
+  ],
+  "diff_shape": "decorator_outside_hunk",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-mine-ownership",
+        "origin": "investigator",
+        "title": "my_orders endpoint drops the per-user ownership filter",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 40,
+            "old_count": 7,
+            "new_start": 40,
+            "new_count": 7,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-mine-ownership:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "93f52ff64c61167b88ca9d091ce5c2473779f2c2",
+  "pr_sha": "6223659c3236e80d53f30769bf0247c8d66c75ab",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "orders-mine-ownership"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

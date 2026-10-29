@@ -19,11 +19,11 @@ including Semgrep) and llm-only.
 | Directory | Modes | Notes |
 |---|---|---|
 | Shoply run folder | lgtm, llm-only on the 36 committed Shoply cases | Written by `benchmark/evaluate.py --gpu-cluster` |
-| `real_world/` | lgtm, llm-only on 12 real-world CVE cases | Held-out: no tuning. Per-case JSON also holds diff size, detected endpoints, index time and `index_skipped`. Which commit produced which case is in [`docs/real-world-eval.md`](../../docs/real-world-eval.md) |
-| `field_trial/` | lgtm, llm-only on 12 ordinary merged PRs (mealie, alerta, redash) | Crash / latency / false-alarm trial; nothing tuned. Write-up in [`docs/field-trial.md`](../../docs/field-trial.md) |
+| `archive/real_world/` | lgtm, llm-only on 12 real-world CVE cases | Held-out: no tuning. Per-case JSON also holds diff size, detected endpoints, index time and `index_skipped`. Which commit produced which case is in [`docs/real-world-eval.md`](../../docs/real-world-eval.md) |
+| `archive/field_trial/` | lgtm, llm-only on 12 ordinary merged PRs (mealie, alerta, redash) | Crash / latency / false-alarm trial; nothing tuned. Write-up in [`docs/field-trial.md`](../../docs/field-trial.md) |
 
-Prompt-injection results are in `benchmark/injection/results/`. The findings
-of the Shoply and real-world lgtm runs are labelled by Claude Opus 5.5 in
+Prompt-injection results are in `benchmark/runs/archive/injection-results/`. The findings
+of the `shoply-20261029/lgtm` run are labelled by Claude Opus 5.5 in
 `benchmark/kev_model_labels.json`.
 
 Earlier runs are in `benchmark/runs/archive/`. They use earlier models and

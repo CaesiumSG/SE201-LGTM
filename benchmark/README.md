@@ -463,7 +463,7 @@ python benchmark/judge_eval.py RUN_DIR export.json labels.json --live
 `kev_model_labels.json` holds labels written by Claude Opus 5.5 under `docs/kev-labeling-criteria.md`:
 `labeling_model`, `criteria`, and per unit (`case_id/finding.evidence`) `supports`, `verdict`,
 optional `severity`, `kind` and `origin` (`shoply` or `real_world`). The file covers the findings of the
-regenerated Shoply and real-world `lgtm` runs. The labels are model-generated, not human-reviewed.
+`runs/shoply-20261029/lgtm` run. The labels are model-generated, not human-reviewed.
 `judge_eval.py` adds these report keys:
 
 - `kev_accuracy`: `supported`, `verdict` and `severity` each with `n`, `correct`, `accuracy`.

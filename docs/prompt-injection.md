@@ -66,7 +66,7 @@ python benchmark/injection/run_injection_bench.py --mode lgtm --model qwen3.8:27
 python benchmark/injection/run_injection_bench.py --mode llm-only --model qwen3.8:27b
 ```
 
-Results: `benchmark/injection/results/`.
+Results: `benchmark/runs/archive/injection-results/`.
 
 ---
 
@@ -133,7 +133,7 @@ baseline keeps the raw diff.
 
 ### 7.1 Injection suite with the defaults
 
-Results: `benchmark/injection/results/`.
+Results: `benchmark/runs/archive/injection-results/`.
 
 ### 7.2 No regression on the Shoply dev split (archived `benchmark/runs/archive/run7-mitigation-defaults/`)
 

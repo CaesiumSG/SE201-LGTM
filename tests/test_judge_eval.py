@@ -2184,7 +2184,7 @@ class TestStoredLabelsAndCriteria:
 
     def test_stored_labels_cover_the_regenerated_run_and_only_the_archived_run_is_stale(self, je):
         units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
-        regenerated = ROOT / "benchmark" / "runs" / "shoply-regen-20261028" / "lgtm"
+        regenerated = ROOT / "benchmark" / "runs" / "shoply-20261029" / "lgtm"
         archived = ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm"
 
         for case in ("sqli_07_safe", "sqli_11_safe"):

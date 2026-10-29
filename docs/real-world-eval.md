@@ -11,7 +11,7 @@ evaluation: 6 published vulnerabilities in open-source Python web projects,
 cases, and every experiment flag is off.
 
 > The Headline and Results sections describe the runs in
-> `benchmark/runs/real_world/`: reviewer `qwen3.8:27b` on the SCIS GPU
+> `benchmark/runs/archive/real_world/`: reviewer `qwen3.8:27b` on the SCIS GPU
 > cluster, judge Kev (Kev-4B), conditions LGTM (the full pipeline, including
 > Semgrep) and LLM-only. Every other section describes the archived 15 Oct
 > run (`qwen2.5-coder:7b`, earlier conditions) in
@@ -19,7 +19,7 @@ cases, and every experiment flag is off.
 
 - **Data:** [`benchmark/real_world/cases.json`](../benchmark/real_world/cases.json)
   (how the cases are built: [`benchmark/real_world/README.md`](../benchmark/real_world/README.md)).
-- **Runs:** [`benchmark/runs/real_world/`](../benchmark/runs/real_world/),
+- **Runs:** [`benchmark/runs/archive/real_world/`](../benchmark/runs/archive/real_world/),
   one JSON per case and a `summary.json` per mode; the archived 15 Oct run is in
   [`benchmark/runs/archive/real_world/`](../benchmark/runs/archive/real_world/).
 - **Code:** [`benchmark/real_world/evaluate_real.py`](../benchmark/real_world/evaluate_real.py)
@@ -29,7 +29,7 @@ cases, and every experiment flag is off.
 ## Headline
 
 The 3 SQL injection cases `alerta_sqli_vulnerable`, `alerta_sqli_safe` and
-`postgraas_sqli_safe` are out of scope. Results: `benchmark/runs/real_world/summary.json`.
+`postgraas_sqli_safe` are out of scope. Results: `benchmark/runs/archive/real_world/summary.json`.
 
 ## Setup
 
@@ -114,7 +114,7 @@ the ground truth and did not influence any score.
 
 ## Results
 
-Results: `benchmark/runs/real_world/summary.json`. Review latency excludes
+Results: `benchmark/runs/archive/real_world/summary.json`. Review latency excludes
 one-time indexing and downloads.
 
 ### Beside the synthetic Shoply results (36 cases)

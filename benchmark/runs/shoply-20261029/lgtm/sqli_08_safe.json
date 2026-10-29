@@ -1,0 +1,580 @@
+{
+  "id": "sqli_08_safe",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 0.5,
+  "latency_seconds": 131.15,
+  "est_tokens": 1579,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/users.py:64",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query at app/routes/users.py:64-67 uses SQLAlchemy text() with a named placeholder (:pattern) and passes the user-controlled value (last_search from the 'last_search' cookie, line 62) as a separate bound parameter in the params dict ({\"pattern\": f\"%{last_search}%\"}). The f-string only builds the parameter VALUE, not the SQL statement text, so the query structure is fixed and the input is bound by the DB driver \u2014 this is the parameterized pattern the security policy explicitly requires. No user input is interpolated into the SQL string itself, so this is a false positive for SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            62,
+            67
+          ],
+          "source": null,
+          "content": "    last_search = request.cookies.get(\"last_search\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username FROM users WHERE username LIKE :pattern\"),\n        {\"pattern\": f\"%{last_search}%\"},\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "No change required for SQL injection: the query already uses a bound :pattern parameter with a separate params dict, which is the policy-compliant pattern. Optionally, to avoid LIKE wildcard injection (a user could supply % or _ to broaden the match), escape LIKE metacharacters in last_search (e.g., replace \\, %, _ with their escaped forms) and add an ESCAPE clause, but this is a data-integrity concern, not CWE-89.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.7957,
+      "kev_verdict": "not_real",
+      "kev_severity": "medium",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 64,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 810
+    },
+    {
+      "finding_id": "authz:recent-search-authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /users/recent-search endpoint returns user-identifying data (id, username) for ALL users matching a pattern, but is protected only by @require_auth, which merely verifies a valid token exists (app/auth.py:55-66) and enforces no role. This is a user-listing operation, and security-policy.md \u00a72 requires the manager role or above for listing all users (the reference endpoint list_users at app/routes/users.py:21-27 uses @require_role(\"manager\")). api-spec.md likewise restricts user listing/search to manager/admin. Any authenticated 'user'-role account can therefore enumerate other users' ids and usernames, bypassing the required manager/admin authorization.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            68
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/recent-search\", methods=[\"GET\"])\n@require_auth\ndef recent_search():\n    last_search = request.cookies.get(\"last_search\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username FROM users WHERE username LIKE :pattern\"),\n        {\"pattern\": f\"%{last_search}%\"},\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            21,
+            27
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef list_users():\n    \"\"\"List all users. Managers and admins only.\"\"\"\n    session = get_session()\n    users = session.query(User).order_by(User.id).all()\n    return jsonify([u.to_dict() for u in users])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 2. User data access rules\n- A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile.\n- Listing all users (`GET /users`) requires the **manager** role or above.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users` | GET | manager, admin |\n| `/users/search` | GET | manager, admin |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restrict the endpoint to the manager role or above by applying @require_role(\"manager\") (or an equivalent role check) in addition to / instead of @require_auth, consistent with list_users and the policy \u00a72 / api-spec.md user-listing rules. Alternatively, scope results to the requesting user's own record only.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8826,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 59,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1065
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/users.py:64",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 50,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters parameterized queries policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_session",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 115,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 80,
+            "end_line": 98,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/users.py:64\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at app/routes/users.py:64-67 uses SQLAlchemy text() with a named placeholder (:pattern) and passes the user-controlled value (last_search from the 'last_search' cookie, line 62) as a separate bound parameter in the params dict ({\\\"pattern\\\": f\\\"%{last_search}%\\\"}). The f-string only builds the parameter VALUE, not the SQL statement text, so the query structure is fixed and the input is bound by the DB driver \u2014 this is the parameterized pattern the security policy explicitly requires. No user input is interpolated into the SQL string itself, so this is a false positive for SQL injection.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [62, 67], \"content\": \"    last_search = request.cookies.get(\\\"last_search\\\", \\\"\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, username FROM users WHERE username LIKE :pattern\\\"),\\n        {\\\"pattern\\\": f\\\"%{last_search}%\\\"},\\n    )\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"No change required for SQL injection: the query already uses a bound :pattern parameter with a separate params dict, which is the policy-compliant pattern. Optionally, to avoid LIKE wildcard injection (a user could supply % or _ to broaden the match), escape LIKE metacharacters in last_search (e.g., replace \\\\, %, _ with their escaped forms) and add an ESCAPE clause, but this is a data-integrity concern, not CWE-89.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_auth decorator and is_owner_or_admin in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "user listing access rules, who may list all users, recent search endpoint"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users/search|def search",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "last_search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "last_search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_session",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 55,
+            "end_line": 68,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 10,
+            "end_line": 16,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 19,
+            "end_line": 27,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 28,
+            "end_line": 40,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 41,
+            "end_line": 55,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 58,
+            "end_line": 68,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 10,
+            "end_line": 16,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 19,
+            "end_line": 27,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 28,
+            "end_line": 40,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 41,
+            "end_line": 55,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 58,
+            "end_line": 68,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 10,
+            "end_line": 16,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"recent-search-authz\",\n      \"title\": \"New /users/recent-search endpoint: authorization gap and SQL injection\",\n      \"rationale\": \"Both hunks together introduce a new user-listing endpoint. Hunk #0 adds the `sqlalchemy.text` import that the new endpoint depends on; hunk #1 adds the `recent_search` route. The endpoint is protected only by `@require_auth` (any authenticated user), yet it returns `id, username` for ALL users matching a pattern \u2014 a user-listing operation that, per security-policy.md \u00a72 and api-spec.md, requires the manager role or above (cf. `list_users` at users.py:19-27 which uses `@require_role(\\\"manager\\\")`). This is an authorization bypass: a plain `user`-role account can enumerate every user's id and username. Additionally, the `last_search` cookie value is interpolated into the LIKE pattern via an f-string (`f\\\"%{last_search}%\\\"`), which is a SQL-injection vector (CWE-89) violating security-policy.md \u00a75's prohibition on string interpolation of request-derived values into SQL. Both hunks are inseparable: the import is only needed for the new endpoint, and the endpoint is the sole consumer of the import.\",\n      \"hunks\": [\n        \"app/routes/users.py#0\",\n        \"app/routes/users.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"list_users\", \"start_line\": 19, \"end_line\": 27, \"snapshot\": \"base\", \"why\": \"Reference endpoint for listing all users; uses @require_role(\\\"manager\\\") per policy \u00a72. The new recent_search endpoint returns the same user data (id, username) but only requires @require_auth, demonstrating the authorization gap.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 40, \"snapshot\": \"base\", \"why\": \"Reference per-object access pattern using is_owner_or_admin; shows the established authorization model for user data that recent_search does not follow.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"The decorator applied to recent_search; only verifies a valid token exists, does not enforce role. Sufficient for own-profile access but insufficient for user-listing per policy \u00a72.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"The decorator that SHOULD be applied (or an equivalent role check) to restrict user-listing to manager/admin, per security-policy.md \u00a72 and api-spec.md.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 40, \"snapshot\": \"base\", \"why\": \"The User model whose id and username columns are exposed by the new endpoint's SELECT; confirms the data returned is user-identifying information subject to the listing access rules.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_session\", \"start_line\": 100, \"end_line\": 101, \"snapshot\": \"base\", \"why\": \"Session factory used by recent_search to execute the raw SQL query; confirms the query runs against the same users table.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "recent-search-authz",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 20,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "recent-search|recent_search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "user listing access rules manager role required for listing all users"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The new GET /users/recent-search endpoint returns user-identifying data (id, username) for ALL users matching a pattern, but is protected only by @require_auth, which merely verifies a valid token exists (app/auth.py:55-66) and enforces no role. This is a user-listing operation, and security-policy.md \u00a72 requires the manager role or above for listing all users (the reference endpoint list_users at app/routes/users.py:21-27 uses @require_role(\\\"manager\\\")). api-spec.md likewise restricts user listing/search to manager/admin. Any authenticated 'user'-role account can therefore enumerate other users' ids and usernames, bypassing the required manager/admin authorization.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [58, 68], \"content\": \"@users_bp.route(\\\"/recent-search\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef recent_search():\\n    last_search = request.cookies.get(\\\"last_search\\\", \\\"\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, username FROM users WHERE username LIKE :pattern\\\"),\\n        {\\\"pattern\\\": f\\\"%{last_search}%\\\"},\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [21, 27], \"content\": \"@users_bp.route(\\\"\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef list_users():\\n    \\\"\\\"\\\"List all users. Managers and admins only.\\\"\\\"\\\"\\n    session = get_session()\\n    users = session.query(User).order_by(User.id).all()\\n    return jsonify([u.to_dict() for u in users])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n    return wrapper\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 2. User data access rules\\n- A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile.\\n- Listing all users (`GET /users`) requires the **manager** role or above.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/users` | GET | manager, admin |\\n| `/users/search` | GET | manager, admin |\"}\n      ],\n      \"suggested_fix\": \"Restrict the endpoint to the manager role or above by applying @require_role(\\\"manager\\\") (or an equivalent role check) in addition to / instead of @require_auth, consistent with list_users and the policy \u00a72 / api-spec.md user-listing rules. Alternatively, scope results to the requesting user's own record only.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 59\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "cdc6d7f73ac8cd1664199bcda55ba055e7ca1788",
+    "pr_sha": "b64867c653d0a87a9302a93eecfee6e38812dd03",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "recent-search-authz",
+        "origin": "investigator",
+        "title": "New /users/recent-search endpoint: authorization gap and SQL injection",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/users.py#1",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 55,
+            "new_count": 14,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:recent-search-authz:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.04,
+  "base_sha": "cdc6d7f73ac8cd1664199bcda55ba055e7ca1788",
+  "pr_sha": "b64867c653d0a87a9302a93eecfee6e38812dd03",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "explicit_safe",
+  "case_label_grounded": "explicit_safe",
+  "target_sections": [
+    "recent-search-authz"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "safe",
+  "predicted_grounded": "safe",
+  "outcome": "TN",
+  "outcome_grounded": "TN",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:recent-search-authz:1"
+  ]
+}

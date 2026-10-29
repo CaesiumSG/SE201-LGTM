@@ -276,7 +276,7 @@ python benchmark/real_world/fetch.py                     # clone + build case br
 python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes lgtm llm-only
 ```
 
-Results: `benchmark/runs/real_world/summary.json`; write-up in
+Results: `benchmark/runs/archive/real_world/summary.json`; write-up in
 [`docs/real-world-eval.md`](docs/real-world-eval.md).
 
 ### 3. Prompt injection
@@ -292,7 +292,7 @@ python benchmark/injection/run_injection_bench.py --mode lgtm --model qwen3.8:27
 python benchmark/injection/run_injection_bench.py --mode llm-only --model qwen3.8:27b
 ```
 
-Results: `benchmark/injection/results/` (see
+Results: `benchmark/runs/archive/injection-results/` (see
 [`docs/prompt-injection.md`](docs/prompt-injection.md)). The mitigations are
 on by default in lgtm mode (§7 there; the dev-split comparison is archived in
 `benchmark/runs/archive/run7-mitigation-defaults/`).
@@ -309,7 +309,7 @@ python benchmark/field_trial/run_field_trial.py --fetch
 python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only
 ```
 
-Results: `benchmark/runs/field_trial/summary.json`; write-up in
+Results: `benchmark/runs/archive/field_trial/summary.json`; write-up in
 [`docs/field-trial.md`](docs/field-trial.md).
 
 ### All results at a glance

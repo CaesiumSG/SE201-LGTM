@@ -408,8 +408,8 @@ live in `prompts.toml` behind a byte-for-byte lock. The integration added:
 re-pinned real-world cases, the field trial and the injection suite with the
 new pipeline (reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev) are
 written to the Shoply run folder under `benchmark/runs/`,
-`benchmark/runs/real_world/`, `benchmark/runs/field_trial/` and
-`benchmark/injection/results/`. Claude Opus 5.5 labels the findings under
+`benchmark/runs/archive/real_world/`, `benchmark/runs/archive/field_trial/` and
+`benchmark/runs/archive/injection-results/`. Claude Opus 5.5 labels the findings under
 [`kev-labeling-criteria.md`](kev-labeling-criteria.md).
 The numbers PR #14 reports (Shoply 25 TP / 25 TN; real-world 5 TP / 4 TN /
 2 UNCREDITED / 1 FN; 105 s and 196k prompt tokens per case) come from an
@@ -441,7 +441,7 @@ both arms from one frozen tree at `4fc0999`) and
 
 Injection suite, mitigations on: attack success rate **0% (0/6)** (was
 100% of 3 unmitigated). The current injection run is in
-`benchmark/injection/results/`.
+`benchmark/runs/archive/injection-results/`.
 
 ### What worked / what didn't
 

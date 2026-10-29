@@ -1,0 +1,714 @@
+{
+  "id": "authz_11_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 186.79,
+  "est_tokens": 1100,
+  "findings": [
+    {
+      "finding_id": "authz:user-export:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new GET /users/<id>/export endpoint (export_user) fetches a user profile and all of that user's orders using the user-controlled user_id, but only enforces authentication via @require_auth. It never calls is_owner_or_admin(g.current_user, user_id), so any authenticated user can read another user's profile (including email) and their orders (status, total, shipping_address). This directly violates security-policy.md \u00a72 ('A user may read or update ONLY their own profile... Use is_owner_or_admin(current_user, user_id) for this check') and \u00a73 ('A user may view ONLY their own orders... MUST verify ownership with is_owner_or_admin(current_user, order.user_id)'). The sibling endpoints get_user (line 32) and update_user (line 45) in the same file correctly apply is_owner_or_admin, confirming the intended access rule that export_user omits.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>/export\", methods=[\"GET\"])\n@require_auth\ndef export_user(user_id: int):\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    orders = session.query(Order).filter(Order.user_id == user_id).all()\n    return jsonify({\"user\": user.to_dict(include_email=True), \"orders\": [o.to_dict() for o in orders]})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            28,
+            38
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>\", methods=[\"GET\"])\n@require_auth\ndef get_user(user_id: int):\n    if not is_owner_or_admin(g.current_user, user_id):\n        return jsonify({\"error\": \"forbidden\"}), 403\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    return jsonify(user.to_dict(include_email=True))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            55,
+            62
+          ],
+          "source": null,
+          "content": "def to_dict(self) -> dict:\n    return {\n        \"id\": self.id,\n        \"user_id\": self.user_id,\n        \"status\": self.status,\n        \"total\": self.total,\n        \"shipping_address\": self.shipping_address,\n    }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Add an ownership check at the top of export_user, mirroring get_user: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\"error\": \"forbidden\"}), 403` before fetching the user and orders.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9213,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 4,
+      "pr_graph_ok": true,
+      "input_tokens": 1281
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "user export endpoint access control owner admin"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def to_dict",
+            "file_glob": "app/models.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 30,
+            "end_line": 75,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 600,
+            "end_line": 700,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def report_\\d+\\(\\):",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "return jsonify\\(\\{\"section\": \\d+, \"users\": session\\.query\\(User\\)\\.count\\(\\)\\}\\)",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def report_",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\"users\": session.query",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def report_",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\"users\": session.query",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1050,
+            "end_line": 1160,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def report_1[0-9][0-9]\\(\\):",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 700,
+            "end_line": 760,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def report_1[0-9][0-9]\\(\\):",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 800,
+            "end_line": 870,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 870,
+            "end_line": 940,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 940,
+            "end_line": 1010,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1010,
+            "end_line": 1055,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1094,
+            "end_line": 1160,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1094,
+            "end_line": 1200,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1094,
+            "end_line": 1150,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"admin-reports\",\n      \"title\": \"New admin report endpoints gated by @require_role(\\\"admin\\\")\",\n      \"rationale\": \"Adds a large batch of read-only /admin/reports/<n> endpoints. Each is decorated with @require_role(\\\"admin\\\"), consistent with security-policy.md \u00a74 (every /admin endpoint requires the admin role) and the file's own access-rule docstring. The authorization concern is that these new admin-surface endpoints correctly enforce the admin role and expose only aggregate counts (no per-user PII).\",\n      \"hunks\": [\"app/routes/admin.py#0\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator enforcing the admin role; the new endpoints rely on it for authorization.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"ROLE_RANK\", \"start_line\": 21, \"end_line\": 21, \"snapshot\": \"base\", \"why\": \"Role hierarchy used by require_role to compare user role against 'admin'.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 36, \"end_line\": 40, \"snapshot\": \"base\", \"why\": \"The report endpoints query User.count(); confirms they return only an aggregate count, not per-user data.\"}\n      ]\n    },\n    {\n      \"id\": \"user-export\",\n      \"title\": \"New /users/<id>/export endpoint exposing profile + orders\",\n      \"rationale\": \"Adds an export endpoint that returns a user's profile (including email) and all of that user's orders. It is decorated only with @require_auth and does NOT call is_owner_or_admin, unlike the sibling get_user/update_user endpoints. This is the key authorization concern: any authenticated user (even a plain 'user' role) can read another user's email and orders, violating security-policy.md \u00a72 (read own profile only) and \u00a73 (view only own orders). The import change (adding Order) is the enabling dependency for this endpoint.\",\n      \"hunks\": [\"app/routes/users.py#0\", \"app/routes/users.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The ownership check that sibling endpoints (get_user, update_user) use but export_user omits.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Only enforces authentication, not ownership; export_user relies solely on this.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"pr\", \"why\": \"Reference pattern: same profile data is gated by is_owner_or_admin, showing the intended access rule.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order.to_dict\", \"start_line\": 55, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Confirms the export returns order details (status, total, shipping_address) for the target user.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "admin-reports.1",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 100,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 50,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 46,
+            "end_line": 58,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "reports/",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "All new `/admin/reports/NNN` endpoints are consistently decorated with `@require_role(\"admin\")`, matching policy \u00a74 (\"Every endpoint under `/admin` requires the admin role, enforced with `@require_role(\"admin\")`\"). They return only an aggregate count with no user-controlled identifiers, so no IDOR or missing/incorrect authorization is present.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "admin-reports.2",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 100,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 452,
+            "end_line": 464,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "reports/059|reports/060|reports/116",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "reports/059|reports/060|reports/116",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "admin-reports.3",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 100,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 855,
+            "end_line": 870,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 45,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "admin_bp|url_prefix",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 46,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "Based on my review, the new report endpoints (117\u2013150) are registered under the `admin_bp` blueprint (mounted at `/admin`), each is decorated with `@require_role(\"admin\")`, and they return only an aggregate `User.count()` \u2014 no per-user data, no user-controlled identifier. This matches the policy: \u00a74 requires the admin role via `@require_role(\"admin\")` for every `/admin` endpoint, and \u00a72 restricts listing all users to manager/admin. The `require_role` decorator correctly enforces authentication and the admin role rank. No authorization flaw is introduced by this section.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "user-export",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 75,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The new `export_user` endpoint (lines 56-70) is the only place in the file that does not call `is_owner_or_admin`, confirming the missing ownership check.\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The new GET /users/<id>/export endpoint (export_user) fetches a user profile and all of that user's orders using the user-controlled user_id, but only enforces authentication via @require_auth. It never calls is_owner_or_admin(g.current_user, user_id), so any authenticated user can read another user's profile (including email) and their orders (status, total, shipping_address). This directly violates security-policy.md \u00a72 ('A user may read or update ONLY their own profile... Use is_owner_or_admin(current_user, user_id) for this check') and \u00a73 ('A user may view ONLY their own orders... MUST verify ownership with is_owner_or_admin(current_user, order.user_id)'). The sibling endpoints get_user (line 32) and update_user (line 45) in the same file correctly apply is_owner_or_admin, confirming the intended access rule that export_user omits.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [56, 70], \"content\": \"@users_bp.route(\\\"/<int:user_id>/export\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef export_user(user_id: int):\\n    session = get_session()\\n    user = session.get(User, user_id)\\n    if user is None:\\n        return jsonify({\\\"error\\\": \\\"not found\\\"}), 404\\n    orders = session.query(Order).filter(Order.user_id == user_id).all()\\n    return jsonify({\\\"user\\\": user.to_dict(include_email=True), \\\"orders\\\": [o.to_dict() for o in orders]})\"},\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [28, 38], \"content\": \"@users_bp.route(\\\"/<int:user_id>\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef get_user(user_id: int):\\n    if not is_owner_or_admin(g.current_user, user_id):\\n        return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403\\n    session = get_session()\\n    user = session.get(User, user_id)\\n    if user is None:\\n        return jsonify({\\\"error\\\": \\\"not found\\\"}), 404\\n    return jsonify(user.to_dict(include_email=True))\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n    return wrapper\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [55, 62], \"content\": \"def to_dict(self) -> dict:\\n    return {\\n        \\\"id\\\": self.id,\\n        \\\"user_id\\\": self.user_id,\\n        \\\"status\\\": self.status,\\n        \\\"total\\\": self.total,\\n        \\\"shipping_address\\\": self.shipping_address,\\n    }\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\"}\n      ],\n      \"suggested_fix\": \"Add an ownership check at the top of export_user, mirroring get_user: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403` before fetching the user and orders.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 58\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "95ad2b40f7ddc6d45011c0b919514a599720ee7c",
+    "pr_sha": "72f29bd208a89bce3276a4b3055ca0356babaaa0",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/routes/users.py",
+      "old_range": null,
+      "new_range": [
+        56,
+        70
+      ]
+    }
+  ],
+  "diff_shape": "oversized_diff",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "manifest_only",
+    "investigator_tool_calls": 24,
+    "files_total": 2,
+    "files_in_scope": 2,
+    "hunks_total": 3,
+    "hunks_assigned": 3,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 3,
+    "sections_scheduled": 4,
+    "sections_completed": 4,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "admin-reports.1",
+        "origin": "investigator",
+        "title": "New admin report endpoints gated by @require_role(\"admin\")",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": true,
+        "partial_hunk": true,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 43,
+            "old_count": 3,
+            "new_start": 43,
+            "new_count": 409,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "admin-reports.2",
+        "origin": "investigator",
+        "title": "New admin report endpoints gated by @require_role(\"admin\")",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": true,
+        "partial_hunk": true,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 45,
+            "old_count": 0,
+            "new_start": 452,
+            "new_count": 406,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "admin-reports.3",
+        "origin": "investigator",
+        "title": "New admin report endpoints gated by @require_role(\"admin\")",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": true,
+        "partial_hunk": true,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 45,
+            "old_count": 0,
+            "new_start": 858,
+            "new_count": 237,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "user-export",
+        "origin": "investigator",
+        "title": "New /users/<id>/export endpoint exposing profile + orders",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 11,
+            "old_count": 7,
+            "new_start": 11,
+            "new_count": 7,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/users.py#1",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 53,
+            "new_count": 18,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:user-export:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "95ad2b40f7ddc6d45011c0b919514a599720ee7c",
+  "pr_sha": "72f29bd208a89bce3276a4b3055ca0356babaaa0",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "user-export"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

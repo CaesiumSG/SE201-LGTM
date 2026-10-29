@@ -1,0 +1,457 @@
+{
+  "id": "authz_07_vulnerable",
+  "category": "authz",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 98.31,
+  "est_tokens": 969,
+  "findings": [
+    {
+      "finding_id": "authz:update-user-authorization-removed:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the per-object ownership check from the PUT /users/<id> handler. In the base snapshot, update_user enforced `is_owner_or_admin(g.current_user, user_id)` (base lines 45-46) before mutating the profile. The PR deletes those two lines, leaving only `@require_auth` (pr line 42), which authenticates the caller but does not verify that the caller owns the target user_id. As a result, any authenticated user can now fetch and modify another user's profile (e.g., overwrite `user.email` at pr lines 46-51), a classic IDOR. This directly violates security-policy.md \u00a72 ('A user may read or update ONLY their own profile (/users/<id>)... Use is_owner_or_admin(current_user, user_id) for this check') and api-spec.md ('/users/<id> | PUT | owner or admin'). The sibling GET handler (pr lines 28-38) still enforces the check, confirming the intended pattern that update_user now lacks.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            41,
+            53
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>\", methods=[\"PUT\"])\n@require_auth\ndef update_user(user_id: int):\n    \"\"\"Update profile fields (email, shipping preferences). Owner or admin.\"\"\"\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    payload = request.get_json(silent=True) or {}\n    if \"email\" in payload:\n        user.email = payload[\"email\"]\n    session.commit()\n    return jsonify(user.to_dict(include_email=True))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            41,
+            46
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>\", methods=[\"PUT\"])\n@require_auth\ndef update_user(user_id: int):\n    \"\"\"Update profile fields (email, shipping preferences). Owner or admin.\"\"\"\n    if not is_owner_or_admin(g.current_user, user_id):\n        return jsonify({\"error\": \"forbidden\"}), 403",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/<id>` | PUT | owner or admin |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the removed ownership guard in update_user before fetching/mutating the user: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\"error\": \"forbidden\"}), 403`.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9184,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 44,
+      "tool_calls_used": 3,
+      "pr_graph_ok": true,
+      "input_tokens": 1141
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "user profile update authorization owner or admin"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user|/users/",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users_bp",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def update_user|update_user\\(",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "PUT /users|/users/<id>",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "PUT /users|/users/<id>",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "PUT /users|/users/<id>",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "PUT /users|/users/<id>",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_user",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"update-user-authorization-removed\",\n      \"title\": \"Removal of owner/admin authorization check from PUT /users/<id>\",\n      \"rationale\": \"The single hunk deletes the `is_owner_or_admin(g.current_user, user_id)` guard (and its 403 response) from the `update_user` handler, leaving only the `@require_auth` decorator. This is the sole access-control concern in the diff: it changes who is permitted to modify a user profile (email) from 'owner or admin' to 'any authenticated user'. The sibling `get_user` handler in the same file still retains the identical check, and the security policy and API spec both mandate owner-or-admin for this endpoint, so the removed lines are the authorization control under review.\",\n      \"hunks\": [\"app/routes/users.py#0\"],\n      \"context\": [\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"update_user\", \"start_line\": 41, \"end_line\": 55, \"snapshot\": \"base\", \"why\": \"Base version of the handler showing the is_owner_or_admin guard that the PR removes (lines 45-46).\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"update_user\", \"start_line\": 41, \"end_line\": 53, \"snapshot\": \"pr\", \"why\": \"PR version of the handler after the guard is removed; only @require_auth remains.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"pr\", \"why\": \"Sibling GET handler that still enforces is_owner_or_admin, demonstrating the intended per-object authorization pattern that update_user now lacks.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"Definition of the ownership/admin check that was removed from update_user; confirms it is the canonical per-object authorization helper.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"The only remaining decorator on update_user; it authenticates but does not enforce object-level ownership, so it does not substitute for the removed check.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 40, \"snapshot\": \"pr\", \"why\": \"The User model whose email field is mutated by update_user, confirming the endpoint writes sensitive profile data.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "update-user-authorization-removed",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 41,
+            "end_line": 55,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removes the per-object ownership check from the PUT /users/<id> handler. In the base snapshot, update_user enforced `is_owner_or_admin(g.current_user, user_id)` (base lines 45-46) before mutating the profile. The PR deletes those two lines, leaving only `@require_auth` (pr line 42), which authenticates the caller but does not verify that the caller owns the target user_id. As a result, any authenticated user can now fetch and modify another user's profile (e.g., overwrite `user.email` at pr lines 46-51), a classic IDOR. This directly violates security-policy.md \u00a72 ('A user may read or update ONLY their own profile (/users/<id>)... Use is_owner_or_admin(current_user, user_id) for this check') and api-spec.md ('/users/<id> | PUT | owner or admin'). The sibling GET handler (pr lines 28-38) still enforces the check, confirming the intended pattern that update_user now lacks.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [41, 53], \"content\": \"@users_bp.route(\\\"/<int:user_id>\\\", methods=[\\\"PUT\\\"])\\n@require_auth\\ndef update_user(user_id: int):\\n    \\\"\\\"\\\"Update profile fields (email, shipping preferences). Owner or admin.\\\"\\\"\\\"\\n    session = get_session()\\n    user = session.get(User, user_id)\\n    if user is None:\\n        return jsonify({\\\"error\\\": \\\"not found\\\"}), 404\\n    payload = request.get_json(silent=True) or {}\\n    if \\\"email\\\" in payload:\\n        user.email = payload[\\\"email\\\"]\\n    session.commit()\\n    return jsonify(user.to_dict(include_email=True))\"},\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [41, 46], \"content\": \"@users_bp.route(\\\"/<int:user_id>\\\", methods=[\\\"PUT\\\"])\\n@require_auth\\ndef update_user(user_id: int):\\n    \\\"\\\"\\\"Update profile fields (email, shipping preferences). Owner or admin.\\\"\\\"\\\"\\n    if not is_owner_or_admin(g.current_user, user_id):\\n        return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n\\n    return wrapper\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/users/<id>` | PUT | owner or admin |\"}\n      ],\n      \"suggested_fix\": \"Restore the removed ownership guard in update_user before fetching/mutating the user: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403`.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 44\n    }\n  ]\n}",
+      "limit_hit": null
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "b0ae9f00d55ee6b4ccc637a2e42ff5ec40c7d733",
+    "pr_sha": "8c2ef715034b61957a5056457329a32b75f36437",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/routes/users.py",
+      "old_range": [
+        45,
+        46
+      ],
+      "new_range": null
+    }
+  ],
+  "diff_shape": "deletion_only",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "update-user-authorization-removed",
+        "origin": "investigator",
+        "title": "Removal of owner/admin authorization check from PUT /users/<id>",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 42,
+            "old_count": 8,
+            "new_start": 42,
+            "new_count": 6,
+            "change": "delete"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:update-user-authorization-removed:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "b0ae9f00d55ee6b4ccc637a2e42ff5ec40c7d733",
+  "pr_sha": "8c2ef715034b61957a5056457329a32b75f36437",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "update-user-authorization-removed"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

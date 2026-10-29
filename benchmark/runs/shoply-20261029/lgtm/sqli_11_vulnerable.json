@@ -1,0 +1,492 @@
+{
+  "id": "sqli_11_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 133.53,
+  "est_tokens": 816,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+      "cwe_id": "CWE-89",
+      "explanation": "The new /admin/purge-user endpoint (app/routes/admin.py:46-59) reads `username` directly from the JSON request body (line 50-51: `payload = request.get_json(silent=True) or {}` / `username = payload.get(\"username\", \"\")`) and interpolates it into a raw SQL string via `%` formatting (lines 54-57: `\"...WHERE username = '%s')\" % username`) before passing it to `conn.exec_driver_sql()`. No bound parameters, placeholders, or whitelist validation are applied, so an attacker with the admin role can inject arbitrary SQL (e.g. `username = \"x') DELETE FROM users; --\"`). This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL (CWE-89). The `@require_role(\"admin\")` decorator limits who can trigger it but does not mitigate the injection. This is a genuine SQL injection vulnerability, not a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            59
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef purge_user_data():\n    \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )\n        conn.commit()\n    return jsonify({\"status\": \"purged\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Rewrite the query to use bound parameters instead of `%` string interpolation. For example: `from sqlalchemy import text; conn.execute(text(\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\"), {\"username\": username})`. Optionally also validate `username` against a strict allowlist (e.g. `^[A-Za-z0-9_.-]+$`) and confirm the referenced user exists before deleting, to add defense in depth.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9537,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/admin.py",
+      "line": 54,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 979
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 40,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters admin purge user"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 44,
+            "end_line": 52,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_engine",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 90,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new /admin/purge-user endpoint (app/routes/admin.py:46-59) reads `username` directly from the JSON request body (line 50-51: `payload = request.get_json(silent=True) or {}` / `username = payload.get(\\\"username\\\", \\\"\\\")`) and interpolates it into a raw SQL string via `%` formatting (lines 54-57: `\\\"...WHERE username = '%s')\\\" % username`) before passing it to `conn.exec_driver_sql()`. No bound parameters, placeholders, or whitelist validation are applied, so an attacker with the admin role can inject arbitrary SQL (e.g. `username = \\\"x') DELETE FROM users; --\\\"`). This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL (CWE-89). The `@require_role(\\\"admin\\\")` decorator limits who can trigger it but does not mitigate the injection. This is a genuine SQL injection vulnerability, not a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 59], \"content\": \"@admin_bp.route(\\\"/purge-user\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef purge_user_data():\\n    \\\"\\\"\\\"Purge a departed user's orders (data-erasure request).\\\"\\\"\\\"\\n    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\\n        conn.commit()\\n    return jsonify({\\\"status\\\": \\\"purged\\\"})\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Rewrite the query to use bound parameters instead of `%` string interpolation. For example: `from sqlalchemy import text; conn.execute(text(\\\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\\\"), {\\\"username\\\": username})`. Optionally also validate `username` against a strict allowlist (e.g. `^[A-Za-z0-9_.-]+$`) and confirm the referenced user exists before deleting, to add defense in depth.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator definition and how it checks roles"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "get_engine definition in app/models.py and Order model user_id relationship"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "admin purge user data deletion SQL injection authorization policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 96,
+            "end_line": 101,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 43,
+            "end_line": 53,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 34,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 69,
+            "end_line": 85,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 34,
+            "end_line": 43,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 87,
+            "end_line": 93,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 78,
+            "end_line": 84,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 65,
+            "end_line": 75,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 46,
+            "end_line": 59,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 18,
+            "end_line": 21,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 18,
+            "end_line": 29,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 32,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 18,
+            "end_line": 21,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 46,
+            "end_line": 59,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"purge-user-endpoint\",\n      \"title\": \"New admin /purge-user endpoint: role-gated destructive data-erasure with SQL injection\",\n      \"rationale\": \"Both hunks implement a single new admin endpoint. Hunk #0 adds the imports the endpoint depends on (flask `request` for reading the JSON body, and `get_engine` for the raw DB connection). Hunk #1 adds the `purge_user_data` route itself, which is decorated with `@require_role(\\\"admin\\\")` (satisfying security-policy.md \u00a74 admin-role requirement) but builds a DELETE statement by `%`-interpolating the request-derived `username` directly into SQL (violating security-policy.md \u00a75 / CWE-89). The endpoint also deletes only `orders` rows while leaving the user's `audit_log` and `api_keys` rows intact, and returns a fixed success response regardless of how many rows were affected. These two hunks are inseparable: the imports exist solely to support the new endpoint, and the endpoint's authorization, input handling, and SQL construction must be reviewed together.\",\n      \"hunks\": [\"app/routes/admin.py#0\", \"app/routes/admin.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to purge_user_data; enforces ROLE_RANK >= admin (401/403) before the handler runs\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"get_current_user\", \"start_line\": 34, \"end_line\": 43, \"snapshot\": \"base\", \"why\": \"Resolves the bearer token to a User; the authorization decision for the new endpoint depends on this\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"ROLE_RANK\", \"start_line\": 21, \"end_line\": 21, \"snapshot\": \"base\", \"why\": \"Role hierarchy (user<manager<admin) used by require_role to gate the endpoint\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_engine\", \"start_line\": 96, \"end_line\": 97, \"snapshot\": \"base\", \"why\": \"Returns the raw SQLAlchemy engine the new endpoint uses for exec_driver_sql; bypasses the ORM session used by other admin endpoints\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 53, \"snapshot\": \"base\", \"why\": \"Target table of the DELETE; user_id FK to users.id is what the injected subquery matches on\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 34, \"snapshot\": \"base\", \"why\": \"Source of the username column used in the injected subquery; also has orders/api_keys relationships the purge does not clean up\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"AuditLog\", \"start_line\": 78, \"end_line\": 84, \"snapshot\": \"base\", \"why\": \"Related user data (user_id FK) that the purge leaves behind, relevant to the data-erasure intent\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"ApiKey\", \"start_line\": 65, \"end_line\": 75, \"snapshot\": \"base\", \"why\": \"Related user data (user_id FK) that the purge leaves behind, relevant to the data-erasure intent\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"stats\", \"start_line\": 18, \"end_line\": 29, \"snapshot\": \"base\", \"why\": \"Existing admin endpoint using the ORM session pattern; contrast with the new endpoint's raw engine/exec_driver_sql approach\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"audit_log\", \"start_line\": 32, \"end_line\": 45, \"snapshot\": \"base\", \"why\": \"Existing admin endpoint; shows the established @require_role(\\\"admin\\\") + get_session() pattern the new endpoint deviates from\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "purge-user-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "purge",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The authorization model is correctly applied: the new `/admin/purge-user` endpoint is gated with `@require_role(\"admin\")` (app/routes/admin.py:47), which satisfies policy \u00a74 (\"Every endpoint under /admin requires the admin role, enforced with @require_role('admin')\") and \u00a73 (\"Only admins may delete or refund orders\"). The `require_role` decorator (app/auth.py:69-85) correctly enforces ROLE_RANK >= admin and returns 401/403, so there is no missing or incorrect authorization on the changed endpoint.\n\nThe SQL injection present in the new code (app/routes/admin.py:54-57, `% username` string interpolation) is a CWE-89 violation of policy \u00a75, but that is outside the authorization flaw classes (CWE-639/862/863) I am scoped to report.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "f059cbe098ffaefe9af11cb649ee4536d752c544",
+    "pr_sha": "28856fda04ecb3d852f2b831abfbbf537c54a820",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/admin.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "purge-user-endpoint",
+        "origin": "investigator",
+        "title": "New admin /purge-user endpoint: role-gated destructive data-erasure with SQL injection",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 7,
+            "old_count": 10,
+            "new_start": 7,
+            "new_count": 10,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/admin.py#1",
+            "file": "app/routes/admin.py",
+            "old_start": 43,
+            "old_count": 3,
+            "new_start": 43,
+            "new_count": 17,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.06,
+  "base_sha": "f059cbe098ffaefe9af11cb649ee4536d752c544",
+  "pr_sha": "28856fda04ecb3d852f2b831abfbbf537c54a820",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "purge-user-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

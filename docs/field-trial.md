@@ -10,7 +10,7 @@ maintainers reviewed and merged.
   12 merged PRs from three open-source Python web apps.
 - **Harness:** [`benchmark/field_trial/run_field_trial.py`](../benchmark/field_trial/run_field_trial.py);
   per-PR JSON and a `summary.json` per mode in
-  [`benchmark/runs/field_trial/`](../benchmark/runs/field_trial/) and, for the
+  [`benchmark/runs/archive/field_trial/`](../benchmark/runs/archive/field_trial/) and, for the
   earlier archived run (23 Oct),
   [`benchmark/runs/archive/field_trial/`](../benchmark/runs/archive/field_trial/).
 - **Conditions:** LGTM (the full pipeline, including Semgrep) and LLM-only.
@@ -81,7 +81,7 @@ PR get reviewed at all. On these 12 PRs, in the archived 23 Oct run
 ## Results
 
 Setup: reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev (Kev-4B),
-conditions LGTM and LLM-only. Results: `benchmark/runs/field_trial/summary.json`.
+conditions LGTM and LLM-only. Results: `benchmark/runs/archive/field_trial/summary.json`.
 
 ## Archived 23 Oct run
 
@@ -218,5 +218,5 @@ python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8783
 ```
 
 Results go to `benchmark/results/field_trial/<mode>/` (git-ignored); the
-runs reported here are copied to `benchmark/runs/field_trial/`.
+runs reported here are copied to `benchmark/runs/archive/field_trial/`.
 

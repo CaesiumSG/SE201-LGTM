@@ -1,0 +1,554 @@
+{
+  "id": "sqli_04_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 126.32,
+  "est_tokens": 1752,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-format:app/routes/admin.py:54",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line builds a SQL DELETE statement by %-formatting a request-derived value directly into the query string. At app/routes/admin.py:50, `user_id = request.args.get(\"user_id\", \"\")` reads attacker-controllable input from the query string, and at line 54 it is interpolated into the SQL via `\"DELETE FROM audit_log WHERE user_id = %s\" % user_id`. This is classic string-interpolation SQL injection: the `%s` placeholder is consumed by Python's %-formatting (not by the DB driver), so the value is concatenated into the SQL text rather than bound as a parameter. No whitelist validation is applied to `user_id` before use. Although the endpoint is gated by `@require_role(\"admin\")` (line 47), the security policy explicitly forbids this pattern regardless of authorization. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL (CWE-89).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            58
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/maintenance\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef run_maintenance():\n    \"\"\"Purge audit-log entries for a user (maintenance procedure).\"\"\"\n    user_id = request.args.get(\"user_id\", \"\")\n    conn = get_engine().raw_connection()\n    try:\n        cursor = conn.cursor()\n        cursor.execute(\"DELETE FROM audit_log WHERE user_id = %s\" % user_id)\n        conn.commit()\n    finally:\n        conn.close()\n    return jsonify({\"status\": \"maintenance complete\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Use a parameterized query with a separate params argument instead of %-formatting. For example: `cursor.execute(\"DELETE FROM audit_log WHERE user_id = %s\", (user_id,))`. Alternatively, use SQLAlchemy's `text()` with a `:user_id` bound parameter. Additionally, validate `user_id` against an expected format (e.g., integer) before use, and note that `get_engine().raw_connection()` is not a standard SQLAlchemy Engine method \u2014 verify the intended API for obtaining a DB-API connection.",
+      "semgrep_rule_id": "lgtm-python-sqli-format",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with str.format() or %-formatting. Use parameterized queries instead.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9593,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/admin.py",
+      "line": 54,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 958
+    },
+    {
+      "finding_id": "authz:admin-maintenance-endpoint:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new /admin/maintenance endpoint is gated only by @require_role(\"admin\"), which satisfies the role requirement in security-policy.md \u00a74. However, the endpoint performs a destructive DELETE on the audit_log table filtered by a user-controlled user_id taken from the query string (request.args.get(\"user_id\", \"\")). The policy's user-data access rules (\u00a72) and the established safe pattern (audit_log endpoint at lines 32-45) treat per-user data as requiring ownership/admin scoping via is_owner_or_admin. Here the admin can delete audit records for ANY user_id, and because user_id is a free-form string with no validation, an empty or malformed value (e.g. empty string, or a value that matches multiple rows) can cause unintended bulk deletion of audit records. This is an incorrect/insufficient authorization check on the object being deleted: the operation is not scoped to a verified, valid target user, and the destructive action is not constrained beyond the admin role. The policy requires that protected operations verify the specific object/owner, not merely the caller's role.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            58
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/maintenance\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef run_maintenance():\n    user_id = request.args.get(\"user_id\", \"\")\n    conn = get_engine().raw_connection()\n    try:\n        cursor = conn.cursor()\n        cursor.execute(\"DELETE FROM audit_log WHERE user_id = %s\" % user_id)\n        conn.commit()\n    finally:\n        conn.close()\n    return jsonify({\"status\": \"maintenance complete\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            107,
+            109
+          ],
+          "source": null,
+          "content": "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n    return user.id == owner_id or user.role == \"admin\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 4. Admin panel\n- Every endpoint under `/admin` requires the **admin** role, enforced with `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug headers, no secret query parameters, no IP allowlists.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 2. User data access rules\n- A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate that user_id is a positive integer and that it corresponds to an existing user before performing the DELETE; scope the destructive operation to a verified target (e.g. confirm the user exists via the ORM and use a parameterized query). Reject empty or non-numeric user_id values with a 400 response rather than executing a broad DELETE.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8355,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/admin.py",
+      "line": 50,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1049
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-format:app/routes/admin.py:54",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_engine|def raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 90,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-format:app/routes/admin.py:54\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged line builds a SQL DELETE statement by %-formatting a request-derived value directly into the query string. At app/routes/admin.py:50, `user_id = request.args.get(\\\"user_id\\\", \\\"\\\")` reads attacker-controllable input from the query string, and at line 54 it is interpolated into the SQL via `\\\"DELETE FROM audit_log WHERE user_id = %s\\\" % user_id`. This is classic string-interpolation SQL injection: the `%s` placeholder is consumed by Python's %-formatting (not by the DB driver), so the value is concatenated into the SQL text rather than bound as a parameter. No whitelist validation is applied to `user_id` before use. Although the endpoint is gated by `@require_role(\\\"admin\\\")` (line 47), the security policy explicitly forbids this pattern regardless of authorization. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL (CWE-89).\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 58], \"content\": \"@admin_bp.route(\\\"/maintenance\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef run_maintenance():\\n    \\\"\\\"\\\"Purge audit-log entries for a user (maintenance procedure).\\\"\\\"\\\"\\n    user_id = request.args.get(\\\"user_id\\\", \\\"\\\")\\n    conn = get_engine().raw_connection()\\n    try:\\n        cursor = conn.cursor()\\n        cursor.execute(\\\"DELETE FROM audit_log WHERE user_id = %s\\\" % user_id)\\n        conn.commit()\\n    finally:\\n        conn.close()\\n    return jsonify({\\\"status\\\": \\\"maintenance complete\\\"})\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 5. Database access (SQL)\\n\\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a parameterized query with a separate params argument instead of %-formatting. For example: `cursor.execute(\\\"DELETE FROM audit_log WHERE user_id = %s\\\", (user_id,))`. Alternatively, use SQLAlchemy's `text()` with a `:user_id` bound parameter. Additionally, validate `user_id` against an expected format (e.g., integer) before use, and note that `get_engine().raw_connection()` is not a standard SQLAlchemy Engine method \u2014 verify the intended API for obtaining a DB-API connection.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and get_engine raw_connection in app.auth and app.models"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 100,
+            "end_line": 160,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "audit log deletion maintenance endpoint authorization policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_engine|raw_connection",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 85,
+            "end_line": 101,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"admin-maintenance-endpoint\",\n      \"title\": \"New /admin/maintenance endpoint that purges audit-log rows by user_id\",\n      \"rationale\": \"Hunk #1 adds the run_maintenance route and hunk #0 adds the imports it depends on (request, get_engine). Together they introduce a new admin endpoint that deletes audit_log rows using a request-derived user_id. The authorization concern is that the endpoint is gated only by @require_role(\\\"admin\\\") (app/auth.py:69-85) and then performs a destructive DELETE built via string interpolation of request.args.get(\\\"user_id\\\") (app/routes/admin.py:50-54), which violates security-policy.md \u00a75 (bound parameters required, string interpolation forbidden, CWE-89) and bypasses the ORM/session layer used by the rest of the admin routes. Both hunks are inseparable: the new function cannot run without the new imports, and the authorization/SQL-injection review must cover the endpoint and its supporting imports as one unit.\",\n      \"hunks\": [\"app/routes/admin.py#0\", \"app/routes/admin.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"The decorator applied to run_maintenance; defines the only authorization gate (admin role) for the new endpoint.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_engine\", \"start_line\": 96, \"end_line\": 97, \"snapshot\": \"base\", \"why\": \"Returns the SQLAlchemy engine whose .raw_connection() the new endpoint calls; no raw_connection method is defined in the repo, so the call relies on an external/undefined API.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_session\", \"start_line\": 100, \"end_line\": 101, \"snapshot\": \"base\", \"why\": \"The session-based access pattern used by the existing admin endpoints (stats, audit_log) that the new endpoint bypasses in favor of a raw connection.\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"audit_log\", \"start_line\": 32, \"end_line\": 45, \"snapshot\": \"base\", \"why\": \"Existing admin endpoint that reads the same AuditLog table via the ORM, showing the established safe access pattern the new DELETE deviates from.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "admin-maintenance-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "audit_log|AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new /admin/maintenance endpoint is gated only by @require_role(\\\"admin\\\"), which satisfies the role requirement in security-policy.md \u00a74. However, the endpoint performs a destructive DELETE on the audit_log table filtered by a user-controlled user_id taken from the query string (request.args.get(\\\"user_id\\\", \\\"\\\")). The policy's user-data access rules (\u00a72) and the established safe pattern (audit_log endpoint at lines 32-45) treat per-user data as requiring ownership/admin scoping via is_owner_or_admin. Here the admin can delete audit records for ANY user_id, and because user_id is a free-form string with no validation, an empty or malformed value (e.g. empty string, or a value that matches multiple rows) can cause unintended bulk deletion of audit records. This is an incorrect/insufficient authorization check on the object being deleted: the operation is not scoped to a verified, valid target user, and the destructive action is not constrained beyond the admin role. The policy requires that protected operations verify the specific object/owner, not merely the caller's role.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 58], \"content\": \"@admin_bp.route(\\\"/maintenance\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef run_maintenance():\\n    user_id = request.args.get(\\\"user_id\\\", \\\"\\\")\\n    conn = get_engine().raw_connection()\\n    try:\\n        cursor = conn.cursor()\\n        cursor.execute(\\\"DELETE FROM audit_log WHERE user_id = %s\\\" % user_id)\\n        conn.commit()\\n    finally:\\n        conn.close()\\n    return jsonify({\\\"status\\\": \\\"maintenance complete\\\"})\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [107, 109], \"content\": \"def is_owner_or_admin(user: User, owner_id: int) -> bool:\\n    \\\"\\\"\\\"Ownership check used for per-object access (orders, profiles).\\\"\\\"\\\"\\n    return user.id == owner_id or user.role == \\\"admin\\\"\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 4. Admin panel\\n- Every endpoint under `/admin` requires the **admin** role, enforced with `@require_role(\\\"admin\\\")`.\\n- There are NO alternative access paths to admin functionality: no debug headers, no secret query parameters, no IP allowlists.\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 2. User data access rules\\n- A user may read or update ONLY their own profile (`/users/<id>`). Administrators may read or update any profile. Use `is_owner_or_admin(current_user, user_id)` for this check.\"}\n      ],\n      \"suggested_fix\": \"Validate that user_id is a positive integer and that it corresponds to an existing user before performing the DELETE; scope the destructive operation to a verified target (e.g. confirm the user exists via the ORM and use a parameterized query). Reject empty or non-numeric user_id values with a 400 response rather than executing a broad DELETE.\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 50\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "1956bef5ae9597525594b17ef5f0372b39a50c23",
+    "pr_sha": "3bac1a6c097439731ab094d82d0f5c50c68e27a9",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/admin.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "admin-maintenance-endpoint",
+        "origin": "investigator",
+        "title": "New /admin/maintenance endpoint that purges audit-log rows by user_id",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 7,
+            "old_count": 10,
+            "new_start": 7,
+            "new_count": 10,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/admin.py#1",
+            "file": "app/routes/admin.py",
+            "old_start": 43,
+            "old_count": 3,
+            "new_start": 43,
+            "new_count": 16,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:admin-maintenance-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.05,
+  "base_sha": "1956bef5ae9597525594b17ef5f0372b39a50c23",
+  "pr_sha": "3bac1a6c097439731ab094d82d0f5c50c68e27a9",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "admin-maintenance-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:admin-maintenance-endpoint:1"
+  ]
+}
