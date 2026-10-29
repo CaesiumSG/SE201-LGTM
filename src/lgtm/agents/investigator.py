@@ -7,7 +7,14 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from lgtm.agents import prompt_parts, registry
-from lgtm.agents.base import RunRecord, fill_record, run_tool_loop
+from lgtm.agents.base import (
+    FinalAnswerSpec,
+    RunRecord,
+    extract_json_object,
+    fill_record,
+    final_answer_spec,
+    run_tool_loop,
+)
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
@@ -36,6 +43,15 @@ class InvestigatorResult:
     input_mode: InputMode
     tool_calls: int
     run_record: RunRecord = field(default_factory=lambda: RunRecord("investigator"))
+
+
+def is_sections_object(text: str) -> bool:
+    """True when the answer is one object whose top-level ``sections`` is a list."""
+    start = text.find("{")
+    if start == -1 or "[" in text[:start]:
+        return False
+    data = extract_json_object(text[start:])
+    return isinstance(data, dict) and isinstance(data.get("sections"), list)
 
 
 def run_investigator(
@@ -81,9 +97,16 @@ def run_investigator(
         investigator_config = replace(
             config, max_agent_iterations=config.investigator_max_iterations
         )
-        raw = fill_record(
-            record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
+        final = FinalAnswerSpec(
+            is_valid=is_sections_object,
+            reask="investigator.reask",
+            forced_final="investigator.forced_final",
+            options={"num_predict": config.investigator_final_output_tokens},
         )
+        with final_answer_spec(final):
+            raw = fill_record(
+                record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
+            )
         proposed = parse_investigator_output(raw)
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)

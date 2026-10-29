@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -440,8 +441,11 @@ def is_json_object(text: str) -> bool:
     return isinstance(extract_json_object(text), dict)
 
 
-def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
-    allowance = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+def invoke_with_retry(llm, messages, config: LGTMConfig, output_tokens: int | None = None) -> Any:
+    """``output_tokens`` is the output limit ``llm`` was built with, for the context allowance."""
+    if output_tokens is None:
+        output_tokens = config.llm_max_output_tokens
+    allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
     if _message_chars(messages) > allowance:
         raise ValueError("Model request exceeds the configured context allowance")
     attempts = max(0, config.llm_retries) + 1
@@ -487,6 +491,35 @@ def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None
     return registry.render("shared.invalid_tool_input", name=name, details=details)
 
 
+@dataclass(frozen=True)
+class FinalAnswerSpec:
+    """How a tool loop asks for, checks and re-asks its final answer; the defaults are the shared behaviour."""
+
+    is_valid: Callable[[str], bool] = is_json_object
+    reask: str = "shared.reask"
+    forced_final: str = "shared.forced_final"
+    options: dict = field(default_factory=dict)
+
+
+# Carries the spec to run_tool_loop without widening its signature.
+_final_answer: ContextVar[FinalAnswerSpec | None] = ContextVar("final_answer", default=None)
+
+
+@contextmanager
+def final_answer_spec(spec: FinalAnswerSpec):
+    token = _final_answer.set(spec)
+    try:
+        yield
+    finally:
+        _final_answer.reset(token)
+
+
+def _with_options(llm, options: dict):
+    # ChatOllama rejects per-call num_predict; it reads the field at call time, so a copy applies it.
+    copy = getattr(llm, "model_copy", None)
+    return copy(update=options) if options and copy else llm
+
+
 def request_valid_answer(
     llm,
     messages: list,
@@ -494,6 +527,8 @@ def request_valid_answer(
     config: LGTMConfig,
     is_valid: Callable[[str], bool],
     on_turn: Callable[[str], Any] | None = None,
+    reask: str = "shared.reask",
+    options: dict | None = None,
 ) -> str:
     from langchain_core.messages import HumanMessage
 
@@ -502,8 +537,8 @@ def request_valid_answer(
     while not is_valid(content) and reasks < cap:
         reasks += 1
         logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
-        messages.append(HumanMessage(content=registry.entry("shared.reask")))
-        response = invoke_with_retry(llm, messages, config)
+        messages.append(HumanMessage(content=registry.entry(reask)))
+        response = invoke_with_retry(llm, messages, config, (options or {}).get("num_predict"))
         messages.append(response)
         content = message_text(response)
         if on_turn is not None:
@@ -583,9 +618,11 @@ def run_tool_loop(
     """
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+    final = _final_answer.get() or FinalAnswerSpec()
     tool_map = {t.name: t for t in tools}
     toolbox = _toolbox_of(tool_map.values())
     llm_with_tools = llm.bind_tools(tools)
+    final_llm = _with_options(llm, final.options)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     tools_used = 0
     pushed_back = False
@@ -594,7 +631,10 @@ def run_tool_loop(
     context_full = False
     cap = config.max_invalid_tool_inputs
     window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
-    final_chars = len(registry.entry("shared.forced_final"))
+    final_chars = len(registry.entry(final.forced_final))
+    final_window_chars = (
+        config.llm_context_tokens - final.options.get("num_predict", config.llm_max_output_tokens)
+    ) * CHARS_PER_TOKEN
     open_record = _open_record.get()
     # Consumed by this run; a later run without a new RunRecord must not append to it.
     _open_record.set(None)
@@ -631,7 +671,9 @@ def run_tool_loop(
                         )
                     )
                     continue
-                answer = request_valid_answer(llm, messages, content, config, is_json_object, log_turn)
+                answer = request_valid_answer(
+                    final_llm, messages, content, config, final.is_valid, log_turn, final.reask, final.options
+                )
                 return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
@@ -693,14 +735,16 @@ def run_tool_loop(
         logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
-    messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
-    if _message_chars(messages) > window_chars:
+    messages.append(HumanMessage(content=registry.entry(final.forced_final)))
+    if _message_chars(messages) > final_window_chars:
         raise ValueError("Forced-final request exceeds the configured context allowance")
-    response = invoke_with_retry(llm, messages, config)
+    response = invoke_with_retry(final_llm, messages, config, final.options.get("num_predict"))
     messages.append(response)
     forced = message_text(response)
     log_turn(forced)
-    answer = request_valid_answer(llm, messages, forced, config, is_json_object, log_turn)
+    answer = request_valid_answer(
+        final_llm, messages, forced, config, final.is_valid, log_turn, final.reask, final.options
+    )
     return _close_run(
         toolbox,
         answer,

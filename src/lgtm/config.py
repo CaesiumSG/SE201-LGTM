@@ -50,6 +50,7 @@ class LGTMConfig:
     read_file_max_lines: int = 600
     investigator_diff_chars: int = 30000
     investigator_max_sections: int = 12
+    investigator_final_output_tokens: int = 8192  # num_predict for the forced-final and re-ask turns
     section_max_chars: int = 12000
     max_sections: int = 24
     # How the authorization review decides what to look at:
@@ -105,6 +106,7 @@ class LGTMConfig:
             "read_file_max_lines",
             "investigator_diff_chars",
             "investigator_max_sections",
+            "investigator_final_output_tokens",
             "section_max_chars",
             "max_sections",
             "graph_init_timeout_s",

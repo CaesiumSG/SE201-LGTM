@@ -1712,3 +1712,62 @@ class TestRunRecordHoldsTheTurns:
         assert "BEFORE_THE_FAILURE" in text
         assert _escaped(result) in text
         assert agent.errors
+
+
+class _OptionsLLM:
+    """Records the keyword options every model call carries and every model copy requested."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.seen: list[list] = []
+        self.kwargs: list[dict] = []
+        self.copies: list[dict] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def model_copy(self, update=None, **kwargs):
+        self.copies.append(dict(update or {}))
+        return self
+
+    def invoke(self, messages, **kwargs):
+        self.seen.append(list(messages))
+        self.kwargs.append(kwargs)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return _ai_message(reply) if isinstance(reply, str) else reply
+
+
+class TestDefaultAnswerPathUnchanged:
+    CUT_AFTER_NESTED = '{"findings": [{"id": "a"}, {"id": "b", "tit'
+
+    def test_extraction_still_returns_the_first_nested_object_of_a_cut_reply(self):
+        assert extract_json_object(self.CUT_AFTER_NESTED) == {"id": "a"}
+
+    def test_cut_reply_with_a_complete_nested_object_is_accepted_without_reask(self):
+        llm = _OptionsLLM(self.CUT_AFTER_NESTED)
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == self.CUT_AFTER_NESTED
+        assert len(llm.seen) == 1
+
+    def test_reask_uses_the_shared_instruction_and_no_model_options(self):
+        from lgtm.agents import registry
+
+        llm = _OptionsLLM("not json", OK)
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert llm.seen[1][-1].content == registry.entry("shared.reask")
+        assert llm.kwargs == [{}, {}]
+        assert llm.copies == []
+
+    def test_forced_final_uses_the_shared_instruction_and_no_model_options(self, git_repo):
+        from lgtm.agents import registry
+
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _OptionsLLM(_call("read_file", {"path": "app.py"}), OK)
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(max_agent_iterations=1)
+        )
+        assert out == OK
+        assert llm.seen[1][-1].content == registry.entry("shared.forced_final")
+        assert llm.kwargs == [{}, {}]
+        assert llm.copies == []
