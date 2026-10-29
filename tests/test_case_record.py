@@ -9,9 +9,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import PrivateAttr
 
 import lgtm.validation.judge as judge_module
-from lgtm.agents.base import AgentFinding, EvidenceItem, RunRecord, fill_record, run_tool_loop
+from lgtm.agents.base import (
+    AgentFinding,
+    EvidenceItem,
+    RunRecord,
+    answer_until_resolved,
+    fill_record,
+    is_json_object,
+    request_valid_answer,
+    run_tool_loop,
+)
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.reporting.report_builder import ReviewMetadata
@@ -98,6 +108,18 @@ def _kev_finding() -> AgentFinding:
 class _UnserialisableFinding(AgentFinding):
     def model_dump(self, *args, **kwargs):
         raise TypeError("not serialisable")
+
+
+class _FlakyFinding(AgentFinding):
+    """Serialises on every call but the first, so the post-review step fails and the error path still can."""
+
+    _dumps: int = PrivateAttr(default=0)
+
+    def model_dump(self, *args, **kwargs):
+        self._dumps += 1
+        if self._dumps == 1:
+            raise TypeError("not serialisable")
+        return super().model_dump(*args, **kwargs)
 
 
 class _Pipeline:
@@ -213,17 +235,49 @@ class TestTraceInLgtmResults:
     ):
         record, _ = _real_record(git_repo)
 
-        bad = _UnserialisableFinding(finding_id="bad:1", category="authz", explanation="x", file="app.py", line=1)
-        row = runner(monkeypatch, tmp_path, "lgtm", _review([bad], [record]))
+        partial = _FlakyFinding(
+            finding_id="part:1", category="authz", explanation="x", file="app.py", line=1
+        )
+        row = runner(monkeypatch, tmp_path, "lgtm", _review([partial], [record]))
 
         assert row["outcome"] == "ERROR"
         assert row["error"]
         json.dumps(row)
         assert {"id", "category", "expected", "mode", "findings", "n_findings", "verdicts", "pin"} <= set(row)
         assert row["mode"] == "lgtm"
+        assert row["findings"] == []
+        assert [f["finding_id"] for f in row["trace"]["findings"]] == ["part:1"]
         assert [r["section"] for r in row["run_records"]] == ["authz:s1"]
         assert row["run_records"][0]["tool_calls"][0]["tool"] == "read_file"
-        assert TURN_TEXT in json.dumps(row["trace"])
+        assert TURN_TEXT in json.dumps(row["trace"]["runs"])
+
+    def test_an_error_row_with_an_unjudged_partial_finding_counts_as_an_error_and_not_in_kev_metrics(
+        self, runner, monkeypatch, tmp_path
+    ):
+        partial = _FlakyFinding(
+            finding_id="part:1", category="authz", explanation="x", file="app.py", line=1
+        )
+        error_row = runner(monkeypatch, tmp_path, "lgtm", _review([partial], []))
+        assert error_row["outcome"] == "ERROR" and error_row["trace"]["findings"]
+        ok_row = runner(monkeypatch, tmp_path, "lgtm", _review([_kev_finding()], []))
+        error_row["id"] = "err"
+        ok_row["id"] = "ok"
+
+        summary = evaluate.summarize([error_row, ok_row])
+        assert summary["errors"] == 1
+        assert [c["id"] for c in summary["error_cases"]] == ["err"]
+        assert summary["kev"]["judged"] == 1
+        assert summary["kev"]["not_judged"] == {}
+
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        for r in (error_row, ok_row):
+            (out / f"{r['id']}.json").write_text(json.dumps(r), encoding="utf-8")
+        written = er.write_dir_summary(out, "lgtm", {"err", "ok"}, "m")["summary"]
+        assert written["errors"] == 1
+        assert [c["id"] for c in written["error_cases"]] == ["err"]
+        assert written["kev"]["judged"] == 1
+        assert written["kev"]["not_judged"] == {}
 
 
 class TestRunRecordIsolation:
@@ -237,6 +291,77 @@ class TestRunRecordIsolation:
         run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
 
         assert earlier.turns == turns_before
+
+
+class _ScriptLLM(_LLM):
+    def invoke(self, messages):
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def _texts(record):
+    return [t["assistant"] for t in record.turns]
+
+
+class TestEveryModelTurnIsRecorded:
+    def test_a_reask_attempt_that_raises_keeps_its_turns_after_the_earlier_attempt(self, git_repo):
+        config = LGTMConfig(llm_retries=0)
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        llm = _ScriptLLM(
+            _ai('{"n": "ATTEMPT_ONE"}'),
+            _ai("ATTEMPT_TWO", [{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}]),
+            RuntimeError("model down"),
+        )
+        record = RunRecord(section="authz:s1")
+
+        with pytest.raises(RuntimeError, match="model down"):
+            answer_until_resolved(
+                lambda note="": fill_record(
+                    record, toolbox, run_tool_loop(llm, toolbox.build_tools(), "sys", "user", config)
+                ),
+                lambda raw: None,
+                toolbox,
+            )
+
+        assert _texts(record) == ['{"n": "ATTEMPT_ONE"}', "ATTEMPT_TWO"]
+        assert record.turns[1]["tool_calls"][0]["tool"] == "read_file"
+
+    def test_an_invalid_json_reply_and_the_valid_reply_after_it_are_both_recorded_in_order(self, git_repo):
+        config = LGTMConfig()
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        record = RunRecord(section="authz:s1")
+        llm = _LLM(_ai("NOT_JSON_REPLY"), _ai('{"verdict": "safe"}'))
+
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", config)
+        fill_record(record, toolbox, out)
+
+        assert _texts(record) == ["NOT_JSON_REPLY", '{"verdict": "safe"}']
+
+    def test_request_valid_answer_reports_each_reask_reply_to_on_turn(self):
+        seen = []
+        llm = _LLM(_ai("STILL_NOT_JSON"), _ai('{"ok": 1}'))
+
+        out = request_valid_answer(llm, [], "NOT_JSON", LGTMConfig(), is_json_object, seen.append)
+
+        assert out == '{"ok": 1}'
+        assert seen == ["STILL_NOT_JSON", '{"ok": 1}']
+
+    def test_a_run_that_spends_its_tool_budget_records_the_forced_final_turn(self, git_repo):
+        config = LGTMConfig(max_tool_calls=1)
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        record = RunRecord(section="authz:s1")
+        llm = _LLM(
+            _ai("CALL_TURN", [{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}]),
+            _ai('{"verdict": "FORCED_FINAL"}'),
+        )
+
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", config)
+        fill_record(record, toolbox, out)
+
+        assert record.limit_hit == "tool_calls"
+        assert _texts(record) == ["CALL_TURN", '{"verdict": "FORCED_FINAL"}']
 
 
 class TestUnjudgedFindingInTrace:

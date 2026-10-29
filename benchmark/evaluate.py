@@ -190,7 +190,7 @@ def partial_fields(mode: str, review=None) -> dict:
         "run_records": lambda: run_record_fields(review),
         "trace": lambda: trace_fields(mode, review).get("trace"),
     }
-    fields = {}
+    built = {}
     for key, build in parts.items():
         try:
             value = build()
@@ -198,7 +198,11 @@ def partial_fields(mode: str, review=None) -> dict:
             logger.exception("Could not serialise partial %s", key)
             continue
         if value is not None:
-            fields[key] = value
+            built[key] = value
+    fields = {k: v for k, v in built.items() if k != "findings"}
+    if "findings" in built:
+        # Error rows keep ``findings`` empty; scoring and Kev metrics read that key.
+        fields["trace"] = {**fields.get("trace", {}), "findings": built["findings"]}
     return fields
 
 

@@ -551,7 +551,7 @@ def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
     """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
     record.raw_answer = answer
     record.tool_calls = list(toolbox.call_log)
-    record.turns = list(getattr(toolbox, "turns", record.turns))
+    record.turns = getattr(toolbox, "turns", record.turns)
     over_budget = getattr(toolbox, "budget_spent", False) or len(toolbox.call_log) > toolbox.budget
     if toolbox.steps_exhausted:
         record.limit_hit = "steps"
