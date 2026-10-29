@@ -9,6 +9,7 @@ output, reference.json the last complete run, flips.json the report.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -18,6 +19,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 GPU_MODEL = "qwen3.8-27b"
+
+
+def _load_evaluate():
+    spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", HERE / "evaluate.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,16 +46,15 @@ def main(argv: list[str] | None = None) -> int:
     subprocess.run(
         [sys.executable, str(REPO_ROOT / "benchmark" / "evaluate.py"), "--mode", "lgtm",
          "--split", "eval", "--gpu-model", GPU_MODEL, "--output", str(run_dir)],
-        check=False, cwd=REPO_ROOT)
+        check=False, cwd=REPO_ROOT, capture_output=True)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True,
                             capture_output=True, check=False).stdout.strip()
 
+    evaluate = _load_evaluate()
     correct: dict[str, bool] = {}
     for cid in eval_cases:
-        try:
-            value = json.loads((run_dir / f"{cid}.json").read_text(encoding="utf-8")).get("correct")
-        except (OSError, ValueError):
-            continue
+        path = run_dir / f"{cid}.json"
+        value = (evaluate.load_result(path) or {}).get("correct") if evaluate.is_done(path) else None
         if isinstance(value, bool):
             correct[cid] = value
     unscored = [cid for cid in eval_cases if cid not in correct]
@@ -57,12 +65,13 @@ def main(argv: list[str] | None = None) -> int:
     flips = [{"id": cid, "category": eval_cases[cid], "direction": "correct_to_wrong"}
              for cid in eval_cases if reference and reference.get(cid) is True and correct.get(cid) is False]
 
-    report = {"commit": commit, "reference": reference is None, "flips": flips, "unscored": unscored}
+    first_reference = reference is None and not unscored
+    report = {"commit": commit, "reference": first_reference, "flips": flips, "unscored": unscored}
     (guard_dir / "flips.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     if not unscored:
         reference_path.write_text(json.dumps({"commit": commit, "correct": correct}), encoding="utf-8")
 
-    print(f"Guard {'reference run' if reference is None else 'run'} on {commit}: "
+    print(f"Guard {'reference run' if first_reference else 'run'} on {commit}: "
           f"{len(flips)} flipped, {len(unscored)} unscored.")
     return 0
 

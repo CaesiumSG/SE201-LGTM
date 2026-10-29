@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -32,6 +33,8 @@ CASE_ID, CATEGORY_KEY, DIRECTION = "id", "category", "direction"
 CORRECT_TO_WRONG = "correct_to_wrong"
 
 LEAK = "SENTINEL-claim-/srv/secret/path.py"
+EVAL_LABEL = "SENTINEL-case-label"
+EVAL_ERROR = "SENTINEL-scan-error"
 
 
 def _result(cid: str, behavior: str) -> dict:
@@ -91,7 +94,24 @@ class Env:
         (out / "summary.json").write_text(json.dumps(
             {"mode": "lgtm", "git_commit": self.commit, "outcomes": outcomes,
              "split": "eval", "cases_expected": len(EVAL_IDS)}), encoding="utf-8")
+        self._console(kw, outcomes)
         return subprocess.CompletedProcess(args, self.rc, stdout="", stderr="")
+
+    @staticmethod
+    def _console(kw, outcomes):
+        """Per-case lines evaluate.py prints; they reach the parent's file
+        descriptors only when the caller leaves the stream inherited."""
+        capture = kw.get("capture_output")
+        out_inherited = not capture and kw.get("stdout") is None
+        err_inherited = not capture and kw.get("stderr") is None
+        if kw.get("stderr") == subprocess.STDOUT:
+            err_inherited = out_inherited
+        for cid, outcome in outcomes.items():
+            line = f"{cid} {outcome} {EVAL_LABEL} (expected vulnerable, predicted safe, 1.2s)\n"
+            if out_inherited:
+                os.write(1, line.encode())
+            if err_inherited:
+                os.write(2, f"ERROR: {EVAL_ERROR} {cid}\n".encode())
 
     @staticmethod
     def _opts(args):
@@ -216,6 +236,15 @@ class TestFlipReport:
             assert secret not in res.out + res.err
         assert not any(c in text for c in EVAL_IDS[1:])
 
+    # AC-US3-2, CON-5: the evaluator's per-case console output is not forwarded
+    def test_evaluator_per_case_console_output_does_not_reach_the_guards_output(self, env, capfd):
+        env.run(capfd)
+        res = env.run(capfd, **{EVAL_IDS[0]: "wrong", EVAL_IDS[1]: "error"})
+        assert env.calls
+        for text in (res.out, res.err):
+            for leaked in (EVAL_LABEL, EVAL_ERROR, "expected vulnerable", "predicted", *EVAL_IDS):
+                assert leaked not in text
+
     # AC-US3-3
     def test_wrong_to_correct_and_unchanged_cases_are_not_flips(self, env, capsys):
         env.run(capsys, **{cid: "wrong" for cid in EVAL_IDS[:3]})
@@ -300,6 +329,16 @@ class TestFirstRunAndReference:
         report = env.report()
         assert report[REFERENCE] is True
         assert report[FLIPS] == []
+
+    # AC-US3-4, AC-US3-6: "reference" is reported only when a reference is stored
+    def test_incomplete_run_with_no_stored_reference_is_not_reported_as_the_reference(self, env, capsys):
+        for _ in range(2):
+            res = env.run(capsys, **{EVAL_IDS[0]: "error"})
+            assert env.report()[REFERENCE] is not True
+            assert "reference run" not in res.out
+            assert env.report()[FLIPS] == []
+        env.run(capsys)
+        assert env.report()[REFERENCE] is True
 
     # DEC-18
     def test_run_after_an_incomplete_run_starts_fresh_over_the_whole_split(self, env, capsys):
