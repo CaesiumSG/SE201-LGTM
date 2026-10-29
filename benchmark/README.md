@@ -74,6 +74,10 @@ python benchmark/evaluate.py --mode lgtm --no-graph                # without Cod
 python benchmark/evaluate.py --mode lgtm --authz-planner endpoint  # checkpoint gating (rounds 1-7)
 ```
 
+The CLI modes `sast-only` and `lgtm-no-sast` are for internal development and
+benchmarking only. Reported results compare `lgtm` (which includes Kev
+judging) against `llm-only`.
+
 The `lgtm` mode uses CodeGraph when the binary is found
 and `--no-graph` is not given ([Configuration](../README.md#configuration)).
 `--authz-planner endpoint` reviews only hunks with a route decorator, as the

@@ -87,7 +87,9 @@ construction without network access.
 ## Evaluating
 
 The benchmark runs two conditions: LGTM (the full pipeline, including
-Semgrep) and LLM-only.
+Semgrep) and LLM-only. The CLI modes `sast-only` and `lgtm-no-sast` are for
+internal development and benchmarking only; reported results compare `lgtm`
+(which includes Kev judging) against `llm-only`.
 
 ```bash
 python benchmark/real_world/fetch.py                # clone + build case branches
@@ -115,7 +117,8 @@ and cannot be combined with `--model`. Results go to
 every miss are explained in [`docs/real-world-eval.md`](../../docs/real-world-eval.md).
 
 `policies/<project>.md` are short access-control policies written only from
-each project's public documentation.
+each project's public documentation. They and `fetch.py --policies` are
+internal-only; `evaluate_real.py` does not use them.
 
 The lgtm records carry `kev_verdict` and `kev_severity` per finding, and each
 `summary.json` carries the `kev` metrics described in [`benchmark/README.md`](../README.md).

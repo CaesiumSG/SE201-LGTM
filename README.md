@@ -104,6 +104,10 @@ lgtm review ... --no-detect-prompt-injection  # don't report reviewer-directed
                                               #   text in the diff as a finding
 ```
 
+`sast-only` and `lgtm-no-sast` are for internal development and benchmarking
+only. Reported results compare `lgtm` (which includes Kev judging) against
+`llm-only`.
+
 Outputs `lgtm-output/report.json` (machine-readable findings) and
 `lgtm-output/report.md` (human-readable review). Both list supported,
 unsupported and not judged candidates, supported first.

@@ -37,6 +37,9 @@ Current runs: reviewer `qwen3.8:27b`, judge Kev (Kev-4B), command
 `python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes lgtm llm-only`.
 The findings are labelled by Claude Opus 5.5 under
 [`kev-labeling-criteria.md`](kev-labeling-criteria.md).
+The CLI modes `sast-only` and `lgtm-no-sast` are for internal development and
+benchmarking only; reported results compare `lgtm` (which includes Kev
+judging) against `llm-only`.
 
 The table below describes the archived 15 Oct run.
 
@@ -267,7 +270,8 @@ separate argument"), which is the behaviour the synthetic benchmark claimed.
 
 `policies/{aegra,langflow,litellm}.md` were written only from each
 project's public documentation, covering the whole API access model, and
-committed (`ddbe127`) before any model ran on these projects.
+committed (`ddbe127`) before any model ran on these projects. The policy
+files and `fetch.py --policies` are internal-only; the runner does not use them.
 
 - For **aegra and litellm** the policy had no effect, because no agent runs.
   That is a property of the detector, not of the policy.
