@@ -7,8 +7,10 @@ that failures are fine if they are documented. This page is that
 evaluation: 6 published vulnerabilities in open-source Python web projects,
 12 cases, the LGTM and LLM-only conditions, and what went wrong.
 
-**It is a held-out test.** No prompt, rule or config was tuned on these
-cases, and every experiment flag is off.
+**This is the development set.** The 12 real-world cases are what prompts,
+rules and config are tuned against; the held-out check is the synthetic eval
+split (`--split eval`). The archived runs below were made before any tuning on
+these cases, with every experiment flag off.
 
 > The Headline and Results sections describe the runs in
 > `benchmark/runs/archive/real_world/`: reviewer `qwen3.8:27b` on the SCIS GPU

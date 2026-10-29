@@ -1,10 +1,12 @@
 # Real-world CVE benchmark
 
 Shoply, our synthetic app, is the only thing LGTM has been evaluated on so
-far. This directory holds a small **held-out** benchmark built from published
+far. This directory holds a small benchmark built from published
 vulnerabilities in open-source Python web projects, so we can see what
-happens off our own toy app. Failures are expected and are documented, not
-tuned away: no prompt, rule or config is changed to fix a case here.
+happens off our own toy app. The real-world set is the development set:
+prompts, rules and config are tuned against it. The synthetic eval split
+(`python benchmark/evaluate.py --split eval`) is the held-out check.
+Failures are documented.
 
 ## Cases
 
@@ -115,6 +117,29 @@ and cannot be combined with `--model`. Results go to
 `benchmark/results/real_world/` (git-ignored); curated runs are in
 [`benchmark/runs/real_world/`](../runs/real_world/), and the results and
 every miss are explained in [`docs/real-world-eval.md`](../../docs/real-world-eval.md).
+
+### Batches and the guard run
+
+```bash
+python benchmark/real_world/batch.py <results-root>
+python benchmark/guard.py <results-root>
+```
+
+`batch.py` runs the next unrun batch only, `lgtm` over its cases, into
+`<results-root>/batch-<n>/` (n = 1 to 4). The `llm-only` control of every case
+is written once under `<results-root>/control/`. A finished batch writes
+`<results-root>/batch-<n>/bundle.json`: the batch number, the commit it ran on,
+per-case correctness of `lgtm` and of the control against the labels, batch
+totals, and the paths of the per-case `lgtm` result files. Running the same
+command again resumes with the next unrun batch; when none remains it says so
+and exits 0.
+
+`guard.py` runs the synthetic eval split in `lgtm` mode and writes
+`<results-root>/guard/flips.json`: the commit it ran on and, for each case
+that went from correct to wrong against the previous complete guard run, the
+case id and category. Cases that errored in either run are reported as
+unscored. The first run is the reference and reports no flips. It exits 0
+whatever the flips.
 
 `policies/<project>.md` are short access-control policies written only from
 each project's public documentation. They and `fetch.py --policies` are

@@ -78,6 +78,10 @@ The CLI modes `sast-only` and `lgtm-no-sast` are for internal development and
 benchmarking only. Reported results compare `lgtm` (which includes Kev
 judging) against `llm-only`.
 
+`python benchmark/guard.py <results-root>` runs the eval split in `lgtm` mode
+and reports the cases that went from correct to wrong against the previous
+complete guard run; see [`real_world/README.md`](real_world/README.md).
+
 The `lgtm` mode uses CodeGraph when the binary is found
 and `--no-graph` is not given ([Configuration](../README.md#configuration)).
 `--authz-planner endpoint` reviews only hunks with a route decorator, as the
