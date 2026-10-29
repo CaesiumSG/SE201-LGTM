@@ -9,6 +9,7 @@ under <results root>/control/.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -21,6 +22,12 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from lgtm.config import LGTMConfig  # noqa: E402
 
+_spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", REPO_ROOT / "benchmark" / "evaluate.py")
+evaluate = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = evaluate
+_spec.loader.exec_module(evaluate)
+is_done, load_result = evaluate.is_done, evaluate.load_result
+
 BATCH_SIZE = 6
 BATCHES = 4
 
@@ -29,24 +36,8 @@ def _evaluate(*args: str) -> None:
     subprocess.run([sys.executable, str(HERE / "evaluate_real.py"), *args], check=False)
 
 
-def _load(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def _finished(path: Path) -> bool:
-    data = _load(path)
-    return data is not None and not data.get("error") and all(
-        f.get("kev_verdict") for f in data.get("findings", []) if f.get("judged"))
-
-
 def _cite(path: Path) -> str:
-    try:
-        return path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        return path.as_posix()
+    return path.relative_to(REPO_ROOT).as_posix()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     _evaluate("--modes", "lgtm", "--output", str(out), "--cases", *batch_ids, "--resume")
 
     lgtm_dir = out / "lgtm"
-    unfinished = [i for i in batch_ids if not _finished(lgtm_dir / f"{i}.json")]
+    unfinished = [i for i in batch_ids if not is_done(lgtm_dir / f"{i}.json")]
     if unfinished:
         print(f"Batch {n} unfinished, no bundle written: {', '.join(unfinished)}", file=sys.stderr)
         return 1
@@ -91,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     for i in batch_ids:
         rows.append({
             "id": i,
-            "lgtm_correct": (_load(lgtm_dir / f"{i}.json") or {}).get("correct"),
-            "control_correct": (_load(control / f"{i}.json") or {}).get("correct"),
+            "lgtm_correct": (load_result(lgtm_dir / f"{i}.json") or {}).get("correct"),
+            "control_correct": (load_result(control / f"{i}.json") or {}).get("correct"),
             "lgtm_result": _cite(lgtm_dir / f"{i}.json"),
         })
     bundle = {

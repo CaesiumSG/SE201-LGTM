@@ -19,6 +19,10 @@ import pytest
 from lgtm.config import LGTMConfig
 
 RW = Path(__file__).resolve().parent.parent / "benchmark" / "real_world"
+_spec = importlib.util.spec_from_file_location("rw_test_evaluate", RW.parent / "evaluate.py")
+evaluate = importlib.util.module_from_spec(_spec)
+sys.modules["rw_test_evaluate"] = evaluate
+_spec.loader.exec_module(evaluate)
 CASE_IDS = [c["id"] for c in json.loads((RW / "cases.json").read_text(encoding="utf-8"))["cases"]]
 FIRST, SECOND = CASE_IDS[:6], CASE_IDS[6:]
 
@@ -44,16 +48,10 @@ def _result(cid: str, mode: str, behavior: str = "ok") -> dict:
         row.update(predicted="error", outcome="ERROR", correct=None, error="boom", findings=[])
     if behavior == "unjudged":
         row["findings"] = [{"judged": True, "kev_verdict": None}]
+    if behavior == "uncited":
+        row["findings"] = [{"judged": True, "kev_verdict": None,
+                            "unsupported_reason": "no_cited_source"}]
     return row
-
-
-def _is_done(path: Path) -> bool:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return not data.get("error") and all(
-        f.get("kev_verdict") for f in data.get("findings", []) if f.get("judged"))
 
 
 class Env:
@@ -91,7 +89,7 @@ class Env:
         out, mode = Path(opt["--output"][0]), opt["--modes"][0]
         for cid in opt.get("--cases", CASE_IDS):
             path = out / mode / f"{cid}.json"
-            if "--resume" in args and _is_done(path):
+            if "--resume" in args and evaluate.is_done(path):
                 continue
             self.ran.append((mode, cid))
             behavior = self.behavior.get(cid, "ok") if mode == "lgtm" else "ok"
@@ -122,6 +120,7 @@ class Env:
     def reset(self):
         self.calls.clear()
         self.ran.clear()
+        self.endpoints.clear()
 
     def ran_ids(self, mode):
         return [cid for m, cid in self.ran if m == mode]
@@ -218,7 +217,9 @@ class TestResume:
             self, env, capsys, behavior):
         victim = FIRST[2]
         env.behavior[victim] = behavior
-        assert env.run(capsys).last != str(env.root / "batch-1" / "bundle.json")
+        res = env.run(capsys)
+        assert res.rc != 0
+        assert victim in res.out + res.err
         assert env.bundles() == []
         env.behavior.clear()
         env.reset()
@@ -227,6 +228,12 @@ class TestResume:
         assert env.ran_ids("lgtm") == [victim]
         assert env.bundle(1)["batch"] == 1
         assert not (env.root / "batch-2").exists()
+
+    def test_finding_without_cited_evidence_counts_as_finished(self, env, capsys):
+        env.behavior[FIRST[2]] = "uncited"
+        res = env.run(capsys)
+        assert res.rc == 0
+        assert len(env.bundles()) == 1
 
     def test_session_stopping_early_leaves_batch_unfinished(self, env, capsys):
         for cid in FIRST[3:]:
@@ -266,6 +273,7 @@ class TestEndpointPreflight:
         res = env.run(capsys)
         assert res.rc != 0
         assert env.calls == []
+        assert env.endpoints == [LGTMConfig().ollama_base_url]
         assert LGTMConfig().ollama_base_url in res.out + res.err
         assert env.bundles() == []
 
@@ -275,6 +283,7 @@ class TestEndpointPreflight:
         env.reachable = True
         env.reset()
         assert env.run(capsys).rc == 0
+        assert env.endpoints[-1] == LGTMConfig().ollama_base_url
         assert sorted(env.ran_ids("lgtm")) == sorted(FIRST)
         assert (env.root / "batch-1" / "bundle.json").is_file()
 
@@ -348,6 +357,7 @@ class TestNoBatchRemaining:
         res = env.run(capsys)
         assert res.rc == 0
         assert env.calls == []
+        assert env.endpoints == []
         assert res.out.strip()
         assert not (env.root / "batch-5").exists()
         assert len(env.bundles()) == 4
