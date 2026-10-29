@@ -8,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
+from lgtm.agents import registry
 from lgtm.agents.base import (
     CHARS_PER_TOKEN,
     FinalAnswerSpec,
@@ -266,4 +267,37 @@ def test_default_caller_reask_that_does_not_fit_still_raises_the_context_error()
 
     with pytest.raises(ValueError, match="Model request exceeds the configured context allowance"):
         run()
+    assert llm.replies == [ANSWER]
+
+
+def _fitted_reask_run(reply_chars):
+    spec = FinalAnswerSpec(options={"num_predict": OUTPUT_TOKENS})
+    with final_answer_spec(spec):
+        llm, _, run = _context_full_run(["x" * reply_chars, ANSWER])
+        out = run()
+    return llm, out
+
+
+def test_fitted_reask_drops_the_oldest_history_first_and_keeps_system_user_failed_answer_and_reask():
+    allowance = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    probe, _ = _fitted_reask_run(0)
+    reask_text = registry.entry("shared.reask")
+    reply_chars = allowance + 1 - _chars(probe.requests[-2]) - len(reask_text)
+
+    llm, out = _fitted_reask_run(reply_chars)
+
+    forced, fitted = llm.requests[-2], llm.requests[-1]
+    texts = lambda ms: [str(m.content) for m in ms]
+    assert out == ANSWER
+    assert _chars(fitted) <= allowance
+    assert texts(fitted[:2]) == ["SYSTEM-PROMPT", "USER-PROMPT"]
+    assert texts(fitted[2:-2]) == texts(forced[4:])
+    assert texts(fitted[-2:]) == ["x" * reply_chars, reask_text]
+
+
+def test_fitted_reask_never_drops_the_failed_answer_to_make_room():
+    allowance = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    llm, out = _fitted_reask_run(allowance)
+
+    assert out == "x" * allowance
     assert llm.replies == [ANSWER]

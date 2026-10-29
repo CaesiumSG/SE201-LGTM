@@ -546,15 +546,16 @@ def request_valid_answer(
 
     reasks = 0
     cap = max(0, config.max_answer_reasks)
+    output_tokens = (options or {}).get("num_predict")
     while not is_valid(content) and reasks < cap:
         reasks += 1
         logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
         messages.append(HumanMessage(content=registry.entry(reask)))
-        if "num_predict" in (options or {}) and not _fit_reask(messages, config, options["num_predict"]):
+        if output_tokens is not None and not _fit_reask(messages, config, output_tokens):
             logger.warning("Re-ask does not fit the context allowance; keeping the invalid answer")
             messages.pop()
             break
-        response = invoke_with_retry(llm, messages, config, (options or {}).get("num_predict"))
+        response = invoke_with_retry(llm, messages, config, output_tokens)
         messages.append(response)
         content = message_text(response)
         if on_turn is not None:

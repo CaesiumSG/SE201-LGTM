@@ -292,6 +292,13 @@ def test_reask_after_a_context_full_stop_is_fitted_sent_and_recorded(config, too
     assert len(result.run_record.tool_calls) == rounds
     assert [len(t["tool_calls"]) for t in result.run_record.turns] == [1] * rounds + [0, 0]
     assert llm.options[-1].get("num_predict") == config.investigator_final_output_tokens
+    fitted, forced = llm.seen[-1], llm.seen[-2]
+    assert fitted[:2] == llm.seen[0][:2]
+    assert str(fitted[-2].content) == big_cut
+    assert str(fitted[-1].content) == registry.entry("investigator.reask")
+    dropped = len(forced) - (len(fitted) - 2)
+    assert dropped > 0
+    assert [str(m.content) for m in fitted[2:-2]] == [str(m.content) for m in forced[2 + dropped :]]
 
 
 def test_reask_that_cannot_be_fitted_is_invalid_like_an_exhausted_cap_and_not_retried(config, toolbox, tmp_path):
@@ -301,8 +308,6 @@ def test_reask_that_cannot_be_fitted_is_invalid_like_an_exhausted_cap_and_not_re
 
     result = run(config, toolbox, llm)
 
-    rounds = len(llm.seen) - 1
-    assert len(llm.seen) == rounds + 1
     assert result.status == "failed"
     assert result.proposed is None
     assert result.error == capped.error
