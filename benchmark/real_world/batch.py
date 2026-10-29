@@ -37,7 +37,14 @@ def _evaluate(*args: str) -> None:
 
 
 def _cite(path: Path) -> str:
-    return path.relative_to(REPO_ROOT).as_posix()
+    if path.is_relative_to(REPO_ROOT):
+        return path.relative_to(REPO_ROOT).as_posix()
+    return path.as_posix()
+
+
+def _control_ok(path: Path) -> bool:
+    data = load_result(path)
+    return data is not None and not evaluate.result_is_error(data)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1:
         print("usage: batch.py <results root>", file=sys.stderr)
         return 2
-    root = Path(args[0])
+    root = Path(args[0]).resolve()
 
     n = next((i for i in range(1, BATCHES + 1) if not (root / f"batch-{i}" / "bundle.json").is_file()), None)
     if n is None:
@@ -66,13 +73,14 @@ def main(argv: list[str] | None = None) -> int:
     out = root / f"batch-{n}"
     control = root / "control" / "llm-only"
 
-    lacking = [i for i in batch_ids if not (control / f"{i}.json").is_file()]
+    lacking = [i for i in batch_ids if not _control_ok(control / f"{i}.json")]
     if lacking:
         _evaluate("--modes", "llm-only", "--output", str(root / "control"), "--cases", *lacking)
     _evaluate("--modes", "lgtm", "--output", str(out), "--cases", *batch_ids, "--resume")
 
     lgtm_dir = out / "lgtm"
-    unfinished = [i for i in batch_ids if not is_done(lgtm_dir / f"{i}.json")]
+    unfinished = [i for i in batch_ids
+                  if not is_done(lgtm_dir / f"{i}.json") or not _control_ok(control / f"{i}.json")]
     if unfinished:
         print(f"Batch {n} unfinished, no bundle written: {', '.join(unfinished)}", file=sys.stderr)
         return 1

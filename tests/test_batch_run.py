@@ -63,6 +63,8 @@ class Env:
         self.commit = "c0ffee1"
         self.reachable = True
         self.behavior: dict[str, str] = {}
+        self.control_behavior: dict[str, str] = {}
+        self.control_rc = 0
         self.calls: list[list[str]] = []
         self.ran: list[tuple[str, str]] = []
         self.endpoints: list[str] = []
@@ -92,12 +94,13 @@ class Env:
             if "--resume" in args and evaluate.is_done(path):
                 continue
             self.ran.append((mode, cid))
-            behavior = self.behavior.get(cid, "ok") if mode == "lgtm" else "ok"
+            behavior = (self.behavior if mode == "lgtm" else self.control_behavior).get(cid, "ok")
             if behavior == "missing":
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(_result(cid, mode, behavior)), encoding="utf-8")
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        rc = self.control_rc if mode == "llm-only" else 0
+        return subprocess.CompletedProcess(args, rc, stdout="", stderr="")
 
     @staticmethod
     def _opts(args):
@@ -136,10 +139,10 @@ class Env:
         self.monkeypatch.setattr(batch, "REPO_ROOT", self.repo, raising=False)
         return batch
 
-    def run(self, capsys):
+    def run(self, capsys, root=None):
         batch = self.load()
         capsys.readouterr()
-        rc = batch.main([str(self.root)])
+        rc = batch.main([str(self.root) if root is None else root])
         out = capsys.readouterr()
         return SimpleNamespace(rc=rc, out=out.out, err=out.err,
                                last=(out.out.strip().splitlines() or [""])[-1])
@@ -424,3 +427,105 @@ class TestResultsRoot:
         env.reset()
         env.run(capsys)
         assert sorted(env.ran_ids("lgtm")) == sorted(SECOND)
+
+
+class TestResultsRootLocation:
+    # CT-batch-run-1, AC-US2-7
+    def test_relative_root_inside_repository_writes_bundle_with_repository_relative_paths(
+            self, env, capsys, monkeypatch):
+        monkeypatch.chdir(env.repo)
+        res = env.run(capsys, root="results")
+        assert res.rc == 0
+        cited = [c[LGTM_PATH] for c in env.bundle(1)[CASES]]
+        assert sorted(Path(r).stem for r in cited) == sorted(FIRST)
+        for rel in cited:
+            assert not Path(rel).is_absolute()
+            assert (env.repo / rel).is_file()
+
+    def test_relative_root_outside_repository_writes_bundle_with_absolute_paths(
+            self, env, capsys, monkeypatch, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        res = env.run(capsys, root="results")
+        assert res.rc == 0
+        bundle = json.loads((elsewhere / "results" / "batch-1" / "bundle.json").read_text(encoding="utf-8"))
+        for c in bundle[CASES]:
+            assert Path(c[LGTM_PATH]).is_absolute()
+            assert Path(c[LGTM_PATH]).resolve() == (elsewhere / "results" / "batch-1" / "lgtm" / f"{c[ID]}.json").resolve()
+
+    def test_absolute_root_outside_repository_writes_bundle_with_absolute_paths(
+            self, env, capsys, tmp_path):
+        outside = tmp_path / "outside" / "results"
+        res = env.run(capsys, root=str(outside))
+        assert res.rc == 0
+        bundle = json.loads((outside / "batch-1" / "bundle.json").read_text(encoding="utf-8"))
+        assert sorted(c[ID] for c in bundle[CASES]) == sorted(FIRST)
+        for c in bundle[CASES]:
+            assert Path(c[LGTM_PATH]).is_absolute()
+            assert json.loads(Path(c[LGTM_PATH]).read_text(encoding="utf-8"))["mode"] == "lgtm"
+        assert Path(res.last).resolve() == (outside / "batch-1" / "bundle.json").resolve()
+
+
+class TestControlValidity:
+    # AC-US2-13, final-02
+    def _store(self, env, cid, behavior="ok"):
+        path = env.root / "control" / "llm-only" / f"{cid}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_result(cid, "llm-only", behavior)), encoding="utf-8")
+        return path
+
+    def test_errored_stored_control_is_rerun_into_the_control_directory_and_reported(self, env, capsys):
+        bad, good = FIRST[1], FIRST[2]
+        self._store(env, bad, "error")
+        for cid in FIRST:
+            if cid != bad:
+                self._store(env, cid)
+        kept = env.root / "control" / "llm-only" / f"{good}.json"
+        before = kept.read_bytes()
+        assert env.run(capsys).rc == 0
+        assert env.ran_ids("llm-only") == [bad]
+        for call in env.control_calls():
+            opt = env._opts(call)
+            assert opt["--modes"] == ["llm-only"]
+            assert Path(opt["--output"][0]) == env.root / "control"
+        assert kept.read_bytes() == before
+        row = {c[ID]: c for c in env.bundle(1)[CASES]}[bad]
+        assert row[CONTROL_OK] is _control_correct(bad)
+
+    def test_missing_control_is_run_and_reported_in_the_first_bundle(self, env, capsys):
+        env.run(capsys)
+        row = {c[ID]: c for c in env.bundle(1)[CASES]}
+        assert all(row[c][CONTROL_OK] is not None for c in FIRST)
+
+    @pytest.mark.parametrize("behavior", ["error", "missing"])
+    def test_control_still_invalid_after_its_run_leaves_batch_unfinished_until_it_is_fixed(
+            self, env, capsys, behavior):
+        victim = FIRST[0]
+        env.control_behavior[victim] = behavior
+        res = env.run(capsys)
+        assert res.rc != 0
+        assert victim in res.out + res.err
+        assert env.bundles() == []
+        assert victim in env.ran_ids("llm-only")
+        env.control_behavior.clear()
+        env.reset()
+        res = env.run(capsys)
+        assert res.rc == 0
+        assert env.ran_ids("llm-only") == [victim]
+        assert env.ran_ids("lgtm") == []
+        assert {c[ID]: c for c in env.bundle(1)[CASES]}[victim][CONTROL_OK] is _control_correct(victim)
+
+    def test_failing_control_run_writes_no_bundle(self, env, capsys):
+        env.control_rc = 1
+        for cid in FIRST:
+            env.control_behavior[cid] = "missing"
+        res = env.run(capsys)
+        assert res.rc != 0
+        assert env.bundles() == []
+
+    def test_valid_stored_control_is_never_rerun(self, env, capsys):
+        for cid in FIRST:
+            self._store(env, cid)
+        assert env.run(capsys).rc == 0
+        assert env.control_calls() == []
