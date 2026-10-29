@@ -213,7 +213,7 @@ question, has its own script and its own metric:
 | Benchmark | Question | Cases | Script | Metric | Write-up |
 |---|---|---|---|---|---|
 | **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 52 (dev 26 / eval 26) | `benchmark/evaluate.py` | Precision / recall / F1 | `docs/evaluation-log.md` |
-| **Real-world CVEs** | Does that hold on code real developers shipped? | 12 (held out) | `benchmark/real_world/evaluate_real.py` | Precision / recall / F1 | [`docs/real-world-eval.md`](docs/real-world-eval.md) |
+| **Real-world CVEs** | Does that hold on code real developers shipped? | 12 (development set) | `benchmark/real_world/evaluate_real.py` | Precision / recall / F1 | [`docs/real-world-eval.md`](docs/real-world-eval.md) |
 | **Prompt injection** | Can text in a PR trick LGTM into missing a vulnerability? | 6 attacks on Shoply cases | `benchmark/injection/run_injection_bench.py` | Attack success rate | [`docs/prompt-injection.md`](docs/prompt-injection.md) |
 
 The Shoply files (`app/`, `cases/`, `labels.json`, the policy docs and
@@ -224,7 +224,8 @@ means the 26 held-out *Shoply* cases.
 **Why the results aren't combined into one score:** the benchmarks measure
 different things (accuracy vs. resistance to attack) with different metrics,
 and they differ in how independent they are: Shoply's dev split was used to
-tune the prompts, the eval split and the real-world cases never were. One
+tune the prompts, and the real-world cases are tuned on too; both are
+development sets, while the eval split is held out. One
 pooled F1 would mix tuned and untuned data and hide the drop on real code.
 Read them side by side; the [summary at the end of this
 section](#all-results-at-a-glance) does that.
@@ -270,15 +271,24 @@ Results: the run writes its summary to the Shoply run folder under
 
 ### 2. Real-world CVEs
 
-12 held-out cases built from 6 published advisories in open-source Python
-projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). Nothing was
-tuned on them. `alerta_sqli_vulnerable`, `alerta_sqli_safe` and
+12 cases built from 6 published advisories in open-source Python
+projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). The real-world
+set is the development set: prompts, rules and config are tuned against it.
+The synthetic eval split (`--split eval`) is the held-out check.
+`alerta_sqli_vulnerable`, `alerta_sqli_safe` and
 `postgraas_sqli_safe` are out of scope.
 
 ```bash
 python benchmark/real_world/fetch.py                     # clone + build case branches
 python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes lgtm llm-only
+python benchmark/real_world/batch.py <results-root>      # next unrun batch of the real-world set
+python benchmark/guard.py <results-root>                 # eval split in lgtm mode, flips against the last guard run
 ```
+
+Each `batch.py` run writes `batch-<n>/bundle.json` under the results root when
+the batch finishes; running the same command again continues with the next
+unrun batch. `guard.py` writes `guard/flips.json` under the results root. See
+[`benchmark/real_world/README.md`](benchmark/real_world/README.md).
 
 Results: `benchmark/runs/archive/real_world/summary.json`; write-up in
 [`docs/real-world-eval.md`](docs/real-world-eval.md).
@@ -330,15 +340,15 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
 - ✅ 6 SQLi pairs derived from the OWASP Benchmark taxonomy (Java →
   Python/Flask translation), keeping positives and negatives balanced.
 - ✅ 6 published CVEs in real Python web projects (3 SQLi, 3 authz) as 12
-  held-out cases; see
+  development-set cases; see
   [`docs/real-world-eval.md`](docs/real-world-eval.md).
 - ✅ 6 prompt-injection cases (comments, docstrings, fake JSON findings,
   renamed identifiers, a policy-exemption doc, delimiter escapes); see
   [`docs/prompt-injection.md`](docs/prompt-injection.md).
 - Next: more OWASP patterns (stacked queries, second-order injection) and
   more CVE-linked cases, including real vulnerable PRs rather than reverts.
-- Keep the dev/eval separation strict: all prompt and config tuning on the
-  dev split only.
+- Keep the eval split held out: prompt and config tuning uses the dev split
+  and the real-world set only.
 
 ## Project layout
 
