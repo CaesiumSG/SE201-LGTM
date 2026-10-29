@@ -146,6 +146,7 @@ class AgentToolbox:
         self.steps_exhausted = False
         self.budget_spent = False
         self.call_log: list[dict] = []
+        self.turns: list[dict] = []
         self._legacy_base_sha: str | None = None
         self._missing_binary_warned = False
         self._latch_warned: set[str] = set()
@@ -165,6 +166,7 @@ class AgentToolbox:
         self.steps_exhausted = False
         self.budget_spent = False
         self.call_log = []
+        self.turns = []
 
     def charge(self, tool_name: str, args: dict) -> bool:
         """Spend one slot for an attempted call. Returns False once the budget is spent.

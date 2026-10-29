@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -87,6 +88,7 @@ class AgentFinding(BaseModel):
     provenance_confidence: float | None = None
     kev_verdict: str | None = None
     kev_severity: str | None = None
+    kev_reasoning: str = Field(default="", exclude=True)
     judged: bool = False
     not_judged_reason: str = ""
     unsupported_reason: str = ""
@@ -492,6 +494,7 @@ def request_valid_answer(
     content: str,
     config: LGTMConfig,
     is_valid: Callable[[str], bool],
+    on_turn: Callable[[str], Any] | None = None,
 ) -> str:
     from langchain_core.messages import HumanMessage
 
@@ -504,6 +507,8 @@ def request_valid_answer(
         response = invoke_with_retry(llm, messages, config)
         messages.append(response)
         content = message_text(response)
+        if on_turn is not None:
+            on_turn(content)
     return content
 
 
@@ -517,12 +522,23 @@ def _toolbox_of(tools) -> Any:
 
 @dataclass
 class RunRecord:
-    """What one agent run did: tool calls, final answer text, and the budget it hit."""
+    """What one agent run did: tool calls, final answer text, the budget it hit, and the turns.
+
+    A turn is ``{"assistant": text, "tool_calls": [{"tool", "args", "result"}]}``, in the order made.
+    """
 
     section: str
     tool_calls: list[dict] = field(default_factory=list)
     raw_answer: str = ""
     limit_hit: Literal["tool_calls", "steps"] | None = None
+    turns: list[dict] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # The tool loop writes turns here as they happen, so a run that raises keeps them.
+        _open_record.set(self)
+
+
+_open_record: ContextVar[RunRecord | None] = ContextVar("open_run_record", default=None)
 
 
 def _close_run(toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False) -> str:
@@ -536,6 +552,7 @@ def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
     """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
     record.raw_answer = answer
     record.tool_calls = list(toolbox.call_log)
+    record.turns = list(getattr(toolbox, "turns", record.turns))
     over_budget = getattr(toolbox, "budget_spent", False) or len(toolbox.call_log) > toolbox.budget
     if toolbox.steps_exhausted:
         record.limit_hit = "steps"
@@ -579,6 +596,14 @@ def run_tool_loop(
     cap = config.max_invalid_tool_inputs
     window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
     final_chars = len(registry.entry("shared.forced_final"))
+    open_record = _open_record.get()
+    sinks = [s for s in (getattr(toolbox, "turns", None), open_record and open_record.turns) if s is not None]
+
+    def log_turn(text: str) -> dict:
+        turn = {"assistant": text, "tool_calls": []}
+        for sink in sinks:
+            sink.append(turn)
+        return turn
 
     for iteration in range(config.max_agent_iterations):
         round_start = _message_chars(messages)
@@ -588,6 +613,7 @@ def run_tool_loop(
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
         content = message_text(response)
+        turn = log_turn(content)
         text_calls = False
         if not tool_calls:
             tool_calls = parse_text_tool_calls(content, set(tool_map), include_unknown=True)
@@ -604,7 +630,7 @@ def run_tool_loop(
                         )
                     )
                     continue
-                answer = request_valid_answer(llm, messages, content, config, is_json_object)
+                answer = request_valid_answer(llm, messages, content, config, is_json_object, log_turn)
                 return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
@@ -627,6 +653,7 @@ def run_tool_loop(
                 except Exception as exc:  # noqa: BLE001 - surface to the model
                     logger.warning("Tool %s raised: %s", name, exc)
                     result = registry.render("shared.tool_failed", error=exc)
+            turn["tool_calls"].append({"tool": name, "args": args, "result": str(result)})
             if text_calls:
                 # No native tool_call to attach a ToolMessage to: return the
                 # result as a user turn instead.
@@ -670,7 +697,9 @@ def run_tool_loop(
         raise ValueError("Forced-final request exceeds the configured context allowance")
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
-    answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    forced = message_text(response)
+    log_turn(forced)
+    answer = request_valid_answer(llm, messages, forced, config, is_json_object, log_turn)
     return _close_run(
         toolbox,
         answer,

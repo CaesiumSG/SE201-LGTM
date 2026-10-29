@@ -212,7 +212,8 @@ def error_result(case: dict, mode: str, exc: Exception,
         **evaluate.graph_fields(review),
         **evaluate.sast_fields(review),
     }
-    return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
+    row = evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
+    return {**row, **evaluate.partial_fields(mode, review)}
 
 
 def run_unit(case: dict, mode: str, cache: Path, output: Path,
@@ -280,6 +281,7 @@ def run_unit(case: dict, mode: str, cache: Path, output: Path,
             "case_seconds": round(time.monotonic() - case_started, 2),
             "est_tokens": est_tokens,
             "findings": findings, "run_records": evaluate.run_record_fields(result),
+            **evaluate.trace_fields(mode, result),
             **extra, **graph, **evaluate.sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata

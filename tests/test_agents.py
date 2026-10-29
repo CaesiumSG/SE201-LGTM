@@ -1572,3 +1572,143 @@ class TestAuthzSectionBodyOmitsInvestigatorText:
 
         assert self.TITLE not in rendered and self.RATIONALE not in rendered
         assert "app.py" in rendered and "a = 1" in rendered
+
+
+class _SeeingLLM:
+    """Replays replies, repeating the last; keeps the messages of the latest request and can fail on a given call."""
+
+    def __init__(self, *replies, fail_on_call=None):
+        self.replies = list(replies)
+        self.fail_on_call = fail_on_call
+        self.calls = 0
+        self.seen: list = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.seen = list(messages)
+        self.calls += 1
+        if self.calls == self.fail_on_call:
+            raise ConnectionError("model went away")
+        return self.replies[min(self.calls - 1, len(self.replies) - 1)]
+
+    def tool_results(self) -> list[str]:
+        return [m.content for m in self.seen if type(m).__name__ == "ToolMessage"]
+
+
+def _tool_call(name, args, call_id):
+    return {"name": name, "args": args, "id": call_id}
+
+
+def _record_text(record: RunRecord) -> str:
+    from dataclasses import asdict
+
+    return json.dumps(asdict(record))
+
+
+def _escaped(text: str) -> str:
+    return json.dumps(text)[1:-1]
+
+
+def _strings(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _strings(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _strings(value)
+
+
+def _run_recorded(git_repo, llm, **config):
+    toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig(**config))
+    out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
+    record = RunRecord(section="s")
+    fill_record(record, toolbox, out)
+    return record
+
+
+FINAL = _ai_message('{"verdict": "safe"}')
+
+
+class TestRunRecordHoldsTheTurns:
+    def test_assistant_text_and_tool_results_appear_in_the_order_they_happened(self, git_repo):
+        llm = _SeeingLLM(
+            _ai_message("TURN_ONE_TEXT", [_tool_call("read_file", {"path": "app.py"}, "c1")]),
+            _ai_message("TURN_TWO_TEXT", [_tool_call("read_file", {"path": "policy.md"}, "c2")]),
+            FINAL,
+        )
+
+        record = _run_recorded(git_repo, llm)
+
+        first, second = llm.tool_results()
+        assert first != second
+        text = _record_text(record)
+        marks = [text.find(_escaped(p)) for p in ("TURN_ONE_TEXT", first, "TURN_TWO_TEXT", second)]
+        assert -1 not in marks
+        assert marks == sorted(set(marks))
+
+    def test_a_record_with_turns_is_plain_json(self, git_repo):
+        llm = _SeeingLLM(_ai_message("T", [_tool_call("read_file", {"path": "app.py"}, "c1")]), FINAL)
+
+        record = _run_recorded(git_repo, llm)
+
+        assert json.loads(_record_text(record))["section"] == "s"
+
+    @pytest.mark.parametrize(
+        ("calls", "config"),
+        [
+            pytest.param([_tool_call("read_file", {}, "c1")], {}, id="invalid-arguments"),
+            pytest.param([_tool_call("no_such_tool", {"x": 1}, "c1")], {}, id="unknown-tool"),
+            pytest.param(
+                [_tool_call("read_file", {"path": "app.py"}, "c1"), _tool_call("read_file", {"path": "app.py"}, "c2")],
+                {"max_tool_calls": 1},
+                id="over-budget",
+            ),
+        ],
+    )
+    def test_a_refused_call_keeps_the_outcome_the_agent_saw(self, git_repo, calls, config):
+        llm = _SeeingLLM(_ai_message("", calls), FINAL)
+
+        record = _run_recorded(git_repo, llm, **config)
+
+        seen = llm.tool_results()
+        assert len(seen) == len(calls)
+        text = _record_text(record)
+        for result in seen:
+            assert _escaped(result) in text
+        assert calls[-1]["name"] in text
+
+    def test_a_tool_result_over_the_output_cap_is_stored_as_the_agent_saw_it(self, git_repo):
+        (git_repo / "big.txt").write_text("".join(f"needle {n} " + "x" * 600 + "\n" for n in range(40)))
+        subprocess.run(["git", "-C", str(git_repo), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(git_repo), "commit", "-q", "-m", "big"], check=True, capture_output=True
+        )
+        llm = _SeeingLLM(_ai_message("", [_tool_call("grep_repo", {"pattern": "needle"}, "c1")]), FINAL)
+
+        record = _run_recorded(git_repo, llm)
+
+        [seen] = llm.tool_results()
+        assert len(seen) < 40 * 600
+        stored = list(_strings(json.loads(_record_text(record))))
+        assert seen in stored
+        assert max(map(len, stored)) <= len(seen)
+
+    def test_a_run_that_dies_mid_loop_keeps_the_turns_and_results_gathered_so_far(self, git_repo):
+        llm = _SeeingLLM(
+            _ai_message("BEFORE_THE_FAILURE", [_tool_call("read_file", {"path": "app.py"}, "c1")]),
+            fail_on_call=2,
+        )
+        agent = _triage_agent(git_repo, llm)
+
+        assert agent.triage(SEMGREP_HIT, None) is None
+
+        [record] = agent.run_records
+        [result] = llm.tool_results()
+        text = _record_text(record)
+        assert "BEFORE_THE_FAILURE" in text
+        assert _escaped(result) in text
+        assert agent.errors

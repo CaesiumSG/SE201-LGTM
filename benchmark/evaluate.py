@@ -139,7 +139,50 @@ def graph_fields(review=None) -> dict:
 
 
 def run_record_fields(review=None) -> list[dict]:
-    return [asdict(r) for r in getattr(review, "run_records", None) or []]
+    return [
+        {k: v for k, v in asdict(r).items() if k != "turns"}
+        for r in getattr(review, "run_records", None) or []
+    ]
+
+
+def trace_fields(mode: str, review=None) -> dict:
+    """The ``trace`` key of a judged-mode row: turns per agent run and the Kev answer per finding."""
+    if mode not in JUDGED_MODES:
+        return {}
+    return {"trace": {
+        "runs": [
+            {"section": r.section, "turns": r.turns}
+            for r in getattr(review, "run_records", None) or []
+        ],
+        "kev": [
+            {
+                "finding_id": row.get("finding_id"),
+                "judged": row.get("judged"),
+                "kev_verdict": row.get("kev_verdict"),
+                "kev_severity": row.get("kev_severity"),
+                "supported": row.get("supported"),
+                "provenance_confidence": row.get("provenance_confidence"),
+                "reasoning": getattr(f, "kev_reasoning", ""),
+                "not_judged_reason": row.get("not_judged_reason"),
+            }
+            for f in getattr(review, "findings", None) or []
+            for row in [f.model_dump(exclude={"raw_response"})]
+        ],
+    }}
+
+
+def partial_fields(mode: str, review=None) -> dict:
+    """What a judged-mode review gathered, kept on an error row."""
+    if mode not in JUDGED_MODES or review is None:
+        return {}
+    try:
+        return {
+            "findings": [f.model_dump(exclude={"raw_response"}) for f in review.findings],
+            "run_records": run_record_fields(review),
+            **trace_fields(mode, review),
+        }
+    except Exception:  # noqa: BLE001 - unserialisable partial work never costs the error row
+        return {}
 
 
 def sast_fields(review=None) -> dict:
@@ -618,6 +661,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             "est_tokens": est_tokens,
             "findings": findings,
             "run_records": run_record_fields(result),
+            **trace_fields(config.mode, result),
             "mode": config.mode,
             "pin": pin,
             **case_fields(case),
@@ -626,8 +670,9 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             **sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
-        return score_case(mark_error(
+        row = score_case(mark_error(
             error_record(case, config.mode, pin, result), str(exc)))
+        return {**row, **partial_fields(config.mode, result)}
 
 
 def coverage_summary(results: list[dict]) -> dict:
