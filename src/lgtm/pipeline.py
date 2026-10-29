@@ -208,6 +208,7 @@ class ReviewPipeline:
 
         findings: list[AgentFinding] = []
         section_stage: _SectionStage | None = None
+        triage_records: list[RunRecord] = []
 
         from lgtm.diff.sanitizer import detect_prompt_injections, sanitize_diffs
 
@@ -247,6 +248,7 @@ class ReviewPipeline:
                     continue
                 finding.pr_graph_ok = toolbox.graph_stamp("pr")
                 findings.append(finding)
+            triage_records = triage_agent.run_records
             meta.agent_errors.extend({**e, "stage": "sast_triage"} for e in triage_agent.errors)
 
             # ---- Stage 3: authorization review -----------------------
@@ -312,7 +314,8 @@ class ReviewPipeline:
             json_path=json_path,
             md_path=md_path,
             diffs=diffs,
-            run_records=section_stage.run_records if section_stage is not None else [],
+            run_records=triage_records
+            + (section_stage.run_records if section_stage is not None else []),
         )
 
     # ------------------------------------------------------------------

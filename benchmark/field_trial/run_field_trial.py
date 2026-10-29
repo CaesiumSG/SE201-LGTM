@@ -16,7 +16,7 @@ cache, so a case costs one tree download, not the project's history.
 
 Usage:
     python benchmark/field_trial/run_field_trial.py --fetch            # clones only
-    python benchmark/field_trial/run_field_trial.py --modes sast-only lgtm
+    python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only
     python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8811 --resume
     python benchmark/field_trial/run_field_trial.py --summarize-only
 """
@@ -44,7 +44,7 @@ from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 
-MODES = ["sast-only", "llm-only", "lgtm"]
+MODES = ["lgtm", "llm-only"]
 
 
 class FetchError(RuntimeError):
@@ -123,6 +123,10 @@ def scrub(obj, needles: list[str]):
     return obj
 
 
+def _is_triage(record) -> bool:
+    return record.section.startswith("sast_triage:")
+
+
 def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
     clone = cache / project_of(case)
     base, pr = ensure_case(case, cache)
@@ -139,7 +143,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "diff_chars": sum(len(d.hunk_text()) for d in py),
     }
     index_info: dict = {}
-    if mode in ("lgtm", "lgtm-no-sast"):
+    if mode == "lgtm":
         idx_dir = cache / ".index" / project_of(case)
         index_info = ensure_index(clone, base, idx_dir, cfg)
         cfg.chroma_persist_dir = str(idx_dir)
@@ -160,7 +164,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         **index_info,
         "semgrep_findings_total": result.meta.semgrep_findings_total,
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
-        "endpoints_reviewed": result.meta.endpoints_reviewed,
+        "endpoints_reviewed": getattr(result.meta, "endpoints_reviewed", 0),
         "n_findings": len(findings),
         "verdicts": dict(Counter(f["verdict"] for f in findings)),
         "vulnerable_findings": [
@@ -172,6 +176,17 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
             for f in findings if f["verdict"] == "vulnerable"
         ],
         "tool_calls_total": sum(f.get("tool_calls_used", 0) for f in findings),
+        "investigator_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records if r.section == "investigator"),
+        "sast_triage_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records if _is_triage(r)),
+        "sast_triage_units": sum(1 for r in result.run_records if _is_triage(r)),
+        "reviewer_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records
+            if r.section != "investigator" and not _is_triage(r)),
+        "reviewer_units": sum(
+            1 for r in result.run_records
+            if r.section != "investigator" and not _is_triage(r)),
         "findings": findings,
     })
     return record
@@ -181,9 +196,26 @@ def summarize(records: list[dict]) -> dict:
     ran = [r for r in records if not r.get("crashed")]
     lat = [r["latency_seconds"] for r in ran]
     flagged = [r for r in ran if r.get("verdicts", {}).get("vulnerable")]
+    inv = sum(r.get("investigator_tool_calls", 0) for r in ran)
+    rev = sum(r.get("reviewer_tool_calls", 0) for r in ran)
+    units = sum(r.get("reviewer_units", 0) for r in ran)
+    tri = sum(r.get("sast_triage_tool_calls", 0) for r in ran)
+    tri_units = sum(r.get("sast_triage_units", 0) for r in ran)
     return {
         "cases": len(records),
         "crashed": sum(1 for r in records if r.get("crashed")),
+        "possible_findings": sum(r.get("verdicts", {}).get("possible", 0) for r in ran),
+        "tool_calls": {
+            "investigator": {
+                "total": inv, "per_case_mean": round(inv / len(ran), 2) if ran else None},
+            "sast_triage": {
+                "total": tri, "per_case_mean": round(tri / len(ran), 2) if ran else None,
+                "per_unit_mean": round(tri / tri_units, 2) if tri_units else None},
+            "reviewer": {
+                "total": rev, "per_case_mean": round(rev / len(ran), 2) if ran else None,
+                "per_unit_mean": round(rev / units, 2) if units else None},
+            "reviewer_units": units,
+        },
         "prs_with_vulnerable_verdict": len(flagged),
         "vulnerable_findings_total": sum(len(r.get("vulnerable_findings", [])) for r in ran),
         "findings_total": sum(r.get("n_findings", 0) for r in ran),
@@ -206,7 +238,7 @@ def summarize(records: list[dict]) -> dict:
 
 def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> None:
     payload = {
-        "mode": mode, "model": model if mode != "sast-only" else "none",
+        "mode": mode, "model": model,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "git_commit": subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
@@ -218,7 +250,7 @@ def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=["sast-only", "lgtm"])
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=MODES)
     parser.add_argument("--cases", nargs="+", default=None)
     parser.add_argument("--cache", type=Path, default=HERE / ".cache")
     parser.add_argument("--output", type=Path, default=BENCH / "results" / "field_trial")

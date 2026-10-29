@@ -164,8 +164,8 @@ def test_review_completes_with_candidates_not_judged_and_the_unparsable_agent_er
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
-def test_review_drops_unresolvable_references_without_an_agent_error_or_exit_code_change_and_never_sends_them_to_the_judge(
-    repo, tmp_path, monkeypatch, start_kev
+def test_review_keeps_unresolvable_references_logs_them_and_sends_the_candidate_to_the_judge_without_an_agent_error(
+    repo, tmp_path, monkeypatch, start_kev, caplog
 ):
     kev = start_kev(lambda request: _kev_reply(request, False, 0.5))
     ghost_file = {**_pr_evidence(), "file": "ghost.py"}
@@ -185,18 +185,19 @@ def test_review_drops_unresolvable_references_without_an_agent_error_or_exit_cod
 
     done, report, markdown = _review_cli(repo, tmp_path, monkeypatch, llm, kev.url)
 
-    assert done.exit_code == 0, done.output  # nothing supported; the dropped candidate is not an anomaly
+    assert done.exit_code == 0, done.output  # nothing supported; the kept candidate is not an anomaly
     assert report["review"]["agent_errors"] == []
     found = _by_claim(report, (CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B, CLAIM_DROPPED))
-    assert set(found) == {CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B}
-    assert len(report["findings"]) == 3
+    assert set(found) == {CLAIM_TRIAGE, CLAIM_AUTHZ_A, CLAIM_AUTHZ_B, CLAIM_DROPPED}
+    assert len(report["findings"]) == 4
     assert all((f["judged"], f["supported"]) == (True, False) for f in found.values())
-    assert [(i["file"], i["lines"]) for i in found[CLAIM_AUTHZ_A]["evidence"]] == [("a.py", [4, 4])]
-    assert CLAIM_DROPPED not in markdown and "Agent Errors" not in markdown
+    assert [(i["file"], i["lines"]) for i in found[CLAIM_AUTHZ_A]["evidence"]] == [("a.py", [4, 4]), ("a.py", [900, 901])]
+    assert "Agent Errors" not in markdown
+    assert any("unsupported" in r.getMessage() for r in caplog.records)
 
-    assert len(kev.requests) == 3
+    assert len(kev.requests) == 4
     sent = json.dumps([r.body for r in kev.requests])
-    assert CLAIM_DROPPED not in sent and "ghost.py" not in sent
+    assert CLAIM_DROPPED in sent
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
@@ -257,8 +258,10 @@ def test_review_report_and_exit_code_change_with_the_kev_verdict_only_when_it_ru
         assert all(set(r.body["questions"]) == QUESTION_IDS for r in kev.requests)
         found = _by_claim(report, KEV_ANSWERS)
         assert set(found) == set(KEV_ANSWERS)
-        for f in found.values():
-            assert not {"kev_verdict", "kev_severity", "input_tokens"} & set(f)
+        for claim, f in found.items():
+            assert f["kev_verdict"] == verdict
+            assert f["kev_severity"] == severity
+            assert "input_tokens" not in f
         outcomes[name] = {
             "exit": done.exit_code,
             "supported_count": report["stats"]["supported"],
@@ -309,7 +312,7 @@ def test_saved_candidates_of_a_judged_review_carry_the_kev_verdict_and_severity_
         workdir.mkdir()
         config = LGTMConfig(judge_endpoint=kev.url, judge_model=KEV_MODEL, judge_timeout=2)
 
-        record = evaluate_real.run_unit(unit, "own", "lgtm", workdir, workdir, config)
+        record = evaluate_real.run_unit(unit, "lgtm", workdir, workdir, config)
 
         path = workdir / "x.json"
         path.write_text(json.dumps(record, default=str), encoding="utf-8")
@@ -317,8 +320,10 @@ def test_saved_candidates_of_a_judged_review_carry_the_kev_verdict_and_severity_
         assert len(saved) == len(KEV_ANSWERS) == len(kev.requests)
         for row in saved:
             assert row["judged"] is True
-            assert row["kev_verdict"]
-            assert row["kev_severity"] == SEVERITY_LEVELS[-1 if variant else 0]
+            expected_verdict = "not_real" if variant else "real"
+            expected_severity = SEVERITY_LEVELS[-1 if variant else 0]
+            assert row["kev_verdict"] == expected_verdict
+            assert row["kev_severity"] == expected_severity
             assert isinstance(row["input_tokens"], int) and row["input_tokens"] > 0
         verdicts.append({row["kev_verdict"] for row in saved})
 

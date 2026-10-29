@@ -2035,8 +2035,11 @@ class TestSectionRunRecords:
         result = _run(repo, install_graph, {"investigator": 1})
 
         records = _records(result)
-        assert len(result.run_records) == len(records) == 1 + len(SECTION_IDS)
-        assert set(records) == {"investigator", *SECTION_IDS}
+        graph_records = [
+            r for r in result.run_records if _attr(r, "section") in {"investigator", *SECTION_IDS}
+        ]
+        assert len(graph_records) == 1 + len(SECTION_IDS)
+        assert {"investigator", *SECTION_IDS} <= set(records)
 
     def test_record_exposes_tool_calls_raw_answer_and_no_limit_when_none_was_hit(
         self, repo, install_graph

@@ -42,6 +42,7 @@ class _Toolbox:
 
 class _Triage:
     errors: list = []
+    run_records: list = []
 
     def __init__(self, *args, **kwargs):
         pass

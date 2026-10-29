@@ -13,11 +13,15 @@ recorded as carefully as successes.
   category* says `vulnerable`.
 - **Raw data:** every round's per-case JSON and `summary.json` live in
   [`benchmark/runs/`](../benchmark/runs/) (index in its README).
-- **Re-scoring:** `python benchmark/evaluate.py --mode <m> --rescore --output
-  <dir>` re-applies the current scoring rules to a saved run without calling
-  the model.
+- **Re-scoring:** runs under `benchmark/runs/archive/` predate coverage
+  recording and score UNKNOWN if rescored; their committed summaries are the
+  reported numbers.
 
 ## Headline (final, 13 Oct)
+
+Archived runs (`qwen2.5-coder:7b`, earlier conditions), scored under the
+earlier rules. The current runs are in the Shoply run folder under
+`benchmark/runs/` (see [its README](../benchmark/runs/README.md)).
 
 | | sast-only (A) | llm-only (B) | lgtm-no-sast (ablation) | **lgtm (C)** |
 |---|---|---|---|---|
@@ -83,7 +87,9 @@ LGTM looked slightly *worse* than the LLM-only baseline.
 (`agents/plain_reviewer.py`): one tool-free LLM call over the diff, with no
 Semgrep, no RAG and no tools. The old setup is kept as an *ablation*,
 `lgtm-no-sast`. Also fixed problem 1.2 (scorer) and added grounded and
-off-category metrics (1.6, 1.7). Round 1 was re-scored with the fixed scorer.
+off-category metrics (1.6, 1.7). The round 1 rows below are the re-scored
+numbers in `benchmark/runs/archive/run1-original/summary.json`, scored under
+the earlier rules.
 
 | Mode | P | R | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounded F1 |
 |---|---|---|---|---|---|---|---|
@@ -129,7 +135,7 @@ Regression tests were added for every fix: `tests/test_baselines.py`,
 `test_facts.py`, and the new cases in `test_agents.py`,
 `test_validation.py` and `test_semgrep.py`.
 
-**Results (all 36 cases, `benchmark/runs/run3-bugfixes/`):**
+**Results (all 36 cases, `benchmark/runs/archive/run3-bugfixes/`, scored under the earlier rules):**
 
 | Mode | P | R | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounded F1 | Grounding | Off-category alarms | Median latency |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -193,7 +199,7 @@ Two problems were left: the authz agent's **off-category false alarms**
 prompts and context. Doing that while looking at the eval split would leak
 the held-out cases, so both changes sit behind config flags and were
 measured on the **dev split only**. The control is a fresh flags-off run
-of the dev split from the same snapshot (`run4-dev-experiments/control`); it
+of the dev split from the same snapshot (`archive/run4-dev-experiments/control`); it
 reproduced round 3's dev outcomes case for case.
 
 - **`static_facts`:** deterministic AST facts in the prompt
@@ -207,7 +213,7 @@ reproduced round 3's dev outcomes case for case.
 
 All arms ran from one frozen code snapshot (after the rule-ID fix), so the
 only difference between arms is the flag. Data:
-`benchmark/runs/run4-dev-experiments/`. A planned fourth arm (both flags
+`benchmark/runs/archive/run4-dev-experiments/`. A planned fourth arm (both flags
 together) was dropped once the first two results were in; round 5
 replaces it.
 
@@ -266,7 +272,7 @@ replaces it.
   restricts the data to its owner for that role, and if ambiguous say
   `possible`. This targets the off-category alarms.
 
-Data: `benchmark/runs/run5-dev-role-guidance/`.
+Data: `benchmark/runs/archive/run5-dev-role-guidance/`.
 
 | Arm (dev, n = 18) | Case F1 | SQLi F1 | Authz recall | Off-category alarms | Grounding |
 |---|---|---|---|---|---|
@@ -313,7 +319,7 @@ default.
 ## Final run: shipped configuration, clean (13 Oct)
 
 All flags off; the code includes every round-3 fix plus the path-free
-Semgrep rule IDs. Data: `benchmark/runs/run6-final/`.
+Semgrep rule IDs. Data: `benchmark/runs/archive/run6-final/`.
 
 | Mode | P | R | F1 | Eval F1 | SQLi F1 | Authz F1 | FP rate | Grounded F1 (eval) | Off-category alarms | Median latency |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -334,7 +340,7 @@ them as known failures rather than tuning on them.
 **What we ran:** the same pipeline and both suites with `qwen3.8:27b`
 (Q4_K_M) on one 24 GB GPU, at commit `a9b380b`. Setup, all tables and caveats:
 [`docs/gpu-model-eval.md`](gpu-model-eval.md). Data:
-[`benchmark/runs/gpu-qwen3.8-27b/`](../benchmark/runs/gpu-qwen3.8-27b/).
+[`benchmark/runs/archive/gpu-qwen3.8-27b/`](../benchmark/runs/archive/gpu-qwen3.8-27b/).
 
 **Headline F1** (baseline `qwen2.5-coder:7b` → `qwen3.8:27b`):
 
@@ -398,10 +404,13 @@ live in `prompts.toml` behind a byte-for-byte lock. The integration added:
 | lgtm, `authz_01_vulnerable`, 27B, CodeGraph 1.6.2 | TP, grounded, 4 tool calls, graph `ok` |
 | Field trial (#18, checkpoint pipeline) | 10 of 12 ordinary PRs reached no agent: the reason this round exists |
 
-**Not yet measured:** the full re-run of every mode on Shoply (52), the
-re-pinned real-world cases and the injection suite with the new pipeline,
-from one frozen tree on the GPU cluster. Every results table in the README
-carries a "pending re-measurement" note until those runs are committed.
+**Re-run:** the LGTM and LLM-only conditions on the 36 Shoply cases, the
+re-pinned real-world cases, the field trial and the injection suite with the
+new pipeline (reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev) are
+written to the Shoply run folder under `benchmark/runs/`,
+`benchmark/runs/real_world/`, `benchmark/runs/field_trial/` and
+`benchmark/injection/results/`. Claude Opus 5.5 labels the findings under
+[`kev-labeling-criteria.md`](kev-labeling-criteria.md).
 The numbers PR #14 reports (Shoply 25 TP / 25 TN; real-world 5 TP / 4 TN /
 2 UNCREDITED / 1 FN; 105 s and 196k prompt tokens per case) come from an
 uncommitted run with the stack's own scoring rule, so they are not quoted
@@ -416,15 +425,14 @@ here.
 ## Round 9: prompt-injection mitigations on by default, dev split only (23 Oct, checkpoint pipeline)
 
 **Measured on the checkpoint pipeline** (`main` at `4fc0999`, before round 8); the
-defaults carry over to the section pipeline and are re-measured with it in the
-pending cluster run.
+defaults carry over to the section pipeline.
 
 **Change:** `strip_comments` and `detect_prompt_injection` (Brian's
 mitigations, see [`prompt-injection.md`](prompt-injection.md)) default to
 on in the `lgtm` and `lgtm-no-sast` modes. The `llm-only` baseline is
-untouched. Data: `benchmark/runs/run7-mitigation-defaults/` (dev split,
+untouched. Data: `benchmark/runs/archive/run7-mitigation-defaults/` (dev split,
 both arms from one frozen tree at `4fc0999`) and
-`benchmark/injection/results/lgtm-mitigated/`.
+`benchmark/runs/archive/injection-results/lgtm-mitigated/`.
 
 | Arm (dev, n = 18) | Case F1 | Off-category alarms | Grounding | Median latency |
 |---|---|---|---|---|
@@ -432,7 +440,8 @@ both arms from one frozen tree at `4fc0999`) and
 | mitigations on | 1.00 | 10 / 18 | 0.89 | 28.8s |
 
 Injection suite, mitigations on: attack success rate **0% (0/6)** (was
-100% of 3 unmitigated).
+100% of 3 unmitigated). The current injection run is in
+`benchmark/injection/results/`.
 
 ### What worked / what didn't
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -18,6 +19,8 @@ from lgtm.config import LGTMConfig
 logger = logging.getLogger(__name__)
 
 PARSE_RETRIES = 3
+
+UNRESOLVED_EVIDENCE_REASON = "unresolved-evidence"
 
 SNAPSHOT_LABELS = ("base", "pr")
 
@@ -82,8 +85,8 @@ class AgentFinding(BaseModel):
     severity: str = ""
     supported: bool | None = None
     provenance_confidence: float | None = None
-    kev_verdict: str | None = Field(default=None, exclude=True)
-    kev_severity: str | None = Field(default=None, exclude=True)
+    kev_verdict: str | None = None
+    kev_severity: str | None = None
     judged: bool = False
     not_judged_reason: str = ""
     unsupported_reason: str = ""
@@ -218,6 +221,7 @@ def parse_agent_output(
     a placeholder candidate, so a malformed LLM response never crashes the
     pipeline.
     """
+    text = _content_text(text)
     data = extract_json_object(text)
     if data is None:
         logger.warning("Agent output for %s contained no JSON", finding_id)
@@ -290,49 +294,64 @@ def answer_until_parsed(
 
 
 def answer_until_resolved(
-    ask: Callable[[], str],
+    ask: Callable[..., str],
     parse: Callable[[str], AgentFinding | list[AgentFinding] | None],
     toolbox: Any,
 ) -> list[AgentFinding] | None:
     """Like ``answer_until_parsed``, but an answer citing code that does not resolve at the
     toolbox snapshots counts as a parse failure.
 
-    After the budget the last such answer is returned with unresolved items dropped and
-    candidates left without valid code evidence removed (logged); None means no answer parsed.
+    ``ask`` may take one optional argument: after such a failure it receives the re-ask text
+    naming the unresolved citations. After the budget the last such answer is returned whole;
+    candidates with unresolved items are marked unsupported (logged). None means no answer parsed.
     """
     from lgtm.validation.evidence import EvidenceValidator
 
     validator = EvidenceValidator(
         toolbox.repo, toolbox.base_ref, config=toolbox.config, shas=toolbox.shas
     )
-    pruned: list[AgentFinding] | None = None
-    dropped: list[AgentFinding] = []
+    unresolved: list[AgentFinding] | None = None
+    unresolved_ids: set[str] = set()
+    note = ""
+    takes_note = bool(inspect.signature(ask).parameters)
 
     def check(raw: str) -> list[AgentFinding] | None:
-        nonlocal pruned, dropped
+        nonlocal unresolved, unresolved_ids, note
         result = parse(raw)
         if result is None:
             return None
         findings = result if isinstance(result, list) else [result]
-        bad = {
-            id(f): [i for i in f.evidence if i.type != "policy" and not validator.resolves(i)]
+        issues = {
+            id(f): [
+                issue
+                for i in f.evidence
+                if i.type != "policy"
+                for issue in validator.resolution_issues(i)
+            ]
             for f in findings
         }
-        if not any(bad.values()):
+        if not any(issues.values()):
             return findings
-        pruned, dropped = [], []
-        for f in findings:
-            f.evidence = [i for i in f.evidence if i not in bad[id(f)]]
-            emptied = bad[id(f)] and not any(i.type != "policy" for i in f.evidence)
-            (dropped if emptied else pruned).append(f)
+        unresolved = findings
+        unresolved_ids = {id(f) for f in findings if issues[id(f)]}
+        note = registry.render(
+            "shared.unresolved_reask",
+            details="; ".join(i for found in issues.values() for i in found)[:1000],
+        )
         return None
 
-    answer = answer_until_parsed(ask, check, lambda: toolbox.budget_spent)
+    def ask_with_note() -> str:
+        return ask(note) if note and takes_note else ask()
+
+    answer = answer_until_parsed(ask_with_note, check, lambda: toolbox.budget_spent)
     if answer is not None:
         return answer
-    for f in dropped:
-        logger.warning("Dropped candidate %s: no cited code resolves", f.finding_id)
-    return pruned
+    for f in unresolved or []:
+        if id(f) in unresolved_ids:
+            f.supported = False
+            f.unsupported_reason = UNRESOLVED_EVIDENCE_REASON
+            logger.warning("Kept candidate %s unsupported: cited code does not resolve", f.finding_id)
+    return unresolved
 
 
 def build_llm(config: LGTMConfig):
@@ -403,7 +422,17 @@ _sleep = time.sleep
 
 
 def message_text(response) -> str:
-    return response.content if isinstance(response.content, str) else str(response.content)
+    return _content_text(response.content)
+
+
+def _content_text(content) -> str:
+    if isinstance(content, list):
+        return "\n".join(
+            part if isinstance(part, str) else str(part.get("text", ""))
+            for part in content
+            if isinstance(part, str) or (isinstance(part, dict) and part.get("type", "text") == "text")
+        )
+    return content if isinstance(content, str) else str(content)
 
 
 def is_json_object(text: str) -> bool:
@@ -411,6 +440,9 @@ def is_json_object(text: str) -> bool:
 
 
 def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
+    allowance = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+    if _message_chars(messages) > allowance:
+        raise ValueError("Model request exceeds the configured context allowance")
     attempts = max(0, config.llm_retries) + 1
     delays = tuple(config.llm_backoff_seconds)
     for attempt in range(1, attempts + 1):
@@ -550,6 +582,8 @@ def run_tool_loop(
 
     for iteration in range(config.max_agent_iterations):
         round_start = _message_chars(messages)
+        if round_start > window_chars:
+            raise ValueError("Agent request exceeds the configured context allowance")
         response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
@@ -632,6 +666,8 @@ def run_tool_loop(
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
+    if _message_chars(messages) > window_chars:
+        raise ValueError("Forced-final request exceeds the configured context allowance")
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
     answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)

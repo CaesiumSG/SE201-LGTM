@@ -10,7 +10,11 @@ maintainers reviewed and merged.
   12 merged PRs from three open-source Python web apps.
 - **Harness:** [`benchmark/field_trial/run_field_trial.py`](../benchmark/field_trial/run_field_trial.py);
   per-PR JSON and a `summary.json` per mode in
-  [`benchmark/runs/field_trial/`](../benchmark/runs/field_trial/).
+  [`benchmark/runs/field_trial/`](../benchmark/runs/field_trial/) and, for the
+  earlier archived run (23 Oct),
+  [`benchmark/runs/archive/field_trial/`](../benchmark/runs/archive/field_trial/).
+- **Conditions:** LGTM (the full pipeline, including Semgrep) and LLM-only.
+  Reviewer `qwen3.8:27b` on the SCIS GPU cluster; judge Kev (Kev-4B).
 - **Protocol:** nothing was tuned on these PRs. Every PR was merged by the
   project, so a `vulnerable` verdict is a probable false alarm unless a human
   reading the finding says otherwise; the "judgement" column below is that
@@ -36,10 +40,11 @@ maintainers reviewed and merged.
 The PR is the diff `merge_commit^1..merge_commit`; clones are shallow
 (`git fetch --depth 2`), so the cache is 29 MB for all three projects.
 
-## What reaches an agent
+## What reaches an agent (archived 23 Oct run)
 
 Before any model runs, LGTM's deterministic stages decide which parts of a
-PR get reviewed at all. On these 12 PRs:
+PR get reviewed at all. On these 12 PRs, in the archived 23 Oct run
+(`qwen2.5-coder:7b`, earlier conditions):
 
 | Case | Semgrep findings in diff | Endpoints detected (authz agent runs) | Regex SQL sinks (`lgtm-no-sast` only) | Injection detector hits |
 |---|---|---|---|---|
@@ -75,16 +80,22 @@ PR get reviewed at all. On these 12 PRs:
 
 ## Results
 
+Setup: reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev (Kev-4B),
+conditions LGTM and LLM-only. Results: `benchmark/runs/field_trial/summary.json`.
+
+## Archived 23 Oct run
+
 Setup: `qwen2.5-coder:7b` via Ollama, temperature 0, all defaults (no
-experiment flags, mitigations as on `main`), MacBook, frozen copy of the
-tree at `ff110c3` with the harness from this PR. Review latency is the
-pipeline only; the index is built once per base commit and reported
-separately. Runs: [`benchmark/runs/field_trial/`](../benchmark/runs/field_trial/).
+experiment flags, mitigations as on `main`). The rows come from a MacBook
+with a frozen copy of the tree at `ff110c3` and the harness from this PR
+([`benchmark/runs/archive/field_trial/`](../benchmark/runs/archive/field_trial/)).
+Review latency is the pipeline only; the index is built once per base commit
+and reported separately.
 
 | Mode | Crashes | PRs with a `vulnerable` verdict | Findings (verdicts) | Median review latency | Max | Index time, sum |
 |---|---|---|---|---|---|---|
 | sast-only | 0 / 12 | 0 | 0 | 4.8 s | 17.4 s | – |
-| **lgtm** | **0 / 12** | **0** | 14 (14 `safe`) | 2.5 s | 144.0 s | 335 s |
+| lgtm | 0 / 12 | 0 | 14 (14 `safe`) | 2.5 s | 144.0 s | 335 s |
 | llm-only | 0 / 12 | 0 | 23 (22 `safe`, 1 `possible`) | 14.1 s | 76.1 s | – |
 
 Per PR:
@@ -104,10 +115,10 @@ Per PR:
 | `redash-7749` | 1.8 s | 13.7 s | 2.4 s | 0 | 0 | 9.2 s | safe 2 |
 | `redash-7759` | 8.4 s | 12.4 s | 2.3 s | 0 | 0 | 76.1 s | safe 1 |
 
-### Reading every finding
+### Reading every finding (archived 23 Oct run)
 
 All 14 LGTM findings and the one `possible` from the baseline were read by
-hand (`benchmark/runs/field_trial/<mode>/<case>.json`).
+hand (`benchmark/runs/archive/field_trial/<mode>/<case>.json`).
 
 - **`mealie-8783`, 11 endpoints, all `safe`, all grounded, 13 s each.** The
   PR adds `Depends(require(Perm.GROUP_ORGANIZE))` to the unit, tool, label
@@ -140,7 +151,7 @@ hand (`benchmark/runs/field_trial/<mode>/<case>.json`).
   verdicts are mostly "no SQL in this diff"; 9 of its 23 findings carry no
   evidence at all and are marked ungrounded.
 
-### Latency and cost
+### Latency and cost (archived 23 Oct run)
 
 - A review that reaches no agent costs 2–3 s (git diff + Semgrep).
   One that does costs about **13 s per endpoint** with the 7B model on this
@@ -155,7 +166,7 @@ hand (`benchmark/runs/field_trial/<mode>/<case>.json`).
 - No run hit the LLM timeout or the output cap; no tool calls were made
   (0 on all 14 findings, as in every other 7B run).
 
-## What the trial says
+## What the trial says (archived 23 Oct run)
 
 1. **False-alarm rate on everyday traffic: 0 of 12 PRs** at the `vulnerable`
    level for LGTM, and 0 of 12 for the baseline (one `possible`). The
@@ -189,9 +200,7 @@ hand (`benchmark/runs/field_trial/<mode>/<case>.json`).
 
 ## Limitations
 
-- 12 PRs, 3 projects, one model, one run each. The 7B model never calls
-  tools, so this measures the pre-retrieved-context design, not the agentic
-  one. The 27B runs in PR #10 would be the next thing to try here.
+- 12 PRs, 3 projects, one model, one run each.
 - All PRs were merged, so the trial can only count false alarms, not
   misses. Four PRs fix a security bug; LGTM did not review three of them,
   and on the fourth (`mealie-8783`) it only confirmed the fix is in place.
@@ -204,7 +213,7 @@ hand (`benchmark/runs/field_trial/<mode>/<case>.json`).
 
 ```bash
 python benchmark/field_trial/run_field_trial.py --fetch                 # shallow clones (29 MB)
-python benchmark/field_trial/run_field_trial.py --modes sast-only lgtm llm-only --model qwen2.5-coder:7b
+python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only --model qwen3.8:27b
 python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8783 --resume
 ```
 

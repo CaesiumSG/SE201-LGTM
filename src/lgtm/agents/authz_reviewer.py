@@ -235,10 +235,6 @@ class AuthzReviewerAgent:
         section_body = registry.render(
             "authz_reviewer.section_body",
             section_id=prompt_parts.escape_control(section.section_id),
-            title=prompt_parts.escape_control(section.title),
-            rationale=prompt_parts.escape_control(
-                section.rationale or registry.entry("authz_reviewer.rationale_none")
-            ),
             files=prompt_parts.escape_control(", ".join(section.files)),
             context_block=_context_block(section.context),
             semgrep_context=_semgrep_block(semgrep_notes),
@@ -292,10 +288,12 @@ class AuthzReviewerAgent:
         self.run_records.append(record)
         try:
             findings = answer_until_resolved(
-                lambda: fill_record(
+                lambda note="": fill_record(
                     record,
                     self.toolbox,
-                    run_tool_loop(self.llm, tools, system, user, self.config),
+                    run_tool_loop(
+                        self.llm, tools, system, f"{user}\n\n{note}" if note else user, self.config
+                    ),
                 ),
                 parse,
                 self.toolbox,

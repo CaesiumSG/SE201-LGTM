@@ -143,6 +143,93 @@ class TestCitationSupport:
 
         assert offender in str(exc.value)
 
+    SHOPLY = ["sqli_01/0.0", "sqli_01/0.1", "sqli_02_safe/0.0"]
+    REAL = ["owner__repo-1/0.0", "owner__repo-2/1.0"]
+
+    @staticmethod
+    def _mixed(shoply_yes=("sqli_01/0.0", "sqli_02_safe/0.0"), **extra):
+        units = {}
+        for uid, supports in [
+            ("sqli_01/0.0", "yes"), ("sqli_01/0.1", "no"), ("sqli_02_safe/0.0", "yes"),
+        ]:
+            units[uid] = {"supports": supports, "origin": "shoply"}
+        for uid, supports in [("owner__repo-1/0.0", "no"), ("owner__repo-2/1.0", "no")]:
+            units[uid] = {"supports": supports, "origin": "real_world"}
+        units.update(extra)
+        return {"units": units}
+
+    def test_mixed_origin_labels_score_a_shoply_export_on_shoply_units_only(self, je):
+        outcomes = [_outcome(u) for u in self.SHOPLY]
+
+        report = je.citation_support(self.SHOPLY, self._mixed(), outcomes)
+
+        assert report["before_judging"] == {"n": 3, "unlabelled": 0, "percent_yes": pytest.approx(200 / 3)}
+        assert report["judged"]["n"] == 3
+        assert report["judged"]["percent_yes"] == pytest.approx(200 / 3)
+
+    def test_mixed_origin_labels_score_a_real_world_export_on_real_world_units_only(self, je):
+        outcomes = [_outcome(u) for u in self.REAL]
+
+        report = je.citation_support(self.REAL, self._mixed(), outcomes)
+
+        assert report["before_judging"] == {"n": 2, "unlabelled": 0, "percent_yes": 0.0}
+        assert report["judged"]["n"] == 2
+
+    def test_mixed_origin_labels_still_reject_an_own_origin_unit_missing_from_the_export(self, je):
+        labels = self._mixed(**{"sqli_99/0.0": {"supports": "yes", "origin": "shoply"}})
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_99/0.0" in str(exc.value)
+
+    def test_mixed_origin_labels_still_reject_a_missing_real_world_unit_for_a_real_world_export(self, je):
+        labels = self._mixed(**{"owner__repo-9/0.0": {"supports": "no", "origin": "real_world"}})
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.REAL, labels, [_outcome(u) for u in self.REAL])
+
+        assert "owner__repo-9/0.0" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", ["maybe", "Yes", None, True])
+    def test_mixed_origin_labels_still_reject_a_bad_supports_value_on_any_unit(self, je, bad):
+        labels = self._mixed()
+        labels["units"]["sqli_01/0.1"]["supports"] = bad
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_01/0.1" in str(exc.value)
+
+    def test_mixed_origin_labels_reject_a_bad_supports_value_on_an_other_origin_unit(self, je):
+        labels = self._mixed()
+        labels["units"]["owner__repo-1/0.0"]["supports"] = "maybe"
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "owner__repo-1/0.0" in str(exc.value)
+
+    def test_single_origin_labels_file_still_rejects_a_unit_missing_from_the_export(self, je):
+        labels = {"units": {
+            "sqli_01/0.0": {"supports": "yes", "origin": "shoply"},
+            "sqli_77/0.0": {"supports": "yes", "origin": "shoply"},
+        }}
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_77/0.0" in str(exc.value)
+
+    def test_single_origin_labels_file_scores_the_export_as_before(self, je):
+        labels = {"units": {u: {"supports": s, "origin": "shoply"}
+                            for u, s in zip(self.SHOPLY, ["yes", "no", "no"])}}
+
+        report = je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert report["before_judging"]["n"] == 3
+        assert report["before_judging"]["percent_yes"] == pytest.approx(100 / 3)
+
     def test_both_populations_come_from_one_export_and_one_labels_file(self, je):
         labels = _labels(u1="yes", u2="no", u3="yes")
         outcomes = [_outcome("u1"), _outcome("u2", supported=False), _outcome("u3", judged=False)]
@@ -244,7 +331,7 @@ class TestVerdictAccuracy:
         assert (result["n"], result["excluded"]) == (1, 2)
         assert result["correct"] == 1
 
-    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_not_judged_case_outside_judged_modes_is_still_scored(self, je, mode):
         baseline = {"category": "authz", "judged": False, "supported": None, "verdict": "vulnerable"}
         cases = [
@@ -565,7 +652,7 @@ class TestFallbackAndLatency:
         judge = _scripted_judge(clock, [(s, GOOD) for s in seconds])
 
         records = _measure(je, [_candidate(f"c{i}") for i in range(20)], judge, clock)
-        measures = je.run_measures(records, "lgtm-no-sast")
+        measures = je.run_measures(records, "lgtm")
 
         assert measures["latency_median"] == pytest.approx(1.0)
         assert measures["latency_p95"] == pytest.approx(5.0)
@@ -586,7 +673,7 @@ class TestFallbackAndLatency:
         assert measures["latency_median"] == pytest.approx(5.0)
         assert measures["latency_p95"] == pytest.approx(5.0)
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_fallback_rate_is_not_reported_for_modes_without_a_judge(self, je, mode):
         records = [
             {"judged": False, "latency_seconds": None},
@@ -629,7 +716,7 @@ def _scored_rows(ev, mode):
 
 
 class TestNotJudgedExclusionInSyntheticHarness:
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_case_with_a_not_judged_candidate_is_excluded_and_listed_with_its_count(self, ev, mode):
         summary = ev.summarize(_scored_rows(ev, mode))
 
@@ -639,7 +726,7 @@ class TestNotJudgedExclusionInSyntheticHarness:
         assert overall["accuracy"] == 1.0
         assert summary["not_judged_cases"] == [{"id": "b", "not_judged": 2}]
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_cases_whose_candidates_were_all_judged_are_scored_and_not_listed(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding()], mode)),
@@ -651,7 +738,7 @@ class TestNotJudgedExclusionInSyntheticHarness:
         assert summary["overall"]["scored"] == 2
         assert summary.get("not_judged_cases", []) == []
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_runs_without_a_judge_are_scored_as_before(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode)),
@@ -672,7 +759,7 @@ class TestNotJudgedExclusionInRealWorldHarness:
         rows = _scored_rows(ev, mode)
         for row in rows:
             (out / f"{row['id']}.json").write_text(json.dumps(row), encoding="utf-8")
-        return er.write_dir_summary(out, mode, "own", {r["id"] for r in rows}, "m")["summary"]
+        return er.write_dir_summary(out, mode, {r["id"] for r in rows}, "m")["summary"]
 
     def test_judged_mode_excludes_and_lists_the_case_with_a_not_judged_candidate(self, er, ev, tmp_path):
         summary = self._summary(er, ev, tmp_path, "lgtm")
@@ -681,14 +768,14 @@ class TestNotJudgedExclusionInRealWorldHarness:
         assert summary["overall"]["fn"] == 0
         assert summary["not_judged_cases"] == [{"id": "b", "not_judged": 2}]
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_are_scored_as_before(self, er, ev, tmp_path, mode):
         out = tmp_path / mode
         out.mkdir()
         row = ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode))
         (out / "a.json").write_text(json.dumps(row), encoding="utf-8")
 
-        summary = er.write_dir_summary(out, mode, "own", {"a"}, "m")["summary"]
+        summary = er.write_dir_summary(out, mode, {"a"}, "m")["summary"]
 
         assert summary["overall"]["tp"] == 1
         assert summary.get("not_judged_cases", []) == []
@@ -751,19 +838,6 @@ class TestNotJudgedExclusionInInjectionHarness:
 
         assert summary["originally_flagged"] == 1
         assert summary["attacks_succeeded"] == 1
-        assert summary.get("not_judged_cases", []) == []
-
-    def test_sast_only_pair_is_scored_as_before_with_its_fixed_vulnerable_verdict(
-        self, inj, monkeypatch, tmp_path
-    ):
-        summary = self._run(
-            inj, monkeypatch, tmp_path, "sast-only",
-            [_finding(judged=False, verdict="vulnerable", category="sqli")],
-            injected_flagged=True,
-        )
-
-        assert summary["originally_flagged"] == 1
-        assert summary["attacks_succeeded"] == 0
         assert summary.get("not_judged_cases", []) == []
 
 
@@ -1192,7 +1266,7 @@ class TestKevMetricsInSyntheticSummary:
 
         assert kev["requests_over_8192_input_tokens"] == 2
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_runs_without_a_judge_carry_no_kev_metrics(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode)),
@@ -1206,7 +1280,7 @@ class TestKevMetricsInSyntheticSummary:
                 kev.get("not_judged", {}), kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, {}, 0)
         assert (summary["overall"]["tp"], summary["overall"]["tn"], summary["overall"]["scored"]) == (1, 1, 2)
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_existing_scores_and_gating_equal_those_of_the_same_run_without_kev_answers(self, ev, mode):
         with_kev = _kev_rows(ev, mode)
         with_kev[0]["findings"][0]["kev_severity"] = "critical"
@@ -1223,7 +1297,7 @@ class TestKevMetricsInSyntheticSummary:
         right = {k: v for k, v in ev.summarize(plain).items() if k != "kev"}
         assert left == right
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_supported_candidate_the_kev_verdict_rules_not_real_no_longer_scores_as_detected(self, ev, mode):
         with_kev = _kev_rows(ev, mode)
         with_kev[0]["findings"][0]["kev_verdict"] = "not_real"
@@ -1315,7 +1389,7 @@ class TestKevFieldsInSavedResults:
 
         assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_save_no_kev_fields(self, ev, monkeypatch, mode):
         saved = self._evaluate(ev, monkeypatch, mode, [self._candidate("a", verdict="vulnerable")])
 
@@ -1336,7 +1410,7 @@ class TestKevResume:
     def test_judged_unit_with_kev_fields_is_kept_on_resume(self, ev, tmp_path):
         assert ev.is_done(self._done(ev, tmp_path, [_kev()])) is True
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_are_kept_on_resume(self, ev, tmp_path, mode):
         done = self._done(ev, tmp_path, [_finding(judged=False, verdict="vulnerable")], mode)
 
@@ -1777,6 +1851,17 @@ class TestKevAccuracy:
 
         assert je.kev_accuracy(labels, outcomes)["supported"]["n"] == 1
 
+    def test_support_only_and_verdict_only_labels_use_independent_denominators(self, je):
+        labels = _kl(
+            support_only=("yes", None, None),
+            verdict_only=(None, "not_real", None),
+        )
+        outcomes = [_ko("support_only", True, "real"), _ko("verdict_only", False, "not_real")]
+
+        accuracy = je.kev_accuracy(labels, outcomes)
+        assert accuracy["supported"] == {"n": 1, "correct": 1, "accuracy": 1.0}
+        assert accuracy["verdict"] == {"n": 1, "correct": 1, "accuracy": 1.0}
+
     def test_no_labelled_judged_unit_reports_no_accuracy(self, je):
         accuracy = je.kev_accuracy(self.LABELS, [_ko("other")])
 
@@ -2046,7 +2131,7 @@ class TestFreshCandidatesOfTheRegeneratedShoplyCases:
         assert report["stale"] == []
 
     def test_the_stored_run6_final_candidates_are_still_reported_stale_with_the_reason(self, je, tmp_path):
-        report = self._report(je, tmp_path, ROOT / "benchmark" / "runs" / "run6-final" / "lgtm")
+        report = self._report(je, tmp_path, ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm")
 
         assert sorted(s["case_id"] for s in report["stale"]) == sorted(STALE_CASES)
         assert all(s["reason"] for s in report["stale"])
@@ -2063,7 +2148,7 @@ class TestFreshCandidatesOfTheRegeneratedShoplyCases:
         export, labels = tmp_path / "export.json", tmp_path / "labels.json"
         export.write_text(json.dumps({"units": [{"unit_id": uid} for uid in units]}), encoding="utf-8")
         labels.write_text(json.dumps(_kl(**units)), encoding="utf-8")
-        stored = ROOT / "benchmark" / "runs" / "run6-final" / "lgtm"
+        stored = ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm"
         monkeypatch.setattr(sys, "argv", ["judge_eval.py", str(stored), str(export), str(labels), "--live"])
 
         je.main()
@@ -2097,10 +2182,15 @@ class TestStoredLabelsAndCriteria:
         assert all(u["supports"] in ("yes", "no") and u["verdict"] in ("real", "not_real", "undetermined") for u in units.values())
         assert all(u.get("kind") and u.get("origin") in ("shoply", "real_world") for u in units.values())
 
-    def test_stored_labels_leave_out_the_stale_shoply_candidates(self):
+    def test_stored_labels_cover_the_regenerated_run_and_only_the_archived_run_is_stale(self, je):
         units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
+        regenerated = ROOT / "benchmark" / "runs" / "shoply-regen-20261028" / "lgtm"
+        archived = ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm"
 
-        assert not [uid for uid in units if uid.split("/")[0] in STALE_CASES]
+        for case in ("sqli_07_safe", "sqli_11_safe"):
+            assert [uid for uid in units if uid.split("/")[0] == case]
+        assert je.stale_cases_for(regenerated) == ()
+        assert sorted(je.stale_cases_for(archived)) == sorted(STALE_CASES)
 
 
 class TestUndeterminedLabels:
@@ -2152,3 +2242,36 @@ class TestUndeterminedLabels:
         assert report["undetermined"] == ["authz_02_vulnerable/0.0"]
         assert report["kev_accuracy"]["verdict"]["n"] == 1
         assert report["kev_agreement"]["verdict_vs_supported"]["n"] == 1
+
+
+class TestMixedOriginLabelsGiveTheSameResultsAsOwnUnitsOnly:
+    OUTCOMES = [_ko("s1/0.0", True), _ko("s1/1.0", False), _ko("s2/0.0", True)]
+
+    @staticmethod
+    def _labels_for(*, with_real_world):
+        units = {
+            "s1/0.0": _live(supports="yes", verdict="real"),
+            "s1/1.0": _live(),
+            "s2/0.0": _live(kind="safe_twin"),
+        }
+        if with_real_world:
+            units["r1/0.0"] = _live("real_world", supports="yes", verdict="real")
+            units["r2/0.0"] = _live("real_world")
+        return _kl(**units)
+
+    def test_confidence_agreement_ignores_the_other_origin_units(self, je):
+        outcomes = [{**o, "provenance_confidence": 0.5} for o in self.OUTCOMES]
+
+        mixed = je.confidence_agreement(self._labels_for(with_real_world=True), outcomes)
+        own = je.confidence_agreement(self._labels_for(with_real_world=False), outcomes)
+
+        assert mixed == own
+        assert mixed["yes"]["n"] + mixed["no"]["n"] > 0
+
+    def test_per_origin_safe_case_counts_ignore_the_other_origin_units(self, je):
+        mixed = je.safe_case_acceptance(self._labels_for(with_real_world=True), self.OUTCOMES, {"s1", "s2"})
+        own = je.safe_case_acceptance(self._labels_for(with_real_world=False), self.OUTCOMES, {"s1", "s2"})
+
+        assert mixed == own
+        assert mixed["shoply"]["n"] == 3
+        assert mixed["real_world"]["n"] == 0

@@ -169,7 +169,7 @@ class TestSyntheticRecords:
         labels = write_labels(tmp_path, [case()])
         out = tmp_path / "out"
         monkeypatch.setattr(sys, "argv", [
-            "evaluate.py", "--mode", "sast-only", "--labels", str(labels),
+            "evaluate.py", "--mode", "llm-only", "--labels", str(labels),
             "--output", str(out)])
         ev.main()
         rec = json.loads((out / "sqli_01_vulnerable.json").read_text("utf-8"))
@@ -208,26 +208,32 @@ class TestSummaryGraphStates:
 
 
 class TestHistoricalResults:
-    def _saved_run(self, tmp_path):
+    def _saved_run(self, tmp_path, pinned=True):
         out = tmp_path / "run"
         out.mkdir()
         for cid, outcome in (("sqli_01_vulnerable", "TP"), ("sqli_01_safe", "TN")):
             expected = "vulnerable" if outcome == "TP" else "safe"
             rec = legacy(cid, outcome, expected, expected)
+            if pinned:
+                rec.update(mode="llm-only", pin={})
             (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
         return out, [case("sqli_01_vulnerable"), case("sqli_01_safe", "safe")]
 
     def test_rescore_adds_no_fields_to_old_records_and_counts_unknown(
             self, tmp_path):
-        out, cases = self._saved_run(tmp_path)
+        out, cases = self._saved_run(tmp_path, pinned=False)
         ev.rescore(out, cases, "lgtm")
         for c in cases:
             rec = json.loads((out / f"{c['id']}.json").read_text("utf-8"))
             assert not set(FIELDS) & set(rec)
-            assert rec["outcome"] in ("TP", "TN")
+            assert rec["outcome"] == "UNKNOWN"
+            assert rec["correct"] is None
         payload = json.loads((out / "summary.json").read_text("utf-8"))
         assert payload["summary"]["graph_states"] == {"unknown": 2}
         assert payload["summary"]["overall"]["scored"] == 2
+        overall = payload["summary"]["overall"]
+        assert (overall["vulnerable_scored"], overall["safe_scored"]) == (0, 0)
+        assert overall["unknown_rows"] == 2
 
     def test_rescore_preserves_new_fields(self, tmp_path):
         out = tmp_path / "run"
@@ -248,7 +254,7 @@ class TestHistoricalResults:
         labels = write_labels(tmp_path, cases)
         before = {p.name: p.read_text("utf-8") for p in out.glob("sqli_*.json")}
         monkeypatch.setattr(sys, "argv", [
-            "evaluate.py", "--mode", "sast-only", "--labels", str(labels),
+            "evaluate.py", "--mode", "llm-only", "--labels", str(labels),
             "--output", str(out), "--resume"])
         ev.main()
         assert script.cleaned == 0
@@ -279,7 +285,7 @@ class TestInjectionRecords:
                   review(meta("degraded:pr:timeout", 2.0, BASE40, inj_pr)))
         out = tmp_path / "out"
         monkeypatch.setattr(sys, "argv", [
-            "run_injection_bench.py", "--mode", "sast-only",
+            "run_injection_bench.py", "--mode", "llm-only",
             "--cases", "inj_01_sqli_comment", "--output", str(out)])
         inj.main()
         summary = json.loads((out / "summary.json").read_text("utf-8"))
@@ -297,7 +303,7 @@ class TestInterruptExitsThree:
             case("sqli_01_vulnerable"), case("sqli_01_safe", "safe")])
         out = tmp_path / "out"
         monkeypatch.setattr(sys, "argv", [
-            "evaluate.py", "--mode", "sast-only", "--labels", str(labels),
+            "evaluate.py", "--mode", "llm-only", "--labels", str(labels),
             "--output", str(out)])
         assert run_exit(ev.main) == 3
         assert script.cleaned == 2
@@ -306,7 +312,7 @@ class TestInterruptExitsThree:
     def test_injection_harness(self, injection, monkeypatch, tmp_path):
         script = injection(KeyboardInterrupt())
         monkeypatch.setattr(sys, "argv", [
-            "run_injection_bench.py", "--mode", "sast-only", "--cases",
+            "run_injection_bench.py", "--mode", "llm-only", "--cases",
             "inj_01_sqli_comment", "--output", str(tmp_path / "out")])
         assert run_exit(inj.main) == 3
         assert script.cleaned == 1
@@ -398,13 +404,7 @@ class TestNewFormatRecords:
             assert root == ev.REPO_ROOT
             assert refs == {"base": BASE40, "pr": PR40}
 
-    def test_lgtm_no_sast_record_carries_coverage(self, synthetic, pinned):
-        synthetic(coverage_review(full_coverage()))
-        rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode="lgtm-no-sast"))
-        assert rec["mode"] == "lgtm-no-sast"
-        assert rec["coverage"] == full_coverage()
-
-    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_baseline_records_have_no_coverage_key(self, synthetic, pinned, mode):
         synthetic(coverage_review(full_coverage(), [FakeFinding("vulnerable", "sqli")]))
         rec = ev.evaluate_case(graph_case(), ev.LGTMConfig(mode=mode))
@@ -412,7 +412,7 @@ class TestNewFormatRecords:
         assert rec["mode"] == mode
         assert rec["pin"]["base_sha"] == BASE40
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     @pytest.mark.parametrize("review_meta", [
         meta(), SimpleNamespace(semgrep_findings_in_diff=0)],
         ids=["coverage-none", "no-coverage-attribute"])
@@ -488,14 +488,29 @@ class TestInjectionSummaryUnknownState:
                   RuntimeError("boom"))
         out = tmp_path / "out"
         monkeypatch.setattr(sys, "argv", [
-            "run_injection_bench.py", "--mode", "sast-only",
+            "run_injection_bench.py", "--mode", "lgtm",
             "--cases", "inj_01_sqli_comment", "--output", str(out)])
         inj.main()
         summary = json.loads((out / "summary.json").read_text("utf-8"))
         assert summary["graph_states"] == {"ok": 1, "unknown": 1}
-        assert summary["comparisons"][0]["injected_graph"] == {
-            "graph_state": None, "graph_index_seconds": None,
-            "base_sha": "", "pr_sha": ""}
+        assert summary["errors"] == 1
+        assert summary["comparisons"] == []
+
+    def test_pair_without_graph_metadata_is_counted_unknown_with_null_graph(
+            self, injection, monkeypatch, tmp_path):
+        bare = SimpleNamespace()
+        injection(review(bare), review(bare))
+        out = tmp_path / "out"
+        monkeypatch.setattr(sys, "argv", [
+            "run_injection_bench.py", "--mode", "lgtm",
+            "--cases", "inj_01_sqli_comment", "--output", str(out)])
+        inj.main()
+        summary = json.loads((out / "summary.json").read_text("utf-8"))
+        assert summary["graph_states"] == {"unknown": 2}
+        assert summary["errors"] == 0
+        graph = summary["comparisons"][0]["injected_graph"]
+        assert graph["graph_state"] is None
+        assert graph["graph_index_seconds"] is None
 
 
 def test_case_repo_indexes_only_the_project_policy_documents(tmp_path):

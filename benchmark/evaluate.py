@@ -15,7 +15,7 @@ tokens per PR.
 
 Usage:
     python benchmark/evaluate.py --mode lgtm
-    python benchmark/evaluate.py --mode sast-only --cases sqli_01_vulnerable
+    python benchmark/evaluate.py --mode llm-only --cases sqli_01_vulnerable
     python benchmark/evaluate.py --mode lgtm --rescore   # re-score saved run
 """
 
@@ -49,7 +49,7 @@ from lgtm.validation.judge import REASON_JUDGE_FAILED, http_judge  # noqa: E402
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
 CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
-COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
+COVERAGE_MODES = ("lgtm",)
 
 
 def infra_failure_ids(findings: list[dict], skip_authz: bool = False) -> list[str]:
@@ -111,11 +111,10 @@ def mark_error(result: dict, message: str) -> dict:
 def scope_fields(result: dict) -> dict:
     """Headline scope and off-category finding ids of one case result.
 
-    SQL injection rows are out of scope in ``lgtm-no-sast`` and for cases
-    flagged ``case_scope: out`` (no in-diff Semgrep warning on either side).
+    SQL injection rows are out of scope for cases flagged ``case_scope: out``
+    (no in-diff Semgrep warning on either side).
     """
-    out = result.get("category") == "sqli" and (
-        result.get("mode") == "lgtm-no-sast" or result.get("case_scope") == "out")
+    out = result.get("category") == "sqli" and result.get("case_scope") == "out"
     judged = is_judged_row(result)
     return {
         "scope": "out" if out else "in",
@@ -194,6 +193,8 @@ def load_result(path: Path) -> dict | None:
 def is_done(path: Path) -> bool:
     data = load_result(path)
     if data is None or result_is_error(data) or data.get("case_label") == "scan_failure":
+        return False
+    if "pin" not in data and data.get("coverage") is None:
         return False
     if is_judged_row(data) and any(
         (f.get("judged") and not f.get("unsupported_reason") and f.get("kev_verdict") is None)
@@ -461,8 +462,9 @@ def _target_files(row: dict) -> set[str]:
 def _scan_failed(cov: dict) -> bool:
     scheduled = cov.get("sections_scheduled") or 0
     return (scheduled > 0 and cov.get("sections_completed", 1) == 0) or (
-        bool(cov.get("investigator_error")) and scheduled == 0
-    )
+        "sections_scheduled" in cov and cov.get("sections_scheduled") == 0
+        and "sections_completed" in cov and cov.get("sections_completed") == 0
+    ) or (bool(cov.get("investigator_error")) and scheduled == 0)
 
 
 def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
@@ -514,6 +516,12 @@ def score_case(result: dict) -> dict:
             result.update(case_label=None, case_label_grounded=None)
         else:
             result.update(target_sections=[], coverage_gap=False)
+    elif legacy and result.get("coverage") is None:
+        result.update(
+            predicted="unknown", predicted_grounded="unknown",
+            outcome="UNKNOWN", outcome_grounded="UNKNOWN", correct=None,
+            case_label=None, case_label_grounded=None,
+        )
     elif legacy:
         judged = is_judged_row(result)
         result["predicted"] = predict_case_verdict(findings, result["category"], judged=judged)
@@ -580,8 +588,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
     ) as tmpdir:
         tmp = Path(tmpdir)
         build_case_repo(tmp, patch_path)
-        if config.mode != "sast-only":
-            index_repo_docs(tmp, config)
+        index_repo_docs(tmp, config)
         pipeline = ReviewPipeline(tmp, config)
         tokens = record_input_tokens(pipeline, config) if config.mode in JUDGED_MODES else None
         result = pipeline.run("main", "pr", output_dir=None)
@@ -656,7 +663,7 @@ def coverage_summary(results: list[dict]) -> dict:
     }
 
 
-JUDGED_MODES = ("lgtm", "lgtm-no-sast")
+JUDGED_MODES = ("lgtm",)
 
 
 def not_judged_count(row: dict) -> int:
@@ -664,6 +671,38 @@ def not_judged_count(row: dict) -> int:
     if row.get("mode") not in JUDGED_MODES:
         return 0
     return sum(1 for f in row.get("findings", []) if f.get("judged") is False)
+
+
+def tool_call_counts(rows: list[dict]) -> dict:
+    """Investigator, SAST triage and reviewer tool calls summed from the rows' run records."""
+    per_row = {k: [0] * len(rows) for k in ("investigator", "sast_triage", "reviewer")}
+    units = dict.fromkeys(per_row, 0)
+    for i, r in enumerate(rows):
+        for rec in r.get("run_records") or []:
+            section = rec.get("section") or ""
+            if section == "investigator":
+                kind = "investigator"
+            elif section.startswith("sast_triage:"):
+                kind = "sast_triage"
+            else:
+                kind = "reviewer"
+            per_row[kind][i] += len(rec.get("tool_calls") or [])
+            units[kind] += 1
+
+    def part(kind: str) -> dict:
+        total, n = sum(per_row[kind]), units[kind]
+        return {
+            "total": total,
+            "per_case_mean": round(total / len(rows), 2) if rows else None,
+            "per_unit_mean": round(total / n, 2) if n else None,
+        }
+
+    return {
+        "investigator": part("investigator"),
+        "sast_triage": part("sast_triage"),
+        "reviewer": part("reviewer"),
+        "reviewer_units": units["reviewer"],
+    }
 
 
 def summarize(results: list[dict]) -> dict:
@@ -697,7 +736,7 @@ def summarize(results: list[dict]) -> dict:
             f1 = None
         safe_rows = [
             r for r in scored_rows
-            if r["expected"] == "safe" and r[key] != "EXCLUDED"
+            if r["expected"] == "safe" and r[key] not in ("EXCLUDED", "UNKNOWN")
         ]
         excluded_on_safe = sum(
             1 for r in scored_rows
@@ -708,7 +747,9 @@ def summarize(results: list[dict]) -> dict:
             if safe_rows
             else None
         )
-        counted = len(scored_rows) - excluded_on_safe
+        counted = len(scored_rows) - excluded_on_safe - sum(
+            1 for r in scored_rows if r[key] == "UNKNOWN"
+        )
         return {
             "cases": len(rows),
             "scored": len(scored_rows),
@@ -721,8 +762,10 @@ def summarize(results: list[dict]) -> dict:
             "false_positive_rate_on_safe": round(fpr, 3) if fpr is not None else None,
             "accuracy": round((tp + tn) / counted, 3) if counted else None,
             "vulnerable_scored": sum(
-                1 for r in scored_rows if r["expected"] == "vulnerable"),
+                1 for r in scored_rows
+                if r["expected"] == "vulnerable" and r[key] != "UNKNOWN"),
             "safe_scored": len(safe_rows),
+            "unknown_rows": sum(1 for r in scored_rows if r[key] == "UNKNOWN"),
             "abstentions": sum(
                 1 for r in scored_rows
                 if r.get(label_key) in ("insufficient_evidence", "possible_vulnerability")
@@ -798,6 +841,8 @@ def summarize(results: list[dict]) -> dict:
             round(grounded / len(all_findings), 3) if all_findings else None
         ),
         "possible_rate": round(possible / len(scored), 3) if scored else None,
+        "possible_findings": sum(1 for f in all_findings if f.get("verdict") == "possible"),
+        "tool_calls": tool_call_counts(scored),
         "insufficient_evidence_rate": (
             round(insufficient / len(scored), 3) if scored else None
         ),
@@ -819,7 +864,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate LGTM on the benchmark")
     parser.add_argument(
         "--mode",
-        choices=["lgtm", "sast-only", "llm-only", "lgtm-no-sast"],
+        choices=["lgtm", "llm-only"],
         default="lgtm",
     )
     parser.add_argument("--model", default=None, help="Ollama model override")
@@ -989,7 +1034,7 @@ def main() -> None:
         r for c in cases
         if (r := load_result(out_dir / f"{c['id']}.json")) is not None
     ]
-    model = config.ollama_model if args.mode != "sast-only" else "none"
+    model = config.ollama_model
     write_summary(
         out_dir, results, args.mode, model,
         {"split": args.split, "reasoning": config.reasoning,
@@ -1080,7 +1125,7 @@ def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
     payload = {k: v for k, v in old.items() if k not in ("outcomes", "summary")}
     payload.setdefault("cases_expected", len(cases))
     payload.setdefault("mode", mode)
-    payload.setdefault("model", "none" if mode == "sast-only" else "unknown")
+    payload.setdefault("model", "unknown")
     payload.pop("rescored_from_run_at", None)  # superseded key from earlier versions
     payload["rescored_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     payload["rescored_at_commit"] = git_commit()

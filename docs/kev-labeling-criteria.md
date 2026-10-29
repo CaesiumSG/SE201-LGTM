@@ -3,6 +3,9 @@
 Labels for judge candidates (`benchmark/kev_model_labels.json`). Each unit is one cited code item
 of a candidate finding.
 
+Claude Opus 5.5 writes the labels under these criteria. Kev, the judge being measured, is not the
+labeller.
+
 Labelers are given the claim, the quoted code, and the enclosing function with its decorators from
 the reviewed code. A unit whose quote is not present in the reviewed code is `undetermined` and
 excluded from accuracy.
@@ -40,5 +43,5 @@ produces it) or `safe_twin`.
 ## Stale candidates
 
 Candidates of `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe` in the stored
-`benchmark/runs/run6-final/lgtm` run cite text that predates the regenerated Shoply patches and
-are not labelled. Fresh candidates of these cases are labelled and scored.
+`benchmark/runs/archive/run6-final/lgtm` run are not labelled. The labels file covers the regenerated runs, where candidates of these cases
+are labelled and scored.

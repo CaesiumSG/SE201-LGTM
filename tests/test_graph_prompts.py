@@ -325,13 +325,17 @@ class _LongPolicyRetriever:
 
 
 class TestSectionReviewPrompt:
-    def test_prompt_names_the_section_and_its_rationale(self, git_repo):
+    def test_prompt_omits_the_investigator_title_and_rationale_and_shows_code_and_location(
+        self, git_repo
+    ):
         section = _section(
-            section_id="sec-7", title="Refund approval", rationale="Managers approve refunds"
+            lines=("refund_total = 1",), section_id="sec-7", title="Refund approval",
+            rationale="Managers approve refunds",
         )
         text = _section_prompt(git_repo, section)
-        assert "sec-7" in text and "Refund approval" in text
-        assert "Managers approve refunds" in text
+        assert "Refund approval" not in text
+        assert "Managers approve refunds" not in text
+        assert "refund_total = 1" in text and "app.py" in text
 
     def test_section_text_longer_than_six_thousand_characters_appears_in_full(self, git_repo):
         lines = [f"value_{i:04d} = {i}" for i in range(500)]
@@ -497,8 +501,12 @@ class TestSectionPromptInjectionResistance:
     )
     def test_pr_controlled_field_cannot_start_a_new_prompt_line(self, git_repo, field, separator):
         section, notes = _hostile_section(field, f"x{separator}{HEADING} y")
+        prompt = _user_prompt(git_repo, section, notes)
+        if field in ("title", "rationale"):
+            assert "INJECTED_HEADING" not in prompt
+            return
 
-        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+        lines = _classified_lines(prompt)
 
         escaped = [
             line for line, inside in lines
@@ -514,8 +522,12 @@ class TestSectionPromptInjectionResistance:
         self, git_repo, field
     ):
         section, notes = _hostile_section(field, "PR_CONTROLLED_VALUE")
+        prompt = _user_prompt(git_repo, section, notes)
+        if field in ("title", "rationale"):
+            assert "PR_CONTROLLED_VALUE" not in prompt
+            return
 
-        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+        lines = _classified_lines(prompt)
 
         hits = [i for i, (line, _) in enumerate(lines) if "PR_CONTROLLED_VALUE" in line]
         assert hits, "the field value is not shown to the reviewer"

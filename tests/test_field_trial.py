@@ -51,3 +51,64 @@ def test_scrub_replaces_cache_paths():
     mod = _load()
     out = mod.scrub({"x": ["/Users/me/cache/repo/file.py"]}, ["/Users/me/cache"])
     assert out == {"x": ["<cache>/repo/file.py"]}
+
+
+def test_llm_only_case_without_endpoints_reviewed_completes_with_zero(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from lgtm.reporting.report_builder import ReviewMetadata
+
+    mod = _load()
+    meta = ReviewMetadata(semgrep_findings_total=0, semgrep_findings_in_diff=0)
+    assert not hasattr(meta, "endpoints_reviewed")
+
+    class Pipeline:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, base, pr, output_dir=None):
+            return SimpleNamespace(findings=[], meta=meta, run_records=[])
+
+    monkeypatch.setattr(mod, "ensure_case", lambda case, cache: ("b" * 40, "p" * 40))
+    monkeypatch.setattr(mod, "get_pr_diff", lambda *a, **k: [])
+    monkeypatch.setattr(mod, "ReviewPipeline", Pipeline)
+    case = {"id": "x-1", "repo": "o/x", "pr": 1}
+
+    record = mod.run_case(case, "llm-only", tmp_path, mod.LGTMConfig())
+
+    assert record["crashed"] is False
+    assert record["endpoints_reviewed"] == 0
+
+
+def test_summary_counts_sast_triage_tool_calls_apart_from_reviewer(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from lgtm.reporting.report_builder import ReviewMetadata
+
+    mod = _load()
+    meta = ReviewMetadata(semgrep_findings_total=0, semgrep_findings_in_diff=0)
+
+    def rec(section, n):
+        return SimpleNamespace(section=section, tool_calls=[{"tool": "read_file"}] * n)
+
+    records = [rec("investigator", 1), rec("s1", 2), rec("route:users:12", 4),
+               rec("sast_triage:rule.x:app.py:10", 8), rec("sast_triage:rule.y:app.py:20", 16)]
+
+    class Pipeline:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, base, pr, output_dir=None):
+            return SimpleNamespace(findings=[], meta=meta, run_records=records)
+
+    monkeypatch.setattr(mod, "ensure_case", lambda case, cache: ("b" * 40, "p" * 40))
+    monkeypatch.setattr(mod, "get_pr_diff", lambda *a, **k: [])
+    monkeypatch.setattr(mod, "ReviewPipeline", Pipeline)
+    record = mod.run_case({"id": "x-1", "repo": "o/x", "pr": 1}, "llm-only", tmp_path, mod.LGTMConfig())
+
+    tool_calls = mod.summarize([record])["tool_calls"]
+
+    assert tool_calls["investigator"]["total"] == 1
+    assert tool_calls["reviewer"]["total"] == 6
+    assert tool_calls["reviewer"]["per_unit_mean"] == 3
+    assert tool_calls["sast_triage"] == {"total": 24, "per_case_mean": 24, "per_unit_mean": 12}

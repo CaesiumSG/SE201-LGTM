@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from lgtm.agents.base import CHARS_PER_TOKEN, build_llm, run_tool_loop
+from lgtm.agents.base import CHARS_PER_TOKEN, build_llm, invoke_with_retry, request_valid_answer, run_tool_loop
 from lgtm.config import LGTMConfig
 
 CONTEXT_TOKENS = 1400
@@ -64,12 +65,12 @@ def _chars(messages) -> int:
 
 
 def _config(**overrides):
-    return LGTMConfig(
-        llm_context_tokens=CONTEXT_TOKENS,
-        llm_max_output_tokens=OUTPUT_TOKENS,
-        max_agent_iterations=SCRIPTED_CALLS + 5,
+    return LGTMConfig(**{
+        "llm_context_tokens": CONTEXT_TOKENS,
+        "llm_max_output_tokens": OUTPUT_TOKENS,
+        "max_agent_iterations": SCRIPTED_CALLS + 5,
         **overrides,
-    )
+    })
 
 
 def test_build_llm_passes_context_size_as_num_ctx():
@@ -114,6 +115,89 @@ def test_ends_with_a_final_request_after_the_guard_trips():
 
     assert llm.bound_requests == TOOL_ROUNDS_THAT_FIT
     assert isinstance(llm.requests[-1][-1], HumanMessage)
+
+
+def test_oversized_initial_request_is_bounded_before_model_invocation():
+    llm = _ContextLLM(0)
+    oversized_user_prompt = "x" * (CONTEXT_TOKENS * CHARS_PER_TOKEN)
+
+    with pytest.raises(ValueError, match="Agent request exceeds the configured context allowance"):
+        run_tool_loop(llm, [], "SYSTEM-PROMPT", oversized_user_prompt, _config())
+
+    assert llm.requests == []
+
+
+def test_oversized_tool_result_never_reaches_a_model_request():
+    dump, _, _ = _tool()
+    dump.func = lambda: "x" * (CONTEXT_TOKENS * CHARS_PER_TOKEN)
+    llm = _ContextLLM(SCRIPTED_CALLS)
+
+    with pytest.raises(ValueError, match="Forced-final request exceeds the configured context allowance"):
+        run_tool_loop(llm, [dump], "sys", "user", _config())
+
+    assert len(llm.requests) == 1
+    assert _chars(llm.requests[0]) <= (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+
+
+def test_forced_final_request_fits_after_tool_round():
+    dump, _, _ = _tool()
+    dump.func = lambda: "x" * 700
+    llm = _ContextLLM(SCRIPTED_CALLS)
+    run_tool_loop(llm, [dump], "sys", "user", _config(llm_context_tokens=650))
+
+    limit = (650 - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    assert llm.requests
+    assert llm.requests[-1][-1].content
+    assert all(_chars(request) <= limit for request in llm.requests)
+
+
+def test_json_repair_request_fits_context_window():
+    class _RepairLLM:
+        def __init__(self):
+            self.requests = []
+
+        def invoke(self, messages):
+            self.requests.append(list(messages))
+            return AIMessage(content=ANSWER)
+
+    llm = _RepairLLM()
+    messages = [SystemMessage(content="s"), HumanMessage(content="x" * 3400)]
+    answer = request_valid_answer(
+        llm,
+        messages,
+        "not json",
+        _config(max_answer_reasks=1),
+        is_valid=lambda text: text == ANSWER,
+    )
+
+    limit = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    assert answer == ANSWER
+    assert llm.requests
+    assert all(_chars(request) <= limit for request in llm.requests)
+
+
+@pytest.mark.parametrize("extra_chars", [0, 1], ids=["exact-fit", "one-over"])
+def test_model_request_context_boundary(extra_chars):
+    class _RequestLLM:
+        def __init__(self):
+            self.requests = []
+
+        def invoke(self, messages):
+            self.requests.append(list(messages))
+            return AIMessage(content=ANSWER)
+
+    llm = _RequestLLM()
+    allowance = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    messages = [HumanMessage(content="x" * (allowance + extra_chars))]
+
+    if extra_chars:
+        with pytest.raises(ValueError, match="Model request exceeds the configured context allowance"):
+            invoke_with_retry(llm, messages, _config())
+        assert llm.requests == []
+    else:
+        invoke_with_retry(llm, messages, _config())
+        assert len(llm.requests) == 1
+        assert _chars(llm.requests[0]) == allowance
 
 
 def test_short_conversation_is_unaffected():

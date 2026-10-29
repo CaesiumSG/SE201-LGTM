@@ -115,11 +115,11 @@ def test_both_evaluators_keep_their_run_manifests_when_given_the_one_results_dir
     monkeypatch.setattr(evaluate, "evaluate_case", lambda case, config: _scored_row(case["id"], case["category"]))
     monkeypatch.setattr(real, "preflight", lambda modes, config: {})
     monkeypatch.setattr(
-        real, "run_unit", lambda case, variant, mode, *a, **k: _scored_row(case["id"], case["category"])
+        real, "run_unit", lambda case, mode, *a, **k: _scored_row(case["id"], case["category"])
     )
     monkeypatch.setattr(sys, "argv", ["evaluate.py", *steps["evaluate.py"], "--split", "all", "--cases", labelled["id"]])
     real_argv = [*steps["evaluate_real.py"], "--cache", str(cache), "--cases", real_case["id"],
-                 "--modes", "llm-only", "--variants", "own"]
+                 "--modes", "llm-only"]
 
     for name, call in (("evaluate.py", evaluate.main), ("evaluate_real.py", lambda: real.main(real_argv))):
         try:

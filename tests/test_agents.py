@@ -397,12 +397,13 @@ class TestReviewSection:
         self._assert_no_candidates(out)
 
     @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
-    def test_invalid_evidence_line_citation_drops_the_candidate_after_the_retry_budget(
+    def test_invalid_evidence_line_citation_keeps_the_candidate_unsupported_after_the_retry_budget(
         self, git_repo, lines
     ):
         evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
         llm = _SequenceLLM(_reply(_finding(evidence=[evidence])).content)
-        assert _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo)) == []
+        [candidate] = _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo))
+        assert candidate.supported is False
         assert llm.calls == 4
 
     def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
@@ -973,60 +974,69 @@ class TestUnresolvedReferenceReask:
 
 class TestUnresolvedReferencesAfterBudget:
     @BAD
-    def test_authz_drops_unresolved_items_and_keeps_the_valid_ones(self, git_repo, bad):
+    def test_authz_keeps_every_cited_item_and_marks_the_candidate_not_supported(self, git_repo, bad):
         llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad, GOOD_PR, GOOD_BASE])))
         agent = _authz_agent(git_repo, llm)
         [candidate] = agent.review_section(_section())
         assert [(e.file, e.snapshot) for e in candidate.evidence] == [
-            ("app.py", "pr"), ("app.py", "base"),
+            (bad["file"], bad["snapshot"]), ("app.py", "pr"), ("app.py", "base"),
         ]
+        assert candidate.supported is False
         assert llm.calls == 4 and agent.errors == []
 
     @BAD
-    def test_triage_drops_unresolved_items_and_keeps_the_valid_ones(self, git_repo, bad):
+    def test_triage_keeps_every_cited_item_and_marks_the_candidate_not_supported(self, git_repo, bad):
         llm = _SequenceLLM(_triage_reply(evidence=[bad, GOOD_PR]))
         agent = _triage_agent(git_repo, llm)
         candidate = agent.triage(SEMGREP_HIT, None)
-        assert [(e.file, e.snapshot) for e in candidate.evidence] == [("app.py", "pr")]
+        assert [(e.file, e.snapshot) for e in candidate.evidence] == [
+            (bad["file"], bad["snapshot"]), ("app.py", "pr"),
+        ]
+        assert candidate.supported is False
         assert llm.calls == 4 and agent.errors == []
 
     @BAD
-    def test_authz_candidate_with_no_valid_code_item_is_dropped_and_logged_not_errored(
+    def test_authz_candidate_with_no_valid_code_item_is_kept_unsupported_and_logged_not_errored(
         self, git_repo, bad, caplog
     ):
         llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad])))
         agent = _authz_agent(git_repo, llm)
         with caplog.at_level(logging.WARNING):
-            assert agent.review_section(_section()) == []
+            [candidate] = agent.review_section(_section())
+        assert candidate.supported is False
         assert any("s1" in m for m in _warnings(caplog))
         assert agent.errors == []
 
-    def test_other_candidates_of_the_section_are_still_reported(self, git_repo):
+    def test_unresolved_and_grounded_candidates_of_the_section_are_both_reported(self, git_repo):
         llm = _SequenceLLM(_authz_reply(
             _finding(explanation="invented", evidence=[UNRESOLVED["file missing"]]),
             _finding(explanation="grounded", evidence=[GOOD_PR]),
         ))
         agent = _authz_agent(git_repo, llm)
         out = agent.review_section(_section())
-        assert [f.explanation for f in out] == ["grounded"]
+        by_claim = {f.explanation: f for f in out}
+        assert set(by_claim) == {"invented", "grounded"}
+        assert by_claim["invented"].supported is False
+        assert by_claim["grounded"].supported is not False
         assert agent.errors == []
 
     @BAD
-    def test_triage_candidate_with_no_valid_code_item_is_dropped_and_logged_not_errored(
+    def test_triage_candidate_with_no_valid_code_item_is_kept_unsupported_and_logged_not_errored(
         self, git_repo, bad, caplog
     ):
         llm = _SequenceLLM(_triage_reply(evidence=[bad]))
         agent = _triage_agent(git_repo, llm)
         with caplog.at_level(logging.WARNING):
-            assert agent.triage(SEMGREP_HIT, None) is None
+            candidate = agent.triage(SEMGREP_HIT, None)
+        assert candidate is not None and candidate.supported is False
         assert any(SEMGREP_HIT.finding_id in m for m in _warnings(caplog))
         assert agent.errors == []
 
-    def test_a_dropped_triage_candidate_does_not_stop_the_next_hit(self, git_repo):
+    def test_an_unsupported_triage_candidate_does_not_stop_the_next_hit(self, git_repo):
         agent = _triage_agent(
             git_repo, _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
         )
-        assert agent.triage(SEMGREP_HIT, None) is None
+        assert agent.triage(SEMGREP_HIT, None).supported is False
         agent.llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR]))
         assert agent.triage(SEMGREP_HIT, None) is not None
 
@@ -1424,3 +1434,141 @@ class TestLimitHitOutcomes:
             git_repo, [self._read("c1"), _ai_message('{"verdict": "safe"}')], max_tool_calls=5
         )
         assert record.limit_hit is None
+
+
+class TestListContentParts:
+    PAYLOAD = json.dumps({
+        "finding_id": "f9", "cwe_id": "CWE-639", "explanation": "no ownership check",
+        "evidence": [],
+    })
+
+    def test_finding_json_split_across_text_parts_parses(self):
+        mid = self.PAYLOAD.index(",") + 1
+        parts = [{"type": "text", "text": self.PAYLOAD[:mid]}, {"type": "text", "text": self.PAYLOAD[mid:]}]
+        answer = run_tool_loop(_AlwaysLLM(parts), [], "sys", "user", LGTMConfig(**NO_RETRY_CONFIG))
+        finding = parse_agent_output(answer, "fallback")
+
+        assert (finding.finding_id, finding.cwe_id) == ("f9", "CWE-639")
+        assert finding.explanation == "no ownership check"
+
+    def test_parse_agent_output_joins_list_parts_with_newlines(self):
+        parts = [{"type": "text", "text": "Analysis follows."}, {"type": "text", "text": self.PAYLOAD}]
+
+        finding = parse_agent_output(parts, "fallback")
+
+        assert finding.finding_id == "f9"
+
+    def test_authz_review_parses_findings_split_across_parts(self, git_repo):
+        raw = json.dumps({"findings": [_finding(explanation="split answer")]})
+        cut = raw.index(",") + 1
+        parts = [{"type": "text", "text": raw[:cut]}, {"type": "text", "text": raw[cut:]}]
+        out = _review(git_repo, _AlwaysLLM(parts), **NO_RETRY_CONFIG)
+        assert [f.explanation for f in out] == ["split answer"]
+
+
+class _PromptRecordingLLM(_SequenceLLM):
+    def __init__(self, *replies):
+        super().__init__(*replies)
+        self.prompts = []
+
+    def invoke(self, messages):
+        self.prompts.append("\n".join(str(m.content) for m in messages))
+        return super().invoke(messages)
+
+
+def _all_unresolved_reply(**fields):
+    return _authz_reply(_finding(evidence=[UNRESOLVED["file missing"]], **fields))
+
+
+class TestUnresolvedCandidatesAreKeptUnsupported:
+    def test_authz_candidate_with_no_resolving_evidence_comes_back_marked_not_supported(
+        self, git_repo, caplog
+    ):
+        llm = _SequenceLLM(_all_unresolved_reply(explanation="invented citation"))
+        agent = _authz_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            out = agent.review_section(_section())
+
+        assert [f.explanation for f in out] == ["invented citation"]
+        assert out[0].supported is False
+        assert any("s1" in m or "authz" in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_every_unresolved_candidate_is_kept_and_marked_not_supported(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(
+            _finding(explanation="invented one", evidence=[UNRESOLVED["file missing"]]),
+            _finding(explanation="invented two", evidence=[UNRESOLVED["snippet mismatch"]]),
+        ))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+
+        assert sorted(f.explanation for f in out) == ["invented one", "invented two"]
+        assert [f.supported for f in out] == [False, False]
+
+    def test_triage_candidate_with_no_resolving_evidence_comes_back_marked_not_supported(
+        self, git_repo, caplog
+    ):
+        llm = _SequenceLLM(_triage_reply(explanation="invented", evidence=[UNRESOLVED["file missing"]]))
+        agent = _triage_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            candidate = agent.triage(SEMGREP_HIT, None)
+
+        assert candidate is not None and candidate.explanation == "invented"
+        assert candidate.supported is False
+        assert any(SEMGREP_HIT.finding_id in m for m in _warnings(caplog))
+
+
+class TestMismatchReaskNamesTheCitation:
+    def test_the_next_ask_carries_an_error_naming_the_unresolved_file_and_is_not_a_resend(
+        self, git_repo
+    ):
+        bad = {**GOOD_PR, "file": "ghost_module.py"}
+        llm = _PromptRecordingLLM(
+            _authz_reply(_finding(explanation="first", evidence=[bad])),
+            _authz_reply(_finding(explanation="second", evidence=[GOOD_PR])),
+        )
+        out = _authz_agent(git_repo, llm).review_section(_section())
+
+        assert [f.explanation for f in out] == ["second"]
+        first, second = llm.prompts
+        assert second != first
+        assert "ghost_module.py" in second and "ghost_module.py" not in first
+
+
+class TestSastTriageRunRecord:
+    def test_a_run_record_is_produced_when_triage_keeps_nothing(self, git_repo):
+        llm = _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        agent = _triage_agent(git_repo, llm)
+
+        agent.triage(SEMGREP_HIT, None)
+
+        assert [r.section for r in agent.run_records] == [f"sast_triage:{SEMGREP_HIT.finding_id}"]
+        assert agent.run_records[0].raw_answer
+
+    def test_a_run_record_is_produced_when_the_answer_never_parses(self, git_repo):
+        agent = _triage_agent(git_repo, _SequenceLLM(UNPARSABLE))
+
+        assert agent.triage(SEMGREP_HIT, None) is None
+        assert [r.section for r in agent.run_records] == [f"sast_triage:{SEMGREP_HIT.finding_id}"]
+
+
+class TestAuthzSectionBodyOmitsInvestigatorText:
+    TITLE = "Zebra quartz checkout framing"
+    RATIONALE = "Marmalade rationale from the planner"
+
+    def test_prompt_has_no_section_title_or_rationale_but_keeps_code_and_location(self, git_repo):
+        llm = _PromptRecordingLLM(_authz_reply())
+        section = _section(title=self.TITLE, rationale=self.RATIONALE)
+
+        _authz_agent(git_repo, llm).review_section(section)
+
+        prompt = llm.prompts[0]
+        assert self.TITLE not in prompt and self.RATIONALE not in prompt
+        assert "app.py" in prompt and "a = 1" in prompt
+
+    def test_render_section_has_no_title_or_rationale_but_keeps_code_and_location(self):
+        from lgtm.review.sections import render_section
+
+        rendered = render_section(_section(title=self.TITLE, rationale=self.RATIONALE))
+
+        assert self.TITLE not in rendered and self.RATIONALE not in rendered
+        assert "app.py" in rendered and "a = 1" in rendered

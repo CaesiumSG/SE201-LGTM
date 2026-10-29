@@ -317,7 +317,7 @@ def test_replay_of_one_recorded_run_gives_the_same_kev_summary_in_evaluate_evalu
             "repo_url": "https://github.com/o/p", "file": "app.py"}
     config = LGTMConfig(judge_endpoint=fake_kev, judge_timeout=5)
 
-    record = evaluate_real.run_unit(unit, "own", "lgtm", tmp_path, tmp_path, config)
+    record = evaluate_real.run_unit(unit, "lgtm", tmp_path, tmp_path, config)
 
     run_dir, real_dir = tmp_path / "run", tmp_path / "real"
     for directory in (run_dir, real_dir):
@@ -339,7 +339,7 @@ def test_replay_of_one_recorded_run_gives_the_same_kev_summary_in_evaluate_evalu
     labels.write_text(json.dumps({"units": {}}), encoding="utf-8")
 
     bench_kev = evaluate.summarize([saved_row])["kev"]
-    real_kev = evaluate_real.write_dir_summary(real_dir, "lgtm", "own", {CASE_ID}, "m")["summary"]["kev"]
+    real_kev = evaluate_real.write_dir_summary(real_dir, "lgtm", {CASE_ID}, "m")["summary"]["kev"]
     done = _cli("judge_eval.py", run_dir, export, labels)
 
     assert done.returncode == 0, done.stderr

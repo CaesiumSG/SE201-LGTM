@@ -53,14 +53,23 @@ def _percent(yes: int, n: int) -> float | None:
 
 
 def _validate_labels(unit_ids: Sequence[str], labels: dict) -> dict[str, dict]:
-    units = labels.get("units", {})
+    all_units = labels.get("units", {})
     known = set(unit_ids)
-    for uid, entry in units.items():
-        if uid not in known:
+
+    def origin(entry: object) -> object:
+        return entry.get("origin") if isinstance(entry, dict) else None
+
+    own_origins = {origin(e) for uid, e in all_units.items() if uid in known}
+    units = {}
+    for uid, entry in all_units.items():
+        foreign = uid not in known and own_origins and origin(entry) not in own_origins
+        if uid not in known and not foreign:
             raise ValueError(f"labels file names unit {uid!r}, which is not in the export")
         if not isinstance(entry, dict) or entry.get("supports") not in LABELS:
             label = entry.get("supports") if isinstance(entry, dict) else entry
             raise ValueError(f"unit {uid!r} has label {label!r}; use yes or no")
+        if not foreign:
+            units[uid] = entry
     return units
 
 
@@ -128,7 +137,7 @@ def _undetermined(labels: dict) -> set[str]:
 
 def stale_cases_for(run_dir: Path | None) -> tuple[str, ...]:
     """Stale cases of a run: STALE_CASES for the stored run6-final export, none otherwise."""
-    if run_dir is None or Path(run_dir).resolve() == (BENCH / "runs" / "run6-final" / "lgtm").resolve():
+    if run_dir is None or Path(run_dir).resolve() == (BENCH / "runs" / "archive" / "run6-final" / "lgtm").resolve():
         return STALE_CASES
     return ()
 
@@ -149,10 +158,12 @@ def _tally(n: int, correct: int) -> dict:
 
 def kev_accuracy(labels: dict, outcomes: list[dict], stale: tuple[str, ...] = STALE_CASES) -> dict:
     pairs = _labelled_judged(labels, outcomes, stale)
+    support_pairs = [(o, e) for o, e in pairs if e.get("supports") in LABELS]
+    verdict_pairs = [(o, e) for o, e in pairs if e.get("verdict") in {"real", "not_real"}]
     with_severity = [(o, e) for o, e in pairs if e.get("severity")]
     return {
-        "supported": _tally(len(pairs), sum(o["supported"] == (e["supports"] == "yes") for o, e in pairs)),
-        "verdict": _tally(len(pairs), sum(o["kev_verdict"] == e.get("verdict") for o, e in pairs)),
+        "supported": _tally(len(support_pairs), sum(o["supported"] == (e["supports"] == "yes") for o, e in support_pairs)),
+        "verdict": _tally(len(verdict_pairs), sum(o["kev_verdict"] == e.get("verdict") for o, e in verdict_pairs)),
         "severity": _tally(len(with_severity), sum(o["kev_severity"] == e["severity"] for o, e in with_severity)),
     }
 
@@ -501,6 +512,7 @@ def report(
     stale = stale_cases_for(source_run or run_dir)
     unit_ids = [u["unit_id"] for u in json.loads(Path(export_path).read_text(encoding="utf-8"))["units"]]
     labels = json.loads(Path(labels_path).read_text(encoding="utf-8"))
+    labels = {**labels, "units": _validate_labels(unit_ids, labels)}
     outcomes = run_outcomes(run_dir)
     records = citation_export.read_records(run_dir)
     modes = {r.get("mode") for r in records}

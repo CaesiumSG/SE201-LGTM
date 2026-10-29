@@ -96,6 +96,22 @@ class TestJsonReport:
     def test_json_serializable(self):
         json.dumps(ReportBuilder(sample_findings(), meta()).build_json(), default=str)
 
+    def test_saved_kev_verdict_survives_report_json_round_trip_and_controls_mixed_counts(self):
+        findings = [
+            TestSupportedButNotReal._finding("ruled-out", "not_real"),
+            TestSupportedButNotReal._finding("real", "real"),
+        ]
+        saved = ReportBuilder(findings, meta()).build_json()
+        restored = [AgentFinding.model_validate(item) for item in saved["findings"]]
+
+        report = ReportBuilder(restored, meta()).build_json()
+        assert {item["finding_id"]: item["kev_verdict"] for item in report["findings"]} == {
+            "ruled-out": "not_real",
+            "real": "real",
+        }
+        assert report["stats"]["not_real"] == 1
+        assert report["stats"]["supported"] == 1
+
     def test_stats_omit_endpoints_reviewed(self):
         payload = ReportBuilder(sample_findings(), meta()).build_json()
         assert "endpoints_reviewed" not in payload["stats"]

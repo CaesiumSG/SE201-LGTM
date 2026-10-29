@@ -144,6 +144,20 @@ def seeded_bench(bench) -> Path:
     return bench
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [bytes.fromhex("00410d0a4200"), bytes.fromhex("41000d000a004200")],
+    ids=["nul-binary", "utf16le"],
+)
+def test_build_base_repo_preserves_binary_asset_bytes(gen, bench, tmp_path, payload):
+    (bench / "app" / "asset.bin").write_bytes(payload)
+    destination = tmp_path / "base"
+
+    gen.build_base_repo(destination)
+
+    assert (destination / "app" / "asset.bin").read_bytes() == payload
+
+
 @pytest.fixture
 def repo(tmp_path, gen, seeded_bench) -> Path:
     path = tmp_path / "repo"
@@ -921,10 +935,10 @@ def test_scope_statement_names_both_jobs_and_the_exclusions(path):
     assert re.search(r"out[- ]of[- ]scope", text), "other vulnerability classes are not marked out of scope"
 
 
-def test_benchmark_readme_lists_out_of_scope_cases_and_modes():
+def test_benchmark_readme_lists_out_of_scope_cases():
     text = _doc(BENCH / "README.md")
     assert re.search(r"out[- ]of[- ]scope", text)
-    for item in ("alerta_sqli", "postgraas_sqli_safe", "lgtm-no-sast"):
+    for item in ("alerta_sqli", "postgraas_sqli_safe"):
         assert item in text, f"{item} is not listed as out of scope"
 
 

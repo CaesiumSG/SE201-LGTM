@@ -227,3 +227,66 @@ def test_fuzzy_match_is_fast_on_large_files():
     started = time.monotonic()
     validator._snippet_in_text(snippet, haystack)
     assert time.monotonic() - started < 10  # stride-1 everywhere took ~40s
+
+
+COMMENTED_SOURCE = (
+    "def charge(user, amount):\n"
+    '    """Charge the user.\n'
+    "\n"
+    "    Refunds follow the finance team's quarterly reconciliation process and the\n"
+    "    audit trail written by the ledger service for every single settled amount.\n"
+    '    """\n'
+    "    # internal note: the ledger service mirrors this entry to the external audit trail\n"
+    "    ledger.append(amount)\n"
+    "    return amount\n"
+) + "".join(f"\ndef filler_{i}(x):\n    return x + {i}\n" for i in range(12))
+
+
+@pytest.fixture
+def commented_validator(tmp_path):
+    from tests.conftest import git
+
+    repo = tmp_path / "commented"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@t.local")
+    git(repo, "config", "user.name", "T")
+    (repo / "billing.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    (repo / "billing.py").write_text(COMMENTED_SOURCE, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "pr")
+    sha = git(repo, "rev-parse", "HEAD").strip()
+    base = git(repo, "rev-parse", "HEAD~1").strip()
+    return EvidenceValidator(repo, "main", shas={"base": base, "pr": sha})
+
+
+def _billing_item(content):
+    return EvidenceItem(type="code", file="billing.py", content=content, snapshot="pr")
+
+
+class TestSnippetResolutionTolerance:
+    def test_snippet_with_different_indentation_and_line_wrapping_resolves_against_the_file(
+        self, commented_validator
+    ):
+        reflowed = "ledger.append(\n        amount)\n\n\treturn   amount"
+
+        assert commented_validator.resolves(_billing_item(reflowed)) is True
+
+    def test_snippet_with_a_misspelled_identifier_does_not_resolve(self, commented_validator):
+        assert commented_validator.resolves(_billing_item("ledger.apend(amount)")) is False
+
+    def test_snippet_that_exists_only_without_docstring_and_comments_resolves(
+        self, commented_validator
+    ):
+        sanitized_view = "def charge(user, amount):\n    ledger.append(amount)\n    return amount"
+
+        assert commented_validator.resolves(_billing_item(sanitized_view)) is True
+
+    def test_snippet_in_neither_the_file_nor_its_sanitized_text_does_not_resolve(
+        self, commented_validator
+    ):
+        item = _billing_item("subprocess.run(user_supplied_command, shell=True)")
+
+        assert commented_validator.resolves(item) is False

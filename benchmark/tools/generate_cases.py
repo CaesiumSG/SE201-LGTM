@@ -1715,6 +1715,20 @@ def build_base_repo(tmp: Path) -> None:
     shutil.copytree(BENCH / "app", tmp / "app")
     for doc in ("security-policy.md", "api-spec.md", "README.md"):
         shutil.copy(BENCH / doc, tmp / doc)
+    for path in (tmp / "app").rglob("*"):
+        if path.is_file():
+            raw = path.read_bytes()
+            if b"\x00" in raw:
+                continue
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8", newline="\n")
+    for doc in ("security-policy.md", "api-spec.md", "README.md"):
+        path = tmp / doc
+        content = path.read_bytes().decode("utf-8")
+        path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8", newline="\n")
     run(["git", "init", "-q", "-b", "main"], tmp)
     run(["git", "config", "user.email", "bench@lgtm.local"], tmp)
     run(["git", "config", "user.name", "LGTM Bench"], tmp)
@@ -1734,7 +1748,7 @@ def edit_file(tmp: Path, case_id: str, file: str,
         content = content.rstrip("\n") + "\n" + append.lstrip("\n")
         if not content.endswith("\n"):
             content += "\n"
-    target.write_text(content, encoding="utf-8")
+    target.write_text(content, encoding="utf-8", newline="\n")
 
 
 def apply_case(tmp: Path, case: Case) -> str:
@@ -1743,7 +1757,7 @@ def apply_case(tmp: Path, case: Case) -> str:
     for rel, content in case.new_files.items():
         path = tmp / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="\n")
     edit_file(tmp, case.id, case.file, case.replacements, case.append)
     for edit in case.edits:
         edit_file(tmp, case.id, edit["file"],
@@ -1850,7 +1864,7 @@ def main() -> None:
             out_dir = BENCH / "cases" / case.category
             out_dir.mkdir(parents=True, exist_ok=True)
             patch_path = out_dir / case.patch_name
-            patch_path.write_text(diff, encoding="utf-8")
+            patch_path.write_text(diff, encoding="utf-8", newline="\n")
             vuln_lines = (
                 vulnerable_lines_from_patch(diff, case.vuln_markers)
                 if case.vuln_markers
