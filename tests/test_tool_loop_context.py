@@ -229,3 +229,41 @@ def test_context_full_stop_leaves_room_for_a_larger_final_answer_allowance():
     assert out == ANSWER
     final_window = (CONTEXT_TOKENS - final_tokens) * CHARS_PER_TOKEN
     assert _chars(llm.requests[-1]) <= final_window
+
+
+class _ScriptedFinalLLM(_ContextLLM):
+    """Calls the tool on every bound request; unbound requests get the scripted replies in order."""
+
+    def __init__(self, replies):
+        super().__init__(SCRIPTED_CALLS)
+        self.replies = list(replies)
+
+    def invoke(self, messages):
+        self.requests.append(list(messages))
+        return AIMessage(content=self.replies.pop(0) if len(self.replies) > 1 else self.replies[0])
+
+
+def _context_full_run(replies):
+    dump, _, toolbox = _tool()
+    toolbox.turns = []
+    llm = _ScriptedFinalLLM(replies)
+    return llm, toolbox, lambda: run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
+
+
+def test_default_caller_reask_after_context_full_stop_keeps_the_whole_history():
+    llm, toolbox, run = _context_full_run(["not json", ANSWER])
+
+    assert run() == ANSWER
+
+    forced_request, reask_request = llm.requests[-2], llm.requests[-1]
+    assert [m.content for m in reask_request[: len(forced_request)]] == [m.content for m in forced_request]
+    assert len(reask_request) == len(forced_request) + 2
+    assert [t["assistant"] for t in toolbox.turns][-2:] == ["not json", ANSWER]
+
+
+def test_default_caller_reask_that_does_not_fit_still_raises_the_context_error():
+    llm, _, run = _context_full_run(["x" * RESULT_CHARS, ANSWER])
+
+    with pytest.raises(ValueError, match="Model request exceeds the configured context allowance"):
+        run()
+    assert llm.replies == [ANSWER]

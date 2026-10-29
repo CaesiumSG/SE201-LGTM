@@ -258,3 +258,52 @@ def test_full_context_still_ends_in_the_investigators_answer_not_a_context_error
     assert llm.options[-1].get("num_predict") == config.investigator_final_output_tokens
     final_chars = sum(len(str(m.content)) for m in llm.seen[-1])
     assert final_chars <= (config.llm_context_tokens - config.investigator_final_output_tokens) * 3
+
+
+def _full_context(config):
+    config.llm_context_tokens = 12000
+    config.investigator_max_tool_calls = 40
+    config.investigator_max_iterations = 40
+    filler = tool_call_reply(1)
+    filler.content = "x" * FILLER_CHARS
+    return filler
+
+
+def _chars(messages):
+    return sum(len(str(m.content)) for m in messages)
+
+
+def test_reask_after_a_context_full_stop_is_fitted_sent_and_recorded(config, toolbox):
+    big_cut = CUT + " " * 4000
+    llm = FillerLLM(_full_context(config), answer(VALID))
+    llm.script = [answer(big_cut), answer(VALID)]
+
+    result = run(config, toolbox, llm)
+
+    final_window = (config.llm_context_tokens - config.investigator_final_output_tokens) * 3
+    rounds = len(llm.seen) - 2
+    assert result.error is None
+    assert result.status == "ok"
+    assert [s.section_id for s in result.proposed] == ["s1"]
+    assert all(_chars(request) <= final_window for request in llm.seen[rounds:])
+    assert last_user_text(llm.seen[-1]) != registry.entry("shared.forced_final")
+    assert assistant_turns(result)[-2:] == [big_cut, VALID]
+    assert len(assistant_turns(result)) == len(llm.seen)
+    assert len(result.run_record.tool_calls) == rounds
+    assert [len(t["tool_calls"]) for t in result.run_record.turns] == [1] * rounds + [0, 0]
+    assert llm.options[-1].get("num_predict") == config.investigator_final_output_tokens
+
+
+def test_reask_that_cannot_be_fitted_is_invalid_like_an_exhausted_cap_and_not_retried(config, toolbox, tmp_path):
+    capped = run(config, AgentToolbox(tmp_path, "main", None, config), OptionsLLM([answer(CUT)]))
+    huge_cut = CUT + " " * 11000
+    llm = FillerLLM(_full_context(config), answer(huge_cut))
+
+    result = run(config, toolbox, llm)
+
+    rounds = len(llm.seen) - 1
+    assert len(llm.seen) == rounds + 1
+    assert result.status == "failed"
+    assert result.proposed is None
+    assert result.error == capped.error
+    assert assistant_turns(result)[-1] == huge_cut

@@ -520,6 +520,18 @@ def _with_options(llm, options: dict):
     return copy(update=options) if options and copy else llm
 
 
+def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
+    """Drop the oldest messages after the system and user pair until the request fits; the failed answer and the re-ask stay."""
+    allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
+    total = _message_chars(messages)
+    drop = 2
+    while total > allowance and drop < len(messages) - 2:
+        total -= len(str(messages[drop].content))
+        drop += 1
+    del messages[2:drop]
+    return total <= allowance
+
+
 def request_valid_answer(
     llm,
     messages: list,
@@ -538,6 +550,10 @@ def request_valid_answer(
         reasks += 1
         logger.warning("Final answer was not valid JSON; re-asking (%d of %d)", reasks, cap)
         messages.append(HumanMessage(content=registry.entry(reask)))
+        if "num_predict" in (options or {}) and not _fit_reask(messages, config, options["num_predict"]):
+            logger.warning("Re-ask does not fit the context allowance; keeping the invalid answer")
+            messages.pop()
+            break
         response = invoke_with_retry(llm, messages, config, (options or {}).get("num_predict"))
         messages.append(response)
         content = message_text(response)
