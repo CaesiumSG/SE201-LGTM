@@ -29,9 +29,6 @@ REASON_REQUEST_TOO_LARGE = "request-too-large"
 REASON_JUDGE_FAILED = "judge-failed"
 REASON_NO_CITED_SOURCE = "no-cited-source"
 
-NO_KEV_REASONING = "Kev returned no reasoning text."
-ASK_REASONING = " Briefly state your reasoning."
-
 SUPPORT_ANSWERS = {
     "yes": "The cited code supports the claimed security flaw.",
     "no": "The cited code does not support the claimed security flaw.",
@@ -75,7 +72,7 @@ def _neutral_questions(subject: str) -> dict[str, dict]:
     return {
         QUESTION_SUPPORT: {
             "type": "choice",
-            "instructions": f"Looking only at the cited code, does it contain {subject}?" + ASK_REASONING,
+            "instructions": f"Looking only at the cited code, does it contain {subject}?",
             "criteria": {
                 "yes": f"The cited code contains {subject}.",
                 "no": f"The cited code does not contain {subject}.",
@@ -92,7 +89,7 @@ def _questions(few_shot: bool) -> dict[str, dict]:
     questions = {
         QUESTION_SUPPORT: {
             "type": "choice",
-            "instructions": "Does the cited code support the claimed security flaw?" + ASK_REASONING,
+            "instructions": "Does the cited code support the claimed security flaw?",
             "criteria": SUPPORT_ANSWERS,
         },
         QUESTION_VERDICT: {
@@ -207,7 +204,6 @@ def apply_judge_answer(finding: AgentFinding, answer: Mapping[str, Any]) -> None
     finding.kev_verdict = verdict
     finding.kev_severity = severity
     finding.judged = True
-    finding.kev_reasoning = str(answer.get("reasoning") or "").strip() or NO_KEV_REASONING
 
 
 def parse_kev_reply(reply: Any) -> dict[str, Any]:
@@ -221,10 +217,6 @@ def parse_kev_reply(reply: Any) -> dict[str, Any]:
             QUESTION_CONFIDENCE: answers[QUESTION_CONFIDENCE]["noul"],
         }
         parsed["input_tokens"] = (reply.get("usage") or {}).get("input_tokens")
-        texts = [reply.get("reasoning"), *(a.get("reasoning") for a in answers.values() if isinstance(a, dict))]
-        parsed["reasoning"] = "\n".join(
-            dict.fromkeys(t.strip() for t in texts if isinstance(t, str) and t.strip())
-        )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"judge reply lacks an answer: {exc!r}") from exc
     return parsed
@@ -278,7 +270,6 @@ def judge_candidates(
         finding.provenance_confidence = None
         finding.kev_verdict = None
         finding.kev_severity = None
-        finding.kev_reasoning = ""
         finding.judged = False
         finding.not_judged_reason = ""
         finding.unsupported_reason = ""

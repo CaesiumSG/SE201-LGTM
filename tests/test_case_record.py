@@ -15,7 +15,13 @@ from lgtm.agents.base import AgentFinding, EvidenceItem, RunRecord, fill_record,
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.reporting.report_builder import ReviewMetadata
-from lgtm.validation.judge import build_judge_request, judge_candidates
+from lgtm.validation.judge import (
+    REASON_JUDGE_FAILED,
+    REASON_REQUEST_TOO_LARGE,
+    REQUEST_FORMATS,
+    build_judge_request,
+    judge_candidates,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -32,7 +38,6 @@ evaluate = _load("case_record_bench_evaluate", ROOT / "benchmark" / "evaluate.py
 er = _load("case_record_rw_evaluate_real", ROOT / "benchmark" / "real_world" / "evaluate_real.py")
 
 TURN_TEXT = "TRACE_TURN_TEXT_SENTINEL"
-KEV_TEXT = "TRACE_KEV_REASONING_SENTINEL the sink gets a formatted string"
 CASE_ID = "aegra_authz_vulnerable"
 
 
@@ -59,8 +64,8 @@ def _real_record(git_repo) -> tuple[RunRecord, str]:
         _ai('{"verdict": "safe"}'),
     )
     toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig())
-    out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
     record = RunRecord(section="authz:s1")
+    out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
     fill_record(record, toolbox, out)
     [result] = [m.content for m in llm.seen if type(m).__name__ == "ToolMessage"]
     return record, result
@@ -85,12 +90,14 @@ def _kev_finding() -> AgentFinding:
             label = next((n for n in labels if n.lower().startswith("y")), labels[0]) if qid == "supported" else labels[0]
             answers[qid] = {"type": "choice", "choice": label, "confidence": 0.8,
                             "probabilities": {n: (0.9 if n == label else 0.1) for n in labels}}
-    for answer in answers.values():
-        answer["reasoning"] = KEV_TEXT
-    reply = {"model": "kev-test", "answers": answers, "usage": {"input_tokens": 1, "output_tokens": 0},
-             "reasoning": KEV_TEXT}
+    reply = {"model": "kev-test", "answers": answers, "usage": {"input_tokens": 1, "output_tokens": 0}}
     judge_candidates([finding], lambda item: "CODE", LGTMConfig(), lambda req: judge_module.parse_kev_reply(reply))
     return finding
+
+
+class _UnserialisableFinding(AgentFinding):
+    def model_dump(self, *args, **kwargs):
+        raise TypeError("not serialisable")
 
 
 class _Pipeline:
@@ -153,7 +160,7 @@ BASE_TOP_KEYS = {
 }
 
 
-def _kev_reasoning_keys(row):
+def _reasoning_keys(row):
     return [k for f in row["findings"] for k in f if "reasoning" in k]
 
 
@@ -166,7 +173,7 @@ def _review(findings, records):
 
 @RUNNERS
 class TestTraceInLgtmResults:
-    def test_trace_holds_the_turns_tool_results_and_kev_reasoning(self, runner, monkeypatch, tmp_path, git_repo):
+    def test_trace_holds_the_turns_tool_results_and_kev_results_without_reasoning(self, runner, monkeypatch, tmp_path, git_repo):
         record, tool_result = _real_record(git_repo)
 
         row = runner(monkeypatch, tmp_path, "lgtm", _review([_kev_finding()], [record]))
@@ -174,9 +181,12 @@ class TestTraceInLgtmResults:
         trace = json.dumps(row["trace"])
         assert TURN_TEXT in trace
         assert json.dumps(tool_result)[1:-1] in trace
-        assert KEV_TEXT in trace
-        assert _kev_reasoning_keys(row) == []
-        assert KEV_TEXT not in json.dumps(row["findings"])
+        kev = row["trace"]["kev"][0]
+        assert kev["judged"] is True
+        assert kev["kev_verdict"] and kev["kev_severity"]
+        assert kev["supported"] is True
+        assert not any("reasoning" in k for k in kev)
+        assert _reasoning_keys(row) == []
 
     def test_trace_key_is_present_and_the_row_is_json_when_no_agent_ran(self, runner, monkeypatch, tmp_path):
         row = runner(monkeypatch, tmp_path, "lgtm", _review([], []))
@@ -203,20 +213,82 @@ class TestTraceInLgtmResults:
     ):
         record, _ = _real_record(git_repo)
 
-        def boom(*args, **kwargs):
-            raise RuntimeError("scoring blew up")
-
-        monkeypatch.setattr(evaluate, "finding_verdict", boom)
-        monkeypatch.setattr(er.evaluate, "finding_verdict", boom)
-
-        row = runner(monkeypatch, tmp_path, "lgtm", _review([_kev_finding()], [record]))
+        bad = _UnserialisableFinding(finding_id="bad:1", category="authz", explanation="x", file="app.py", line=1)
+        row = runner(monkeypatch, tmp_path, "lgtm", _review([bad], [record]))
 
         assert row["outcome"] == "ERROR"
-        assert "scoring blew up" in row["error"]
-        trace = json.dumps(row["trace"])
-        assert TURN_TEXT in trace and KEV_TEXT in trace
-        assert _kev_reasoning_keys(row) == []
-        assert [f["finding_id"] for f in row["findings"]] == ["authz:1"]
+        assert row["error"]
+        json.dumps(row)
+        assert {"id", "category", "expected", "mode", "findings", "n_findings", "verdicts", "pin"} <= set(row)
+        assert row["mode"] == "lgtm"
+        assert [r["section"] for r in row["run_records"]] == ["authz:s1"]
+        assert row["run_records"][0]["tool_calls"][0]["tool"] == "read_file"
+        assert TURN_TEXT in json.dumps(row["trace"])
+
+
+class TestRunRecordIsolation:
+    def test_a_later_run_without_a_new_record_does_not_append_to_an_earlier_record(self, git_repo):
+        earlier, _ = _real_record(git_repo)
+        turns_before = list(earlier.turns)
+        assert turns_before
+
+        llm = _LLM(_ai("LATER_RUN_TEXT"))
+        toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig())
+        run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
+
+        assert earlier.turns == turns_before
+
+
+class TestUnjudgedFindingInTrace:
+    @pytest.mark.parametrize("reason", [REASON_JUDGE_FAILED, REASON_REQUEST_TOO_LARGE])
+    def test_trace_records_the_unjudged_state_and_reason_without_reasoning(self, monkeypatch, tmp_path, reason):
+        finding = AgentFinding(
+            finding_id="authz:2", category="authz", explanation="no ownership check", file="app.py", line=1,
+            evidence=[EvidenceItem(type="code", file="app.py", lines=[1, 1], content="x", snapshot="pr")],
+        )
+        if reason == REASON_JUDGE_FAILED:
+            def judge(request):
+                raise RuntimeError("kev unreachable")
+            read = lambda item: "CODE"  # noqa: E731
+        else:
+            judge = lambda request: {}  # noqa: E731
+            read = lambda item: "x" * 100_000  # noqa: E731
+        judge_candidates([finding], read, LGTMConfig(), judge)
+        agreeing = _kev_finding()
+
+        for runner in (_run_synthetic, _run_real_world):
+            row = runner(monkeypatch, tmp_path, "lgtm", _review([finding, agreeing], []))
+
+            by_id = {k["finding_id"]: k for k in row["trace"]["kev"]}
+            unjudged = by_id["authz:2"]
+            assert unjudged["judged"] is False
+            assert unjudged["not_judged_reason"] == reason
+            assert unjudged["kev_verdict"] is None
+            assert not any("reasoning" in k for k in unjudged)
+            assert by_id["authz:1"]["judged"] is True
+            assert by_id["authz:1"]["not_judged_reason"] in ("", None)
+
+
+class TestKevPromptHasNoReasoningRequest:
+    @pytest.mark.parametrize("request_format", REQUEST_FORMATS)
+    def test_questions_carry_no_added_reasoning_request(self, request_format):
+        finding = AgentFinding(
+            finding_id="authz:1", category="authz", explanation="no ownership check", file="app.py", line=1,
+            evidence=[EvidenceItem(type="code", file="app.py", lines=[1, 1], content="x", snapshot="pr")],
+        )
+        request = build_judge_request(
+            finding, lambda item: "CODE", model="kev-test", max_chars=200_000, request_format=request_format
+        )
+
+        for question in request["questions"].values():
+            assert "reasoning" not in question["instructions"].lower()
+        if request_format == "current":
+            instructions = {q["instructions"] for q in request["questions"].values()}
+            assert any(i.startswith("Does the cited code support the claimed security flaw?\n") for i in instructions)
+            assert any(
+                i.startswith("Is the claimed security flaw a real vulnerability in the cited code?\n")
+                for i in instructions
+            )
 
 
 @RUNNERS

@@ -1289,44 +1289,30 @@ class TestKevFieldsOnTheFinding:
         assert finding.kev_verdict is None and finding.kev_severity is None
 
 
-class TestKevReasoningOnTheJudgedFinding:
+class TestKevCarriesNoReasoning:
     REASONING = "KEV_REASONING_SENTINEL the cursor receives a formatted string"
 
-    @classmethod
-    def _judged(cls, reasoning=None):
+    def test_reasoning_text_in_the_kev_reply_is_not_carried_and_verdict_and_support_are(self):
         request = _build(_candidate())
         reply = _kev_payload(request)
-        if reasoning is not None:
-            reply["reasoning"] = reasoning
-            for answer in reply["answers"].values():
-                answer["reasoning"] = reasoning
+        reply["reasoning"] = self.REASONING
+        for answer in reply["answers"].values():
+            answer["reasoning"] = self.REASONING
         finding = _candidate()
+
         judge_candidates(
             [finding], lambda item: "CODE", LGTMConfig(), lambda req: judge_module.parse_kev_reply(reply)
         )
-        return finding
 
-    def test_reasoning_text_in_the_kev_reply_is_kept_with_the_verdict_and_support(self):
-        finding = self._judged(self.REASONING)
-
-        assert self.REASONING in finding.kev_reasoning
-        assert "kev_reasoning" not in finding.model_dump()
+        assert self.REASONING not in json.dumps(finding.model_dump(), default=str)
+        assert not any("reasoning" in k for k in finding.model_dump())
+        assert not hasattr(finding, "kev_reasoning")
         assert finding.judged is True and finding.supported is True
         assert finding.kev_verdict and finding.kev_severity
         assert finding.provenance_confidence == 0.9
 
-    def test_a_reply_without_reasoning_is_stated_in_words_and_is_not_taken_for_agreement(self):
-        with_reasoning = self._judged(self.REASONING)
-        without = self._judged()
-
-        stated = without.kev_reasoning
-        assert len(stated.split()) >= 2
-        assert self.REASONING not in stated
-        assert stated != with_reasoning.kev_reasoning
-        assert without.judged is True
-
     @pytest.mark.parametrize("failure", [ConnectionError("down"), TimeoutError("slow")])
-    def test_an_unreachable_or_slow_kev_is_stated_in_words_and_does_not_abort_the_others(self, failure):
+    def test_an_unreachable_or_slow_kev_gives_a_reason_and_does_not_abort_the_others(self, failure):
         def judge(request):
             if "FAIL_ME" in request["state"]:
                 raise failure

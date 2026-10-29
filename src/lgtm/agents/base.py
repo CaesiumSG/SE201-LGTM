@@ -88,7 +88,6 @@ class AgentFinding(BaseModel):
     provenance_confidence: float | None = None
     kev_verdict: str | None = None
     kev_severity: str | None = None
-    kev_reasoning: str = Field(default="", exclude=True)
     judged: bool = False
     not_judged_reason: str = ""
     unsupported_reason: str = ""
@@ -597,6 +596,8 @@ def run_tool_loop(
     window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
     final_chars = len(registry.entry("shared.forced_final"))
     open_record = _open_record.get()
+    # Consumed by this run; a later run without a new RunRecord must not append to it.
+    _open_record.set(None)
     sinks = [s for s in (getattr(toolbox, "turns", None), open_record and open_record.turns) if s is not None]
 
     def log_turn(text: str) -> dict:

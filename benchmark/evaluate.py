@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 import shutil
 import statistics
 import subprocess
@@ -45,6 +46,8 @@ from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.coverage import location_overlaps  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
 from lgtm.validation.judge import REASON_JUDGE_FAILED, http_judge  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
@@ -162,27 +165,41 @@ def trace_fields(mode: str, review=None) -> dict:
                 "kev_severity": row.get("kev_severity"),
                 "supported": row.get("supported"),
                 "provenance_confidence": row.get("provenance_confidence"),
-                "reasoning": getattr(f, "kev_reasoning", ""),
                 "not_judged_reason": row.get("not_judged_reason"),
             }
             for f in getattr(review, "findings", None) or []
-            for row in [f.model_dump(exclude={"raw_response"})]
+            for row in [_dump_or_empty(f)]
         ],
     }}
+
+
+def _dump_or_empty(finding) -> dict:
+    try:
+        return finding.model_dump(exclude={"raw_response"})
+    except Exception:  # noqa: BLE001 - the trace entry keeps its keys with empty values
+        logger.exception("Could not serialise finding for the trace")
+        return {}
 
 
 def partial_fields(mode: str, review=None) -> dict:
     """What a judged-mode review gathered, kept on an error row."""
     if mode not in JUDGED_MODES or review is None:
         return {}
-    try:
-        return {
-            "findings": [f.model_dump(exclude={"raw_response"}) for f in review.findings],
-            "run_records": run_record_fields(review),
-            **trace_fields(mode, review),
-        }
-    except Exception:  # noqa: BLE001 - unserialisable partial work never costs the error row
-        return {}
+    parts = {
+        "findings": lambda: [f.model_dump(exclude={"raw_response"}) for f in review.findings],
+        "run_records": lambda: run_record_fields(review),
+        "trace": lambda: trace_fields(mode, review).get("trace"),
+    }
+    fields = {}
+    for key, build in parts.items():
+        try:
+            value = build()
+        except Exception:  # noqa: BLE001 - one unserialisable part never costs the others or the error row
+            logger.exception("Could not serialise partial %s", key)
+            continue
+        if value is not None:
+            fields[key] = value
+    return fields
 
 
 def sast_fields(review=None) -> dict:
