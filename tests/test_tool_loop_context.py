@@ -8,7 +8,15 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from lgtm.agents.base import CHARS_PER_TOKEN, build_llm, invoke_with_retry, request_valid_answer, run_tool_loop
+from lgtm.agents.base import (
+    CHARS_PER_TOKEN,
+    FinalAnswerSpec,
+    build_llm,
+    final_answer_spec,
+    invoke_with_retry,
+    request_valid_answer,
+    run_tool_loop,
+)
 from lgtm.config import LGTMConfig
 
 CONTEXT_TOKENS = 1400
@@ -208,3 +216,16 @@ def test_short_conversation_is_unaffected():
     assert out == ANSWER
     assert len(runs) == 2
     assert len(llm.requests) == 3
+
+
+def test_context_full_stop_leaves_room_for_a_larger_final_answer_allowance():
+    final_tokens = 800
+    dump, _, _ = _tool()
+    llm = _ContextLLM(SCRIPTED_CALLS)
+
+    with final_answer_spec(FinalAnswerSpec(options={"num_predict": final_tokens})):
+        out = run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
+
+    assert out == ANSWER
+    final_window = (CONTEXT_TOKENS - final_tokens) * CHARS_PER_TOKEN
+    assert _chars(llm.requests[-1]) <= final_window

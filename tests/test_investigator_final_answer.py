@@ -12,6 +12,9 @@ from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from tests.test_investigator import answer, sections_json, small_diffs, tool_call_reply
 
+FINAL_TOKENS = 5000
+FILLER_CHARS = 3000
+
 CUT = (
     '{"sections": [{"id": "s1", "title": "T", "rationale": "r", "hunks": ["app.py#0"], '
     '"context": []}, {"id": "s2", "title": "Second", "rationale": "r2", "hun'
@@ -48,6 +51,25 @@ class OptionsLLM:
         self.seen.append(list(messages))
         self.options.append({**self._options, **kwargs})
         return self.script.pop(0) if len(self.script) > 1 else self.script[0]
+
+
+class FillerLLM(OptionsLLM):
+    """Keeps calling a tool while tools are bound; the unbound final-answer turns get the answer."""
+
+    def __init__(self, filler, final):
+        super().__init__([final])
+        self.filler = filler
+
+    def bind_tools(self, tools):
+        owner = self
+
+        class _Bound:
+            def invoke(self, messages, **kwargs):
+                owner.seen.append(list(messages))
+                owner.options.append(dict(owner._options))
+                return owner.filler
+
+        return _Bound()
 
 
 def limits(options):
@@ -195,3 +217,44 @@ def test_tool_rounds_keep_the_default_output_limit(config, toolbox):
     run(config, toolbox, llm)
 
     assert all(value <= config.llm_max_output_tokens for value in limits(llm.options[0]))
+
+
+def num_predicts(llm):
+    return [options.get("num_predict") for options in llm.options]
+
+
+def test_reask_turn_runs_with_the_configured_final_output_allowance(config, toolbox):
+    config.investigator_final_output_tokens = FINAL_TOKENS
+    llm = OptionsLLM([answer(CUT), answer(VALID)])
+
+    run(config, toolbox, llm)
+
+    assert num_predicts(llm)[1] == FINAL_TOKENS
+
+
+def test_forced_final_and_its_reask_run_with_the_configured_final_output_allowance(config, toolbox):
+    config.investigator_final_output_tokens = FINAL_TOKENS
+    llm = OptionsLLM([tool_call_reply(1), tool_call_reply(1), answer(CUT), answer(VALID)])
+
+    run(config, toolbox, llm)
+
+    assert num_predicts(llm)[2:4] == [FINAL_TOKENS, FINAL_TOKENS]
+    assert num_predicts(llm)[0] != FINAL_TOKENS
+
+
+def test_full_context_still_ends_in_the_investigators_answer_not_a_context_error(config, toolbox):
+    config.llm_context_tokens = 12000
+    config.investigator_max_tool_calls = 40
+    config.investigator_max_iterations = 40
+    filler = tool_call_reply(1)
+    filler.content = "x" * FILLER_CHARS
+    llm = FillerLLM(filler, answer(VALID))
+
+    result = run(config, toolbox, llm)
+
+    assert result.error is None
+    assert result.status == "ok"
+    assert [s.section_id for s in result.proposed] == ["s1"]
+    assert llm.options[-1].get("num_predict") == config.investigator_final_output_tokens
+    final_chars = sum(len(str(m.content)) for m in llm.seen[-1])
+    assert final_chars <= (config.llm_context_tokens - config.investigator_final_output_tokens) * 3

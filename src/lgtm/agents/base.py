@@ -722,7 +722,7 @@ def run_tool_loop(
             break
         used = _message_chars(messages)
         # Another round as large as this one, plus the final-answer prompt, would not fit.
-        if used + (used - round_start) + final_chars > window_chars:
+        if used + (used - round_start) + final_chars > min(window_chars, final_window_chars):
             context_full = True
             break
 
