@@ -1,7 +1,11 @@
 # qwen3.8:27b evaluation
 
 The same pipeline and both benchmark suites, run with `qwen3.8:27b` on one
-GPU. Comparisons with the committed `qwen2.5-coder:7b` runs are in section D.
+GPU. This page describes the archived 18 Oct runs in
+`benchmark/runs/archive/gpu-qwen3.8-27b/` and `benchmark/runs/archive/gpu-shared/`,
+scored under the earlier rules, with conditions (sast-only, lgtm-no-sast,
+policy variants). Comparisons with
+the archived `qwen2.5-coder:7b` runs are in section D.
 
 ## Summary
 
@@ -19,7 +23,7 @@ GPU. Comparisons with the committed `qwen2.5-coder:7b` runs are in section D.
 
 ## A. Setup
 
-Source: `benchmark/runs/gpu-qwen3.8-27b/deployment.json`, unless noted.
+Source: `benchmark/runs/archive/gpu-qwen3.8-27b/deployment.json`, unless noted.
 
 | | |
 |---|---|
@@ -43,7 +47,7 @@ Suites:
   (6 cases).
 
 Modes: lgtm, lgtm-no-sast and llm-only. sast-only does not call the model.
-Its results are in `benchmark/runs/gpu-shared/`. Its `run.json` `model` field
+Its results are in `benchmark/runs/archive/gpu-shared/`. Its `run.json` `model` field
 shows the configured default (`qwen2.5-coder:7b`); its `summary.json` records
 model `none`.
 
@@ -53,8 +57,17 @@ each finding.
 
 ## B. Shoply results
 
-Source: `benchmark/runs/gpu-qwen3.8-27b/shoply/<mode>/summary.json`; sast-only
-from `benchmark/runs/gpu-shared/shoply/sast-only/summary.json`.
+> **Withdrawn (24 Oct).** These Shoply runs were produced with the benchmark's
+> README (which describes every case) copied into the case repository and
+> indexed, so the authz agent could retrieve the case descriptions. The runs
+> were archived under `benchmark/runs/archive/` when the leak was fixed (PR #14); the
+> table stays only to document what was reported at the checkpoint. The
+> real-world runs in section C did not have this problem but were made on
+> case refs that have since been re-pinned (`benchmark/real_world/cases.json`,
+> 8 of 12 cases).
+
+Source (archived): `benchmark/runs/archive/gpu-qwen3.8-27b/shoply/<mode>/summary.json`;
+sast-only from `benchmark/runs/archive/gpu-shared/shoply/sast-only/summary.json`.
 
 | Mode | TP/FP/FN/TN | Precision | Recall | F1 | FPR on safe | Scored | Errors (rate) |
 |---|---|---|---|---|---|---|---|
@@ -88,8 +101,8 @@ llm-only misses: `authz_06_safe` (FP) and `authz_06_vulnerable` (FN).
 
 ## C. Real-world results
 
-Source: `benchmark/runs/gpu-qwen3.8-27b/real_world/<mode>/summary.json`;
-sast-only from `benchmark/runs/gpu-shared/real_world/sast-only/summary.json`.
+Source: `benchmark/runs/archive/gpu-qwen3.8-27b/real_world/<mode>/summary.json`;
+sast-only from `benchmark/runs/archive/gpu-shared/real_world/sast-only/summary.json`.
 All summaries are complete.
 
 | Mode | TP/FP/FN/TN | Precision | Recall | F1 | FPR on safe | Scored | Errors (rate) |
@@ -128,25 +141,25 @@ Misses:
 
 ## D. Comparison with qwen2.5-coder:7b
 
-The qwen2.5-coder:7b baselines ran on older code. The Shoply baselines record
+The archived qwen2.5-coder:7b baselines ran on older code. The Shoply baselines record
 git_commit `unknown`. The real-world baselines record `0f8f527`. Since then the
 code gained UTF-8 diff decoding (`4bf1cb6`), error accounting (`886305d`), and
 LLM retries, tool-input validation and re-asks of non-JSON answers
 (`efe14ca`). The agent text sent to the model is unchanged. Model and code
-changes are therefore not separated in this comparison. The committed
+changes are therefore not separated in this comparison. The archived
 qwen2.5-coder:7b baseline summaries record no GPU type, and the real-world
 baseline summaries record Ollama 0.40.4 (this run: 0.34.2) and ran with the default 4096-token context (this run: 32768), so latency is not
 compared (section E).
 
 | Comparison | Baseline source | TP/FP/FN/TN (baseline → qwen3.8:27b) | F1 (baseline → qwen3.8:27b) | Grounded F1 (baseline → qwen3.8:27b) | Other | Changed cases |
 |---|---|---|---|---|---|---|
-| Shoply lgtm | `benchmark/runs/run6-final/lgtm` | 17/1/1/17 → 18/0/0/18 | 0.944 → 1.000 | 0.914 → 1.000 | FPR 0.056 → 0.000; grounding 0.925 → 0.970 | `authz_06_safe` FP → TN; `sqli_04_vulnerable` FN → TP |
-| Shoply lgtm-no-sast | `benchmark/runs/run3-bugfixes/lgtm-no-sast` | 17/2/1/16 → 18/0/0/18 | 0.919 → 1.000 | 0.889 → 1.000 | FPR 0.111 → 0.000 | `authz_06_safe` FP → TN; `sqli_03_safe` FP → TN; `sqli_04_vulnerable` FN → TP |
-| Shoply llm-only | `benchmark/runs/run3-bugfixes/llm-only` | 12/2/6/16 → 17/1/1/17 | 0.750 → 0.944 | 0.750 → 0.944 | Authz F1 0.000 → 0.833 | `authz_01` to `authz_05_vulnerable` FN → TP; `sqli_03_safe` and `sqli_06_safe` FP → TN; `authz_06_safe` TN → FP |
-| Real-world lgtm | `benchmark/runs/real_world/lgtm` | 2/1/4/5 → 3/0/3/6 | 0.444 → 0.667 | 0.500 → 0.500 | Evidence grounding 0.833 → 0.500 | `langflow_authz_safe` FP → TN; `langflow_authz_vulnerable` FN → TP |
-| Real-world lgtm-no-sast | `benchmark/runs/real_world/lgtm-no-sast` | 2/1/4/5 → 3/0/3/6 | 0.444 → 0.667 | 0.444 → 0.286 | Evidence grounding 0.750 → 0.667 | `langflow_authz_safe` FP → TN; `langflow_authz_vulnerable` FN → TP |
-| Real-world policy modes | `benchmark/runs/real_world/lgtm-policy`, `benchmark/runs/real_world/lgtm-no-sast-policy` | 1/1/2/2 → 1/0/2/3 | 0.400 → 0.500 | 0.500 → 0.000 | Evidence grounding 0.500 → 0.500 (lgtm-policy); 0.833 → 0.833 (lgtm-no-sast-policy) | `langflow_authz_safe` FP → TN |
-| Real-world llm-only | `benchmark/runs/real_world/llm-only` | 4/0/2/6 → 6/0/0/6 | 0.800 → 1.000 | 0.800 → 0.909 | n/a | `alerta_sqli_vulnerable` and `litellm_authz_vulnerable` FN → TP |
+| Shoply lgtm | `benchmark/runs/archive/run6-final/lgtm` | 17/1/1/17 → 18/0/0/18 | 0.944 → 1.000 | 0.914 → 1.000 | FPR 0.056 → 0.000; grounding 0.925 → 0.970 | `authz_06_safe` FP → TN; `sqli_04_vulnerable` FN → TP |
+| Shoply lgtm-no-sast | `benchmark/runs/archive/run3-bugfixes/lgtm-no-sast` | 17/2/1/16 → 18/0/0/18 | 0.919 → 1.000 | 0.889 → 1.000 | FPR 0.111 → 0.000 | `authz_06_safe` FP → TN; `sqli_03_safe` FP → TN; `sqli_04_vulnerable` FN → TP |
+| Shoply llm-only | `benchmark/runs/archive/run3-bugfixes/llm-only` | 12/2/6/16 → 17/1/1/17 | 0.750 → 0.944 | 0.750 → 0.944 | Authz F1 0.000 → 0.833 | `authz_01` to `authz_05_vulnerable` FN → TP; `sqli_03_safe` and `sqli_06_safe` FP → TN; `authz_06_safe` TN → FP |
+| Real-world lgtm | `benchmark/runs/archive/real_world/lgtm` | 2/1/4/5 → 3/0/3/6 | 0.444 → 0.667 | 0.500 → 0.500 | Evidence grounding 0.833 → 0.500 | `langflow_authz_safe` FP → TN; `langflow_authz_vulnerable` FN → TP |
+| Real-world lgtm-no-sast | `benchmark/runs/archive/real_world/lgtm-no-sast` | 2/1/4/5 → 3/0/3/6 | 0.444 → 0.667 | 0.444 → 0.286 | Evidence grounding 0.750 → 0.667 | `langflow_authz_safe` FP → TN; `langflow_authz_vulnerable` FN → TP |
+| Real-world policy modes | `benchmark/runs/archive/real_world/lgtm-policy`, `benchmark/runs/archive/real_world/lgtm-no-sast-policy` | 1/1/2/2 → 1/0/2/3 | 0.400 → 0.500 | 0.500 → 0.000 | Evidence grounding 0.500 → 0.500 (lgtm-policy); 0.833 → 0.833 (lgtm-no-sast-policy) | `langflow_authz_safe` FP → TN |
+| Real-world llm-only | `benchmark/runs/archive/real_world/llm-only` | 4/0/2/6 → 6/0/0/6 | 0.800 → 1.000 | 0.800 → 0.909 | n/a | `alerta_sqli_vulnerable` and `litellm_authz_vulnerable` FN → TP |
 
 sast-only calls no model and is not in this table.
 
@@ -155,8 +168,8 @@ sast-only calls no model and is not in this table.
 Latency and wall time are reported for qwen3.8:27b only, and are not compared
 with the baselines (section D).
 
-Source: `benchmark/runs/gpu-qwen3.8-27b/run-stats.json` (sast-only from
-`benchmark/runs/gpu-shared/`, recorded in the same file).
+Source: `benchmark/runs/archive/gpu-qwen3.8-27b/run-stats.json` (sast-only from
+`benchmark/runs/archive/gpu-shared/`, recorded in the same file).
 
 - **Wall time** is the whole run, including the temp-repo build and indexing.
 - **Latency** is per case. Shoply latency includes the repo build and
@@ -196,7 +209,7 @@ qwen2.5-coder:7b runs record 0 tool calls on every finding.
 ## F. Agent limits and resilience counters
 
 Source: run logs, which are not committed. The per-mode totals are also in
-`benchmark/runs/gpu-qwen3.8-27b/run-stats.json`. The retry, invalid-input,
+`benchmark/runs/archive/gpu-qwen3.8-27b/run-stats.json`. The retry, invalid-input,
 re-ask and thinking-text results come from the logs only.
 
 | Mode | Iteration-cap forced finals | Cases that hit the cap | Tool-budget refusals |

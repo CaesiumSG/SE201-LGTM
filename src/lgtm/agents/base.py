@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -17,6 +19,8 @@ from lgtm.config import LGTMConfig
 logger = logging.getLogger(__name__)
 
 PARSE_RETRIES = 3
+
+UNRESOLVED_EVIDENCE_REASON = "unresolved-evidence"
 
 SNAPSHOT_LABELS = ("base", "pr")
 
@@ -81,8 +85,8 @@ class AgentFinding(BaseModel):
     severity: str = ""
     supported: bool | None = None
     provenance_confidence: float | None = None
-    kev_verdict: str | None = Field(default=None, exclude=True)
-    kev_severity: str | None = Field(default=None, exclude=True)
+    kev_verdict: str | None = None
+    kev_severity: str | None = None
     judged: bool = False
     not_judged_reason: str = ""
     unsupported_reason: str = ""
@@ -217,6 +221,7 @@ def parse_agent_output(
     a placeholder candidate, so a malformed LLM response never crashes the
     pipeline.
     """
+    text = _content_text(text)
     data = extract_json_object(text)
     if data is None:
         logger.warning("Agent output for %s contained no JSON", finding_id)
@@ -269,62 +274,84 @@ def parse_agent_output(
     )
 
 
-def answer_until_parsed(ask: Callable[[], str], parse: Callable[[str], Any | None]) -> Any | None:
+def answer_until_parsed(
+    ask: Callable[[], str],
+    parse: Callable[[str], Any | None],
+    stop: Callable[[], bool] = lambda: False,
+) -> Any | None:
     """Run ``ask`` until ``parse`` accepts its answer, retrying PARSE_RETRIES times.
 
     Exceptions from ``ask`` propagate unretried; None means every answer failed to parse.
+    ``stop`` is checked after each failed parse and ends the retries.
     """
     for _ in range(PARSE_RETRIES + 1):
         result = parse(ask())
         if result is not None:
             return result
+        if stop():
+            break
     return None
 
 
 def answer_until_resolved(
-    ask: Callable[[], str],
+    ask: Callable[..., str],
     parse: Callable[[str], AgentFinding | list[AgentFinding] | None],
     toolbox: Any,
 ) -> list[AgentFinding] | None:
     """Like ``answer_until_parsed``, but an answer citing code that does not resolve at the
     toolbox snapshots counts as a parse failure.
 
-    After the budget the last such answer is returned with unresolved items dropped and
-    candidates left without valid code evidence removed (logged); None means no answer parsed.
+    ``ask`` may take one optional argument: after such a failure it receives the re-ask text
+    naming the unresolved citations. After the budget the last such answer is returned whole;
+    candidates with unresolved items are marked unsupported (logged). None means no answer parsed.
     """
     from lgtm.validation.evidence import EvidenceValidator
 
     validator = EvidenceValidator(
         toolbox.repo, toolbox.base_ref, config=toolbox.config, shas=toolbox.shas
     )
-    pruned: list[AgentFinding] | None = None
-    dropped: list[AgentFinding] = []
+    unresolved: list[AgentFinding] | None = None
+    unresolved_ids: set[str] = set()
+    note = ""
+    takes_note = bool(inspect.signature(ask).parameters)
 
     def check(raw: str) -> list[AgentFinding] | None:
-        nonlocal pruned, dropped
+        nonlocal unresolved, unresolved_ids, note
         result = parse(raw)
         if result is None:
             return None
         findings = result if isinstance(result, list) else [result]
-        bad = {
-            id(f): [i for i in f.evidence if i.type != "policy" and not validator.resolves(i)]
+        issues = {
+            id(f): [
+                issue
+                for i in f.evidence
+                if i.type != "policy"
+                for issue in validator.resolution_issues(i)
+            ]
             for f in findings
         }
-        if not any(bad.values()):
+        if not any(issues.values()):
             return findings
-        pruned, dropped = [], []
-        for f in findings:
-            f.evidence = [i for i in f.evidence if i not in bad[id(f)]]
-            emptied = bad[id(f)] and not any(i.type != "policy" for i in f.evidence)
-            (dropped if emptied else pruned).append(f)
+        unresolved = findings
+        unresolved_ids = {id(f) for f in findings if issues[id(f)]}
+        note = registry.render(
+            "shared.unresolved_reask",
+            details="; ".join(i for found in issues.values() for i in found)[:1000],
+        )
         return None
 
-    answer = answer_until_parsed(ask, check)
+    def ask_with_note() -> str:
+        return ask(note) if note and takes_note else ask()
+
+    answer = answer_until_parsed(ask_with_note, check, lambda: toolbox.budget_spent)
     if answer is not None:
         return answer
-    for f in dropped:
-        logger.warning("Dropped candidate %s: no cited code resolves", f.finding_id)
-    return pruned
+    for f in unresolved or []:
+        if id(f) in unresolved_ids:
+            f.supported = False
+            f.unsupported_reason = UNRESOLVED_EVIDENCE_REASON
+            logger.warning("Kept candidate %s unsupported: cited code does not resolve", f.finding_id)
+    return unresolved
 
 
 def build_llm(config: LGTMConfig):
@@ -341,6 +368,7 @@ def build_llm(config: LGTMConfig):
         # runaway generation with no stop token blocked a benchmark run for
         # over an hour before either existed.
         num_predict=config.llm_max_output_tokens,
+        num_ctx=config.llm_context_tokens,
         client_kwargs={"timeout": config.llm_timeout},
         **kwargs,
     )
@@ -394,7 +422,17 @@ _sleep = time.sleep
 
 
 def message_text(response) -> str:
-    return response.content if isinstance(response.content, str) else str(response.content)
+    return _content_text(response.content)
+
+
+def _content_text(content) -> str:
+    if isinstance(content, list):
+        return "\n".join(
+            part if isinstance(part, str) else str(part.get("text", ""))
+            for part in content
+            if isinstance(part, str) or (isinstance(part, dict) and part.get("type", "text") == "text")
+        )
+    return content if isinstance(content, str) else str(content)
 
 
 def is_json_object(text: str) -> bool:
@@ -402,6 +440,9 @@ def is_json_object(text: str) -> bool:
 
 
 def invoke_with_retry(llm, messages, config: LGTMConfig) -> Any:
+    allowance = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+    if _message_chars(messages) > allowance:
+        raise ValueError("Model request exceeds the configured context allowance")
     attempts = max(0, config.llm_retries) + 1
     delays = tuple(config.llm_backoff_seconds)
     for attempt in range(1, attempts + 1):
@@ -474,6 +515,42 @@ def _toolbox_of(tools) -> Any:
     return None
 
 
+@dataclass
+class RunRecord:
+    """What one agent run did: tool calls, final answer text, and the budget it hit."""
+
+    section: str
+    tool_calls: list[dict] = field(default_factory=list)
+    raw_answer: str = ""
+    limit_hit: Literal["tool_calls", "steps"] | None = None
+
+
+def _close_run(toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False) -> str:
+    if toolbox is not None:
+        toolbox.steps_exhausted = steps_exhausted
+        toolbox.budget_spent = budget_spent
+    return answer
+
+
+def fill_record(record: RunRecord, toolbox: Any, answer: str) -> str:
+    """Fill ``record`` from the toolbox after a ``run_tool_loop`` call; returns ``answer``."""
+    record.raw_answer = answer
+    record.tool_calls = list(toolbox.call_log)
+    over_budget = getattr(toolbox, "budget_spent", False) or len(toolbox.call_log) > toolbox.budget
+    if toolbox.steps_exhausted:
+        record.limit_hit = "steps"
+    else:
+        record.limit_hit = "tool_calls" if over_budget else None
+    return answer
+
+
+CHARS_PER_TOKEN = 3
+
+
+def _message_chars(messages: list) -> int:
+    return sum(len(str(m.content)) for m in messages)
+
+
 def run_tool_loop(
     llm,
     tools: list,
@@ -497,9 +574,16 @@ def run_tool_loop(
     tools_used = 0
     pushed_back = False
     invalid_inputs = 0
+    budget_spent = False
+    context_full = False
     cap = config.max_invalid_tool_inputs
+    window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
+    final_chars = len(registry.entry("shared.forced_final"))
 
     for iteration in range(config.max_agent_iterations):
+        round_start = _message_chars(messages)
+        if round_start > window_chars:
+            raise ValueError("Agent request exceeds the configured context allowance")
         response = invoke_with_retry(llm_with_tools, messages, config)
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
@@ -520,7 +604,8 @@ def run_tool_loop(
                         )
                     )
                     continue
-                return request_valid_answer(llm, messages, content, config, is_json_object)
+                answer = request_valid_answer(llm, messages, content, config, is_json_object)
+                return _close_run(toolbox, answer, False)
 
         for call in tool_calls:
             name = call.get("name")
@@ -559,12 +644,36 @@ def run_tool_loop(
                 messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
         if cap > 0 and invalid_inputs >= cap:
             break
+        if toolbox is not None and toolbox.calls_used >= toolbox.budget:
+            # The budget is spent: every further tool call would be refused
+            # and still cost a full model call (a third of all calls in the
+            # 24 Oct Shoply run). Ask for the verdict now.
+            budget_spent = True
+            break
+        used = _message_chars(messages)
+        # Another round as large as this one, plus the final-answer prompt, would not fit.
+        if used + (used - round_start) + final_chars > window_chars:
+            context_full = True
+            break
 
-    if cap > 0 and invalid_inputs >= cap:
+    invalid_capped = cap > 0 and invalid_inputs >= cap
+    if context_full:
+        logger.warning("Agent history nears the context window; asking for the final answer")
+    elif invalid_capped:
         logger.warning("Agent hit invalid tool input cap (%d); forcing final answer", cap)
+    elif budget_spent:
+        logger.info("Agent spent its tool budget (%d); asking for the final answer", toolbox.budget)
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry("shared.forced_final")))
+    if _message_chars(messages) > window_chars:
+        raise ValueError("Forced-final request exceeds the configured context allowance")
     response = invoke_with_retry(llm, messages, config)
     messages.append(response)
-    return request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    answer = request_valid_answer(llm, messages, message_text(response), config, is_json_object)
+    return _close_run(
+        toolbox,
+        answer,
+        steps_exhausted=not (invalid_capped or budget_spent or context_full),
+        budget_spent=budget_spent,
+    )

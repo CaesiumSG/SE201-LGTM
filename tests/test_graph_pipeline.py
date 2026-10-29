@@ -516,7 +516,8 @@ class TestMetadata:
         assert llm.bound_tool_names and all(
             names == ["read_file", "grep_repo", "search_policy"] for names in llm.bound_tool_names
         )
-        assert _stamps(result) == {"a.py": False, "b.py": False, "c.py": False}
+        # No graph ran, so no finding carries a graph stamp (and none is downgraded).
+        assert _stamps(result) == {"a.py": None, "b.py": None, "c.py": None}
 
     def test_missing_binary_is_reported_even_when_no_section_yields_a_finding(
         self, repo, install_graph, monkeypatch
@@ -629,7 +630,7 @@ class TestSessionLifecycle:
         loaded = {}
         for mode in ("lgtm", "sast-only", "llm-only"):
             done = subprocess.run(
-                [sys.executable, "-I", str(script), mode, str(repo)],
+                [sys.executable, "-I", str(script), mode, str(repo), str(SRC_DIR)],
                 capture_output=True, text=True, timeout=120,
             )
             assert done.returncode == 0, done.stderr
@@ -647,11 +648,14 @@ class TestSessionLifecycle:
             assert (loaded[mode]["base"], loaded[mode]["pr"]) == ("main", "pr")
 
 
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+
 _PROBE = r'''
 import json, sys
 from types import SimpleNamespace
 
-mode, repo = sys.argv[1], sys.argv[2]
+mode, repo, src = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, src)  # -I ignores PYTHONPATH; import this checkout, not an installed lgtm
 import lgtm.pipeline as pipeline
 from lgtm.config import LGTMConfig
 
@@ -896,16 +900,19 @@ class TestCapIntegration:
         assert not triage.verdict
         assert result.meta.graph_state == "degraded:pr:timeout"
 
-    def test_triage_candidate_is_stamped_down_and_stays_unjudged_when_the_graph_binary_is_missing(
+    def test_triage_candidate_is_not_stamped_down_and_stays_unjudged_when_the_graph_binary_is_missing(
         self, repo, install_graph, semgrep
     ):
+        # A machine without CodeGraph must score a PR exactly as one with
+        # it would have before the graph ran: the cap applies only when the
+        # graph was running and failed for the PR snapshot.
         install_graph(FakeRunner(available=False))
         llm = ScriptedLLM([_msg(_vulnerable(_pr_evidence(content="os.system('invented')")))])
 
         result = _review(repo, llm)
 
         triage = next(f for f in result.findings if f.category != "authz" and f.file == "a.py")
-        assert triage.pr_graph_ok is False
+        assert triage.pr_graph_ok is None
         assert not triage.verdict
         assert result.meta.graph_state == "unavailable:missing"
 
@@ -1544,17 +1551,16 @@ class TestSectionPipeline:
         assert llm.user_prompts["investigator"] == [] and llm.user_prompts["section"] == []
         assert result.findings == []
 
-    def test_coverage_is_in_the_json_metadata_and_endpoint_counts_are_gone(
-        self, repo, install_graph, no_semgrep, tmp_path
+    def test_coverage_is_in_the_json_metadata_and_endpoint_count_is_informational(
+        self, repo_with_endpoints, install_graph, no_semgrep, tmp_path
     ):
         install_graph()
 
-        result = _review(repo, RoutedLLM(), output_dir=tmp_path / "out")
+        result = _review(repo_with_endpoints, RoutedLLM(), output_dir=tmp_path / "out")
 
         review = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
-        assert review["coverage"]["sections_scheduled"] == 4
-        assert "endpoints_reviewed" not in review
-        assert not hasattr(result.meta, "endpoints_reviewed")
+        assert review["coverage"]["sections_scheduled"] == 5
+        assert result.meta.endpoints_reviewed == 2
         assert "hunks_total" not in result.md_path.read_text(encoding="utf-8")
 
     def test_llm_only_mode_is_unchanged_and_runs_no_sections(
@@ -1988,3 +1994,107 @@ def test_judge_request_carries_the_code_at_the_cited_revision_and_not_the_agent_
     assert cited_code in states[0]
     assert other_revision_code not in states[0]
     assert agent_snippet not in states[0].partition("Cited item:")[2]
+
+
+SECTION_IDS = {"fallback:a.py", "fallback:b.py", "fallback:c.py", "fallback:app.py"}
+
+
+class _RoutedLLM(ScriptedLLM):
+    """Asks for ``rounds[route]`` read_file calls on a route, then answers like ScriptedLLM."""
+
+    def __init__(self, rounds):
+        super().__init__()
+        self.rounds = rounds
+        self.invocations = {}
+
+    def invoke(self, messages):
+        route = _route(messages)
+        n = self.invocations[route] = self.invocations.get(route, 0) + 1
+        if n <= self.rounds.get(route, 0):
+            return _call("read_file", {"path": "a.py"}, f"{route}-{n}")
+        return super().invoke(messages)
+
+
+def _attr(record, name):
+    return record[name] if isinstance(record, dict) else getattr(record, name)
+
+
+def _records(result):
+    return {_attr(r, "section"): r for r in result.run_records}
+
+
+def _run(repo, install_graph, rounds, **config):
+    install_graph()
+    return _review(repo, _RoutedLLM(rounds), mode="lgtm-no-sast", **config)
+
+
+class TestSectionRunRecords:
+    def test_result_carries_one_record_for_the_investigator_and_one_per_section(
+        self, repo, install_graph
+    ):
+        result = _run(repo, install_graph, {"investigator": 1})
+
+        records = _records(result)
+        graph_records = [
+            r for r in result.run_records if _attr(r, "section") in {"investigator", *SECTION_IDS}
+        ]
+        assert len(graph_records) == 1 + len(SECTION_IDS)
+        assert {"investigator", *SECTION_IDS} <= set(records)
+
+    def test_record_exposes_tool_calls_raw_answer_and_no_limit_when_none_was_hit(
+        self, repo, install_graph
+    ):
+        records = _records(_run(repo, install_graph, {"investigator": 1}))
+
+        investigator = records["investigator"]
+        [call] = _attr(investigator, "tool_calls")
+        assert call["tool"] == "read_file" and call["args"]["path"] == "a.py"
+        assert _attr(investigator, "raw_answer") == _no_sections()
+        assert _attr(investigator, "limit_hit") is None
+        section = records["fallback:a.py"]
+        assert _attr(section, "tool_calls") == []
+        assert _attr(section, "raw_answer") == _findings()
+        assert _attr(section, "limit_hit") is None
+
+    def test_investigator_that_exhausts_its_tool_budget_records_tool_calls(
+        self, repo, install_graph
+    ):
+        records = _records(
+            _run(repo, install_graph, {"investigator": 4}, investigator_max_tool_calls=2)
+        )
+
+        assert _attr(records["investigator"], "limit_hit") == "tool_calls"
+        assert {_attr(r, "limit_hit") for s, r in records.items() if s != "investigator"} == {None}
+
+    def test_investigator_that_exhausts_its_step_budget_records_steps(self, repo, install_graph):
+        records = _records(
+            _run(
+                repo, install_graph, {"investigator": 2},
+                investigator_max_iterations=2, investigator_max_tool_calls=50,
+            )
+        )
+
+        assert _attr(records["investigator"], "limit_hit") == "steps"
+        assert {_attr(r, "limit_hit") for s, r in records.items() if s != "investigator"} == {None}
+
+    def test_section_that_exhausts_the_tool_budget_records_tool_calls_for_that_section_only(
+        self, repo, install_graph
+    ):
+        records = _records(_run(repo, install_graph, {"section": 3}, max_tool_calls=1))
+
+        limits = {s: _attr(r, "limit_hit") for s, r in records.items()}
+        assert list(limits.values()).count("tool_calls") == 1
+        assert limits["investigator"] is None
+        assert set(limits.values()) == {None, "tool_calls"}
+
+    def test_section_that_exhausts_the_step_budget_records_steps_for_that_section_only(
+        self, repo, install_graph
+    ):
+        records = _records(
+            _run(repo, install_graph, {"section": 2}, max_agent_iterations=2, max_tool_calls=50)
+        )
+
+        limits = {s: _attr(r, "limit_hit") for s, r in records.items()}
+        assert list(limits.values()).count("steps") == 1
+        assert limits["investigator"] is None
+        assert set(limits.values()) == {None, "steps"}

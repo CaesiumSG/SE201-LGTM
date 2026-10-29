@@ -220,7 +220,7 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
   with `PYTHONUTF8=1`. `evaluate_real.py` reads its clones from the real-world
   cache of the worktree, `benchmark/real_world/.cache`. Before submitting, the
   command exits non-zero when a clone of a case is missing there, naming the
-  cache and `benchmark/real_world/fetch.py`. Run `benchmark/real_world/fetch.py --policies`
+  cache and `benchmark/real_world/fetch.py`. Run `benchmark/real_world/fetch.py`
   from the worktree before the job, or copy the clones into the cache. With
   `--results-dir DIR`, step 3 gets `--output DIR/evaluate --resume` and step 4
   gets `--output DIR/evaluate-real --resume`. Judged-mode units whose judged

@@ -1,0 +1,470 @@
+{
+  "id": "authz_04_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 102.71,
+  "est_tokens": 861,
+  "findings": [
+    {
+      "finding_id": "authz:user-orders-authorization:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new endpoint GET /users/<user_id>/orders authenticates the caller with @require_auth but then queries Order by the request-supplied user_id with no ownership verification. Any authenticated user can pass an arbitrary user_id and retrieve that user's orders (including shipping_address), violating security-policy.md \u00a73 ('A user may view ONLY their own orders... Listing another user's orders is restricted to that user themselves and administrators') and api-spec.md which lists '/users/<id>/orders | GET | owner or admin'. The sibling endpoint get_user in the same file correctly gates on is_owner_or_admin(g.current_user, user_id) (users.py:32), and the policy mandates using is_owner_or_admin(current_user, order.user_id) for order access. The new code omits this check entirely.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            62
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>/orders\", methods=[\"GET\"])\n@require_auth\ndef user_orders(user_id: int):\n    \"\"\"List a user's orders.\"\"\"\n    session = get_session()\n    orders = session.query(Order).filter(Order.user_id == user_id).all()\n    return jsonify([o.to_dict() for o in orders])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            107,
+            109
+          ],
+          "source": null,
+          "content": "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n    return user.id == owner_id or user.role == \"admin\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            28,
+            38
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>\", methods=[\"GET\"])\n@require_auth\ndef get_user(user_id: int):\n    \"\"\"Fetch a user profile. Owner or admin only.\"\"\"\n    if not is_owner_or_admin(g.current_user, user_id):\n        return jsonify({\"error\": \"forbidden\"}), 403",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data. Listing another user's orders is restricted to that user themselves and administrators.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/<id>/orders` | GET | owner or admin |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Add an ownership check before querying: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\"error\": \"forbidden\"}), 403` at the start of user_orders, matching the pattern used in get_user.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9384,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 61,
+      "tool_calls_used": 3,
+      "pr_graph_ok": true,
+      "input_tokens": 1051
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_auth, require_role, is_owner_or_admin decorators in app/auth"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "access rules for user orders endpoint, who may view another user's orders"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 11,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 53,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"user-orders-authorization\",\n      \"title\": \"New GET /users/<id>/orders endpoint lacks ownership/role check\",\n      \"rationale\": \"Both hunks together add a new endpoint that lists a user's orders. Hunk #0 adds the Order model import needed by the handler; hunk #1 adds the route itself. The authorization concern is that the handler only applies @require_auth (any authenticated user) and then queries Order by the request-supplied user_id with no is_owner_or_admin check, so any authenticated user can read any other user's orders. This violates security-policy.md \u00a73 ('A user may view ONLY their own orders... Listing another user's orders is restricted to that user themselves and administrators') and api-spec.md which lists '/users/<id>/orders | GET | owner or admin'. The sibling endpoints in the same file (get_user, update_user) correctly gate on is_owner_or_admin(g.current_user, user_id), and the analogous orders.py endpoints scope to g.current_user.id or require the manager role, so the missing check here is the access-control defect to review.\",\n      \"hunks\": [\"app/routes/users.py#0\", \"app/routes/users.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The ownership check the new endpoint should apply but does not; returns user.id == owner_id or user.role == 'admin'.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Only decorator applied to user_orders; authenticates any user and sets g.current_user but performs no per-object authorization.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"base\", \"why\": \"Sibling endpoint in the same file that correctly gates on is_owner_or_admin(g.current_user, user_id) before returning data, showing the intended pattern the new endpoint omits.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"base\", \"why\": \"Analogous orders-listing endpoint that scopes the query to g.current_user.id rather than a request-supplied user_id, demonstrating the ownership-scoped access model.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Order model with user_id FK and to_dict() that the new endpoint queries and serializes; confirms the data exposed is per-user order records.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "user-orders-authorization",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 43,
+            "end_line": 62,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The new endpoint GET /users/<user_id>/orders authenticates the caller with @require_auth but then queries Order by the request-supplied user_id with no ownership verification. Any authenticated user can pass an arbitrary user_id and retrieve that user's orders (including shipping_address), violating security-policy.md \u00a73 ('A user may view ONLY their own orders... Listing another user's orders is restricted to that user themselves and administrators') and api-spec.md which lists '/users/<id>/orders | GET | owner or admin'. The sibling endpoint get_user in the same file correctly gates on is_owner_or_admin(g.current_user, user_id) (users.py:32), and the policy mandates using is_owner_or_admin(current_user, order.user_id) for order access. The new code omits this check entirely.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [56, 62], \"content\": \"@users_bp.route(\\\"/<int:user_id>/orders\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef user_orders(user_id: int):\\n    \\\"\\\"\\\"List a user's orders.\\\"\\\"\\\"\\n    session = get_session()\\n    orders = session.query(Order).filter(Order.user_id == user_id).all()\\n    return jsonify([o.to_dict() for o in orders])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [107, 109], \"content\": \"def is_owner_or_admin(user: User, owner_id: int) -> bool:\\n    \\\"\\\"\\\"Ownership check used for per-object access (orders, profiles).\\\"\\\"\\\"\\n    return user.id == owner_id or user.role == \\\"admin\\\"\"},\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [28, 38], \"content\": \"@users_bp.route(\\\"/<int:user_id>\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef get_user(user_id: int):\\n    \\\"\\\"\\\"Fetch a user profile. Owner or admin only.\\\"\\\"\\\"\\n    if not is_owner_or_admin(g.current_user, user_id):\\n        return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data. Listing another user's orders is restricted to that user themselves and administrators.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/users/<id>/orders` | GET | owner or admin |\"}\n      ],\n      \"suggested_fix\": \"Add an ownership check before querying: `if not is_owner_or_admin(g.current_user, user_id): return jsonify({\\\"error\\\": \\\"forbidden\\\"}), 403` at the start of user_orders, matching the pattern used in get_user.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 61\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "68c0051b97970fbe12969e4e6975ebdf409a4116",
+    "pr_sha": "0c47b5284a07db7819ed73b86e7732e37f880ec9",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "user-orders-authorization",
+        "origin": "investigator",
+        "title": "New GET /users/<id>/orders endpoint lacks ownership/role check",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 11,
+            "old_count": 7,
+            "new_start": 11,
+            "new_count": 7,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/users.py#1",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 53,
+            "new_count": 10,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:user-orders-authorization:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.05,
+  "base_sha": "68c0051b97970fbe12969e4e6975ebdf409a4116",
+  "pr_sha": "0c47b5284a07db7819ed73b86e7732e37f880ec9",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "user-orders-authorization"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

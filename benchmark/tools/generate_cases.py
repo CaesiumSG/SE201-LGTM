@@ -281,16 +281,18 @@ CASES.append(Case(
 def run_maintenance():
     """Purge audit-log entries for a user (maintenance procedure)."""
     user_id = request.args.get("user_id", "")
+    table = "audit_log"
     conn = get_engine().raw_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM audit_log WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM %s WHERE user_id = ?" % table, (user_id,))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"status": "maintenance complete"})
 ''',
-    description="Same maintenance procedure with a DB-API placeholder.",
+    description="Same maintenance procedure: the table name is a fixed "
+                "constant and the user id is a DB-API placeholder.",
 ))
 
 # --- Pair 5: search endpoint injection vs proper binding -------------------
@@ -473,11 +475,12 @@ CASES.append(Case(
 def export_orders():
     """Export orders filtered by the X-Report-Filter header."""
     status_filter = request.headers.get("X-Report-Filter", "shipped")
+    order_column = "id"
     conn = get_engine().raw_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, user_id, status, total FROM orders WHERE status = ?",
+            f"SELECT id, user_id, status, total FROM orders WHERE status = ? ORDER BY {order_column}",
             (status_filter,),
         )
         rows = cursor.fetchall()
@@ -485,7 +488,8 @@ def export_orders():
         conn.close()
     return jsonify([list(r) for r in rows])
 ''',
-    description="Same header-driven export with a DB-API placeholder.",
+    description="Same header-driven export: the sort column is a fixed "
+                "constant and the filter is a DB-API placeholder.",
 ))
 
 # --- Pair 8: cookie source -> f-string -> SQLAlchemy text ------------------
@@ -706,17 +710,18 @@ def purge_user_data():
     """Purge a departed user's orders (data-erasure request)."""
     payload = request.get_json(silent=True) or {}
     username = payload.get("username", "")
+    table = "orders"
     engine = get_engine()
     with engine.connect() as conn:
         conn.exec_driver_sql(
-            "DELETE FROM orders WHERE user_id = "
-            "(SELECT id FROM users WHERE username = ?)",
+            "DELETE FROM %s WHERE user_id = (SELECT id FROM users WHERE username = ?)" % table,
             (username,),
         )
         conn.commit()
     return jsonify({"status": "purged"})
 ''',
-    description="Same purge using a driver-level placeholder parameter.",
+    description="Same purge: the table name is a fixed constant and the "
+                "username is a driver-level placeholder parameter.",
 ))
 
 # --- Pair 12: parameter map -> WHERE-clause builder -------------------------
@@ -1710,6 +1715,20 @@ def build_base_repo(tmp: Path) -> None:
     shutil.copytree(BENCH / "app", tmp / "app")
     for doc in ("security-policy.md", "api-spec.md", "README.md"):
         shutil.copy(BENCH / doc, tmp / doc)
+    for path in (tmp / "app").rglob("*"):
+        if path.is_file():
+            raw = path.read_bytes()
+            if b"\x00" in raw:
+                continue
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8", newline="\n")
+    for doc in ("security-policy.md", "api-spec.md", "README.md"):
+        path = tmp / doc
+        content = path.read_bytes().decode("utf-8")
+        path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8", newline="\n")
     run(["git", "init", "-q", "-b", "main"], tmp)
     run(["git", "config", "user.email", "bench@lgtm.local"], tmp)
     run(["git", "config", "user.name", "LGTM Bench"], tmp)
@@ -1729,7 +1748,7 @@ def edit_file(tmp: Path, case_id: str, file: str,
         content = content.rstrip("\n") + "\n" + append.lstrip("\n")
         if not content.endswith("\n"):
             content += "\n"
-    target.write_text(content, encoding="utf-8")
+    target.write_text(content, encoding="utf-8", newline="\n")
 
 
 def apply_case(tmp: Path, case: Case) -> str:
@@ -1738,7 +1757,7 @@ def apply_case(tmp: Path, case: Case) -> str:
     for rel, content in case.new_files.items():
         path = tmp / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="\n")
     edit_file(tmp, case.id, case.file, case.replacements, case.append)
     for edit in case.edits:
         edit_file(tmp, case.id, edit["file"],
@@ -1845,7 +1864,7 @@ def main() -> None:
             out_dir = BENCH / "cases" / case.category
             out_dir.mkdir(parents=True, exist_ok=True)
             patch_path = out_dir / case.patch_name
-            patch_path.write_text(diff, encoding="utf-8")
+            patch_path.write_text(diff, encoding="utf-8", newline="\n")
             vuln_lines = (
                 vulnerable_lines_from_patch(diff, case.vuln_markers)
                 if case.vuln_markers

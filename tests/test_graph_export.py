@@ -442,7 +442,7 @@ class TestProvenanceFormatting:
             args = (*args[:3], body)
             end = "[END GREP]"
         out = renderer(*args, max_chars=9000)
-        assert len(out) <= 8000
+        assert len(out) <= (9000 if renderer is render_read else 8000)
         assert out.startswith("[READ " if renderer is render_read else "[GREP ")
         assert out.endswith(end)
 

@@ -36,48 +36,51 @@ class TestScrub:
 
 
 class TestPlanning:
-    def test_unit_counts_and_policy_only_where_it_applies(self):
+    def test_every_case_runs_in_exactly_lgtm_and_llm_only(self):
         cases = er.fetch.load_cases()
-        units = list(er.work_units(cases, list(er.MODES), ["own", "policy"]))
-        own = [u for u in units if u[1] == "own"]
-        policy = [(c["id"], m) for c, v, m in units if v == "policy"]
-        assert len(own) == 12 * 4
-        assert len(policy) == 6 * 2  # 6 authz cases x (lgtm, lgtm-no-sast)
-        assert {m for _i, m in policy} == set(er.DOC_MODES)
-        assert all("_authz_" in i for i, _m in policy)
+        units = list(er.work_units(cases, list(er.MODES)))
+        assert set(er.MODES) == {"lgtm", "llm-only"}
+        assert len(units) == 12 * 2
+        assert {(c["id"], m) for c, m in units} == {
+            (c["id"], m) for c in cases for m in ("lgtm", "llm-only")}
 
     def test_resume_skips_existing_results(self, tmp_path):
         cases = er.fetch.load_cases()[:2]
-        units = list(er.work_units(cases, ["sast-only"], ["own"]))
-        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        units = list(er.work_units(cases, ["llm-only"]))
+        out = er.out_dir_for(tmp_path, "llm-only")
         out.mkdir(parents=True)
-        (out / f"{cases[0]['id']}.json").write_text("{}", encoding="utf-8")
-        resumed = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        completed = TestResultsAndSummary._completed_result(
+            cases[0]["id"], "vulnerable", "TP", "llm-only")
+        (out / f"{cases[0]['id']}.json").write_text(
+            json.dumps(completed), encoding="utf-8")
+        resumed = [c["id"] for c, _m in er.pending_units(units, tmp_path, True)]
         assert resumed == [cases[1]["id"]]
         assert len(list(er.pending_units(units, tmp_path, False))) == 2
 
     def test_resume_reruns_error_results(self, tmp_path):
         cases = er.fetch.load_cases()[:2]
-        units = list(er.work_units(cases, ["sast-only"], ["own"]))
-        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        units = list(er.work_units(cases, ["llm-only"]))
+        out = er.out_dir_for(tmp_path, "llm-only")
         out.mkdir(parents=True)
-        done = TestResultsAndSummary._result(cases[0]["id"], "vulnerable", "TP")
-        failed = {**TestResultsAndSummary._result(cases[1]["id"], "safe", "TN"),
-                  "predicted": "error"}
+        done = TestResultsAndSummary._completed_result(
+            cases[0]["id"], "vulnerable", "TP", "llm-only")
+        failed = {**TestResultsAndSummary._completed_result(
+            cases[1]["id"], "safe", "TN", "llm-only"), "predicted": "error"}
         (out / f"{cases[0]['id']}.json").write_text(json.dumps(done), encoding="utf-8")
         (out / f"{cases[1]['id']}.json").write_text(json.dumps(failed), encoding="utf-8")
-        resumed = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        resumed = [c["id"] for c, _m in er.pending_units(units, tmp_path, True)]
         assert resumed == [cases[1]["id"]]
 
     def test_resume_reruns_unreadable_json(self, tmp_path):
         cases = er.fetch.load_cases()[:2]
-        units = list(er.work_units(cases, ["sast-only"], ["own"]))
-        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        units = list(er.work_units(cases, ["llm-only"]))
+        out = er.out_dir_for(tmp_path, "llm-only")
         out.mkdir(parents=True)
-        done = TestResultsAndSummary._result(cases[1]["id"], "safe", "TN")
+        done = TestResultsAndSummary._completed_result(
+            cases[1]["id"], "safe", "TN", "llm-only")
         (out / f"{cases[0]['id']}.json").write_text("{not json", encoding="utf-8")
         (out / f"{cases[1]['id']}.json").write_text(json.dumps(done), encoding="utf-8")
-        resumed = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        resumed = [c["id"] for c, _m in er.pending_units(units, tmp_path, True)]
         assert resumed == [cases[0]["id"]]
 
     @pytest.mark.parametrize("stored", [
@@ -99,7 +102,7 @@ class TestPlanning:
 
         with pytest.raises(SystemExit) as exc:
             er.main(["--resume", "--cache", str(cache), "--output", str(out),
-                     "--modes", "lgtm", "--variants", "own",
+                     "--modes", "lgtm",
                      "--cases", "aegra_authz_safe", "--model", "x:1"])
 
         assert exc.value.code == 2
@@ -107,11 +110,11 @@ class TestPlanning:
         assert ran == []
         assert [p.name for p in out.rglob("*.json")] == ["run.json"]
 
-    def test_expected_ids_per_directory(self):
+    def test_expected_ids_per_mode_directory(self):
         cases = er.fetch.load_cases()
-        assert len(er.expected_ids(cases, "lgtm", "own")) == 12
-        assert len(er.expected_ids(cases, "lgtm", "policy")) == 6
-        assert er.expected_ids(cases, "llm-only", "policy") == set()
+        every = {c["id"] for c in cases}
+        assert er.expected_ids(cases, "lgtm") == every
+        assert er.expected_ids(cases, "llm-only") == every
 
 
 class TestIndexMarker:
@@ -171,8 +174,7 @@ class TestIndexOnlyNeverWritesResults:
 
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_unit", boom)
-        code = er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                        "--variants", "own", "--cases", "aegra_authz_safe",
+        code = er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm", "--cases", "aegra_authz_safe",
                         "--index-only"])
         assert code == 0
         assert "ERROR" in capsys.readouterr().out
@@ -188,8 +190,7 @@ class TestIndexOnlyNeverWritesResults:
 
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_unit", boom)
-        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm", "--cases", "aegra_authz_safe"])
         saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text(encoding="utf-8"))
         assert saved["predicted"] == "error" and saved["outcome"] == "ERROR"
 
@@ -205,8 +206,7 @@ class TestSummarizeOnlyKeepsTheEnvironment:
         (out / "lgtm" / "pyload_sqli_vulnerable.json").write_text(json.dumps(result))
         monkeypatch.setattr(er, "preflight",
                             lambda modes, config: {"python": "3.14.5", "ollama_version": "0.40.4"})
-        er.main(["--summarize-only", "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own"])
+        er.main(["--summarize-only", "--output", str(out), "--modes", "lgtm"])
         summary = json.loads((out / "lgtm" / "summary.json").read_text(encoding="utf-8"))
         assert summary["python"] == "3.14.5"
         assert summary["ollama_version"] == "0.40.4"
@@ -224,17 +224,22 @@ class TestResultsAndSummary:
             "latency_seconds": 1.0, "est_tokens": 0, "findings": [],
         }
 
+    @classmethod
+    def _completed_result(cls, cid, expected, outcome, mode, category="authz"):
+        return {**cls._result(cid, expected, outcome, category),
+                "pin": {}, "mode": mode}
+
     def test_summary_aggregates_chunks_and_flags_incomplete(self, tmp_path):
         out = tmp_path / "lgtm"
         out.mkdir()
         (out / "a.json").write_text(json.dumps(self._result("a", "vulnerable", "TP")))
         (out / "b.json").write_text(json.dumps(self._result("b", "safe", "TN")))
-        partial = er.write_dir_summary(out, "lgtm", "own", {"a", "b", "c"}, "m")
+        partial = er.write_dir_summary(out, "lgtm", {"a", "b", "c"}, "m")
         assert partial["complete"] is False and partial["missing"] == ["c"]
         assert partial["summary"]["overall"]["tp"] == 1
 
         (out / "c.json").write_text(json.dumps(self._result("c", "vulnerable", "FN")))
-        full = er.write_dir_summary(out, "lgtm", "own", {"a", "b", "c"}, "m")
+        full = er.write_dir_summary(out, "lgtm", {"a", "b", "c"}, "m")
         assert full["complete"] is True
         assert full["summary"]["overall"]["fn"] == 1
         assert full["experiments"] == {"require_tool_use": False,
@@ -246,9 +251,9 @@ class TestResultsAndSummary:
                 "repo_url": "https://github.com/o/p",
             "file": "src/app/routes.py"}
         safe = {**vuln, "expected_verdict": "safe"}
-        assert er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
-        assert er.error_result(safe, "lgtm", "own", RuntimeError("boom"))["outcome"] == "ERROR"
-        assert "RuntimeError: boom" in er.error_result(vuln, "lgtm", "own", RuntimeError("boom"))["error"]
+        assert er.error_result(vuln, "lgtm", RuntimeError("boom"))["outcome"] == "ERROR"
+        assert er.error_result(safe, "lgtm", RuntimeError("boom"))["outcome"] == "ERROR"
+        assert "RuntimeError: boom" in er.error_result(vuln, "lgtm", RuntimeError("boom"))["error"]
 
     def test_infra_failure_result_is_scored_as_error(self, tmp_path, monkeypatch):
         class Finding:
@@ -270,7 +275,7 @@ class TestResultsAndSummary:
         case = {"id": "x", "category": "authz", "expected_verdict": "vulnerable",
                 "repo_url": "https://github.com/o/p",
                 "file": "src/app/routes.py"}
-        result = er.run_unit(case, "own", "llm-only", tmp_path, tmp_path, er.LGTMConfig())
+        result = er.run_unit(case, "llm-only", tmp_path, tmp_path, er.LGTMConfig())
         assert result["outcome"] == "ERROR"
         assert result["infra_failures"] == 1
         assert result["infra_failure_ids"] == ["authz:1"]
@@ -282,7 +287,7 @@ class TestResultsAndSummary:
                   "error": "RuntimeError: boom"}
         (out / "a.json").write_text(json.dumps(self._result("a", "vulnerable", "TP")))
         (out / "b.json").write_text(json.dumps(failed))
-        summary = er.write_dir_summary(out, "lgtm", "own", {"a", "b"}, "m")
+        summary = er.write_dir_summary(out, "lgtm", {"a", "b"}, "m")
         assert summary["summary"]["overall"]["scored"] == 1
         assert summary["summary"]["overall"]["errors"] == 1
         assert summary["summary"]["overall"]["error_rate"] == 0.5
@@ -296,7 +301,7 @@ class TestResultsAndSummary:
         out.mkdir()
         (out / "a.json").write_text(json.dumps(self._result("a", "vulnerable", "TP")))
         (out / "run.json").write_text(json.dumps({"model": "m", "reasoning": None}))
-        summary = er.write_dir_summary(out, "lgtm", "own", {"a"}, "m")
+        summary = er.write_dir_summary(out, "lgtm", {"a"}, "m")
         assert summary["cases_present"] == 1
         assert summary["summary"]["overall"]["cases"] == 1
         assert summary["complete"] is True
@@ -338,8 +343,7 @@ class TestGpuModel:
     def test_summary_records_reasoning(self, tmp_path, monkeypatch):
         out = self._out_with_result(tmp_path)
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
-        base = ["--summarize-only", "--output", str(out), "--modes", "lgtm",
-                "--variants", "own"]
+        base = ["--summarize-only", "--output", str(out), "--modes", "lgtm"]
         summary_path = out / "lgtm" / "summary.json"
 
         er.main([*base, "--gpu-model", "qwen3.8-27b"])
@@ -395,7 +399,7 @@ class TestGraphMetadataOnRecords:
     def _run(self, monkeypatch, tmp_path, step):
         monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
         monkeypatch.setattr(er, "ReviewPipeline", self._pipeline([step], []))
-        return er.run_unit(self.CASE, "own", "llm-only", tmp_path, tmp_path,
+        return er.run_unit(self.CASE, "llm-only", tmp_path, tmp_path,
                            er.LGTMConfig())
 
     def test_new_record_copies_review_metadata(self, tmp_path, monkeypatch):
@@ -435,7 +439,7 @@ class TestGraphMetadataOnRecords:
         assert rec["graph_state"] == "ok" and rec["pr_sha"] == self.PR40
 
     def test_error_result_has_null_fields(self):
-        rec = er.error_result(self.CASE, "lgtm", "own", RuntimeError("boom"))
+        rec = er.error_result(self.CASE, "lgtm", RuntimeError("boom"))
         assert (rec["graph_state"], rec["graph_index_seconds"],
                 rec["base_sha"], rec["pr_sha"]) == (None, None, "", "")
 
@@ -449,8 +453,7 @@ class TestGraphMetadataOnRecords:
 
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_unit", boom)
-        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm", "--cases", "aegra_authz_safe"])
         saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text("utf-8"))
         assert (saved["graph_state"], saved["graph_index_seconds"],
                 saved["base_sha"], saved["pr_sha"]) == (None, None, "", "")
@@ -467,7 +470,7 @@ class TestGraphMetadataOnRecords:
         for cid, extra in rows.items():
             rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP"), **extra}
             (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
-        summary = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")
+        summary = er.write_dir_summary(out, "lgtm", set(rows), "m")
         assert summary["summary"]["graph_states"] == {
             "ok": 1, "degraded:pr:timeout": 1, "unknown": 2}
         assert summary["summary"]["overall"]["tp"] == 4
@@ -475,14 +478,15 @@ class TestGraphMetadataOnRecords:
 
     def test_historical_results_stay_resumable_and_unknown(self, tmp_path):
         cases = er.fetch.load_cases()[:1]
-        units = list(er.work_units(cases, ["sast-only"], ["own"]))
-        out = er.out_dir_for(tmp_path, "sast-only", "own")
+        units = list(er.work_units(cases, ["llm-only"]))
+        out = er.out_dir_for(tmp_path, "llm-only")
         out.mkdir(parents=True)
         rec = TestResultsAndSummary._result(cases[0]["id"], "vulnerable", "TP")
         path = out / f"{cases[0]['id']}.json"
         path.write_text(json.dumps(rec), encoding="utf-8")
-        assert list(er.pending_units(units, tmp_path, True)) == []
-        summary = er.write_dir_summary(out, "sast-only", "own", {cases[0]["id"]}, "m")
+        pending = list(er.pending_units(units, tmp_path, True))
+        assert [case["id"] for case, _mode in pending] == [cases[0]["id"]]
+        summary = er.write_dir_summary(out, "llm-only", {cases[0]["id"]}, "m")
         assert summary["summary"]["graph_states"] == {"unknown": 1}
         assert json.loads(path.read_text("utf-8")) == rec
 
@@ -496,7 +500,7 @@ class TestGraphMetadataOnRecords:
                             self._pipeline([KeyboardInterrupt()], cleaned))
         try:
             code = er.main(["--cache", str(cache), "--output", str(tmp_path / "out"),
-                            "--modes", "llm-only", "--variants", "own",
+                            "--modes", "llm-only",
                             "--cases", "aegra_authz_safe"])
         except SystemExit as exc:
             code = exc.code
@@ -534,7 +538,7 @@ class TestPostReviewFailureAndErrorCounts:
 
         monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
         monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
-        rec = er.run_unit(TestGraphMetadataOnRecords.CASE, "own", "llm-only",
+        rec = er.run_unit(TestGraphMetadataOnRecords.CASE, "llm-only",
                           tmp_path, tmp_path, er.LGTMConfig())
         assert rec["outcome"] == "ERROR" and rec["error"]
         assert (rec["graph_state"], rec["graph_index_seconds"],
@@ -553,7 +557,7 @@ class TestPostReviewFailureAndErrorCounts:
         for cid, extra in rows.items():
             rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP"), **extra}
             (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
-        summary = er.write_dir_summary(out, "lgtm", "own", set(rows), "m")
+        summary = er.write_dir_summary(out, "lgtm", set(rows), "m")
         assert summary["summary"]["overall"]["errors"] == 2
         assert summary["summary"]["graph_states"] == {"ok": 2, "unknown": 1}
 
@@ -588,7 +592,7 @@ class TestAuthzScanRecords:
         "planner": "investigator", "investigator_status": "ok",
         "investigator_error": None, "investigator_input": "full",
         "investigator_tool_calls": 4, "files_total": 5, "files_in_scope": 3,
-        "hunks_total": 4, "hunks_assigned": 3, "hunks_leftover": 1,
+        "hunks_total": 4, "hunks_assigned": 3, "hunks_leftover": 1, "hunks_gated": 0,
         "hunks_reviewed": 2, "sections_scheduled": 2, "sections_completed": 1,
         "sections_failed": 1, "sections_coalesced": 1, "complete": False,
         "exclusions_total": 3}
@@ -621,7 +625,7 @@ class TestAuthzScanRecords:
             er, "ReviewPipeline",
             TestGraphMetadataOnRecords._pipeline(
                 [TestGraphMetadataOnRecords._review(meta)], []))
-        rec = er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+        rec = er.run_unit(self.CASE, mode, tmp_path, tmp_path, er.LGTMConfig())
         return rec, indexed
 
     PIN = {"pin": "sentinel"}
@@ -633,19 +637,17 @@ class TestAuthzScanRecords:
 
         monkeypatch.setattr(er, "run_pin", fake_run_pin, raising=False)
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
-    def test_doc_modes_build_the_index_even_with_zero_endpoints(
-            self, tmp_path, monkeypatch, mode):
-        rec, indexed = self._run(monkeypatch, tmp_path, mode)
+    def test_lgtm_builds_the_index_even_with_zero_endpoints(
+            self, tmp_path, monkeypatch):
+        rec, indexed = self._run(monkeypatch, tmp_path, "lgtm")
         assert len(indexed) == 1
         assert rec["index_skipped"] is False and rec["index_skip_reason"] == ""
         assert (rec["index_seconds"], rec["index_chunks"], rec["index_reused"]) == (
             0.5, 3, False)
         assert rec["outcome"] != "ERROR"
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
-    def test_doc_mode_record_has_pin_file_coverage_and_summary(
-            self, tmp_path, monkeypatch, mode):
+    def test_lgtm_record_has_pin_file_coverage_and_summary(
+            self, tmp_path, monkeypatch):
         real_run_pin = er.run_pin
         calls = []
 
@@ -654,10 +656,10 @@ class TestAuthzScanRecords:
             return real_run_pin(config, repo_root, refs)
 
         monkeypatch.setattr(er, "run_pin", spy)
-        rec, _ = self._run(monkeypatch, tmp_path, mode, {"coverage": self.COVERAGE})
+        rec, _ = self._run(monkeypatch, tmp_path, "lgtm", {"coverage": self.COVERAGE})
         assert rec["pin"]["base_sha"] == self.BASE40
         assert rec["pin"]["pr_sha"] == self.PR40
-        assert rec["pin"]["flags"]["mode"] == mode
+        assert rec["pin"]["flags"]["mode"] == "lgtm"
         assert len(calls) == 1
         root, refs = calls[0]
         assert Path(root) == er.REPO_ROOT
@@ -682,16 +684,14 @@ class TestAuthzScanRecords:
         assert (rec["diff_py_chars"], rec["diff_max_file_chars"]) == (10, 10)
         assert len(indexed) == index_builds
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
-    def test_doc_mode_without_coverage_records_none(self, tmp_path, monkeypatch, mode):
-        rec, _ = self._run(monkeypatch, tmp_path, mode, {"coverage": None})
+    def test_lgtm_without_coverage_records_none(self, tmp_path, monkeypatch):
+        rec, _ = self._run(monkeypatch, tmp_path, "lgtm", {"coverage": None})
         assert rec["coverage"] is None and rec["coverage_summary"] is None
         assert rec["pin"]["pr_sha"] == self.PR40
 
-    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
-    def test_non_doc_mode_record_skips_index_and_has_no_coverage(
-            self, tmp_path, monkeypatch, mode):
-        rec, indexed = self._run(monkeypatch, tmp_path, mode,
+    def test_llm_only_record_skips_index_and_has_no_coverage(
+            self, tmp_path, monkeypatch):
+        rec, indexed = self._run(monkeypatch, tmp_path, "llm-only",
                                  {"coverage": self.COVERAGE})
         assert indexed == []
         assert rec["index_skipped"] is True
@@ -712,8 +712,9 @@ class TestAuthzScanRecords:
         self._record_pin(monkeypatch, calls)
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_unit", lambda *a, **k: None)
-        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own", "--cases", "aegra_authz_safe", "--model", "x:1"])
+        argv = ["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
+                "--cases", "aegra_authz_safe", "--model", "x:1"]
+        er.main(argv)
         manifest = json.loads((out / "run.json").read_text(encoding="utf-8"))
         assert manifest["pin"] == self.PIN
         assert calls and all(Path(root) == er.REPO_ROOT for _c, root, _r in calls)
@@ -739,7 +740,7 @@ class TestAuthzScanRecords:
         monkeypatch.setattr(
             er, "ReviewPipeline",
             TestGraphMetadataOnRecords._pipeline([result], []))
-        rec = er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+        rec = er.run_unit(self.CASE, mode, tmp_path, tmp_path, er.LGTMConfig())
         assert rec["outcome"] == "ERROR"
         assert rec["pin"] == self.PIN
         assert rec["file"] == self.CASE["file"]
@@ -757,8 +758,7 @@ class TestAuthzScanRecords:
         self._record_pin(monkeypatch, [])
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_unit", boom)
-        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm",
-                 "--variants", "own", "--cases", "aegra_authz_safe"])
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm", "--cases", "aegra_authz_safe"])
         path = out / "lgtm" / "aegra_authz_safe.json"
         saved = json.loads(path.read_text(encoding="utf-8"))
         assert saved["outcome"] == "ERROR"
@@ -798,13 +798,13 @@ class TestGitLaunchAbortLeavesAResumableRun:
         monkeypatch.setattr(er, "run_pin", lambda *a, **k: {}, raising=False)
         monkeypatch.setattr(er, "ReviewPipeline", TestGraphMetadataOnRecords._pipeline(
             [TestGraphMetadataOnRecords._review(meta)], []))
-        argv = ["--cache", str(cache), "--output", str(out), "--modes", "llm-only",
-                "--variants", "own"]
+        argv = ["--cache", str(cache), "--output", str(out), "--modes", "llm-only"]
         mode_dir = out / "llm-only"
         if seeded:
             mode_dir.mkdir(parents=True)
             for i in seeded:
-                row = TestResultsAndSummary._result(ids[i], "vulnerable", "TP")
+                row = TestResultsAndSummary._completed_result(
+                    ids[i], "vulnerable", "TP", "llm-only")
                 (mode_dir / f"{ids[i]}.json").write_text(json.dumps(row), encoding="utf-8")
             (mode_dir / "summary.json").write_text(
                 json.dumps({"complete": True, "missing": []}), encoding="utf-8")
@@ -851,7 +851,7 @@ class TestGitLaunchAbortLeavesAResumableRun:
 
         ran: list[str] = []
 
-        def record(case, variant, mode, cache, output, config, index_only=False):
+        def record(case, mode, cache, output, config, index_only=False):
             ran.append(case["id"])
             return TestResultsAndSummary._result(case["id"], "vulnerable", "TP")
 
@@ -868,7 +868,7 @@ class TestGitLaunchAbortLeavesAResumableRun:
         kept = (mode_dir / f"{ids[0]}.json").read_bytes()
         ran: list[str] = []
 
-        def record(case, variant, mode, cache, output, config, index_only=False):
+        def record(case, mode, cache, output, config, index_only=False):
             ran.append(case["id"])
             return TestResultsAndSummary._result(case["id"], "vulnerable", "TP")
 
@@ -908,7 +908,7 @@ class TestKevFieldsAndMetrics:
         monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
         monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
         monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
-        return er.run_unit(self.CASE, "own", mode, tmp_path, tmp_path, er.LGTMConfig())
+        return er.run_unit(self.CASE, mode, tmp_path, tmp_path, er.LGTMConfig())
 
     @staticmethod
     def _row(cid, findings, mode="lgtm"):
@@ -927,7 +927,7 @@ class TestKevFieldsAndMetrics:
         out.mkdir()
         for row in rows:
             (out / f"{row['id']}.json").write_text(json.dumps(row), encoding="utf-8")
-        return er.write_dir_summary(out, mode, "own", {r["id"] for r in rows}, "m")["summary"]
+        return er.write_dir_summary(out, mode, {r["id"] for r in rows}, "m")["summary"]
 
     def test_saved_record_gives_judged_candidate_kev_verdict_severity_and_provenance(
         self, tmp_path, monkeypatch
@@ -979,14 +979,13 @@ class TestKevFieldsAndMetrics:
         monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {"seconds": 0.0, "chunks": 0, "reused": True})
         monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
 
-        record = er.run_unit(self.CASE, "own", "lgtm", tmp_path, tmp_path, er.LGTMConfig())
+        record = er.run_unit(self.CASE, "lgtm", tmp_path, tmp_path, er.LGTMConfig())
 
         saved = {f["finding_id"]: f for f in record["findings"]}
         assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
-    def test_modes_without_a_judge_save_no_kev_fields(self, tmp_path, monkeypatch, mode):
-        record = self._run(monkeypatch, tmp_path, mode, [self._candidate("a", verdict="vulnerable")])
+    def test_llm_only_saves_no_kev_fields(self, tmp_path, monkeypatch):
+        record = self._run(monkeypatch, tmp_path, "llm-only", [self._candidate("a", verdict="vulnerable")])
 
         for f in record["findings"]:
             assert [f.get(k) for k in ("kev_verdict", "kev_severity", "input_tokens")] == [None, None, None]
@@ -1008,12 +1007,11 @@ class TestKevFieldsAndMetrics:
         assert kev["not_judged"] == {"judge-failed": 1}
         assert kev["requests_over_8192_input_tokens"] == 1
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
-    def test_summary_of_modes_without_a_judge_has_no_kev_metrics(self, tmp_path, mode):
+    def test_summary_of_llm_only_has_no_kev_metrics(self, tmp_path):
         row = self._row("a", [{"finding_id": "f", "category": "sqli", "verdict": "vulnerable",
-                               "judged": False}], mode)
+                               "judged": False}], "llm-only")
 
-        summary = self._summary(tmp_path, mode, [row], mode)
+        summary = self._summary(tmp_path, "llm-only", [row], "llm-only")
 
         kev = summary.get("kev", {})
         assert (kev.get("judged", 0), kev.get("verdicts", {}), kev.get("severities", {}),
@@ -1034,8 +1032,8 @@ class TestKevFieldsAndMetrics:
 
     def test_resume_judges_again_a_judged_unit_without_kev_fields_and_keeps_one_with_them(self, tmp_path):
         cases = er.fetch.load_cases()[:3]
-        units = list(er.work_units(cases, ["lgtm"], ["own"]))
-        out = er.out_dir_for(tmp_path, "lgtm", "own")
+        units = list(er.work_units(cases, ["lgtm"]))
+        out = er.out_dir_for(tmp_path, "lgtm")
         out.mkdir(parents=True)
         old = {"finding_id": "f", "category": "sqli", "verdict": "", "judged": True, "supported": True}
         rows = {
@@ -1045,7 +1043,7 @@ class TestKevFieldsAndMetrics:
         for cid, row in rows.items():
             (out / f"{cid}.json").write_text(json.dumps(row), encoding="utf-8")
 
-        pending = [c["id"] for c, _v, _m in er.pending_units(units, tmp_path, True)]
+        pending = [c["id"] for c, _m in er.pending_units(units, tmp_path, True)]
 
         assert pending == [cases[0]["id"], cases[2]["id"]]
 
@@ -1081,8 +1079,7 @@ class _GitScript:
         monkeypatch.setattr(er, "preflight", lambda modes, config: {})
         monkeypatch.setattr(er, "run_pin", lambda *a, **k: {}, raising=False)
         monkeypatch.setattr(er, "ReviewPipeline", TestGraphMetadataOnRecords._pipeline(reviews, []))
-        self.argv = ["--cache", str(self.cache), "--output", str(self.out), "--modes", "llm-only",
-                     "--variants", "own", "--cases", *self.ids]
+        self.argv = ["--cache", str(self.cache), "--output", str(self.out), "--modes", "llm-only", "--cases", *self.ids]
 
     def run(self, capsys):
         try:
@@ -1120,8 +1117,9 @@ class TestMissingCloneStopsTheRunBeforeAnyUnit:
         monkeypatch.setattr(er, "run_unit", lambda case, *a, **k: ran.append(case["id"]))
 
         with pytest.raises(SystemExit) as raised:
-            er.main(["--cache", str(cache), "--output", str(tmp_path / "out"), "--modes", "llm-only",
-                     "--variants", "own", "--cases", *[c["id"] for c in picked]])
+            argv = ["--cache", str(cache), "--output", str(tmp_path / "out"), "--modes", "llm-only",
+                    "--cases", *[c["id"] for c in picked]]
+            er.main(argv)
 
         message = str(raised.value.code).replace("\\", "/")
         assert raised.value.code not in (0, None)
@@ -1215,3 +1213,148 @@ class TestOtherGitFailuresKeepTheRunGoing:
         assert set(rows) == set(script.ids)
         errored = {cid for cid, kind in zip(script.ids, outcomes) if kind != "ok"}
         assert {cid for cid, row in rows.items() if row["outcome"] == "ERROR"} == errored
+
+
+class TestScopeAndTraceOnRealWorldRecords:
+    OUT_OF_SCOPE = ["alerta_sqli_vulnerable", "alerta_sqli_safe", "postgraas_sqli_safe"]
+    IN_SCOPE = ["postgraas_sqli_vulnerable", "pyload_sqli_vulnerable", "pyload_sqli_safe"]
+
+    @staticmethod
+    def _case(cid):
+        return next(c for c in er.fetch.load_cases() if c["id"] == cid)
+
+    @staticmethod
+    def _finding(category="sqli", verdict="safe", fid="sqli:1"):
+        class Finding:
+            def model_dump(self, exclude=None):
+                return {"finding_id": fid, "category": category, "verdict": verdict,
+                        "supported": verdict == "vulnerable", "judged": True,
+                        "explanation": "ok"}
+
+        return Finding()
+
+    def _run(self, monkeypatch, tmp_path, cid, mode, semgrep_in_diff, findings=(),
+             run_records=()):
+        from lgtm.agents.base import RunRecord
+
+        meta = type("Meta", (), {"semgrep_findings_in_diff": semgrep_in_diff})()
+        review = type("Result", (), {
+            "findings": list(findings), "meta": meta,
+            "run_records": [RunRecord(**r) for r in run_records]})()
+
+        class Pipeline:
+            def __init__(self, repo, config):
+                pass
+
+            def run(self, base, pr, output_dir=None):
+                return review
+
+        monkeypatch.setattr(er, "get_pr_diff", lambda *a, **k: [])
+        monkeypatch.setattr(er, "ReviewPipeline", Pipeline)
+        monkeypatch.setattr(er, "ensure_index", lambda *a, **k: {
+            "seconds": 0.0, "chunks": 0, "reused": True})
+        monkeypatch.setattr(er.evaluate, "record_input_tokens", lambda p, c: {})
+        return er.run_unit(self._case(cid), mode, tmp_path / "cache",
+                           tmp_path / "out", er.LGTMConfig())
+
+    @pytest.mark.parametrize("mode", ["llm-only", "lgtm"])
+    @pytest.mark.parametrize("cid", OUT_OF_SCOPE)
+    def test_case_flagged_out_of_scope_records_scope_out(
+            self, monkeypatch, tmp_path, cid, mode):
+        rec = self._run(monkeypatch, tmp_path, cid, mode, 0, [self._finding()])
+        assert rec["scope"] == "out"
+
+    @pytest.mark.parametrize("warned", [0, 2])
+    @pytest.mark.parametrize("mode", ["llm-only", "lgtm"])
+    @pytest.mark.parametrize("cid", IN_SCOPE)
+    def test_case_not_flagged_out_of_scope_records_scope_in(
+            self, monkeypatch, tmp_path, cid, mode, warned):
+        rec = self._run(monkeypatch, tmp_path, cid, mode, warned, [self._finding()])
+        assert rec["scope"] == "in"
+
+    def test_authz_case_without_semgrep_warning_is_in_scope(self, monkeypatch, tmp_path):
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "lgtm", 0,
+                        [self._finding("authz", fid="authz:1")])
+        assert rec["scope"] == "in"
+
+    def test_out_of_scope_rows_are_left_out_of_the_headline_and_the_count(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        rows = {
+            "alerta_sqli_vulnerable": {"scope": "out", "outcome": "FN"},
+            "postgraas_sqli_safe": {"scope": "out", "outcome": "FP"},
+            "pyload_sqli_vulnerable": {"scope": "in", "outcome": "TP"},
+            "aegra_authz_safe": {"scope": "in", "outcome": "TN"},
+        }
+        for cid, extra in rows.items():
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", extra["outcome"]),
+                   "scope": extra["scope"]}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        overall = er.write_dir_summary(out, "lgtm", set(rows), "m")["summary"]["overall"]
+        assert (overall["tp"], overall["fp"], overall["fn"], overall["tn"]) == (1, 0, 0, 1)
+        assert overall["cases"] == 2
+
+    def test_summary_reports_how_many_sql_cases_semgrep_warns_on(self, tmp_path):
+        out = tmp_path / "lgtm"
+        out.mkdir()
+        rows = [("a", "sqli", 3), ("b", "sqli", 0), ("c", "sqli", 1), ("d", "authz", 5)]
+        for cid, category, warned in rows:
+            rec = {**TestResultsAndSummary._result(cid, "vulnerable", "TP", category),
+                   "semgrep_findings_in_diff": warned}
+            (out / f"{cid}.json").write_text(json.dumps(rec), encoding="utf-8")
+        payload = er.write_dir_summary(out, "lgtm", {r[0] for r in rows}, "m")
+        counts = [v for k, v in _flatten(payload) if "semgrep" in k and "sql" in k]
+        assert counts == [2]
+
+    def test_main_writes_case_results_and_summary_with_the_existing_keys(
+            self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "aegra" / ".git").mkdir(parents=True)
+        out = tmp_path / "out"
+        monkeypatch.setattr(er, "preflight", lambda modes, config: {})
+        monkeypatch.setattr(er, "run_unit", lambda case, mode, *a, **k: {
+            **TestResultsAndSummary._result(case["id"], "safe", "TN"),
+            "scope": "in", "off_category": []})
+        er.main(["--cache", str(cache), "--output", str(out), "--modes", "lgtm", "--cases", "aegra_authz_safe"])
+        saved = json.loads((out / "lgtm" / "aegra_authz_safe.json").read_text("utf-8"))
+        summary = json.loads((out / "lgtm" / "summary.json").read_text("utf-8"))
+        assert saved["outcome"] == "TN" and saved["scope"] == "in"
+        assert "variant" not in summary
+        for key in ("mode", "complete", "cases_expected", "cases_present",
+                    "missing", "outcomes", "summary"):
+            assert key in summary
+        assert summary["summary"]["overall"]["tn"] == 1
+
+    def test_each_section_run_and_limit_hit_reach_the_case_result(self, monkeypatch, tmp_path):
+        records = [
+            {"section": "s-1", "raw_answer": "answer one",
+             "tool_calls": [{"tool": "read_file", "args": {"path": "a.py"}}]},
+            {"section": "s-2", "raw_answer": "cut off", "limit_hit": "tool_calls"},
+            {"section": "investigator", "raw_answer": "", "limit_hit": "steps"},
+        ]
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "lgtm", 0,
+                        [self._finding("authz", fid="authz:1")], records)
+        runs = {r["section"]: r for r in rec["run_records"]}
+        assert runs["s-1"]["tool_calls"] == [{"tool": "read_file", "args": {"path": "a.py"}}]
+        assert runs["s-1"]["raw_answer"] == "answer one"
+        assert {s: r["limit_hit"] for s, r in runs.items()} == {
+            "s-1": None, "s-2": "tool_calls", "investigator": "steps"}
+
+    def test_off_category_findings_are_listed_without_changing_the_outcome(
+            self, monkeypatch, tmp_path):
+        rec = self._run(monkeypatch, tmp_path, "aegra_authz_safe", "llm-only", 0, [
+            self._finding("authz", "safe", "authz:1"),
+            self._finding("sqli", "vulnerable", "sqli:9")])
+        assert rec["off_category"] == ["sqli:9"]
+        assert rec["outcome"] == "TN"
+
+
+def _flatten(obj, prefix=""):
+    """(lowercased key, value) pairs of every dict entry in a JSON-like object."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield str(key).lower(), value
+            yield from _flatten(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _flatten(value)

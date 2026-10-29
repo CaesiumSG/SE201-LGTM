@@ -5,46 +5,43 @@ team wrote for this project. The instructor's feedback was to stop proving
 LGTM only on our own toy app and to apply it to real-world projects, noting
 that failures are fine if they are documented. This page is that
 evaluation: 6 published vulnerabilities in open-source Python web projects,
-12 cases, every LGTM mode, and what went wrong.
+12 cases, the LGTM and LLM-only conditions, and what went wrong.
 
 **It is a held-out test.** No prompt, rule or config was tuned on these
 cases, and every experiment flag is off.
 
+> The Headline and Results sections describe the runs in
+> `benchmark/runs/archive/real_world/`: reviewer `qwen3.8:27b` on the SCIS GPU
+> cluster, judge Kev (Kev-4B), conditions LGTM (the full pipeline, including
+> Semgrep) and LLM-only. Every other section describes the archived 15 Oct
+> run (`qwen2.5-coder:7b`, earlier conditions) in
+> `benchmark/runs/archive/real_world/`.
+
 - **Data:** [`benchmark/real_world/cases.json`](../benchmark/real_world/cases.json)
   (how the cases are built: [`benchmark/real_world/README.md`](../benchmark/real_world/README.md)).
-- **Runs:** [`benchmark/runs/real_world/`](../benchmark/runs/real_world/),
-  one JSON per case and a `summary.json` per mode.
+- **Runs:** [`benchmark/runs/archive/real_world/`](../benchmark/runs/archive/real_world/),
+  one JSON per case and a `summary.json` per mode; the archived 15 Oct run is in
+  [`benchmark/runs/archive/real_world/`](../benchmark/runs/archive/real_world/).
 - **Code:** [`benchmark/real_world/evaluate_real.py`](../benchmark/real_world/evaluate_real.py)
   reuses the scoring functions of `benchmark/evaluate.py`, so the metrics are
   computed exactly as for the synthetic benchmark.
 
 ## Headline
 
-On 12 cases, LGTM did **not** reproduce its Shoply result. The bare LLM
-baseline scored best.
-
-| Mode (own docs) | F1 on 12 real-world cases | F1 on 36 Shoply cases |
-|---|---|---|
-| sast-only | 0.444 | 0.615 |
-| **llm-only** | **0.800** | 0.750 |
-| lgtm | 0.444 | **0.944** |
-| lgtm-no-sast | 0.444 | 0.919 |
-
-- **SQL injection mostly carries over.** LGTM's triage removed the one
-  Semgrep false alarm, and the four SQLi cases that have a recognisable
-  `execute()` sink (pyload, postgraas) were all handled correctly (SQLi F1
-  0.800 vs sast-only 0.667). The fifth, alerta, was missed by every mode.
-- **Authorization does not.** LGTM's authz F1 is 0.000 on real projects
-  (0.923 on Shoply). Four of the six authz cases never reach the authz agent
-  at all, and the pair that does gets both of its verdicts wrong with the
-  repository's own docs.
-- **The policy "fix" is not what it looks like.** With a project policy the
-  langflow vulnerable case flips to a correct verdict, but for a wrong
-  reason, and the safe twin gets the same verdict (see below).
-- With 12 cases, one flipped case moves recall by 0.083 to 0.167. These
-  numbers show failure modes; they are not a precise score.
+The 3 SQL injection cases `alerta_sqli_vulnerable`, `alerta_sqli_safe` and
+`postgraas_sqli_safe` are out of scope. Results: `benchmark/runs/archive/real_world/summary.json`.
 
 ## Setup
+
+Current runs: reviewer `qwen3.8:27b`, judge Kev (Kev-4B), command
+`python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes lgtm llm-only`.
+The findings are labelled by Claude Opus 5.5 under
+[`kev-labeling-criteria.md`](kev-labeling-criteria.md).
+The CLI modes `sast-only` and `lgtm-no-sast` are for internal development and
+benchmarking only; reported results compare `lgtm` (which includes Kev
+judging) against `llm-only`.
+
+The table below describes the archived 15 Oct run.
 
 | | |
 |---|---|
@@ -120,38 +117,14 @@ the ground truth and did not influence any score.
 
 ## Results
 
-Review latency excludes one-time indexing and downloads; see
-[Cost](#cost) for those.
-
-| Mode | Variant | Cases | TP | FP | FN | TN | Precision | Recall | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounding | Grounded F1 | Median review latency |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| sast-only | own docs | 12 | 2 | 1 | 4 | 5 | 0.667 | 0.333 | 0.444 | 0.667 | 0.000 | 0.167 | 1.000 | 0.444 | 12.1 s |
-| llm-only | own docs | 12 | 4 | 0 | 2 | 6 | 1.000 | 0.667 | 0.800 | 0.800 | 0.800 | 0.000 | 0.583 | 0.800 | 68.73 s |
-| lgtm | own docs | 12 | 2 | 1 | 4 | 5 | 0.667 | 0.333 | 0.444 | 0.800 | 0.000 | 0.167 | 0.833 | 0.500 | 16.55 s |
-| lgtm | policy | 6 | 1 | 1 | 2 | 2 | 0.500 | 0.333 | 0.400 | – | 0.400 | 0.333 | 0.500 | 0.500 | 17.02 s |
-| lgtm-no-sast | own docs | 12 | 2 | 1 | 4 | 5 | 0.667 | 0.333 | 0.444 | 0.800 | 0.000 | 0.167 | 0.750 | 0.444 | 39.64 s |
-| lgtm-no-sast | policy | 6 | 1 | 1 | 2 | 2 | 0.500 | 0.333 | 0.400 | – | 0.400 | 0.333 | 0.833 | 0.500 | 38.59 s |
-
-The `policy` rows cover the 6 authorization cases only, so compare them with
-the authz-only breakdown, not with the 12-case rows:
-
-| Mode | Variant (6 authz cases) | TP | FP | FN | TN |
-|---|---|---|---|---|---|
-| lgtm | own docs | 0 | 1 | 3 | 2 |
-| lgtm | policy | 1 | 1 | 2 | 2 |
-| lgtm-no-sast | own docs | 0 | 1 | 3 | 2 |
-| lgtm-no-sast | policy | 1 | 1 | 2 | 2 |
+Results: `benchmark/runs/archive/real_world/summary.json`. Review latency excludes
+one-time indexing and downloads.
 
 ### Beside the synthetic Shoply results (36 cases)
 
-| Mode | Source run | Precision | Recall | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounding | Median latency |
-|---|---|---|---|---|---|---|---|---|---|
-| sast-only | `run3-bugfixes` | 0.571 | 0.667 | 0.615 | 0.727 | 0.000 | 0.500 | 1.000 | 1.82 s |
-| llm-only | `run3-bugfixes` | 0.857 | 0.667 | 0.750 | 0.923 | 0.000 | 0.111 | 0.778 | 11.88 s |
-| lgtm | `run6-final` | 0.944 | 0.944 | 0.944 | 0.957 | 0.923 | 0.056 | 0.925 | 21.29 s |
-| lgtm-no-sast | `run3-bugfixes` | 0.895 | 0.944 | 0.919 | 0.917 | 0.923 | 0.111 | 0.900 | 20.46 s |
+Results: the Shoply run folder under `benchmark/runs/`.
 
-### Per case
+### Per case (archived 15 Oct run)
 
 Own-docs outcome, with the policy-variant outcome in brackets where there is one.
 
@@ -175,7 +148,7 @@ ablation used twice as many agent items (12 against 6) for the same verdicts.
 
 ## Every miss and false alarm
 
-File paths below are under `benchmark/runs/real_world/`.
+File paths below are under `benchmark/runs/archive/real_world/`.
 
 ### `alerta_sqli_vulnerable`: missed by all four modes
 
@@ -293,11 +266,12 @@ separate argument"), which is the behaviour the synthetic benchmark claimed.
 - **Crashes recorded as results: none.** Three environment/product crashes
   occurred before the final run and were fixed or worked around; see below.
 
-## Policy variant: what the gap shows
+## Policy variant: what the gap shows (archived 15 Oct run)
 
 `policies/{aegra,langflow,litellm}.md` were written only from each
 project's public documentation, covering the whole API access model, and
-committed (`ddbe127`) before any model ran on these projects.
+committed (`ddbe127`) before any model ran on these projects. The policy
+files and `fetch.py --policies` are internal-only; the runner does not use them.
 
 - For **aegra and litellm** the policy had no effect, because no agent runs.
   That is a property of the detector, not of the policy.
@@ -307,7 +281,7 @@ committed (`ddbe127`) before any model ran on these projects.
   pages on flows and API keys state no ownership rules, and the policy says
   so ("Not specified in the documentation").
 
-## Why the numbers drop
+## Why the numbers drop (archived 15 Oct run)
 
 Only causes visible in the outputs above:
 
@@ -331,14 +305,14 @@ Only causes visible in the outputs above:
    `llm-only`'s explanations say so ("removes a check", "no longer checks if
    the user is the owner"). A real vulnerable PR that never had the check
    would show no such deletion. This is why `llm-only` scores higher here
-   than on Shoply (authz F1 0.800 vs 0.000), and I would not expect that to
+   than on Shoply, and I would not expect that to
    hold on genuine vulnerable PRs.
 
 What did **not** drop: the SQLi triage still removes the SAST false alarm,
 and the SQLi cases with a real `execute()` sink were caught by every mode
 that can see one.
 
-## Cost
+## Cost (archived 15 Oct run)
 
 | | |
 |---|---|
@@ -449,13 +423,12 @@ Not done, and not tuned for here:
 ## Reproduce
 
 ```bash
-# build the 12 cases and the policy variants (clones into benchmark/real_world/.cache)
-python benchmark/real_world/fetch.py --policies
+# build the 12 cases (clones into benchmark/real_world/.cache)
+python benchmark/real_world/fetch.py
 
 # run in foreground chunks; on Windows set PYTHONUTF8=1
-PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes sast-only --variants own
-PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes llm-only --variants own --resume --budget 300
-PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes lgtm lgtm-no-sast --variants both --resume --budget 240
+PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes llm-only
+PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --gpu-model qwen3.8-27b --modes lgtm --resume --budget 240
 # large indexes can be built separately
 PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes lgtm --cases langflow_authz_safe --index-only
 ```

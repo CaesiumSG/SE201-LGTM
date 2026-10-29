@@ -14,9 +14,9 @@ from lgtm.diff.git_diff import FileDiff, LineChange
 ChangeKind = Literal["add", "delete", "mixed"]
 SnapshotName = Literal["base", "pr"]
 SectionOrigin = Literal["investigator", "leftover", "fallback", "coalesced"]
-Planner = Literal["investigator", "fallback"]
+Planner = Literal["investigator", "fallback", "endpoint"]
 
-_SNAPSHOTS =("base", "pr")
+_SNAPSHOTS = ("base", "pr")
 _SHAPE_ERROR = 'investigator output is not a JSON object with a "sections" list'
 _LINE_PREFIX = {"add": "+", "del": "-", "context": " "}
 
@@ -92,6 +92,7 @@ class ScanPlan:
     hunks_assigned: int = 0
     hunks_leftover: int = 0
     sections_coalesced: int = 0
+    hunks_gated: int = 0  # endpoint planner: Python hunks without a route decorator
 
 
 @dataclass

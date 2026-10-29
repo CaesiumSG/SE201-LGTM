@@ -60,25 +60,34 @@ Authorization pairs 07–14 (vulnerable case; safe control):
 
 ## Running the evaluation
 
-> Results measured at an earlier commit; not re-measured for the current code.
-
 ```bash
 # From the repository root (install LGTM first: pip install -e .)
-python benchmark/evaluate.py --mode lgtm            # full pipeline
-python benchmark/evaluate.py --mode sast-only       # Semgrep baseline
-python benchmark/evaluate.py --mode llm-only        # LLM-only baseline (no SAST/RAG/tools)
-python benchmark/evaluate.py --mode lgtm-no-sast    # ablation: LGTM minus Semgrep
-python benchmark/evaluate.py --mode lgtm --rescore  # re-score a saved run, no LLM calls
+python benchmark/evaluate.py --gpu-cluster --mode lgtm      # full pipeline, including Semgrep
+python benchmark/evaluate.py --gpu-cluster --mode llm-only  # LLM-only baseline (no SAST/RAG/tools)
+python benchmark/evaluate.py --mode lgtm --rescore  # re-score a run in benchmark/results that carries coverage, no LLM calls
 python benchmark/evaluate.py --mode lgtm --resume   # skip completed cases, re-run error results
 python benchmark/evaluate.py --split dev            # development set only
 python benchmark/evaluate.py --split eval           # held-out evaluation set
 python benchmark/evaluate.py --cases sqli_01_vulnerable authz_02_safe  # subset
 python benchmark/evaluate.py --gpu-model qwen3.8-27b
+python benchmark/evaluate.py --mode lgtm --no-graph                # without CodeGraph
+python benchmark/evaluate.py --mode lgtm --authz-planner endpoint  # checkpoint gating (rounds 1-7)
 ```
 
-The `lgtm` and `lgtm-no-sast` modes use CodeGraph when the binary is found
-([Configuration](../README.md#configuration)). `evaluate.py` has no
-`--config-file` option, so graph settings use their defaults.
+The CLI modes `sast-only` and `lgtm-no-sast` are for internal development and
+benchmarking only. Reported results compare `lgtm` (which includes Kev
+judging) against `llm-only`.
+
+The `lgtm` mode uses CodeGraph when the binary is found
+and `--no-graph` is not given ([Configuration](../README.md#configuration)).
+`--authz-planner endpoint` reviews only hunks with a route decorator, as the
+checkpoint pipeline did; the default `investigator` reviews every changed
+Python hunk. `evaluate.py` has no `--config-file` option, so the other graph
+settings use their defaults.
+
+The benchmarks run two conditions: LGTM (the full pipeline, including
+Semgrep) and LLM-only. The reviewer is `qwen3.8:27b`, served on the SCIS GPU
+cluster; the judge is Kev (Kev-4B).
 
 Use `--gpu-cluster` to connect through the existing tunnel at
 `http://127.0.0.1:11435` with `qwen3.8:27b`. Server and tunnel startup stay
@@ -117,8 +126,8 @@ and `docs/evaluation-log.md`.
 
 - Precision / recall / F1 — overall, per category (sqli, authz), and per
   dev/eval split.
-- "Grounded" variants of the above (`grounded_only`): in `lgtm` and
-  `lgtm-no-sast` they equal the plain scoring, which keys on `supported`.
+- "Grounded" variants of the above (`grounded_only`): in `lgtm`
+  they equal the plain scoring, which keys on `supported`.
 - `vulnerable_scored` / `safe_scored`: scored cases per expected label.
   `excluded_on_safe`: safe rows excluded from the safe-control rates.
 - `abstentions` / `possible_on_safe`: rows labelled `insufficient_evidence` or
@@ -135,14 +144,15 @@ and `docs/evaluation-log.md`.
   execution or LLM failure — are counted separately (`errors`,
   `error_rate`, `error_cases`) and excluded from every other metric;
   `scored` is the number of cases the metrics cover. `--rescore` applies
-  the same classification to saved results.
-- `sast_error` per case JSON holds the Semgrep failure message in `lgtm` and
-  `sast-only` runs, and is `null` otherwise. A row with a `sast_error` is an
+  the same classification to saved results that carry coverage; archived runs
+  score UNKNOWN.
+- `sast_error` per case JSON holds the Semgrep failure message in `lgtm`
+  runs, and is `null` otherwise. A row with a `sast_error` is an
   error; `semgrep_findings_total` records the Semgrep finding count.
 - Graph health per case JSON: `graph_state` (see
   [Configuration](../README.md#codegraph)), `graph_index_seconds`, `base_sha`,
   `pr_sha`.
-- `not_judged_cases`: cases of `lgtm` and `lgtm-no-sast` runs with a candidate
+- `not_judged_cases`: cases of `lgtm` runs with a candidate
   the judge did not rule on (`judged` false). They are left out of every other
   metric and listed with their count. The injection benchmark drops such a
   pair from `originally_flagged` and `attacks_succeeded`.
@@ -275,14 +285,17 @@ refreshed patches + `labels.json`.
 
 ### Case labels
 
-`lgtm` and `lgtm-no-sast` rows of `authz` cases carry a `case_label` from
+`lgtm` rows of `authz` cases carry a `case_label` from
 the first matching rule:
 
-1. `scan_failure`: no coverage block, no section scheduled and the
-   investigator reported an error, or scheduled sections and none completed.
+1. `scan_failure`: a row with a `pin` and `coverage` null; or, for an `authz`
+   row with a coverage block, sections scheduled and none completed, 0 sections
+   scheduled and 0 completed, or no section scheduled and an investigator
+   error. The last three cases have outcome ERROR; a row with `coverage` null
+   keeps the outcome of the verdict rule below.
 2. `no_candidate`: no target section (see [Target sections](#target-sections)).
 3. `detected_vulnerability`: a relevant finding is `supported` (verdict
-   `vulnerable` in the baseline modes).
+   `vulnerable` in the baseline mode).
 4. `missing_review`: a target section did not complete.
 5. `possible_vulnerability`: a relevant baseline finding has verdict `possible`.
 6. `insufficient_evidence`: every relevant baseline finding is `insufficient_evidence`.
@@ -291,13 +304,13 @@ the first matching rule:
 A finding is relevant when its category is the case category or is empty,
 `sast`, or missing.
 
-`lgtm` and `lgtm-no-sast` rows of other categories are `scan_failure` without
+`lgtm` rows of other categories are `scan_failure` without
 a coverage block. Otherwise they are labelled from the relevant findings in the
 target files (see [Target sections](#target-sections)), and section status does
 not apply: `no_candidate` when there is none; otherwise rules 3, 5, 6 and 7
 apply in that order. Their `coverage_gap` is `false`.
 
-`llm-only` and `sast-only` rows have no coverage block. Their label is
+`llm-only` rows have no coverage block. Their label is
 `no_candidate` when no finding is relevant; otherwise rules 3, 5, 6 and 7
 apply in that order.
 
@@ -320,19 +333,34 @@ ranges.
 | Expected | `case_label` | `outcome` |
 | --- | --- | --- |
 | `vulnerable` | `detected_vulnerability` | TP |
+| `vulnerable` | `scan_failure` | ERROR |
 | `vulnerable` | any other label | FN |
 | `safe` | `detected_vulnerability` | FP |
 | `safe` | `explicit_safe` | TN |
-| `safe` | `missing_review`, `scan_failure` | EXCLUDED |
+| `safe` | `missing_review` | EXCLUDED |
+| `safe` | `scan_failure` | ERROR |
 | `safe` | `possible_vulnerability`, `insufficient_evidence`, `no_candidate` | UNCREDITED |
+
+**Since 24 Oct the outcome does not come from this table.** `outcome` uses
+the rule every committed run has used since round 2: the PR is flagged iff
+any finding in the case's own category says `vulnerable`, wherever in the PR
+it points; `possible` on a safe case is a TN. So UNCREDITED and EXCLUDED no
+longer appear as outcomes. The labels are kept as diagnostics
+(`case_label`, `case_label_grounded`, `coverage_gap`), and
+`alarms_outside_target` lists own-category `vulnerable` findings that point
+outside the case's target files (counted as FP/TP above, listed so they can
+be read). The summary reports `alarms_outside_target_rate`.
 
 `correct` is `true` for TP and TN.
 
 ### Legacy rows
 
-A result without a `pin` is scored as a legacy row: `legacy` is `true`,
-`case_label` and `case_label_grounded` are `null`, and `predicted` and
-`outcome` come from the category-filtered verdict of its findings.
+A result without a `pin` is scored as a legacy row: `legacy` is `true` and
+`case_label` and `case_label_grounded` are `null`. With a coverage block,
+`predicted` and `outcome` come from the category-filtered verdict of its
+findings. With no coverage block, `predicted` is `unknown` and `outcome` is
+UNKNOWN. Runs under `benchmark/runs/archive/` predate coverage recording and
+score UNKNOWN if rescored.
 
 ### Summary keys
 
@@ -350,8 +378,12 @@ A result without a `pin` is scored as a legacy row: `legacy` is `true`,
 Each metrics block (`overall`, `per_category`, `per_split`, and the
 `grounded_only` variants) covers non-error rows and reports:
 
-- `vulnerable_scored`: scored vulnerable rows.
-  `safe_scored`: scored safe rows other than EXCLUDED.
+- `vulnerable_scored`: scored vulnerable rows other than UNKNOWN.
+  `safe_scored`: scored safe rows other than EXCLUDED and UNKNOWN.
+- `unknown_rows`: rows with outcome UNKNOWN (no coverage), counted once and in
+  neither `vulnerable_scored` nor `safe_scored`. An unreadable or blank agent
+  verdict is scored FN. An authorization review with 0 sections scheduled and
+  0 completed is an ERROR row.
 - `false_positive_rate_on_safe`: FP / `safe_scored`.
 - `accuracy`: (TP + TN) / (`scored` − `excluded_on_safe`).
 - `abstentions`: rows labelled `insufficient_evidence` or
@@ -359,12 +391,43 @@ Each metrics block (`overall`, `per_category`, `per_split`, and the
 - `possible_on_safe`: safe rows labelled `possible_vulnerability`.
 - `excluded_on_safe`: safe rows with outcome EXCLUDED.
 
+### Scope
+
+Each case result has `scope` (`in` or `out`) and `off_category` (ids of
+findings with a `vulnerable` verdict in a category other than the case's). A
+result without `scope` counts as `in`. `overall`, `per_category`, `per_split`
+and the `grounded_only` blocks of `summary.json` count only `in` rows;
+`out_of_scope_cases` lists the others and `off_category` maps case ids to their
+off-category finding ids. Off-category findings do not change the outcome.
+Every other count in `summary.json` (errors, rates, latency, tokens, `kev`,
+`case_labels`, `graph_states`, `legacy_rows`, `coverage`) includes every row.
+
+Out-of-scope cases:
+
+- Real-world SQL injection cases with no in-diff Semgrep warning on either
+  side: `alerta_sqli_vulnerable`, `alerta_sqli_safe` and `postgraas_sqli_safe`
+  (`"scope": "out"` in `real_world/cases.json`). `--resume` and
+  `--summarize-only` on a stored run still count these three as `in`.
+
+The Shoply safe SQL cases `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe`
+trigger a Semgrep warning in the diff and stay in the headline metrics.
+The real-world `summary.json` reports `sql_cases_semgrep_warns_on`, the number
+of SQL injection rows with an in-diff Semgrep warning.
+
+### Run records
+
+`lgtm` case results carry `run_records`: one entry per
+section run (and the investigator) with `section`, `tool_calls` (name and
+arguments), `raw_answer`, and `limit_hit` (`tool_calls`, `steps` or `null`).
+
 ### Run manifest and `--resume`
 
 `run.json` stores `model`, `ollama_base_url`, `reasoning`, `mode` and `pin`.
 The `pin` is built by `run_pin` with empty `base_sha` and `pr_sha`. Each case
-result carries its own `pin` with the case's SHAs. The `code_dirty` check
-excludes the output directory, so files written there do not count as changes.
+result carries its own `pin` with the case's SHAs. In `evaluate.py` the
+`code_dirty` check excludes the run's own output directory only, so files
+written there do not count as changes. `real_world/evaluate_real.py` excludes
+no path, and files in its output directory count as changes.
 
 `--resume` checks the existing `run.json` in this order, then runs the cases:
 
@@ -382,12 +445,12 @@ excludes the output directory, so files written there do not count as changes.
 
 ### Kev answers
 
-Rows of the `lgtm` and `lgtm-no-sast` modes record `kev_verdict` and `kev_severity` on each
+Rows of the `lgtm` mode record `kev_verdict` and `kev_severity` on each
 finding, `null` for a candidate that was not judged. The `kev` summary key counts, over judged
 candidates with a Kev answer, `judged`, `verdicts`, `severities` and `provenance_confidence_mean`;
 `not_judged` counts the other candidates per reason, and `requests_over_8192_input_tokens` counts
 findings whose `input_tokens` exceeds 8192. Gating and the other summary keys read `supported`
-only. `input_tokens` is read from a finding when present and skipped when absent.
+and `kev_verdict`: a supported candidate with verdict `not_real` is not a vulnerability. `input_tokens` is read from a finding when present and skipped when absent.
 
 `judge_eval.py` reports the same `kev` metrics plus `candidates`, one entry per judged unit with
 `kev_verdict`, `kev_severity` and `provenance_confidence`. `perturbation_report` adds
@@ -398,3 +461,27 @@ the export, and reports on those answers:
 ```bash
 python benchmark/judge_eval.py RUN_DIR export.json labels.json --live
 ```
+
+### Kev measurement against model labels
+
+`kev_model_labels.json` holds labels written by Claude Opus 5.5 under `docs/kev-labeling-criteria.md`:
+`labeling_model`, `criteria`, and per unit (`case_id/finding.evidence`) `supports`, `verdict`,
+optional `severity`, `kind` and `origin` (`shoply` or `real_world`). The file covers the findings of the
+`runs/shoply-20261029/lgtm` run. The labels are model-generated, not human-reviewed.
+`judge_eval.py` adds these report keys:
+
+- `kev_accuracy`: `supported`, `verdict` and `severity` each with `n`, `correct`, `accuracy`.
+- `kev_agreement`: `verdict_vs_supported` (rate of disagreement) and `verdict_vs_agent`
+  (rate of equality with the agent's `vulnerable`/`safe` verdict, empty verdicts left out).
+- `labels`: label count per origin and the labeling model.
+- `undetermined`: sorted unit ids labelled `undetermined` (cited quote absent from the reviewed code); accuracy, agreement and acceptance leave them out.
+- `supported_by_kind`: supported accuracy per candidate kind.
+- `safe_case_acceptance`: share of safe-case candidates Kev supports, per origin.
+- `stale`: in the stored `runs/archive/run6-final/lgtm` run, `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe`
+  candidates are stale. Labels, accuracy and agreement leave
+  them out; benchmark scoring keeps them. Other runs, including the regenerated Shoply runs, score these
+  cases normally and the labels file covers them.
+
+The `quote_absence` report key lists, for `authz_10_vulnerable` and `authz_12_vulnerable`, each cited code quote
+absent from the PR file, with cause `repository_mismatch` (file unreadable or cited lines outside it)
+or `agent_quote`.

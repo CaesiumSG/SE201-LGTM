@@ -12,9 +12,11 @@ import logging
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
+    RunRecord,
     answer_until_resolved,
     build_llm,
     extract_json_object,
+    fill_record,
     parse_agent_output,
     run_tool_loop,
 )
@@ -37,6 +39,7 @@ class SASTTriageAgent:
         self.toolbox = toolbox
         self.llm = llm or build_llm(self.config)
         self.errors: list[dict[str, str]] = []
+        self.run_records: list[RunRecord] = []
 
     def triage(
         self,
@@ -90,9 +93,15 @@ class SASTTriageAgent:
             return parse_agent_output(raw, finding.finding_id, default_cwe="CWE-89")
 
         logger.info("SAST triage: %s", finding.finding_id)
+        record = RunRecord(f"sast_triage:{finding.finding_id}")
+        self.run_records.append(record)
         try:
             kept = answer_until_resolved(
-                lambda: run_tool_loop(self.llm, tools, system, user, self.config),
+                lambda note="": fill_record(
+                    record,
+                    self.toolbox,
+                    run_tool_loop(self.llm, tools, system, f"{user}\n\n{note}" if note else user, self.config),
+                ),
                 parse,
                 self.toolbox,
             )
@@ -104,8 +113,6 @@ class SASTTriageAgent:
             message = registry.entry("shared.unparsable_explanation")
         if kept is None:
             self.errors.append({"source": finding.finding_id, "message": message})
-            return None
-        if not kept:
             return None
         result = kept[0]
 

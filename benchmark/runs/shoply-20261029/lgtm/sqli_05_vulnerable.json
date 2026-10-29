@@ -1,0 +1,538 @@
+{
+  "id": "sqli_05_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 125.35,
+  "est_tokens": 1476,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:69",
+      "cwe_id": "CWE-89",
+      "explanation": "The new search_orders() endpoint (app/routes/orders.py:59-70) reads the untrusted query parameter q directly from the request (line 63: q = request.args.get(\"q\", \"\")) and interpolates it into a raw SQL string via an f-string (line 67: ... shipping_address LIKE '%{q}%'). The resulting string is executed with session.execute(text(sql)) on line 69 with no bound parameters passed. Because q is attacker-controlled and concatenated into the SQL text, an attacker can break out of the LIKE literal (e.g. q = \"%' OR '1'='1\") to inject arbitrary SQL. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL (CWE-89). The g.current_user.id value is server-derived, but the q interpolation makes the query injectable.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/search\", methods=[\"GET\"])\n@require_auth\ndef search_orders():\n    \"\"\"Search the current user's orders by shipping address.\"\"\"\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Use a bound parameter for the user-supplied value instead of f-string interpolation, e.g.: sql = text(\"SELECT id, user_id, status, total FROM orders WHERE user_id = :uid AND shipping_address LIKE :q\"); rows = session.execute(sql, {\"uid\": g.current_user.id, \"q\": f\"%{q}%\"}). This keeps the query structure fixed and passes all dynamic values as bound parameters, satisfying security-policy.md \u00a75.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9573,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 69,
+      "tool_calls_used": 3,
+      "pr_graph_ok": true,
+      "input_tokens": 931
+    },
+    {
+      "finding_id": "authz:orders-search-endpoint:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new /orders/search endpoint is documented (api-spec.md) as 'authenticated; results scoped to own orders unless admin', and security-policy.md \u00a73 requires that listing another user's orders be restricted to that user and administrators, using is_owner_or_admin. The implementation hard-codes `WHERE user_id = {g.current_user.id}`, so an admin (or manager) can never see other users' orders \u2014 the admin access path the policy and API spec require is missing. is_owner_or_admin is imported in orders.py but not used by search_orders, and the query does not branch on role. This is an incorrect authorization check: the admin role is silently denied the access the policy grants.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/search\", methods=[\"GET\"])\n@require_auth\ndef search_orders():\n    q = request.args.get(\"q\", \"\")\n    session = get_session()\n    sql = (\n        f\"SELECT id, user_id, status, total FROM orders \"\n        f\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\"\n    )\n    rows = session.execute(text(sql))\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            107,
+            109
+          ],
+          "source": null,
+          "content": "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n    return user.id == owner_id or user.role == \"admin\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Listing another user's orders is restricted to that user themselves and administrators.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Scope the query by role: if g.current_user.role == 'admin', omit the user_id filter (or use is_owner_or_admin semantics); otherwise filter to g.current_user.id. Use bound parameters for both the user_id and the LIKE pattern.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8403,
+      "kev_verdict": "real",
+      "kev_severity": "medium",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 67,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 894
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/orders.py:69",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL queries must use bound parameters"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 59,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/orders.py:69\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new search_orders() endpoint (app/routes/orders.py:59-70) reads the untrusted query parameter q directly from the request (line 63: q = request.args.get(\\\"q\\\", \\\"\\\")) and interpolates it into a raw SQL string via an f-string (line 67: ... shipping_address LIKE '%{q}%'). The resulting string is executed with session.execute(text(sql)) on line 69 with no bound parameters passed. Because q is attacker-controlled and concatenated into the SQL text, an attacker can break out of the LIKE literal (e.g. q = \\\"%' OR '1'='1\\\") to inject arbitrary SQL. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL (CWE-89). The g.current_user.id value is server-derived, but the q interpolation makes the query injectable.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 70], \"content\": \"@orders_bp.route(\\\"/search\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef search_orders():\\n    \\\"\\\"\\\"Search the current user's orders by shipping address.\\\"\\\"\\\"\\n    q = request.args.get(\\\"q\\\", \\\"\\\")\\n    session = get_session()\\n    sql = (\\n        f\\\"SELECT id, user_id, status, total FROM orders \\\"\\n        f\\\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\\\"\\n    )\\n    rows = session.execute(text(sql))\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a bound parameter for the user-supplied value instead of f-string interpolation, e.g.: sql = text(\\\"SELECT id, user_id, status, total FROM orders WHERE user_id = :uid AND shipping_address LIKE :q\\\"); rows = session.execute(sql, {\\\"uid\\\": g.current_user.id, \\\"q\\\": f\\\"%{q}%\\\"}). This keeps the query structure fixed and passes all dynamic values as bound parameters, satisfying security-policy.md \u00a75.\"\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "is_owner_or_admin require_auth require_role definitions in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "bound parameters SQL injection security policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 25,
+            "end_line": 50,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-search-endpoint\",\n      \"title\": \"New GET /orders/search endpoint with SQL injection and missing admin scoping\",\n      \"rationale\": \"Both hunks together introduce a new order-search endpoint. Hunk #0 adds the `sqlalchemy.text` import that the new handler depends on; hunk #1 adds the `search_orders` route. The handler (a) interpolates the request-derived `q` value directly into a raw SQL string via f-string (CWE-89, violating security-policy.md \u00a75 which forbids string interpolation of request-derived values into SQL and mandates bound parameters), and (b) scopes results to the caller's own `user_id` only, whereas api-spec.md \u00a7Orders requires `/orders/search` to be 'scoped to own orders unless admin' \u2014 i.e. admins should see all orders. The existing `is_owner_or_admin` helper (already imported in this file) is the project's canonical ownership check and is not used here. Both hunks are inseparable: the import is only needed by the new handler, and the handler is the authorization-relevant change.\",\n      \"hunks\": [\"app/routes/orders.py#0\", \"app/routes/orders.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Decorator applied to search_orders; sets g.current_user but performs no role/ownership scoping.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"Canonical ownership check (user.id == owner_id or role == 'admin') that the new endpoint should use to allow admins to see all orders; it is imported in orders.py but not used by search_orders.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"base\", \"why\": \"Reference pattern showing how is_owner_or_admin is applied to enforce owner-or-admin access on a per-object endpoint.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Defines the `orders` table columns (user_id, shipping_address, status, total) referenced by the raw SQL in search_orders.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 38, \"end_line\": 49, \"snapshot\": \"base\", \"why\": \"Existing own-orders endpoint that uses parameterized ORM filtering (Order.user_id == g.current_user.id), contrasting with the f-string SQL in the new search_orders.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-search-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "order search endpoint access control admin scope own orders"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new /orders/search endpoint is documented (api-spec.md) as 'authenticated; results scoped to own orders unless admin', and security-policy.md \u00a73 requires that listing another user's orders be restricted to that user and administrators, using is_owner_or_admin. The implementation hard-codes `WHERE user_id = {g.current_user.id}`, so an admin (or manager) can never see other users' orders \u2014 the admin access path the policy and API spec require is missing. is_owner_or_admin is imported in orders.py but not used by search_orders, and the query does not branch on role. This is an incorrect authorization check: the admin role is silently denied the access the policy grants.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 70], \"content\": \"@orders_bp.route(\\\"/search\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef search_orders():\\n    q = request.args.get(\\\"q\\\", \\\"\\\")\\n    session = get_session()\\n    sql = (\\n        f\\\"SELECT id, user_id, status, total FROM orders \\\"\\n        f\\\"WHERE user_id = {g.current_user.id} AND shipping_address LIKE '%{q}%'\\\"\\n    )\\n    rows = session.execute(text(sql))\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [107, 109], \"content\": \"def is_owner_or_admin(user: User, owner_id: int) -> bool:\\n    \\\"\\\"\\\"Ownership check used for per-object access (orders, profiles).\\\"\\\"\\\"\\n    return user.id == owner_id or user.role == \\\"admin\\\"\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"Listing another user's orders is restricted to that user themselves and administrators.\"}\n      ],\n      \"suggested_fix\": \"Scope the query by role: if g.current_user.role == 'admin', omit the user_id filter (or use is_owner_or_admin semantics); otherwise filter to g.current_user.id. Use bound parameters for both the user_id and the LIKE pattern.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 67\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "cd83f7a9e7d2844e3cccd0f233c2cdcbb93699f2",
+    "pr_sha": "539729dd5e76d1eab88dc40d60bf22458d7cbef0",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-search-endpoint",
+        "origin": "investigator",
+        "title": "New GET /orders/search endpoint with SQL injection and missing admin scoping",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 56,
+            "new_count": 15,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-search-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.02,
+  "base_sha": "cd83f7a9e7d2844e3cccd0f233c2cdcbb93699f2",
+  "pr_sha": "539729dd5e76d1eab88dc40d60bf22458d7cbef0",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "orders-search-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:orders-search-endpoint:1"
+  ]
+}

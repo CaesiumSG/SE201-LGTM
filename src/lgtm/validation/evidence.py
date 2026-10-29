@@ -7,7 +7,7 @@ Verifies that every claim an agent made is grounded in reality:
 - cited policy sources exist among the indexed documents.
 
 Code evidence labelled with a snapshot is checked only against the committed
-blob at that snapshot's frozen commit, with exact matching.
+blob at that snapshot's frozen commit, against the raw or the sanitized text.
 
 Validation annotates each cited code item with ``grounded_in_pr``.
 """
@@ -23,7 +23,8 @@ from pathlib import Path
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.agents.tools import read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
-from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
+from lgtm.diff.git_diff import FileDiff, GitError, Hunk, LineChange, read_file_at_ref
+from lgtm.diff.sanitizer import sanitize_file_diff
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,13 @@ FUZZY_THRESHOLD = 0.75
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _sanitized_text(path: str, lines: list[str]) -> str:
+    """``lines`` as the model saw them: comments and docstrings stripped."""
+    changes = [LineChange("add", line, None, n) for n, line in enumerate(lines, 1)]
+    hunk = Hunk(1, 0, 1, len(lines), changes=changes)
+    return sanitize_file_diff(FileDiff(path, hunks=[hunk])).added_text
 
 
 def _locator_candidates(path: str) -> list[str]:
@@ -91,8 +99,10 @@ class EvidenceValidator:
         self._snapshot_cache: dict[tuple[str, str], list[str] | None] = {}
         # Content added by the PR, by file — snippets may legitimately cite it.
         self._diff_added: dict[str, str] = {}
+        self._diff_removed: dict[str, str] = {}
         for fd in diffs or []:
             self._diff_added[fd.path] = _normalize(fd.added_text)
+            self._diff_removed[fd.path] = _normalize(fd.removed_text)
 
     # ------------------------------------------------------------------
     def _read_base_file(self, path: str) -> list[str] | None:
@@ -159,6 +169,12 @@ class EvidenceValidator:
                     return True
         return False
 
+    def _snippet_in_file(self, snippet: str, path: str, lines: list[str]) -> bool:
+        """Fuzzy match against the raw file, then against its sanitized text."""
+        if self._snippet_in_text(snippet, _normalize("\n".join(lines))):
+            return True
+        return self._snippet_in_text(snippet, _normalize(_sanitized_text(path, lines)))
+
     # ------------------------------------------------------------------
     def _snapshot_lines(self, label: str, path: str) -> list[str] | None:
         key = (label, path)
@@ -174,7 +190,7 @@ class EvidenceValidator:
             return [f"snapshot '{label}' is unavailable for this review"]
         lines = self._snapshot_lines(label, item.file)
         if lines is None:
-            return [f"cited file does not exist at {label} snapshot"]
+            return [f"cited file {item.file} does not exist at {label} snapshot"]
         if item.lines is not None:
             if not _is_ordered_positive_range(item.lines):
                 return [f"invalid cited line range for {item.file} at {label} snapshot"]
@@ -185,8 +201,7 @@ class EvidenceValidator:
                     f"at {label} snapshot ({len(lines)} lines)"
                 ]
         if item.content.strip():
-            whole = _normalize("\n".join(lines))
-            if _normalize(item.content) not in whole:
+            if not self._snippet_in_file(item.content, item.file, lines):
                 return [
                     f"cited code snippet not found in {item.file} at {label} snapshot: "
                     f"{item.content[:80]!r}"
@@ -238,8 +253,7 @@ class EvidenceValidator:
                     region = _normalize("\n".join(lines[lo:hi]))
                     found = self._snippet_in_text(item.content, region)
                 if not found:
-                    whole = _normalize("\n".join(lines))
-                    found = self._snippet_in_text(item.content, whole)
+                    found = self._snippet_in_file(item.content, item.file, lines)
             if not found and in_diff:
                 found = self._snippet_in_text(item.content, self._diff_added[item.file])
             if not found:
@@ -249,17 +263,23 @@ class EvidenceValidator:
                 )
         return issues
 
-    def resolves(self, item: EvidenceItem) -> bool:
-        """Whether a code item resolves at its snapshot; unlabelled items resolve at pr, then base."""
+    def resolution_issues(self, item: EvidenceItem) -> list[str]:
+        """Why a code item does not resolve at its snapshot; unlabelled items resolve at pr, then base."""
         if self._shas is None:
-            return True
+            return []
         if item.snapshot is None and not item.snapshot_conflict:
-            return any(
-                not self._validate_code_item(item.model_copy(update={"snapshot": label}))
-                for label in ("pr", "base")
-                if label in self._shas
-            )
-        return not self._validate_code_item(item)
+            issues: list[str] = []
+            for label in ("pr", "base"):
+                if label in self._shas:
+                    found = self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                    if not found:
+                        return []
+                    issues.extend(found)
+            return issues or ["no snapshot is available for this review"]
+        return self._validate_code_item(item)
+
+    def resolves(self, item: EvidenceItem) -> bool:
+        return not self.resolution_issues(item)
 
     def _validate_policy_item(self, item: EvidenceItem) -> list[str]:
         issues: list[str] = []
@@ -286,11 +306,23 @@ class EvidenceValidator:
         """Whether a code item on its own grounds a vulnerable verdict in the PR."""
         if item.type != "code" or issues or not item.content.strip():
             return False
-        if self._shas is not None and item.snapshot is not None:
-            return item.snapshot == "pr"
-        return item.file in self._diff_added and self._snippet_in_text(
-            item.content, self._diff_added[item.file]
-        )
+        labelled = self._shas is not None and item.snapshot is not None
+        if labelled and item.snapshot == "pr":
+            return True
+        if item.file not in self._diff_added:
+            return False
+        texts = [self._diff_removed[item.file]]
+        if not labelled:
+            texts.append(self._diff_added[item.file])
+        return any(self._snippet_in_text(item.content, t) for t in texts)
+
+    def _content_at_lines(self, item: EvidenceItem, label: str) -> bool:
+        lines = self._snapshot_lines(label, item.file)
+        if lines is None or not item.lines or not item.content.strip():
+            return False
+        if not _is_ordered_positive_range(item.lines):
+            return False
+        return _normalize(item.content) in _normalize("\n".join(lines[item.lines[0] - 1 : item.lines[1]]))
 
     def read_cited_code(self, item: EvidenceItem) -> str:
         """Code at the cited location; empty when it cannot be read."""
@@ -300,7 +332,20 @@ class EvidenceValidator:
         if self._shas is None:
             lines = self._read_base_file(self._resolve_path(item.file))
         else:
-            for label in [item.snapshot] if item.snapshot else ["pr", "base"]:
+            labels = ["pr", "base"]
+            if item.snapshot:
+                labels = [item.snapshot]
+            elif not item.snapshot_conflict:
+                # Prefer the snapshot holding the content at the cited lines (removed or shifted code),
+                # then any snapshot where the citation validates.
+                valid = [
+                    label
+                    for label in labels
+                    if label in self._shas
+                    and not self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                ]
+                labels = [label for label in valid if self._content_at_lines(item, label)] or valid or labels
+            for label in labels:
                 if label in self._shas:
                     lines = self._snapshot_lines(label, item.file)
                 if lines is not None:

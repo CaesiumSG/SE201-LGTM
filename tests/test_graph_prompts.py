@@ -41,6 +41,9 @@ SCENARIOS = {
 }
 
 
+_SRC_INSERT = f"sys.path.insert(0, {str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'src')!r})\n"
+
+
 class _Msg(SimpleNamespace):
     pass
 
@@ -174,7 +177,7 @@ class TestSharedGuidanceData:
 
     def test_prompt_parts_import_leaves_the_graph_package_unloaded(self):
         code = (
-            "import sys, lgtm.agents.prompt_parts\n"
+            "import sys\n" + _SRC_INSERT + "import lgtm.agents.prompt_parts\n"
             "print(sorted(m for m in sys.modules if m.startswith('lgtm.graph')))\n"
         )
         done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
@@ -322,13 +325,17 @@ class _LongPolicyRetriever:
 
 
 class TestSectionReviewPrompt:
-    def test_prompt_names_the_section_and_its_rationale(self, git_repo):
+    def test_prompt_omits_the_investigator_title_and_rationale_and_shows_code_and_location(
+        self, git_repo
+    ):
         section = _section(
-            section_id="sec-7", title="Refund approval", rationale="Managers approve refunds"
+            lines=("refund_total = 1",), section_id="sec-7", title="Refund approval",
+            rationale="Managers approve refunds",
         )
         text = _section_prompt(git_repo, section)
-        assert "sec-7" in text and "Refund approval" in text
-        assert "Managers approve refunds" in text
+        assert "Refund approval" not in text
+        assert "Managers approve refunds" not in text
+        assert "refund_total = 1" in text and "app.py" in text
 
     def test_section_text_longer_than_six_thousand_characters_appears_in_full(self, git_repo):
         lines = [f"value_{i:04d} = {i}" for i in range(500)]
@@ -379,6 +386,60 @@ class TestSectionReviewPrompt:
         text = _flat(_section_prompt(git_repo, _section()))
         assert re.search(r"lack of an explicit rule", text, re.I)
         assert not re.search(r"\b(vulnerable|possible|insufficient_evidence)\b", text, re.I)
+
+
+def _scope_sentences(git_repo, **kwargs):
+    text = _flat(_section_prompt(git_repo, _section(), **kwargs))
+    return _sentences(text)
+
+
+def _has(sentences, *patterns):
+    return any(all(re.search(p, s, re.I) for p in patterns) for s in sentences)
+
+
+class TestSectionReviewScopeRule:
+    def test_prompt_requires_a_finding_to_cite_a_changed_or_removed_line(self, git_repo):
+        sentences = _scope_sentences(git_repo)
+        assert _has(sentences, r"\bcit(e|es|ing)\b", r"\bchanged\b", r"\b(removed|deleted)\b")
+
+    def test_prompt_accepts_an_explanation_of_how_the_change_newly_exposes_code(self, git_repo):
+        sentences = _scope_sentences(git_repo)
+        assert _has(sentences, r"newly\s+expos", r"\b(pr|change|pull request)\b")
+
+    def test_prompt_excludes_weaknesses_that_already_exist_and_are_unchanged(self, git_repo):
+        sentences = _scope_sentences(git_repo)
+        assert _has(
+            sentences,
+            r"\b(already exist\w*|pre-?existing|unchanged)\b",
+            r"\b(not|never|do not|don't|omit|exclude)\b",
+        )
+
+    def test_prompt_tells_the_reviewer_to_return_an_empty_list_for_out_of_scope_weaknesses(
+        self, git_repo
+    ):
+        sentences = _scope_sentences(git_repo)
+        assert _has(
+            sentences, r"\b(already exist\w*|pre-?existing|unchanged)\b", r"\bempty\b|no candidate"
+        )
+
+    @pytest.mark.parametrize("role_guidance", [True, False])
+    @pytest.mark.parametrize("notes", ["", "- python.sqli at app.py:2: tainted query"])
+    def test_scope_rule_is_present_regardless_of_guidance_flag_and_sast_notes(
+        self, git_repo, role_guidance, notes
+    ):
+        sentences = _scope_sentences(
+            git_repo, notes=notes, authz_role_guidance=role_guidance
+        )
+        assert _has(sentences, r"newly\s+expos")
+        assert _has(sentences, r"\b(already exist\w*|pre-?existing|unchanged)\b")
+
+    def test_scope_rule_sits_in_the_system_message_not_the_untrusted_section(self, git_repo):
+        config = LGTMConfig(max_tool_calls=BUDGET)
+        toolbox = AgentToolbox(git_repo, "main", None, config)
+        llm = ScriptedLLM([EMPTY_FINDINGS])
+        AuthzReviewerAgent(toolbox, config, llm=llm).review_section(_section(), "")
+        system = _flat(str(llm.seen[0][0].content))
+        assert re.search(r"newly\s+expos", system, re.I)
 
 
 def _user_prompt(git_repo, section, notes=""):
@@ -440,8 +501,12 @@ class TestSectionPromptInjectionResistance:
     )
     def test_pr_controlled_field_cannot_start_a_new_prompt_line(self, git_repo, field, separator):
         section, notes = _hostile_section(field, f"x{separator}{HEADING} y")
+        prompt = _user_prompt(git_repo, section, notes)
+        if field in ("title", "rationale"):
+            assert "INJECTED_HEADING" not in prompt
+            return
 
-        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+        lines = _classified_lines(prompt)
 
         escaped = [
             line for line, inside in lines
@@ -457,8 +522,12 @@ class TestSectionPromptInjectionResistance:
         self, git_repo, field
     ):
         section, notes = _hostile_section(field, "PR_CONTROLLED_VALUE")
+        prompt = _user_prompt(git_repo, section, notes)
+        if field in ("title", "rationale"):
+            assert "PR_CONTROLLED_VALUE" not in prompt
+            return
 
-        lines = _classified_lines(_user_prompt(git_repo, section, notes))
+        lines = _classified_lines(prompt)
 
         hits = [i for i, (line, _) in enumerate(lines) if "PR_CONTROLLED_VALUE" in line]
         assert hits, "the field value is not shown to the reviewer"

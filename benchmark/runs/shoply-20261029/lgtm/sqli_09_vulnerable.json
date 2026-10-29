@@ -1,0 +1,673 @@
+{
+  "id": "sqli_09_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 132.66,
+  "est_tokens": 2474,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:67",
+      "cwe_id": "CWE-89",
+      "explanation": "The new endpoint batch_order_status (app/routes/orders.py:59-70) reads a user-controlled query parameter `ids` (line 63: `raw_ids = request.args.get(\"ids\", \"\")`), splits it on commas (line 64), joins the pieces into a string (line 65: `joined = \", \".join(id_list)`), and then concatenates that string directly into a raw SQL statement executed via SQLAlchemy `text()` (lines 67-69: `text(\"SELECT id, status FROM orders WHERE id IN (\" + joined + \")\")`). No bound parameters are used and no whitelist/numeric validation is applied to the values, so an attacker can inject arbitrary SQL (e.g. `ids=1); DROP TABLE orders;--`). This directly violates the project security policy, which mandates bound parameters and forbids string concatenation of request-derived values into SQL. The `@require_role(\"manager\")` decorator only restricts who can call the endpoint; it does not sanitize the input, so the injection remains exploitable by any authenticated manager/admin.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/batch-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef batch_order_status():\n    \"\"\"Fetch the status of several orders by comma-separated ids.\"\"\"\n    raw_ids = request.args.get(\"ids\", \"\")\n    id_list = raw_ids.split(\",\")\n    joined = \", \".join(id_list)\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, status FROM orders WHERE id IN (\" + joined + \")\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Use bound parameters instead of string concatenation. Parse the ids into a list of integers (rejecting non-numeric values), then build a parameterized IN clause, e.g. `placeholders = \", \".join([f\":id{i}\" for i in range(len(id_list))])` and execute `text(f\"SELECT id, status FROM orders WHERE id IN ({placeholders})\"), {f\"id{i}\": int(v) for i, v in enumerate(id_list)})`. Alternatively, validate each value with `int()` and use SQLAlchemy's `bindparams`/expanding bindparam (`text(\"... WHERE id IN :ids\").bindparams(bindparam(\"ids\", expanding=True))`). Also enforce ownership/role scoping per policy section 3.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9537,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 67,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 969
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:68",
+      "cwe_id": "CWE-89",
+      "explanation": "The new endpoint batch_order_status (app/routes/orders.py:59-70) reads user-controlled input from the query string via request.args.get(\"ids\", \"\") (line 63), splits it on commas (line 64), joins the raw tokens back into a string (line 65), and then concatenates that string directly into a SQLAlchemy text() SQL statement (line 68): text(\"SELECT id, status FROM orders WHERE id IN (\" + joined + \")\"). No bound parameters are used and no whitelist/integer validation is applied to the tokens, so an attacker can inject arbitrary SQL (e.g. ids=1) OR 1=1--). The @require_role(\"manager\") decorator only restricts who can call the endpoint; it does not sanitize the input. This directly violates the project security policy, which forbids string concatenation of request-derived values into SQL and requires bound parameters.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/batch-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef batch_order_status():\n    \"\"\"Fetch the status of several orders by comma-separated ids.\"\"\"\n    raw_ids = request.args.get(\"ids\", \"\")\n    id_list = raw_ids.split(\",\")\n    joined = \", \".join(id_list)\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, status FROM orders WHERE id IN (\" + joined + \")\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate each id as an integer and use bound parameters. For example: ids = [int(x) for x in raw_ids.split(\",\") if x.strip().isdigit()] (raising 400 on any non-integer), then build a placeholder list and pass params: placeholders = \", \".join([f\":id{i}\" for i in range(len(ids))]); params = {f\"id{i}\": v for i, v in enumerate(ids)}; rows = session.execute(text(f\"SELECT id, status FROM orders WHERE id IN ({placeholders})\"), params). This keeps all user input in bound parameters and rejects non-numeric tokens.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9521,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 68,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 942
+    },
+    {
+      "finding_id": "authz:batch-status-endpoint:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new GET /orders/batch-status endpoint fetches orders by user-supplied identifiers (the `ids` query param) and returns their status without any per-order ownership verification. Policy \u00a73 requires that 'Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data.' The handler only applies @require_role('manager'), which is a role check, not an ownership check, and never calls is_owner_or_admin (which is imported at line 15 but unused). This is an IDOR: any manager can read the status of any order by id, and the endpoint exposes order data keyed by a user-controlled identifier with no ownership gate.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            70
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/batch-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef batch_order_status():\n    raw_ids = request.args.get(\"ids\", \"\")\n    id_list = raw_ids.split(\",\")\n    joined = \", \".join(id_list)\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, status FROM orders WHERE id IN (\" + joined + \")\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            107,
+            109
+          ],
+          "source": null,
+          "content": "def is_owner_or_admin(user: User, owner_id: int) -> bool:\n    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n    return user.id == owner_id or user.role == \"admin\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            43,
+            53
+          ],
+          "source": null,
+          "content": "class Order(Base):\n    __tablename__ = \"orders\"\n    id = Column(Integer, primary_key=True)\n    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n    status = Column(String(20), nullable=False, default=\"pending\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "After fetching the requested orders, filter the result set so that only rows where is_owner_or_admin(g.current_user, order.user_id) is True are returned (or restrict the query to the caller's own orders unless the caller is an admin). Do not rely solely on @require_role('manager').",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.935,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 68,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1039
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/orders.py:67",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 75,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_session",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 115,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters raw SQL query policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def require_role",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/orders.py:67\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new endpoint batch_order_status (app/routes/orders.py:59-70) reads a user-controlled query parameter `ids` (line 63: `raw_ids = request.args.get(\\\"ids\\\", \\\"\\\")`), splits it on commas (line 64), joins the pieces into a string (line 65: `joined = \\\", \\\".join(id_list)`), and then concatenates that string directly into a raw SQL statement executed via SQLAlchemy `text()` (lines 67-69: `text(\\\"SELECT id, status FROM orders WHERE id IN (\\\" + joined + \\\")\\\")`). No bound parameters are used and no whitelist/numeric validation is applied to the values, so an attacker can inject arbitrary SQL (e.g. `ids=1); DROP TABLE orders;--`). This directly violates the project security policy, which mandates bound parameters and forbids string concatenation of request-derived values into SQL. The `@require_role(\\\"manager\\\")` decorator only restricts who can call the endpoint; it does not sanitize the input, so the injection remains exploitable by any authenticated manager/admin.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 70], \"content\": \"@orders_bp.route(\\\"/batch-status\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef batch_order_status():\\n    \\\"\\\"\\\"Fetch the status of several orders by comma-separated ids.\\\"\\\"\\\"\\n    raw_ids = request.args.get(\\\"ids\\\", \\\"\\\")\\n    id_list = raw_ids.split(\\\",\\\")\\n    joined = \\\", \\\".join(id_list)\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, status FROM orders WHERE id IN (\\\" + joined + \\\")\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use bound parameters instead of string concatenation. Parse the ids into a list of integers (rejecting non-numeric values), then build a parameterized IN clause, e.g. `placeholders = \\\", \\\".join([f\\\":id{i}\\\" for i in range(len(id_list))])` and execute `text(f\\\"SELECT id, status FROM orders WHERE id IN ({placeholders})\\\"), {f\\\"id{i}\\\": int(v) for i, v in enumerate(id_list)})`. Alternatively, validate each value with `int()` and use SQLAlchemy's `bindparams`/expanding bindparam (`text(\\\"... WHERE id IN :ids\\\").bindparams(bindparam(\\\"ids\\\", expanding=True))`). Also enforce ownership/role scoping per policy section 3.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:68",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 75,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_session",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 115,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters whitelist validation"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def require_role",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:68\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new endpoint batch_order_status (app/routes/orders.py:59-70) reads user-controlled input from the query string via request.args.get(\\\"ids\\\", \\\"\\\") (line 63), splits it on commas (line 64), joins the raw tokens back into a string (line 65), and then concatenates that string directly into a SQLAlchemy text() SQL statement (line 68): text(\\\"SELECT id, status FROM orders WHERE id IN (\\\" + joined + \\\")\\\"). No bound parameters are used and no whitelist/integer validation is applied to the tokens, so an attacker can inject arbitrary SQL (e.g. ids=1) OR 1=1--). The @require_role(\\\"manager\\\") decorator only restricts who can call the endpoint; it does not sanitize the input. This directly violates the project security policy, which forbids string concatenation of request-derived values into SQL and requires bound parameters.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 70], \"content\": \"@orders_bp.route(\\\"/batch-status\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef batch_order_status():\\n    \\\"\\\"\\\"Fetch the status of several orders by comma-separated ids.\\\"\\\"\\\"\\n    raw_ids = request.args.get(\\\"ids\\\", \\\"\\\")\\n    id_list = raw_ids.split(\\\",\\\")\\n    joined = \\\", \\\".join(id_list)\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, status FROM orders WHERE id IN (\\\" + joined + \\\")\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Validate each id as an integer and use bound parameters. For example: ids = [int(x) for x in raw_ids.split(\\\",\\\") if x.strip().isdigit()] (raising 400 on any non-integer), then build a placeholder list and pass params: placeholders = \\\", \\\".join([f\\\":id{i}\\\" for i in range(len(ids))]); params = {f\\\"id{i}\\\": v for i, v in enumerate(ids)}; rows = session.execute(text(f\\\"SELECT id, status FROM orders WHERE id IN ({placeholders})\\\"), params). This keeps all user input in bound parameters and rejects non-numeric tokens.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "bound parameters SQL injection policy orders access rules"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 36,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp|register_blueprint",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 10,
+            "end_line": 30,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_session",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 26,
+            "end_line": 50,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 10,
+            "end_line": 16,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 10,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 52,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "```json\n{\n  \"sections\": [\n    {\n      \"id\": \"batch-status-endpoint\",\n      \"title\": \"New GET /orders/batch-status endpoint with SQL injection and missing ownership check\",\n      \"rationale\": \"Both hunks together introduce a new order-status endpoint. Hunk #0 adds the `from sqlalchemy import text` import that the new handler depends on; hunk #1 adds the `batch_order_status` route. The handler (a) concatenates the request-derived `ids` query parameter directly into a raw SQL string passed to `text()`, violating security-policy.md \u00a75 (bound parameters required; string concatenation of request-derived values into SQL is forbidden, CWE-89); and (b) returns order rows for arbitrary ids with only a `@require_role(\\\"manager\\\")` gate, whereas security-policy.md \u00a73 requires that any endpoint fetching an order by identifier verify ownership with `is_owner_or_admin(current_user, order.user_id)` \u2014 the `is_owner_or_admin` helper is imported (line 15) but never used in the new handler. The endpoint is also not listed in api-spec.md. Both hunks are inseparable: the import is only needed by the new handler, and the handler is the authorization-relevant change.\",\n      \"hunks\": [\n        \"app/routes/orders.py#0\",\n        \"app/routes/orders.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to the new endpoint; enforces manager-or-above but does NOT perform per-order ownership checks required by policy \u00a73.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"Policy \u00a73 mandates this ownership check for any endpoint fetching an order by identifier; it is imported in orders.py (line 15) but not used by the new batch_order_status handler.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"The `orders` table queried by the new handler; has a `user_id` column that the missing ownership check would need to compare against g.current_user.id.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_session\", \"start_line\": 100, \"end_line\": 101, \"snapshot\": \"base\", \"why\": \"Session factory used by the new handler to execute the raw SQL statement.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"base\", \"why\": \"Registers orders_bp under url_prefix=\\\"/orders\\\", so the new route is exposed as GET /orders/batch-status.\"},\n        {\"path\": \"security-policy.md\", \"symbol\": \"\u00a73 Order data access rules\", \"start_line\": 26, \"end_line\": 34, \"snapshot\": \"base\", \"why\": \"Requires is_owner_or_admin for any endpoint fetching an order by identifier; the new endpoint bypasses this.\"},\n        {\"path\": \"security-policy.md\", \"symbol\": \"\u00a75 Database access (SQL)\", \"start_line\": 43, \"end_line\": 50, \"snapshot\": \"base\", \"why\": \"Forbids string concatenation of request-derived values into SQL (CWE-89); the new handler violates this by interpolating `joined` into the text() query.\"}\n      ]\n    }\n  ]\n}\n```",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "batch-status-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 65,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The new GET /orders/batch-status endpoint fetches orders by user-supplied identifiers (the `ids` query param) and returns their status without any per-order ownership verification. Policy \u00a73 requires that 'Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data.' The handler only applies @require_role('manager'), which is a role check, not an ownership check, and never calls is_owner_or_admin (which is imported at line 15 but unused). This is an IDOR: any manager can read the status of any order by id, and the endpoint exposes order data keyed by a user-controlled identifier with no ownership gate.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 70], \"content\": \"@orders_bp.route(\\\"/batch-status\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef batch_order_status():\\n    raw_ids = request.args.get(\\\"ids\\\", \\\"\\\")\\n    id_list = raw_ids.split(\\\",\\\")\\n    joined = \\\", \\\".join(id_list)\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, status FROM orders WHERE id IN (\\\" + joined + \\\")\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [107, 109], \"content\": \"def is_owner_or_admin(user: User, owner_id: int) -> bool:\\n    \\\"\\\"\\\"Ownership check used for per-object access (orders, profiles).\\\"\\\"\\\"\\n    return user.id == owner_id or user.role == \\\"admin\\\"\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [43, 53], \"content\": \"class Order(Base):\\n    __tablename__ = \\\"orders\\\"\\n    id = Column(Integer, primary_key=True)\\n    user_id = Column(Integer, ForeignKey(\\\"users.id\\\"), nullable=False)\\n    status = Column(String(20), nullable=False, default=\\\"pending\\\")\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 3. Order data access rules\\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\"}\n      ],\n      \"suggested_fix\": \"After fetching the requested orders, filter the result set so that only rows where is_owner_or_admin(g.current_user, order.user_id) is True are returned (or restrict the query to the caller's own orders unless the caller is an admin). Do not rely solely on @require_role('manager').\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 68\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "1e7db8c23b40fe6967c1e501c1f2f6a2340f1658",
+    "pr_sha": "08a6a6f1d16d38aa233f001d21550ae92306cf01",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "batch-status-endpoint",
+        "origin": "investigator",
+        "title": "New GET /orders/batch-status endpoint with SQL injection and missing ownership check",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 56,
+            "new_count": 15,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:batch-status-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.1,
+  "base_sha": "1e7db8c23b40fe6967c1e501c1f2f6a2340f1658",
+  "pr_sha": "08a6a6f1d16d38aa233f001d21550ae92306cf01",
+  "sast_error": null,
+  "semgrep_findings_total": 2,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "batch-status-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:batch-status-endpoint:1"
+  ]
+}

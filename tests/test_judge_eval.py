@@ -143,6 +143,93 @@ class TestCitationSupport:
 
         assert offender in str(exc.value)
 
+    SHOPLY = ["sqli_01/0.0", "sqli_01/0.1", "sqli_02_safe/0.0"]
+    REAL = ["owner__repo-1/0.0", "owner__repo-2/1.0"]
+
+    @staticmethod
+    def _mixed(shoply_yes=("sqli_01/0.0", "sqli_02_safe/0.0"), **extra):
+        units = {}
+        for uid, supports in [
+            ("sqli_01/0.0", "yes"), ("sqli_01/0.1", "no"), ("sqli_02_safe/0.0", "yes"),
+        ]:
+            units[uid] = {"supports": supports, "origin": "shoply"}
+        for uid, supports in [("owner__repo-1/0.0", "no"), ("owner__repo-2/1.0", "no")]:
+            units[uid] = {"supports": supports, "origin": "real_world"}
+        units.update(extra)
+        return {"units": units}
+
+    def test_mixed_origin_labels_score_a_shoply_export_on_shoply_units_only(self, je):
+        outcomes = [_outcome(u) for u in self.SHOPLY]
+
+        report = je.citation_support(self.SHOPLY, self._mixed(), outcomes)
+
+        assert report["before_judging"] == {"n": 3, "unlabelled": 0, "percent_yes": pytest.approx(200 / 3)}
+        assert report["judged"]["n"] == 3
+        assert report["judged"]["percent_yes"] == pytest.approx(200 / 3)
+
+    def test_mixed_origin_labels_score_a_real_world_export_on_real_world_units_only(self, je):
+        outcomes = [_outcome(u) for u in self.REAL]
+
+        report = je.citation_support(self.REAL, self._mixed(), outcomes)
+
+        assert report["before_judging"] == {"n": 2, "unlabelled": 0, "percent_yes": 0.0}
+        assert report["judged"]["n"] == 2
+
+    def test_mixed_origin_labels_still_reject_an_own_origin_unit_missing_from_the_export(self, je):
+        labels = self._mixed(**{"sqli_99/0.0": {"supports": "yes", "origin": "shoply"}})
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_99/0.0" in str(exc.value)
+
+    def test_mixed_origin_labels_still_reject_a_missing_real_world_unit_for_a_real_world_export(self, je):
+        labels = self._mixed(**{"owner__repo-9/0.0": {"supports": "no", "origin": "real_world"}})
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.REAL, labels, [_outcome(u) for u in self.REAL])
+
+        assert "owner__repo-9/0.0" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", ["maybe", "Yes", None, True])
+    def test_mixed_origin_labels_still_reject_a_bad_supports_value_on_any_unit(self, je, bad):
+        labels = self._mixed()
+        labels["units"]["sqli_01/0.1"]["supports"] = bad
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_01/0.1" in str(exc.value)
+
+    def test_mixed_origin_labels_reject_a_bad_supports_value_on_an_other_origin_unit(self, je):
+        labels = self._mixed()
+        labels["units"]["owner__repo-1/0.0"]["supports"] = "maybe"
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "owner__repo-1/0.0" in str(exc.value)
+
+    def test_single_origin_labels_file_still_rejects_a_unit_missing_from_the_export(self, je):
+        labels = {"units": {
+            "sqli_01/0.0": {"supports": "yes", "origin": "shoply"},
+            "sqli_77/0.0": {"supports": "yes", "origin": "shoply"},
+        }}
+
+        with pytest.raises(ValueError) as exc:
+            je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert "sqli_77/0.0" in str(exc.value)
+
+    def test_single_origin_labels_file_scores_the_export_as_before(self, je):
+        labels = {"units": {u: {"supports": s, "origin": "shoply"}
+                            for u, s in zip(self.SHOPLY, ["yes", "no", "no"])}}
+
+        report = je.citation_support(self.SHOPLY, labels, [_outcome(u) for u in self.SHOPLY])
+
+        assert report["before_judging"]["n"] == 3
+        assert report["before_judging"]["percent_yes"] == pytest.approx(100 / 3)
+
     def test_both_populations_come_from_one_export_and_one_labels_file(self, je):
         labels = _labels(u1="yes", u2="no", u3="yes")
         outcomes = [_outcome("u1"), _outcome("u2", supported=False), _outcome("u3", judged=False)]
@@ -244,7 +331,7 @@ class TestVerdictAccuracy:
         assert (result["n"], result["excluded"]) == (1, 2)
         assert result["correct"] == 1
 
-    @pytest.mark.parametrize("mode", ["llm-only", "sast-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_not_judged_case_outside_judged_modes_is_still_scored(self, je, mode):
         baseline = {"category": "authz", "judged": False, "supported": None, "verdict": "vulnerable"}
         cases = [
@@ -565,7 +652,7 @@ class TestFallbackAndLatency:
         judge = _scripted_judge(clock, [(s, GOOD) for s in seconds])
 
         records = _measure(je, [_candidate(f"c{i}") for i in range(20)], judge, clock)
-        measures = je.run_measures(records, "lgtm-no-sast")
+        measures = je.run_measures(records, "lgtm")
 
         assert measures["latency_median"] == pytest.approx(1.0)
         assert measures["latency_p95"] == pytest.approx(5.0)
@@ -586,7 +673,7 @@ class TestFallbackAndLatency:
         assert measures["latency_median"] == pytest.approx(5.0)
         assert measures["latency_p95"] == pytest.approx(5.0)
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_fallback_rate_is_not_reported_for_modes_without_a_judge(self, je, mode):
         records = [
             {"judged": False, "latency_seconds": None},
@@ -629,7 +716,7 @@ def _scored_rows(ev, mode):
 
 
 class TestNotJudgedExclusionInSyntheticHarness:
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_case_with_a_not_judged_candidate_is_excluded_and_listed_with_its_count(self, ev, mode):
         summary = ev.summarize(_scored_rows(ev, mode))
 
@@ -639,7 +726,7 @@ class TestNotJudgedExclusionInSyntheticHarness:
         assert overall["accuracy"] == 1.0
         assert summary["not_judged_cases"] == [{"id": "b", "not_judged": 2}]
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_cases_whose_candidates_were_all_judged_are_scored_and_not_listed(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding()], mode)),
@@ -651,7 +738,7 @@ class TestNotJudgedExclusionInSyntheticHarness:
         assert summary["overall"]["scored"] == 2
         assert summary.get("not_judged_cases", []) == []
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_runs_without_a_judge_are_scored_as_before(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode)),
@@ -672,7 +759,7 @@ class TestNotJudgedExclusionInRealWorldHarness:
         rows = _scored_rows(ev, mode)
         for row in rows:
             (out / f"{row['id']}.json").write_text(json.dumps(row), encoding="utf-8")
-        return er.write_dir_summary(out, mode, "own", {r["id"] for r in rows}, "m")["summary"]
+        return er.write_dir_summary(out, mode, {r["id"] for r in rows}, "m")["summary"]
 
     def test_judged_mode_excludes_and_lists_the_case_with_a_not_judged_candidate(self, er, ev, tmp_path):
         summary = self._summary(er, ev, tmp_path, "lgtm")
@@ -681,14 +768,14 @@ class TestNotJudgedExclusionInRealWorldHarness:
         assert summary["overall"]["fn"] == 0
         assert summary["not_judged_cases"] == [{"id": "b", "not_judged": 2}]
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_are_scored_as_before(self, er, ev, tmp_path, mode):
         out = tmp_path / mode
         out.mkdir()
         row = ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode))
         (out / "a.json").write_text(json.dumps(row), encoding="utf-8")
 
-        summary = er.write_dir_summary(out, mode, "own", {"a"}, "m")["summary"]
+        summary = er.write_dir_summary(out, mode, {"a"}, "m")["summary"]
 
         assert summary["overall"]["tp"] == 1
         assert summary.get("not_judged_cases", []) == []
@@ -751,19 +838,6 @@ class TestNotJudgedExclusionInInjectionHarness:
 
         assert summary["originally_flagged"] == 1
         assert summary["attacks_succeeded"] == 1
-        assert summary.get("not_judged_cases", []) == []
-
-    def test_sast_only_pair_is_scored_as_before_with_its_fixed_vulnerable_verdict(
-        self, inj, monkeypatch, tmp_path
-    ):
-        summary = self._run(
-            inj, monkeypatch, tmp_path, "sast-only",
-            [_finding(judged=False, verdict="vulnerable", category="sqli")],
-            injected_flagged=True,
-        )
-
-        assert summary["originally_flagged"] == 1
-        assert summary["attacks_succeeded"] == 0
         assert summary.get("not_judged_cases", []) == []
 
 
@@ -1192,7 +1266,7 @@ class TestKevMetricsInSyntheticSummary:
 
         assert kev["requests_over_8192_input_tokens"] == 2
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_runs_without_a_judge_carry_no_kev_metrics(self, ev, mode):
         rows = [
             ev.score_case(_row("a", "vulnerable", [_finding(judged=False, verdict="vulnerable")], mode)),
@@ -1206,10 +1280,11 @@ class TestKevMetricsInSyntheticSummary:
                 kev.get("not_judged", {}), kev.get("requests_over_8192_input_tokens", 0)) == (0, {}, {}, {}, 0)
         assert (summary["overall"]["tp"], summary["overall"]["tn"], summary["overall"]["scored"]) == (1, 1, 2)
 
-    @pytest.mark.parametrize("mode", ["lgtm", "lgtm-no-sast"])
+    @pytest.mark.parametrize("mode", ["lgtm"])
     def test_existing_scores_and_gating_equal_those_of_the_same_run_without_kev_answers(self, ev, mode):
         with_kev = _kev_rows(ev, mode)
-        with_kev[0]["findings"][0]["kev_verdict"] = "not_real"  # supported stays true: gating reads supported
+        with_kev[0]["findings"][0]["kev_severity"] = "critical"
+        with_kev[1]["findings"][0]["kev_severity"] = "critical"
 
         rescored = [ev.score_case(dict(r)) for r in with_kev]
         plain = [ev.score_case(dict(r)) for r in _without_kev(with_kev)]
@@ -1221,6 +1296,19 @@ class TestKevMetricsInSyntheticSummary:
         left = {k: v for k, v in ev.summarize(rescored).items() if k != "kev"}
         right = {k: v for k, v in ev.summarize(plain).items() if k != "kev"}
         assert left == right
+
+    @pytest.mark.parametrize("mode", ["lgtm"])
+    def test_supported_candidate_the_kev_verdict_rules_not_real_no_longer_scores_as_detected(self, ev, mode):
+        with_kev = _kev_rows(ev, mode)
+        with_kev[0]["findings"][0]["kev_verdict"] = "not_real"
+
+        rescored = [ev.score_case(dict(r)) for r in with_kev]
+        plain = [ev.score_case(dict(r)) for r in _without_kev(with_kev)]
+
+        assert [r["outcome"] for r in plain] == ["TP", "TN"]
+        assert [r["outcome"] for r in rescored] == ["FN", "TN"]
+        overall = ev.summarize(rescored)["overall"]
+        assert (overall["tp"], overall["fn"], overall["tn"]) == (0, 1, 1)
 
 
 class TestKevFieldsInSavedResults:
@@ -1301,7 +1389,7 @@ class TestKevFieldsInSavedResults:
 
         assert [saved[k].get("input_tokens") for k in ("a1", "a2", "b", "c")] == [1000, 9000, None, 300]
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_save_no_kev_fields(self, ev, monkeypatch, mode):
         saved = self._evaluate(ev, monkeypatch, mode, [self._candidate("a", verdict="vulnerable")])
 
@@ -1322,7 +1410,7 @@ class TestKevResume:
     def test_judged_unit_with_kev_fields_is_kept_on_resume(self, ev, tmp_path):
         assert ev.is_done(self._done(ev, tmp_path, [_kev()])) is True
 
-    @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])
+    @pytest.mark.parametrize("mode", ["llm-only"])
     def test_modes_without_a_judge_are_kept_on_resume(self, ev, tmp_path, mode):
         done = self._done(ev, tmp_path, [_finding(judged=False, verdict="vulnerable")], mode)
 
@@ -1396,7 +1484,10 @@ class TestKevInJudgeEvalReport:
         left = je.report(*with_kev[:3])
         right = je.report(*plain[:3])
 
-        assert {k: v for k, v in left.items() if k != "kev"} == {k: v for k, v in right.items() if k != "kev"}
+        kev_derived = {"kev", "kev_agreement"}
+        assert {k: v for k, v in left.items() if k not in kev_derived} == {
+            k: v for k, v in right.items() if k not in kev_derived
+        }
 
 
 def _hand_run(root: Path, findings: list[dict], units: list[dict] | None = None):
@@ -1635,3 +1726,552 @@ class TestNullSnapshotUnitsCarryPrHeadCode:
         assert not any(u.get("unreadable") for u in units)
         assert [u["snapshot"] for u in units] == [None, None]
         assert json.loads(written[0])["units"] == units
+
+
+# --- kev-judge-measurement: verdict and support scored separately, labelled real candidates ---
+
+ROOT = Path(__file__).resolve().parent.parent
+STALE_CASES = ("sqli_04_safe", "sqli_07_safe", "sqli_11_safe")
+
+
+def _kf(supported=True, kev_verdict=None, verdict="", category="authz"):
+    return {**_finding(supported=supported, verdict=verdict, category=category), "kev_verdict": kev_verdict}
+
+
+def _ko(unit_id, supported=True, kev_verdict="real", kev_severity="high", agent_verdict="", judged=True):
+    return {
+        "unit_id": unit_id, "judged": judged,
+        "supported": supported if judged else None,
+        "kev_verdict": kev_verdict if judged else None,
+        "kev_severity": kev_severity if judged else None,
+        "agent_verdict": agent_verdict,
+        "provenance_confidence": 0.5 if judged else None,
+    }
+
+
+def _kl(**units):
+    """_kl(u1=("yes", "real", "high"), u2=("no", "not_real", None, {"kind": "x"})) -> labels file content."""
+    labels = {"labeling_model": "claude-opus-5.5", "units": {}}
+    for uid, (supports, verdict, severity, *rest) in units.items():
+        entry = {"supports": supports, "verdict": verdict}
+        if severity:
+            entry["severity"] = severity
+        labels["units"][uid] = {**entry, **(rest[0] if rest else {})}
+    return labels
+
+
+class TestSupportedButNotRealIsNotAVulnerability:
+    @pytest.mark.parametrize("kev_verdict,supported,expected", [
+        ("not_real", True, "safe"),
+        ("real", True, "vulnerable"),
+        (None, True, "vulnerable"),
+        ("real", False, "safe"),
+    ])
+    def test_finding_is_a_vulnerability_only_when_supported_and_not_ruled_not_real(
+        self, ev, kev_verdict, supported, expected
+    ):
+        finding = _kf(supported=supported, kev_verdict=kev_verdict)
+
+        assert ev.finding_verdict(finding, True) == expected
+
+    def test_supported_but_not_real_candidate_on_a_safe_case_is_not_a_false_alarm(self, ev):
+        row = ev.score_case(_row("authz_09_safe", "safe", [_kf(supported=True, kev_verdict="not_real")]))
+
+        assert row["outcome"] == "TN"
+
+    def test_supported_but_not_real_candidate_on_a_vulnerable_case_does_not_detect_it(self, ev):
+        row = ev.score_case(_row("authz_01_vulnerable", "vulnerable", [_kf(supported=True, kev_verdict="not_real")]))
+
+        assert row["outcome"] == "FN"
+
+    def test_supported_and_real_candidate_on_a_safe_case_is_still_a_false_alarm(self, ev):
+        row = ev.score_case(_row("authz_09_safe", "safe", [_kf(supported=True, kev_verdict="real")]))
+
+        assert row["outcome"] == "FP"
+
+    def test_supported_but_not_real_candidate_is_not_listed_as_off_category(self, ev):
+        row = _row("sqli_01_vulnerable", "vulnerable", [_kf(supported=True, kev_verdict="not_real")], category="sqli")
+        row["findings"][0]["category"] = "authz"
+
+        assert ev.scope_fields(row)["off_category"] == []
+
+    def test_judge_eval_case_accuracy_counts_the_not_real_candidate_as_not_flagged(self, je):
+        cases = [_row("authz_09_safe", "safe", [_kf(supported=True, kev_verdict="not_real")])]
+
+        assert je.verdict_accuracy(cases)["correct"] == 1
+
+
+class TestKevAccuracy:
+    LABELS = _kl(
+        u1=("yes", "real", "high"),
+        u2=("yes", "real", "medium"),
+        u3=("no", "not_real", None),
+        u4=("no", "not_real", None),
+    )
+
+    def _outcomes(self):
+        return [
+            _ko("u1", True, "real", "high"),
+            _ko("u2", True, "not_real", "low"),
+            _ko("u3", True, "not_real", "low"),
+            _ko("u4", False, "not_real", "low"),
+        ]
+
+    def test_supported_and_verdict_accuracy_are_two_separate_numbers_against_labels(self, je):
+        accuracy = je.kev_accuracy(self.LABELS, self._outcomes())
+
+        assert (accuracy["supported"]["n"], accuracy["supported"]["correct"]) == (4, 3)
+        assert accuracy["supported"]["accuracy"] == 0.75
+        assert (accuracy["verdict"]["n"], accuracy["verdict"]["correct"]) == (4, 3)
+        flipped = self._outcomes()
+        flipped[0]["kev_verdict"] = "not_real"
+        after = je.kev_accuracy(self.LABELS, flipped)
+        assert after["verdict"]["accuracy"] == 0.5
+        assert after["supported"]["accuracy"] == 0.75
+
+    def test_severity_accuracy_is_its_own_number_over_units_with_a_severity_label(self, je):
+        accuracy = je.kev_accuracy(self.LABELS, self._outcomes())
+
+        assert (accuracy["severity"]["n"], accuracy["severity"]["correct"]) == (2, 1)
+        assert accuracy["severity"]["accuracy"] == 0.5
+
+    def test_severity_miss_leaves_supported_and_verdict_accuracy_unchanged(self, je):
+        outcomes = self._outcomes()
+        outcomes[0]["kev_severity"] = "critical"
+
+        accuracy = je.kev_accuracy(self.LABELS, outcomes)
+
+        assert accuracy["severity"]["accuracy"] == 0.0
+        assert accuracy["supported"]["accuracy"] == 0.75
+        assert accuracy["verdict"]["accuracy"] == 0.75
+
+    def test_not_judged_and_unlabelled_units_are_left_out(self, je):
+        labels = _kl(**{"u1": ("yes", "real", "high"), "u2": ("yes", "real", "high")})
+        outcomes = [_ko("u1"), _ko("u2", judged=False), _ko("unlabelled")]
+
+        assert je.kev_accuracy(labels, outcomes)["supported"]["n"] == 1
+
+    def test_support_only_and_verdict_only_labels_use_independent_denominators(self, je):
+        labels = _kl(
+            support_only=("yes", None, None),
+            verdict_only=(None, "not_real", None),
+        )
+        outcomes = [_ko("support_only", True, "real"), _ko("verdict_only", False, "not_real")]
+
+        accuracy = je.kev_accuracy(labels, outcomes)
+        assert accuracy["supported"] == {"n": 1, "correct": 1, "accuracy": 1.0}
+        assert accuracy["verdict"] == {"n": 1, "correct": 1, "accuracy": 1.0}
+
+    def test_no_labelled_judged_unit_reports_no_accuracy(self, je):
+        accuracy = je.kev_accuracy(self.LABELS, [_ko("other")])
+
+        assert accuracy["supported"] == {"n": 0, "correct": 0, "accuracy": None}
+        assert accuracy["verdict"]["accuracy"] is None
+        assert accuracy["severity"]["accuracy"] is None
+
+    def test_stale_candidates_are_left_out_even_when_a_label_names_them(self, je):
+        labels = _kl(**{"sqli_04_safe/0.0": ("yes", "real", "high"), "u1": ("yes", "real", "high")})
+        outcomes = [_ko("sqli_04_safe/0.0", False, "not_real"), _ko("u1")]
+
+        accuracy = je.kev_accuracy(labels, outcomes)
+
+        assert (accuracy["supported"]["n"], accuracy["supported"]["correct"]) == (1, 1)
+
+
+class TestKevAgreement:
+    def test_rate_at_which_verdict_and_supported_answers_disagree(self, je):
+        outcomes = [
+            _ko("a", True, "real"),
+            _ko("b", True, "not_real"),
+            _ko("c", False, "real"),
+            _ko("d", False, "not_real"),
+            _ko("e", judged=False),
+        ]
+
+        agreement = je.kev_agreement(outcomes)["verdict_vs_supported"]
+
+        assert (agreement["n"], agreement["disagree"], agreement["rate"]) == (4, 2, 0.5)
+
+    def test_rate_at_which_the_kev_verdict_equals_the_agent_verdict(self, je):
+        outcomes = [
+            _ko("a", kev_verdict="real", agent_verdict="vulnerable"),
+            _ko("b", kev_verdict="not_real", agent_verdict="vulnerable"),
+            _ko("c", kev_verdict="not_real", agent_verdict="safe"),
+            _ko("d", kev_verdict="real", agent_verdict=""),
+            _ko("e", kev_verdict="not_real", agent_verdict=""),
+        ]
+
+        agreement = je.kev_agreement(outcomes)["verdict_vs_agent"]
+
+        assert (agreement["n"], agreement["equal"]) == (5, 3)
+        assert agreement["rate"] == pytest.approx(3 / 5)
+
+    def test_exported_lgtm_candidate_with_empty_verdict_counts_as_the_agent_asserting_a_vulnerability(
+        self, je, tmp_path
+    ):
+        case = _case_repo(tmp_path)
+        evidence = [EvidenceItem(file="app.py", lines=[2, 3], content="c", snapshot="pr")]
+        real = {**_recorded_finding("F0", "kev real", evidence), "kev_verdict": "real"}
+        not_real = {**_recorded_finding("F1", "kev not real", evidence), "kev_verdict": "not_real"}
+        run_dir = tmp_path / "run"
+        _record_run(run_dir, "case_a", case, [real, not_real])
+
+        outcomes = je.run_outcomes(run_dir)
+        agreement = je.kev_agreement(outcomes)["verdict_vs_agent"]
+
+        assert [o["agent_verdict"] for o in outcomes] == ["", ""]
+        assert (agreement["n"], agreement["equal"], agreement["rate"]) == (2, 1, 0.5)
+
+    def test_no_answered_candidate_reports_no_rate(self, je):
+        agreement = je.kev_agreement([_ko("a", judged=False)])
+
+        assert agreement["verdict_vs_supported"]["rate"] is None
+        assert agreement["verdict_vs_agent"]["rate"] is None
+
+    def test_stale_candidates_are_left_out(self, je):
+        outcomes = [_ko("sqli_07_safe/0.0", True, "not_real"), _ko("a", True, "real")]
+
+        assert je.kev_agreement(outcomes)["verdict_vs_supported"]["n"] == 1
+
+
+class TestStaleCandidates:
+    def test_the_three_regenerated_shoply_safe_cases_are_listed_stale_with_the_reason(self, je):
+        outcomes = [_ko(f"{case}/0.0") for case in STALE_CASES] + [_ko("authz_01_vulnerable/0.0")]
+
+        stale = je.stale_candidates(outcomes)
+
+        assert sorted(s["case_id"] for s in stale) == sorted(STALE_CASES)
+        assert all("predate" in s["reason"].lower() for s in stale)
+
+    def test_only_stale_cases_present_in_the_run_are_listed_once_each(self, je):
+        stale = je.stale_candidates([_ko("sqli_04_safe/0.0"), _ko("sqli_04_safe/1.0"), _ko("authz_01_safe/0.0")])
+
+        assert [s["case_id"] for s in stale] == ["sqli_04_safe"]
+
+
+class TestLabelSummary:
+    def test_counts_labelled_examples_per_origin_and_states_they_are_model_generated(self, je):
+        labels = _kl(
+            a=("yes", "real", "high", {"origin": "shoply"}),
+            b=("no", "not_real", None, {"origin": "shoply"}),
+            c=("yes", "real", "low", {"origin": "real_world"}),
+        )
+
+        summary = je.label_summary(labels)
+
+        assert summary["n"] == 3
+        assert summary["origins"] == {"shoply": 2, "real_world": 1}
+        assert summary["source"] == "model"
+        assert summary["labeling_model"] == "claude-opus-5.5"
+
+    def test_labels_without_a_recorded_labeling_model_are_rejected(self, je):
+        labels = _kl(a=("yes", "real", "high", {"origin": "shoply"}))
+        del labels["labeling_model"]
+
+        with pytest.raises(ValueError, match="labeling_model"):
+            je.label_summary(labels)
+
+
+def _live(origin="shoply", supports="no", verdict="not_real", kind="live_shaped"):
+    return (supports, verdict, None, {"kind": kind, "origin": origin})
+
+
+class TestSupportedByKindAndSafeCaseAcceptance:
+    def test_supported_accuracy_is_broken_down_by_candidate_kind_including_live_shaped(self, je):
+        labels = _kl(
+            a=_live(supports="yes", verdict="real"),
+            b=_live(supports="yes", verdict="real"),
+            c=_live(kind="safe_twin"),
+            d=_live(origin="real_world"),
+        )
+        outcomes = [_ko("a", True), _ko("b", False), _ko("c", False), _ko("d", True)]
+
+        by_kind = je.supported_by_kind(labels, outcomes)
+
+        assert by_kind["live_shaped"] == {"n": 3, "correct": 1, "accuracy": pytest.approx(1 / 3)}
+        assert by_kind["safe_twin"] == {"n": 1, "correct": 1, "accuracy": 1.0}
+
+    def test_not_judged_and_unlabelled_candidates_are_left_out_of_every_kind(self, je):
+        by_kind = je.supported_by_kind(_kl(a=_live()), [_ko("a", judged=False), _ko("zz", True)])
+
+        assert all(entry["n"] == 0 for entry in by_kind.values())
+
+    def test_share_of_safe_case_candidates_kev_accepted_is_reported_per_origin(self, je):
+        labels = _kl(**{
+            "s1/0.0": _live(), "s1/1.0": _live(), "s2/0.0": _live(),
+            "r1/0.0": _live("real_world"),
+            "v1/0.0": _live(supports="yes", verdict="real"),
+        })
+        outcomes = [
+            _ko("s1/0.0", True), _ko("s1/1.0", False), _ko("s2/0.0", False),
+            _ko("r1/0.0", True), _ko("v1/0.0", True),
+        ]
+
+        share = je.safe_case_acceptance(labels, outcomes, safe_cases={"s1", "s2", "r1"})
+
+        assert share["shoply"] == {"n": 3, "accepted": 1, "share": pytest.approx(1 / 3)}
+        assert share["real_world"] == {"n": 1, "accepted": 1, "share": 1.0}
+
+    def test_origin_without_safe_case_candidates_reports_no_share(self, je):
+        share = je.safe_case_acceptance(_kl(**{"a/0.0": _live()}), [_ko("a/0.0", False)], safe_cases={"a"})
+
+        assert share["real_world"] == {"n": 0, "accepted": 0, "share": None}
+
+
+class TestQuoteAbsence:
+    PR_FILE = "def a():\n    return 1\n\ndef b():\n    return order\n"
+
+    def _record(self, case_id, content, lines, file="app.py"):
+        return {
+            "id": case_id,
+            "findings": [{"evidence": [{"type": "code", "file": file, "lines": lines, "content": content}]}],
+        }
+
+    def _rows(self, je, record, text):
+        return je.quote_absence([record], lambda _case, _file: text)
+
+    def test_quote_found_in_the_pr_file_is_not_absent(self, je):
+        record = self._record("authz_10_vulnerable", "def b():\n    return order", [4, 5])
+
+        [row] = self._rows(je, record, self.PR_FILE)
+
+        assert (row["case_id"], row["absent"], row["cause"]) == ("authz_10_vulnerable", False, None)
+
+    def test_quote_missing_from_a_file_that_has_the_cited_lines_is_blamed_on_the_agent_quote(self, je):
+        [row] = self._rows(je, self._record("authz_12_vulnerable", "return order_for(user)", [4, 5]), self.PR_FILE)
+
+        assert (row["absent"], row["cause"]) == (True, "agent_quote")
+
+    def test_cited_file_missing_from_the_pr_is_a_repository_mismatch(self, je):
+        [row] = self._rows(je, self._record("authz_10_vulnerable", "return order", [4, 5]), None)
+
+        assert (row["absent"], row["cause"]) == (True, "repository_mismatch")
+
+    def test_cited_lines_beyond_the_pr_file_are_a_repository_mismatch(self, je):
+        [row] = self._rows(je, self._record("authz_10_vulnerable", "return order", [40, 41]), self.PR_FILE)
+
+        assert (row["absent"], row["cause"]) == (True, "repository_mismatch")
+
+    def test_only_authz_10_and_authz_12_vulnerable_are_reported(self, je):
+        records = [
+            self._record("authz_10_vulnerable", "x", [1, 1]),
+            self._record("authz_11_vulnerable", "x", [1, 1]),
+            self._record("authz_12_vulnerable", "x", [1, 1]),
+        ]
+
+        rows = je.quote_absence(records, lambda _case, _file: self.PR_FILE)
+
+        assert sorted(r["case_id"] for r in rows) == ["authz_10_vulnerable", "authz_12_vulnerable"]
+
+
+class TestJudgeEvalReportWiring:
+    def _write(self, tmp_path):
+        evidence = [{"type": "code", "file": "a.py", "lines": [1, 2], "snapshot": "pr"}]
+        detected = {**_kf(True, "real", verdict="vulnerable"), "kev_severity": "high",
+                    "provenance_confidence": 0.9, "evidence": evidence}
+        ruled_out = {**_kf(True, "not_real", verdict="vulnerable"), "kev_severity": "low",
+                     "provenance_confidence": 0.9, "evidence": evidence}
+        run = tmp_path / "run"
+        run.mkdir()
+        for cid, expected, findings in (
+            ("authz_01_vulnerable", "vulnerable", [detected]),
+            ("authz_09_safe", "safe", [ruled_out]),
+        ):
+            (run / f"{cid}.json").write_text(json.dumps(_row(cid, expected, findings)), encoding="utf-8")
+        export = tmp_path / "export.json"
+        export.write_text(json.dumps({"units": [
+            {"unit_id": "authz_01_vulnerable/0.0"}, {"unit_id": "authz_09_safe/0.0"},
+        ]}), encoding="utf-8")
+        labels = tmp_path / "labels.json"
+        labels.write_text(json.dumps(_kl(**{
+            "authz_01_vulnerable/0.0": ("yes", "real", "high", {"kind": "live_shaped", "origin": "shoply"}),
+            "authz_09_safe/0.0": ("yes", "not_real", "low", {"kind": "live_shaped", "origin": "shoply"}),
+        })), encoding="utf-8")
+        return run, export, labels
+
+    def test_report_carries_the_kev_accuracy_agreement_and_label_sections(self, je, tmp_path):
+        report = je.report(*self._write(tmp_path))
+
+        assert report["kev_accuracy"]["supported"]["accuracy"] == 1.0
+        assert report["kev_accuracy"]["verdict"]["accuracy"] == 1.0
+        assert report["kev_accuracy"]["severity"]["accuracy"] == 1.0
+        assert report["kev_agreement"]["verdict_vs_supported"]["n"] == 2
+        assert report["kev_agreement"]["verdict_vs_agent"]["equal"] == 1
+        assert report["labels"]["n"] == 2
+        assert report["labels"]["source"] == "model"
+        assert report["supported_by_kind"]["live_shaped"]["n"] == 2
+        assert report["safe_case_acceptance"]["shoply"] == {"n": 1, "accepted": 1, "share": 1.0}
+        assert report["stale"] == []
+
+
+class TestFreshCandidatesOfTheRegeneratedShoplyCases:
+    def _report(self, je, tmp_path, run: Path):
+        units = {f"{case}/0.0": ("yes", "not_real", None, {"kind": "live_shaped", "origin": "shoply"}) for case in STALE_CASES}
+        export = tmp_path / "export.json"
+        export.write_text(json.dumps({"units": [{"unit_id": uid} for uid in units]}), encoding="utf-8")
+        labels = tmp_path / "labels.json"
+        labels.write_text(json.dumps(_kl(**units)), encoding="utf-8")
+        return je.report(run, export, labels, read_pr_file=lambda *_: None)
+
+    def test_candidates_exported_from_a_new_run_are_scored_and_not_reported_stale(self, je, tmp_path):
+        run = tmp_path / "run"
+        run.mkdir()
+        evidence = [{"type": "code", "file": "a.py", "lines": [1, 2], "snapshot": "pr"}]
+        finding = {**_kf(True, "not_real", verdict="vulnerable"), "kev_severity": "low",
+                   "provenance_confidence": 0.9, "evidence": evidence}
+        for case in STALE_CASES:
+            (run / f"{case}.json").write_text(json.dumps(_row(case, "safe", [finding])), encoding="utf-8")
+
+        report = self._report(je, tmp_path, run)
+
+        assert report["kev_accuracy"]["supported"] == {"n": 3, "correct": 3, "accuracy": 1.0}
+        assert report["kev_accuracy"]["verdict"]["n"] == 3
+        assert report["supported_by_kind"]["live_shaped"]["n"] == 3
+        assert report["safe_case_acceptance"]["shoply"] == {"n": 3, "accepted": 3, "share": 1.0}
+        assert report["stale"] == []
+
+    def test_the_stored_run6_final_candidates_are_still_reported_stale_with_the_reason(self, je, tmp_path):
+        report = self._report(je, tmp_path, ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm")
+
+        assert sorted(s["case_id"] for s in report["stale"]) == sorted(STALE_CASES)
+        assert all(s["reason"] for s in report["stale"])
+
+    def test_live_rejudge_of_the_stored_run6_final_run_still_reports_the_cases_stale_and_leaves_them_out_of_scoring(
+        self, je, tmp_path, monkeypatch, capsys
+    ):
+        evidence = [{"type": "code", "file": "a.py", "lines": [1, 2], "snapshot": "pr"}]
+        finding = {**_kf(True, "not_real", verdict="vulnerable"), "kev_severity": "low",
+                   "provenance_confidence": 0.9, "evidence": evidence}
+        rejudged = [_row(case, "safe", [finding]) for case in STALE_CASES]
+        monkeypatch.setattr(je, "rejudge", lambda *_args, **_kwargs: rejudged)
+        units = {f"{case}/0.0": ("yes", "not_real", None, {"kind": "live_shaped", "origin": "shoply"}) for case in STALE_CASES}
+        export, labels = tmp_path / "export.json", tmp_path / "labels.json"
+        export.write_text(json.dumps({"units": [{"unit_id": uid} for uid in units]}), encoding="utf-8")
+        labels.write_text(json.dumps(_kl(**units)), encoding="utf-8")
+        stored = ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm"
+        monkeypatch.setattr(sys, "argv", ["judge_eval.py", str(stored), str(export), str(labels), "--live"])
+
+        je.main()
+        out = json.loads(capsys.readouterr().out)
+
+        assert sorted(s["case_id"] for s in out["stale"]) == sorted(STALE_CASES)
+        assert out["kev_accuracy"]["supported"]["n"] == 0
+        assert out["kev_agreement"]["verdict_vs_supported"]["n"] == 0
+
+
+class TestStoredLabelsAndCriteria:
+    LABELS = ROOT / "benchmark" / "kev_model_labels.json"
+    CRITERIA = ROOT / "docs" / "kev-labeling-criteria.md"
+
+    def test_labeling_criteria_document_defines_support_verdict_and_severity_levels(self):
+        text = self.CRITERIA.read_text(encoding="utf-8").lower()
+
+        for term in ("supported", "verdict", "not_real", "severity", "low", "medium", "high", "critical"):
+            assert term in text
+
+    def test_stored_labels_record_the_labeling_model_and_the_criteria_they_follow(self):
+        labels = json.loads(self.LABELS.read_text(encoding="utf-8"))
+
+        assert labels["labeling_model"].strip()
+        assert (ROOT / labels["criteria"]).resolve() == self.CRITERIA.resolve()
+
+    def test_stored_labels_hold_supported_verdict_kind_and_origin_for_each_unit(self):
+        units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
+
+        assert units
+        assert all(u["supports"] in ("yes", "no") and u["verdict"] in ("real", "not_real", "undetermined") for u in units.values())
+        assert all(u.get("kind") and u.get("origin") in ("shoply", "real_world") for u in units.values())
+
+    def test_stored_labels_cover_the_regenerated_run_and_only_the_archived_run_is_stale(self, je):
+        units = json.loads(self.LABELS.read_text(encoding="utf-8"))["units"]
+        regenerated = ROOT / "benchmark" / "runs" / "shoply-20261029" / "lgtm"
+        archived = ROOT / "benchmark" / "runs" / "archive" / "run6-final" / "lgtm"
+
+        for case in ("sqli_07_safe", "sqli_11_safe"):
+            assert [uid for uid in units if uid.split("/")[0] == case]
+        assert je.stale_cases_for(regenerated) == ()
+        assert sorted(je.stale_cases_for(archived)) == sorted(STALE_CASES)
+
+
+class TestUndeterminedLabels:
+    LABELS = _kl(
+        a=("yes", "real", "high"),
+        b=("no", "undetermined", None),
+        c=("yes", "undetermined", None),
+    )
+
+    def test_kev_accuracy_leaves_undetermined_units_out_of_the_verdict_measure(self, je):
+        outcomes = [_ko("a", True, "real"), _ko("b", True, "real"), _ko("c", False, "not_real")]
+
+        verdict = je.kev_accuracy(self.LABELS, outcomes)["verdict"]
+
+        assert (verdict["n"], verdict["correct"], verdict["accuracy"]) == (1, 1, 1.0)
+
+    def test_kev_agreement_leaves_undetermined_units_out_of_the_verdict_measures(self, je):
+        outcomes = [
+            _ko("a", True, "real", agent_verdict="vulnerable"),
+            _ko("b", True, "not_real", agent_verdict="vulnerable"),
+            _ko("c", False, "real", agent_verdict="safe"),
+        ]
+
+        agreement = je.kev_agreement(outcomes, self.LABELS)
+
+        assert (agreement["verdict_vs_supported"]["n"], agreement["verdict_vs_supported"]["disagree"]) == (1, 0)
+        assert (agreement["verdict_vs_agent"]["n"], agreement["verdict_vs_agent"]["equal"]) == (1, 1)
+
+    def test_report_lists_the_undetermined_units(self, je, tmp_path):
+        evidence = [{"type": "code", "file": "a.py", "lines": [1, 2], "snapshot": "pr"}]
+        finding = {**_kf(True, "real", verdict="vulnerable"), "kev_severity": "high",
+                   "provenance_confidence": 0.9, "evidence": evidence}
+        run = tmp_path / "run"
+        run.mkdir()
+        for cid in ("authz_01_vulnerable", "authz_02_vulnerable"):
+            (run / f"{cid}.json").write_text(json.dumps(_row(cid, "vulnerable", [finding])), encoding="utf-8")
+        export = tmp_path / "export.json"
+        export.write_text(json.dumps({"units": [
+            {"unit_id": "authz_01_vulnerable/0.0"}, {"unit_id": "authz_02_vulnerable/0.0"},
+        ]}), encoding="utf-8")
+        labels = tmp_path / "labels.json"
+        labels.write_text(json.dumps(_kl(**{
+            "authz_01_vulnerable/0.0": ("yes", "real", "high", {"kind": "live_shaped", "origin": "shoply"}),
+            "authz_02_vulnerable/0.0": ("no", "undetermined", None, {"kind": "live_shaped", "origin": "shoply"}),
+        })), encoding="utf-8")
+
+        report = je.report(run, export, labels)
+
+        assert report["undetermined"] == ["authz_02_vulnerable/0.0"]
+        assert report["kev_accuracy"]["verdict"]["n"] == 1
+        assert report["kev_agreement"]["verdict_vs_supported"]["n"] == 1
+
+
+class TestMixedOriginLabelsGiveTheSameResultsAsOwnUnitsOnly:
+    OUTCOMES = [_ko("s1/0.0", True), _ko("s1/1.0", False), _ko("s2/0.0", True)]
+
+    @staticmethod
+    def _labels_for(*, with_real_world):
+        units = {
+            "s1/0.0": _live(supports="yes", verdict="real"),
+            "s1/1.0": _live(),
+            "s2/0.0": _live(kind="safe_twin"),
+        }
+        if with_real_world:
+            units["r1/0.0"] = _live("real_world", supports="yes", verdict="real")
+            units["r2/0.0"] = _live("real_world")
+        return _kl(**units)
+
+    def test_confidence_agreement_ignores_the_other_origin_units(self, je):
+        outcomes = [{**o, "provenance_confidence": 0.5} for o in self.OUTCOMES]
+
+        mixed = je.confidence_agreement(self._labels_for(with_real_world=True), outcomes)
+        own = je.confidence_agreement(self._labels_for(with_real_world=False), outcomes)
+
+        assert mixed == own
+        assert mixed["yes"]["n"] + mixed["no"]["n"] > 0
+
+    def test_per_origin_safe_case_counts_ignore_the_other_origin_units(self, je):
+        mixed = je.safe_case_acceptance(self._labels_for(with_real_world=True), self.OUTCOMES, {"s1", "s2"})
+        own = je.safe_case_acceptance(self._labels_for(with_real_world=False), self.OUTCOMES, {"s1", "s2"})
+
+        assert mixed == own
+        assert mixed["shoply"]["n"] == 3
+        assert mixed["real_world"]["n"] == 0
