@@ -10,10 +10,12 @@ from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     FinalAnswerSpec,
     RunRecord,
+    cut_to_fit,
     extract_json_object,
     fill_record,
     final_answer_spec,
     run_tool_loop,
+    user_prompt_budget,
 )
 from lgtm.agents.tools import AgentToolbox, EvidenceLimits, relative_path
 from lgtm.config import LGTMConfig
@@ -105,12 +107,26 @@ def run_investigator(
             forced_final="investigator.forced_final",
             options={"num_predict": config.investigator_final_output_tokens},
         )
+        overflow = len(user) - user_prompt_budget(investigator_config, system, final)
+        if overflow > 0 and diff_section:
+            # Leaves room for one result at the bound, so a read of a file whose diff was cut can be served and closed.
+            diff_text = cut_to_fit(diff_text, max(0, len(diff_text) - overflow - config.investigator_result_chars))
+            user = registry.render(
+                "investigator.user_prompt",
+                manifest=manifest,
+                diff_section=registry.render(
+                    "investigator.diff_section", block=prompt_parts.code_fence(diff_text, "diff")
+                ),
+            )
+            toolbox.evidence.changed = frozenset(
+                p
+                for d in shown
+                if d.hunks and _wholly_shown(d, diff_text) and (p := relative_path(d.path)) is not None
+            )
         with final_answer_spec(final):
             raw = fill_record(
                 record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
             )
-        if toolbox.closing_unfitted:
-            raise ValueError(registry.entry("tools.closing_not_fitted"))
         proposed = parse_investigator_output(raw)
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)
@@ -130,6 +146,11 @@ def run_investigator(
         tool_calls=toolbox.calls_used,
         run_record=record,
     )
+
+
+def _wholly_shown(diff: FileDiff, shown_text: str) -> bool:
+    refs = [_display_ref(_hunk_ref(diff, index)) for index in range(len(diff.hunks))]
+    return render_section(_section("investigator", "investigator", "", "", refs)) in shown_text
 
 
 def _display_ref(ref: HunkRef) -> HunkRef:

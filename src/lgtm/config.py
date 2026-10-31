@@ -32,6 +32,7 @@ class LGTMConfig:
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
     llm_context_tokens: int = 32768  # num_ctx: the context window served to the model
+    llm_window_headroom: float = 0.8  # share of the usable window the tool-loop agents fill
 
     # Judge (Kev-4B, base URL; the client appends /v1/systemone)
     judge_endpoint: str = "http://127.0.0.1:8008"
@@ -119,6 +120,8 @@ class LGTMConfig:
         for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if not 0 < self.llm_window_headroom <= 1:
+            raise ValueError("llm_window_headroom must be above 0 and at most 1")
         if self.authz_planner not in ("investigator", "endpoint"):
             raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
         if not self.judge_model:

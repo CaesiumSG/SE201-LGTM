@@ -261,6 +261,7 @@ def test_full_context_still_ends_in_the_investigators_answer_not_a_context_error
 
 
 def _full_context(config):
+    config.llm_window_headroom = 1.0
     config.llm_context_tokens = 12000
     config.investigator_max_tool_calls = 40
     config.investigator_max_iterations = 40

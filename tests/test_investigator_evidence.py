@@ -57,7 +57,7 @@ def files(monkeypatch):
 
 @pytest.fixture
 def config():
-    return LGTMConfig(llm_retries=0, max_answer_reasks=0, require_tool_use=False)
+    return LGTMConfig(llm_retries=0, max_answer_reasks=0, require_tool_use=False, llm_window_headroom=1.0)
 
 
 class StubSession:
@@ -137,6 +137,7 @@ def tight(config, prompt_chars, result_chars, slots):
         llm_retries=0,
         max_answer_reasks=0,
         require_tool_use=False,
+        llm_window_headroom=1.0,
         llm_context_tokens=tokens,
     )
 
@@ -410,7 +411,7 @@ def scripted_history(last_result, older=4):
 
 def closing_config(allowance_chars):
     tokens = -(-allowance_chars // CHARS_PER_TOKEN) + OUTPUT_TOKENS
-    return LGTMConfig(llm_context_tokens=tokens)
+    return LGTMConfig(llm_context_tokens=tokens, llm_window_headroom=1.0)
 
 
 @pytest.mark.parametrize("stop", list(STOP_RESULTS))
@@ -458,19 +459,41 @@ def test_closing_request_that_cannot_fit_after_shortening_every_older_result_is_
 
 def test_a_request_that_cannot_be_fitted_is_not_sent_and_is_an_invalid_answer_without_a_context_error(files, config):
     prompt_chars, bound = probe(config, files)
-    cfg = tight(config, prompt_chars, bound, slots=2.5)
+    cfg = tight(config, prompt_chars, bound, slots=0)
     files["old.py"] = body("OLD", BIG_LINES)
-    oversized = "y" * (2 * final_window(cfg))
 
-    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py"), content=oversized), answer(VALID)])
+    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py")), answer(VALID)])
 
     assert result.status == "failed"
     assert result.proposed is None
     assert result.error == registry.entry("tools.closing_not_fitted")
     assert all(chars(request) <= final_window(cfg) or request is llm.seen[0] for request in llm.seen[1:])
-    assert [t["assistant"] for t in result.run_record.turns][0] == oversized
-    assert len(result.run_record.tool_calls) == 1
-    assert len(recorded_results(result)) == 1
+    assert len(llm.seen) == 1
+    assert len(result.run_record.turns) == 1
+
+
+def test_a_stop_turn_text_larger_than_the_room_left_is_trimmed_in_the_closing_request_and_the_run_completes(files, config):
+    prompt_chars, bound = probe(config, files)
+    cfg = tight(config, prompt_chars, bound, slots=2.5)
+    files["old.py"] = body("OLD", BIG_LINES)
+    files["new.py"] = body("NEW", BIG_LINES)
+    fat = "y" * (3 * bound)
+    stop_reply = reply(read("new.py"), content=fat)
+    replies = [reply(read("old.py")), stop_reply, answer(VALID)]
+
+    result, llm = run(cfg, make_toolbox(cfg), replies)
+
+    closing = llm.seen[-1]
+    sent = [m for m in closing if isinstance(m, AIMessage) and m.tool_calls][-1]
+    assert result.status == "ok"
+    assert result.error is None
+    assert [s.section_id for s in result.proposed] == ["s1"]
+    assert chars(closing) <= final_window(cfg)
+    assert str(closing[-1].content) == forced_final()
+    assert 0 < len(str(sent.content)) < len(fat)
+    assert fat.startswith(str(sent.content))
+    assert sent.tool_calls == stop_reply.tool_calls
+    assert [t["assistant"] for t in result.run_record.turns][1] == fat
 
 
 # --- AC-US7-8: nothing changes for other callers on the same toolbox ----------------
@@ -641,6 +664,7 @@ def test_a_call_runs_exactly_when_its_result_at_the_bound_still_leaves_the_closi
         llm_retries=0,
         max_answer_reasks=0,
         require_tool_use=False,
+        llm_window_headroom=1.0,
         investigator_result_chars=bound,
         llm_context_tokens=allowance // 3 + config.investigator_final_output_tokens,
     )
@@ -662,6 +686,7 @@ def test_calls_stopped_at_the_exact_boundary_still_leave_a_closing_request_that_
         llm_retries=0,
         max_answer_reasks=0,
         require_tool_use=False,
+        llm_window_headroom=1.0,
         investigator_result_chars=bound,
         llm_context_tokens=(base + 2 * bound) // 3 + config.investigator_final_output_tokens,
     )
@@ -684,6 +709,7 @@ def test_stopped_calls_past_the_remaining_budget_get_the_budget_message_and_the_
         llm_retries=0,
         max_answer_reasks=0,
         require_tool_use=False,
+        llm_window_headroom=1.0,
         investigator_result_chars=bound,
         investigator_max_tool_calls=3,
         llm_context_tokens=(base + bound) // 3 + config.investigator_final_output_tokens,
@@ -725,7 +751,14 @@ def test_text_form_closing_request_after_each_non_context_stop_is_fitted_by_shor
     replies = [text_reply(read("a.py")), text_reply(*second_turn), answer(VALID)]
 
     def make(**extra):
-        return LGTMConfig(llm_retries=0, max_answer_reasks=0, require_tool_use=False, **overrides, **extra)
+        return LGTMConfig(
+            llm_retries=0,
+            max_answer_reasks=0,
+            require_tool_use=False,
+            llm_window_headroom=1.0,
+            **overrides,
+            **extra,
+        )
 
     ample = make()
     _, roomy = run(ample, make_toolbox(ample), replies)

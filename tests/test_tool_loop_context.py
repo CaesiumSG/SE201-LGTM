@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from lgtm.agents import registry
@@ -73,13 +73,24 @@ def _chars(messages) -> int:
     return sum(len(str(m.content)) for m in messages)
 
 
-def _config(**overrides):
-    return LGTMConfig(**{
+HEADROOM_FIELD = "llm_window_headroom"
+DEFAULT_HEADROOM = "default"
+
+
+def _config(headroom=1.0, **overrides):
+    """Pins the headroom fraction to 1 (the usable window) unless a test names another or the default."""
+    config = LGTMConfig(**{
         "llm_context_tokens": CONTEXT_TOKENS,
         "llm_max_output_tokens": OUTPUT_TOKENS,
         "max_agent_iterations": SCRIPTED_CALLS + 5,
         **overrides,
     })
+    if headroom != DEFAULT_HEADROOM:
+        setattr(config, HEADROOM_FIELD, headroom)
+    return config
+
+
+USABLE_CHARS = (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
 
 
 def test_build_llm_passes_context_size_as_num_ctx():
@@ -126,26 +137,25 @@ def test_ends_with_a_final_request_after_the_guard_trips():
     assert isinstance(llm.requests[-1][-1], HumanMessage)
 
 
-def test_oversized_initial_request_is_bounded_before_model_invocation():
+def test_oversized_initial_request_never_reaches_the_model_over_the_window_and_raises_nothing():
     llm = _ContextLLM(0)
     oversized_user_prompt = "x" * (CONTEXT_TOKENS * CHARS_PER_TOKEN)
 
-    with pytest.raises(ValueError, match="Agent request exceeds the configured context allowance"):
-        run_tool_loop(llm, [], "SYSTEM-PROMPT", oversized_user_prompt, _config())
+    run_tool_loop(llm, [], "SYSTEM-PROMPT", oversized_user_prompt, _config())
 
-    assert llm.requests == []
+    assert all(_chars(request) <= USABLE_CHARS for request in llm.requests)
+    assert all(request[0].content == "SYSTEM-PROMPT" for request in llm.requests)
 
 
-def test_oversized_tool_result_never_reaches_a_model_request():
+def test_oversized_tool_result_is_never_sent_over_the_window_and_raises_nothing():
     dump, _, _ = _tool()
     dump.func = lambda: "x" * (CONTEXT_TOKENS * CHARS_PER_TOKEN)
     llm = _ContextLLM(SCRIPTED_CALLS)
 
-    with pytest.raises(ValueError, match="Forced-final request exceeds the configured context allowance"):
-        run_tool_loop(llm, [dump], "sys", "user", _config())
+    run_tool_loop(llm, [dump], "sys", "user", _config())
 
     assert len(llm.requests) == 1
-    assert _chars(llm.requests[0]) <= (CONTEXT_TOKENS - OUTPUT_TOKENS) * CHARS_PER_TOKEN
+    assert all(_chars(request) <= USABLE_CHARS for request in llm.requests)
 
 
 def test_forced_final_request_fits_after_tool_round():
@@ -262,12 +272,23 @@ def test_default_caller_reask_after_context_full_stop_keeps_the_whole_history():
     assert [t["assistant"] for t in toolbox.turns][-2:] == ["not json", ANSWER]
 
 
-def test_default_caller_reask_that_does_not_fit_still_raises_the_context_error():
+def test_default_caller_reask_is_fitted_sent_and_raises_nothing_when_dropping_old_history_makes_room():
     llm, _, run = _context_full_run(["x" * RESULT_CHARS, ANSWER])
 
-    with pytest.raises(ValueError, match="Model request exceeds the configured context allowance"):
-        run()
-    assert llm.replies == [ANSWER]
+    assert run() == ANSWER
+    assert all(_chars(request) <= USABLE_CHARS for request in llm.requests)
+    assert str(llm.requests[-1][-2].content) == "x" * RESULT_CHARS
+    assert str(llm.requests[-1][-1].content) == registry.entry("shared.reask")
+
+
+def test_default_caller_reask_that_cannot_fit_is_not_sent_and_raises_nothing():
+    baseline, _, run_baseline = _context_full_run([ANSWER])
+    run_baseline()
+    llm, _, run = _context_full_run(["x" * USABLE_CHARS, ANSWER])
+
+    assert run() == "x" * USABLE_CHARS
+    assert len(llm.requests) == len(baseline.requests)
+    assert all(_chars(request) <= USABLE_CHARS for request in llm.requests)
 
 
 def _fitted_reask_run(reply_chars):
@@ -301,3 +322,113 @@ def test_fitted_reask_never_drops_the_failed_answer_to_make_room():
 
     assert out == "x" * allowance
     assert llm.replies == [ANSWER]
+
+
+# --- AC-US8-1, AC-US8-2, AC-US8-4 for callers that run the loop with no per-call stop ---
+
+
+class _SizedTool:
+    """Returns the scripted result sizes in call order."""
+
+    def __init__(self, sizes):
+        self.sizes = list(sizes)
+        self.runs = 0
+
+    def build(self):
+        owner = self
+        toolbox = SimpleNamespace(
+            calls_used=0, budget=SCRIPTED_CALLS * 10, steps_exhausted=None, budget_spent=None, turns=[]
+        )
+
+        @tool
+        def dump() -> str:
+            """Return a blob."""
+            owner.runs += 1
+            return "x" * owner.sizes[min(owner.runs, len(owner.sizes)) - 1]
+
+        dump.metadata = {"toolbox": toolbox}
+        return dump, toolbox
+
+
+class _MultiCallLLM(_ContextLLM):
+    """First bound request asks for several calls at once; later bound requests answer."""
+
+    def __init__(self, calls_in_first_turn):
+        super().__init__(0)
+        self.first_turn = calls_in_first_turn
+
+    def bind_tools(self, tools):
+        owner = self
+
+        class _Bound:
+            def invoke(self, messages):
+                owner.requests.append(list(messages))
+                if owner.bound_requests:
+                    return AIMessage(content=ANSWER)
+                owner.bound_requests += 1
+                calls = [{"name": "dump", "args": {}, "id": f"c{i}"} for i in range(owner.first_turn)]
+                return AIMessage(content="", tool_calls=calls)
+
+        return _Bound()
+
+
+@pytest.mark.parametrize(
+    "headroom",
+    [DEFAULT_HEADROOM, 0.5, 1.0],
+    ids=["default-0.8", "half", "whole-window"],
+)
+def test_every_request_fits_the_headroom_adjusted_window(headroom):
+    dump, _, _ = _tool()
+    llm = _ContextLLM(SCRIPTED_CALLS)
+
+    out = run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config(headroom))
+
+    fraction = 0.8 if headroom == DEFAULT_HEADROOM else headroom
+    assert out == ANSWER
+    assert llm.bound_requests >= 1
+    assert all(_chars(request) <= fraction * USABLE_CHARS for request in llm.requests)
+
+
+def test_a_larger_headroom_fraction_allows_more_tool_rounds():
+    rounds = {}
+    for fraction in (0.5, 1.0):
+        dump, _, _ = _tool()
+        llm = _ContextLLM(SCRIPTED_CALLS)
+        run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config(fraction))
+        rounds[fraction] = llm.bound_requests
+
+    assert rounds[1.0] == TOOL_ROUNDS_THAT_FIT
+    assert 1 <= rounds[0.5] < rounds[1.0]
+
+
+def test_closing_request_after_a_stop_shortens_only_older_results_and_the_record_keeps_them_whole():
+    sized = _SizedTool([800, 2800])
+    dump, toolbox = sized.build()
+    llm = _ContextLLM(SCRIPTED_CALLS)
+
+    out = run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
+
+    closing = llm.requests[-1]
+    results = [m for m in closing if isinstance(m, ToolMessage)]
+    assert out == ANSWER
+    assert _chars(closing) <= USABLE_CHARS
+    assert [m.content for m in closing[:2]] == ["SYSTEM-PROMPT", "USER-PROMPT"]
+    assert isinstance(closing[-1], HumanMessage)
+    assert results[-1].content == "x" * 2800
+    assert len(results[0].content) < 800
+    assert [c["result"] for t in toolbox.turns for c in t["tool_calls"]] == ["x" * 800, "x" * 2800]
+
+
+def test_every_call_of_a_multi_call_turn_runs_with_no_stop_message_and_nothing_over_the_window_is_sent():
+    sized = _SizedTool([RESULT_CHARS])
+    dump, toolbox = sized.build()
+    llm = _MultiCallLLM(3)
+
+    run_tool_loop(llm, [dump], "SYSTEM-PROMPT", "USER-PROMPT", _config())
+
+    assert sized.runs == 3
+    assert all(_chars(request) <= USABLE_CHARS for request in llm.requests)
+    assert not any(
+        str(m.content) == registry.entry("tools.context_full") for request in llm.requests for m in request
+    )
+    assert [len(t["tool_calls"]) for t in toolbox.turns][:1] == [3]
