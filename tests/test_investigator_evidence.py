@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -82,7 +83,7 @@ def call(name, **args):
 
 
 def reply(*calls, content=""):
-    return SimpleNamespace(
+    return AIMessage(
         content=content,
         tool_calls=[{**c, "id": f"call_{i}_{c['name']}"} for i, c in enumerate(calls)],
     )
@@ -503,3 +504,248 @@ def test_default_callers_of_a_toolbox_the_investigator_used_get_the_same_results
     for name, args in requests:
         assert tools[name].invoke(args) == fresh_tools[name].invoke(args)
     assert last_line_marker("BIG", BIG_LINES) in tools["read_file"].invoke({"path": "big.py"})
+
+
+# --- repair: whole-file refusal proven against the per-call bound ------------------
+
+
+def small_pr_read(files, config, **span):
+    files["app.py"] = body("APP", SMALL_LINES)
+    _, llm = run(config, make_toolbox(config), [reply(read("app.py", "pr", **span)), answer(VALID)])
+    return tool_texts(llm.seen[1])[0]
+
+
+@pytest.mark.parametrize(
+    "span",
+    [{}, {"start_line": 1, "end_line": SMALL_LINES}, {"start_line": 1, "end_line": SMALL_LINES + 5}, {"end_line": SMALL_LINES}],
+    ids=["no-range", "exact-range", "range-past-end", "open-start"],
+)
+def test_whole_file_pr_read_of_a_small_changed_file_is_refused_not_just_bounded(files, config, span):
+    served = small_pr_read(files, config, **span)
+
+    assert served != default_read(config, "app.py", snapshot="pr")
+    assert "APP-LINE-0000" not in served
+    assert last_line_marker("APP", SMALL_LINES) not in served
+
+
+@pytest.mark.parametrize(
+    "span",
+    [{"start_line": 2}, {"start_line": 2, "end_line": SMALL_LINES}, {"start_line": 1, "end_line": SMALL_LINES - 1}],
+    ids=["from-second-line", "second-line-to-end", "stops-one-short"],
+)
+def test_pr_read_that_leaves_part_of_a_changed_file_out_is_served_as_before(files, config, span):
+    served = small_pr_read(files, config, **span)
+
+    assert served == default_read(config, "app.py", snapshot="pr", **span)
+
+
+def test_whole_file_pr_read_of_a_changed_file_outside_the_prompt_diff_is_served(files, config):
+    files["README.md"] = body("DOC", SMALL_LINES)
+
+    _, llm = run(config, make_toolbox(config), [reply(read("README.md", "pr")), answer(VALID)])
+
+    assert tool_texts(llm.seen[1]) == [default_read(config, "README.md", snapshot="pr")]
+
+
+# --- repair: per-call bound for every tool ------------------------------------------
+
+BOUND = 2000
+
+
+def kind_call(kind):
+    return {
+        "read_file": read("big.py"),
+        "grep_repo": call("grep_repo", pattern="g", snapshot="base"),
+        "investigate_pr_code": call("investigate_pr_code", query="handler"),
+    }[kind]
+
+
+def plain_result(config, session, request):
+    tools = {t.name: t for t in make_toolbox(config, session).build_tools()}
+    return tools[request["name"]].invoke(request["args"])
+
+
+@pytest.mark.parametrize("kind", ["read_file", "grep_repo", "investigate_pr_code"])
+def test_a_result_longer_than_the_configured_bound_is_cut_with_a_marker_for_every_tool(files, config, kind):
+    files["big.py"] = body("BIG", BIG_LINES)
+    config.investigator_result_chars = BOUND
+    session = StubSession("G" * 50000)
+    assert len(plain_result(config, session, kind_call(kind))) > BOUND
+
+    _, llm = run(config, make_toolbox(config, session), [reply(kind_call(kind)), answer(VALID)])
+
+    served = tool_texts(llm.seen[1])[0]
+    assert len(served) <= BOUND
+    assert "[TRUNCATED]" in served
+
+
+def test_a_graph_result_within_the_configured_bound_is_unchanged(files, config):
+    config.investigator_result_chars = BOUND
+    session = StubSession("G" * 500)
+    request = kind_call("investigate_pr_code")
+
+    _, llm = run(config, make_toolbox(config, session), [reply(request), answer(VALID)])
+
+    assert tool_texts(llm.seen[1]) == [plain_result(config, session, request)]
+
+
+# --- repair: repeats for every tool; a refused call is not an earlier call ----------
+
+
+@pytest.mark.parametrize("kind", ["grep_repo", "investigate_pr_code"])
+def test_identical_repeat_of_a_non_read_tool_is_answered_with_a_pointer_naming_tool_and_arguments(files, config, kind):
+    request = kind_call(kind)
+    session = StubSession("G" * 3000)
+
+    result, _ = run(config, make_toolbox(config, session), [reply(request), reply(request), answer(VALID)])
+
+    first, repeat = recorded_results(result)
+    assert first not in repeat
+    assert len(repeat) < len(first) / 2
+    assert kind in repeat
+    assert all(str(value) in repeat for value in request["args"].values())
+
+
+def test_a_refused_read_retried_identically_is_refused_again_without_a_pointer_to_content_never_held(files, config):
+    files["app.py"] = body("APP", SMALL_LINES)
+
+    result, _ = run(
+        config, make_toolbox(config), [reply(read("app.py", "pr")), reply(read("app.py", "pr")), answer(VALID)]
+    )
+
+    refused, retried = recorded_results(result)
+    assert refused != default_read(config, "app.py", snapshot="pr")
+    assert retried == refused
+
+
+# --- repair: the stop boundary -------------------------------------------------------
+
+
+def prompt_chars(config):
+    _, llm = run(config, make_toolbox(config), [answer(VALID)])
+    return chars(llm.seen[0])
+
+
+@pytest.mark.parametrize(
+    ("fitting", "shortfall", "executed"),
+    [(2, 0, 2), (2, 3, 1), (1, 0, 1), (1, 3, 0)],
+    ids=["two-fit-exactly", "one-token-short-of-two", "one-fits-exactly", "none-fit-first-call-stops"],
+)
+def test_a_call_runs_exactly_when_its_result_at_the_bound_still_leaves_the_closing_request_room(
+    files, config, fitting, shortfall, executed
+):
+    base = prompt_chars(config) + len(forced_final())
+    bound = next(b for b in range(8000, 8003) if (base + fitting * b) % 3 == 0)
+    allowance = base + fitting * bound - shortfall
+    cfg = LGTMConfig(
+        llm_retries=0,
+        max_answer_reasks=0,
+        require_tool_use=False,
+        investigator_result_chars=bound,
+        llm_context_tokens=allowance // 3 + config.investigator_final_output_tokens,
+    )
+    files.update({f"big{i}.py": body(f"B{i}", BIG_LINES) for i in range(5)})
+    turn = reply(*(read(f"big{i}.py") for i in range(fitting)))
+
+    result, llm = run(cfg, make_toolbox(cfg), [turn, answer(VALID)])
+
+    results = recorded_results(result)
+    assert [f"B{i}-LINE" in r for i, r in enumerate(results)] == [i < executed for i in range(fitting)]
+    assert len(llm.seen) == 2
+    assert chars(llm.seen[1]) <= final_window(cfg)
+
+
+def test_calls_stopped_at_the_exact_boundary_still_leave_a_closing_request_that_fits(files, config):
+    base = prompt_chars(config) + len(forced_final())
+    bound = next(b for b in range(8000, 8003) if (base + 2 * b) % 3 == 0)
+    cfg = LGTMConfig(
+        llm_retries=0,
+        max_answer_reasks=0,
+        require_tool_use=False,
+        investigator_result_chars=bound,
+        llm_context_tokens=(base + 2 * bound) // 3 + config.investigator_final_output_tokens,
+    )
+    files.update({f"big{i}.py": body(f"B{i}", BIG_LINES) for i in range(5)})
+
+    result, llm = run(cfg, make_toolbox(cfg), [reply(*(read(f"big{i}.py") for i in range(5))), answer(VALID)])
+
+    assert result.status == "ok"
+    assert result.error is None
+    assert len(llm.seen) == 2
+    assert chars(llm.seen[1]) <= final_window(cfg)
+
+
+def test_stopped_calls_past_the_remaining_budget_get_the_budget_message_and_the_budget_is_spent(files, config):
+    toolbox = make_toolbox(config)
+    stop = max(len(registry.entry("tools.context_full")), len(toolbox.BUDGET_MESSAGE))
+    base = prompt_chars(config) + len(forced_final()) + 4 * stop
+    bound = next(b for b in range(8000, 8003) if (base + b) % 3 == 0)
+    cfg = LGTMConfig(
+        llm_retries=0,
+        max_answer_reasks=0,
+        require_tool_use=False,
+        investigator_result_chars=bound,
+        investigator_max_tool_calls=3,
+        llm_context_tokens=(base + bound) // 3 + config.investigator_final_output_tokens,
+    )
+    files.update({f"big{i}.py": body(f"B{i}", BIG_LINES) for i in range(5)})
+    toolbox = make_toolbox(cfg)
+
+    result, _ = run(cfg, toolbox, [reply(*(read(f"big{i}.py") for i in range(5))), answer(VALID)])
+
+    results = recorded_results(result)
+    assert "B0-LINE" in results[0]
+    assert results[1] == results[2] != toolbox.BUDGET_MESSAGE
+    assert results[3] == results[4] == toolbox.BUDGET_MESSAGE
+    assert toolbox.calls_used == toolbox.budget == 3
+
+
+# --- repair: the closing request is fitted after every stop --------------------------
+
+
+def text_reply(*calls):
+    tags = "".join(f"<tool_call>{json.dumps({'name': c['name'], 'arguments': c['args']})}</tool_call>" for c in calls)
+    return AIMessage(content=tags)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "second_turn", "limit"),
+    [
+        ({"investigator_max_tool_calls": 2}, [read("b.py")], "tool_calls"),
+        ({"investigator_max_iterations": 2}, [read("b.py")], "steps"),
+        ({"max_invalid_tool_inputs": 1}, [call("read_file"), read("b.py")], None),
+    ],
+    ids=["budget-spent", "iteration-limit", "invalid-input-limit"],
+)
+def test_text_form_closing_request_after_each_non_context_stop_is_fitted_by_shortening_only_older_results(
+    files, overrides, second_turn, limit
+):
+    files["a.py"] = body("A", BIG_LINES)
+    files["b.py"] = body("B", BIG_LINES)
+    replies = [text_reply(read("a.py")), text_reply(*second_turn), answer(VALID)]
+
+    def make(**extra):
+        return LGTMConfig(llm_retries=0, max_answer_reasks=0, require_tool_use=False, **overrides, **extra)
+
+    ample = make()
+    _, roomy = run(ample, make_toolbox(ample), replies)
+    last = len(str(roomy.seen[-1][-2].content))
+    assert last > ample.investigator_result_chars
+    allowance = chars(roomy.seen[-1]) - last + ample.investigator_result_chars
+    cfg = make(llm_context_tokens=-(-allowance // CHARS_PER_TOKEN) + ample.investigator_final_output_tokens)
+
+    result, llm = run(cfg, make_toolbox(cfg), replies)
+
+    closing = llm.seen[-1]
+    results = recorded_results(result)
+    assert len(llm.seen) == 3
+    assert result.status == "ok"
+    assert result.error is None
+    assert result.run_record.limit_hit == limit
+    assert chars(closing) <= final_window(cfg)
+    assert closing[:2] == llm.seen[0][:2]
+    assert str(closing[-1].content) == forced_final()
+    assert results[-1] in str(closing[-2].content)
+    assert not any(results[0] in str(m.content) for m in closing)
+    assert any(str(m.content) == registry.entry("tools.result_elided") for m in closing)
+    assert len(results) == len(second_turn) + 1

@@ -206,9 +206,9 @@ class AgentToolbox:
             return registry.render(
                 "tools.repeat_call", tool=name, args=json.dumps(args, default=str)[:_REPEAT_ARGS_CHARS]
             )
-        ev.seen.add(key)
         if name == "read_file" and self._is_whole_changed_read(ev, args):
             return registry.entry("tools.whole_file_held")
+        ev.seen.add(key)
         return None
 
     def _is_whole_changed_read(self, ev: EvidenceLimits, args: dict) -> bool:

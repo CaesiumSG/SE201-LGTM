@@ -60,12 +60,8 @@ def run_investigator(
     toolbox: AgentToolbox,
     llm,
 ) -> InvestigatorResult:
-    refs = [
-        _display_ref(_hunk_ref(diff, index))
-        for diff in diffs
-        if diff.path.endswith(".py")
-        for index in range(len(diff.hunks))
-    ]
+    shown = [diff for diff in diffs if diff.path.endswith(".py")]
+    refs = [_display_ref(_hunk_ref(diff, index)) for diff in shown for index in range(len(diff.hunks))]
     diff_text = render_section(_section("investigator", "investigator", "", "", refs))
     manifest_only = len(diff_text) > config.investigator_diff_chars
     input_mode: InputMode = "manifest_only" if manifest_only else "full"
@@ -78,7 +74,7 @@ def run_investigator(
             config.investigator_result_chars,
             frozenset()
             if manifest_only
-            else frozenset(relative_path(d.path) for d in diffs if d.hunks and d.path.endswith(".py")),
+            else frozenset(p for d in shown if d.hunks and (p := relative_path(d.path)) is not None),
         )
         tools = toolbox.build_tools()
         tool_info = prompt_parts.tool_guidance(toolbox)
@@ -108,7 +104,6 @@ def run_investigator(
             reask="investigator.reask",
             forced_final="investigator.forced_final",
             options={"num_predict": config.investigator_final_output_tokens},
-            result_bound=config.investigator_result_chars,
         )
         with final_answer_spec(final):
             raw = fill_record(

@@ -499,8 +499,6 @@ class FinalAnswerSpec:
     reask: str = "shared.reask"
     forced_final: str = "shared.forced_final"
     options: dict = field(default_factory=dict)
-    # Per-call tool result bound in chars; when set, the loop stops per requested call and fits the closing request.
-    result_bound: int = 0
 
 
 # Carries the spec to run_tool_loop without widening its signature.
@@ -522,6 +520,9 @@ def _with_options(llm, options: dict):
     return copy(update=options) if options and copy else llm
 
 
+_TEXT_RESULT = "text_call_result"
+
+
 def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
     """Drop the oldest messages after the system and user pair until the request fits; the failed answer and the re-ask stay."""
     allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
@@ -537,23 +538,30 @@ def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
 def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
     """Shorten older tool results, oldest first, until the request fits; the results right before the final message stay.
 
-    Replaces list entries instead of editing them. False when the request still does not fit.
+    Covers ToolMessage results and text-form results (marked HumanMessages). Replaces list entries instead of editing them.
+    False when the request still does not fit.
     """
-    from langchain_core.messages import ToolMessage
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    def is_result(message) -> bool:
+        return isinstance(message, ToolMessage) or bool(getattr(message, "additional_kwargs", {}).get(_TEXT_RESULT))
 
     allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
     total = _message_chars(messages)
     recent = len(messages) - 1
-    while recent > 0 and isinstance(messages[recent - 1], ToolMessage):
+    while recent > 0 and is_result(messages[recent - 1]):
         recent -= 1
     stub = registry.entry("tools.result_elided")
     for i in range(recent):
         message = messages[i]
         if total <= allowance:
             break
-        if isinstance(message, ToolMessage) and len(str(message.content)) > len(stub):
+        if is_result(message) and len(str(message.content)) > len(stub):
             total -= len(str(message.content)) - len(stub)
-            messages[i] = ToolMessage(content=stub, tool_call_id=message.tool_call_id)
+            if isinstance(message, ToolMessage):
+                messages[i] = ToolMessage(content=stub, tool_call_id=message.tool_call_id)
+            else:
+                messages[i] = HumanMessage(content=stub, additional_kwargs={_TEXT_RESULT: True})
     return total <= allowance
 
 
@@ -666,6 +674,8 @@ def run_tool_loop(
     final = _final_answer.get() or FinalAnswerSpec()
     tool_map = {t.name: t for t in tools}
     toolbox = _toolbox_of(tool_map.values())
+    # The toolbox cut and this reserve share one bound; 0 leaves the default loop behaviour.
+    result_bound = getattr(getattr(toolbox, "evidence", None), "bound", 0)
     llm_with_tools = llm.bind_tools(tools)
     final_llm = _with_options(llm, final.options)
     messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
@@ -677,6 +687,9 @@ def run_tool_loop(
     cap = config.max_invalid_tool_inputs
     window_chars = (config.llm_context_tokens - config.llm_max_output_tokens) * CHARS_PER_TOKEN
     final_chars = len(registry.entry(final.forced_final))
+    stop_chars = (
+        max(len(registry.entry("tools.context_full")), len(toolbox.BUDGET_MESSAGE)) if result_bound else 0
+    )
     final_window_chars = (
         config.llm_context_tokens - final.options.get("num_predict", config.llm_max_output_tokens)
     ) * CHARS_PER_TOKEN
@@ -721,15 +734,18 @@ def run_tool_loop(
                 )
                 return _close_run(toolbox, answer, False)
 
-        for call in tool_calls:
+        for position, call in enumerate(tool_calls):
             name = call.get("name")
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
             error = validate_tool_call(name, tool_map, args)
-            if final.result_bound and not context_full:
-                # One more result at the bound must still leave room for the closing request.
+            if result_bound and not context_full:
+                # A result at the bound plus a stop message per later call must still leave room for the closing request.
                 context_full = (
-                    _message_chars(messages) + final.result_bound + final_chars
+                    _message_chars(messages)
+                    + result_bound
+                    + (len(tool_calls) - position - 1) * stop_chars
+                    + final_chars
                     > min(window_chars, final_window_chars)
                 )
             # Valid calls are charged by the tool body on invoke; rejected calls are charged here.
@@ -763,7 +779,8 @@ def run_tool_loop(
                             name=name,
                             args=json.dumps(args, default=str),
                             result=result,
-                        )
+                        ),
+                        additional_kwargs={_TEXT_RESULT: True},
                     )
                 )
             else:
@@ -780,7 +797,7 @@ def run_tool_loop(
             break
         used = _message_chars(messages)
         # Another round as large as this one, plus the final-answer prompt, would not fit.
-        if not final.result_bound and used + (used - round_start) + final_chars > min(
+        if not result_bound and used + (used - round_start) + final_chars > min(
             window_chars, final_window_chars
         ):
             context_full = True
@@ -796,7 +813,7 @@ def run_tool_loop(
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry(final.forced_final)))
-    if final.result_bound:
+    if result_bound:
         if not fit_closing_request(messages, config, final.options.get("num_predict", config.llm_max_output_tokens)):
             logger.warning("Closing request does not fit the context allowance; not sent")
             return _close_run(
