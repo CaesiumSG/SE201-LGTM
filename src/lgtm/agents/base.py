@@ -499,6 +499,8 @@ class FinalAnswerSpec:
     reask: str = "shared.reask"
     forced_final: str = "shared.forced_final"
     options: dict = field(default_factory=dict)
+    # Per-call tool result bound in chars; when set, the loop stops per requested call and fits the closing request.
+    result_bound: int = 0
 
 
 # Carries the spec to run_tool_loop without widening its signature.
@@ -529,6 +531,29 @@ def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
         total -= len(str(messages[drop].content))
         drop += 1
     del messages[2:drop]
+    return total <= allowance
+
+
+def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
+    """Shorten older tool results, oldest first, until the request fits; the results right before the final message stay.
+
+    Replaces list entries instead of editing them. False when the request still does not fit.
+    """
+    from langchain_core.messages import ToolMessage
+
+    allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
+    total = _message_chars(messages)
+    recent = len(messages) - 1
+    while recent > 0 and isinstance(messages[recent - 1], ToolMessage):
+        recent -= 1
+    stub = registry.entry("tools.result_elided")
+    for i in range(recent):
+        message = messages[i]
+        if total <= allowance:
+            break
+        if isinstance(message, ToolMessage) and len(str(message.content)) > len(stub):
+            total -= len(str(message.content)) - len(stub)
+            messages[i] = ToolMessage(content=stub, tool_call_id=message.tool_call_id)
     return total <= allowance
 
 
@@ -592,10 +617,13 @@ class RunRecord:
 _open_record: ContextVar[RunRecord | None] = ContextVar("open_run_record", default=None)
 
 
-def _close_run(toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False) -> str:
+def _close_run(
+    toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False, closing_unfitted: bool = False
+) -> str:
     if toolbox is not None:
         toolbox.steps_exhausted = steps_exhausted
         toolbox.budget_spent = budget_spent
+        toolbox.closing_unfitted = closing_unfitted
     return answer
 
 
@@ -698,8 +726,19 @@ def run_tool_loop(
             args = call.get("args", {}) or {}
             call_id = call.get("id", f"call_{iteration}")
             error = validate_tool_call(name, tool_map, args)
+            if final.result_bound and not context_full:
+                # One more result at the bound must still leave room for the closing request.
+                context_full = (
+                    _message_chars(messages) + final.result_bound + final_chars
+                    > min(window_chars, final_window_chars)
+                )
             # Valid calls are charged by the tool body on invoke; rejected calls are charged here.
-            if error:
+            if context_full:
+                if toolbox is None or toolbox.charge(name, args):
+                    result = registry.entry("tools.context_full")
+                else:
+                    result = toolbox.BUDGET_MESSAGE
+            elif error:
                 invalid_inputs += 1
                 if toolbox is None or toolbox.charge(name, args):
                     logger.warning("Invalid tool input (%d of %d): tool=%s", invalid_inputs, cap, name)
@@ -737,9 +776,13 @@ def run_tool_loop(
             # 24 Oct Shoply run). Ask for the verdict now.
             budget_spent = True
             break
+        if context_full:
+            break
         used = _message_chars(messages)
         # Another round as large as this one, plus the final-answer prompt, would not fit.
-        if used + (used - round_start) + final_chars > min(window_chars, final_window_chars):
+        if not final.result_bound and used + (used - round_start) + final_chars > min(
+            window_chars, final_window_chars
+        ):
             context_full = True
             break
 
@@ -753,7 +796,17 @@ def run_tool_loop(
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry(final.forced_final)))
-    if _message_chars(messages) > final_window_chars:
+    if final.result_bound:
+        if not fit_closing_request(messages, config, final.options.get("num_predict", config.llm_max_output_tokens)):
+            logger.warning("Closing request does not fit the context allowance; not sent")
+            return _close_run(
+                toolbox,
+                "",
+                steps_exhausted=not (invalid_capped or budget_spent or context_full),
+                budget_spent=budget_spent,
+                closing_unfitted=True,
+            )
+    elif _message_chars(messages) > final_window_chars:
         raise ValueError("Forced-final request exceeds the configured context allowance")
     response = invoke_with_retry(final_llm, messages, config, final.options.get("num_predict"))
     messages.append(response)

@@ -15,7 +15,7 @@ from lgtm.agents.base import (
     final_answer_spec,
     run_tool_loop,
 )
-from lgtm.agents.tools import AgentToolbox
+from lgtm.agents.tools import AgentToolbox, EvidenceLimits, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
 from lgtm.review.coverage import InvestigatorStatus
@@ -74,6 +74,12 @@ def run_investigator(
     record = RunRecord("investigator")
     try:
         toolbox.reset_budget(config.investigator_max_tool_calls)
+        toolbox.evidence = EvidenceLimits(
+            config.investigator_result_chars,
+            frozenset()
+            if manifest_only
+            else frozenset(relative_path(d.path) for d in diffs if d.hunks and d.path.endswith(".py")),
+        )
         tools = toolbox.build_tools()
         tool_info = prompt_parts.tool_guidance(toolbox)
         system = registry.render(
@@ -102,11 +108,14 @@ def run_investigator(
             reask="investigator.reask",
             forced_final="investigator.forced_final",
             options={"num_predict": config.investigator_final_output_tokens},
+            result_bound=config.investigator_result_chars,
         )
         with final_answer_spec(final):
             raw = fill_record(
                 record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
             )
+        if toolbox.closing_unfitted:
+            raise ValueError(registry.entry("tools.closing_not_fitted"))
         proposed = parse_investigator_output(raw)
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)

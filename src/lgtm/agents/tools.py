@@ -11,10 +11,12 @@ Guardrails:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
@@ -112,6 +114,19 @@ class ToolCallLimitExceeded(RuntimeError):
     """Raised when an agent exceeds its tool-call budget."""
 
 
+_CUT_MARK = "\n[TRUNCATED]"
+_REPEAT_ARGS_CHARS = 200
+
+
+@dataclass
+class EvidenceLimits:
+    """Investigator-only serving rules: one result bound, no repeats, no whole-file reads of ``changed`` PR files."""
+
+    bound: int
+    changed: frozenset[str] = frozenset()
+    seen: set[str] = field(default_factory=set)
+
+
 class AgentToolbox:
     """Factory for read-only tools over a repo's committed snapshots.
 
@@ -147,6 +162,8 @@ class AgentToolbox:
         self.budget_spent = False
         self.call_log: list[dict] = []
         self.turns: list[dict] = []
+        self.evidence: EvidenceLimits | None = None
+        self.closing_unfitted = False
         self._legacy_base_sha: str | None = None
         self._missing_binary_warned = False
         self._latch_warned: set[str] = set()
@@ -167,6 +184,41 @@ class AgentToolbox:
         self.budget_spent = False
         self.call_log = []
         self.turns = []
+        self.evidence = None
+        self.closing_unfitted = False
+
+    def _serve(self, name: str, args: dict, impl, charges: bool = True) -> str:
+        """Charge and run one tool call; under ``evidence`` repeats and held reads are answered with a note and every result is bound."""
+        ev = self.evidence
+        note = self._held_note(ev, name, args) if ev else None
+        if note is not None:
+            return note if self.charge(name, args) else self.BUDGET_MESSAGE
+        if charges and not self.charge(name, args):
+            return self.BUDGET_MESSAGE
+        result = impl()
+        if ev and len(result) > ev.bound:
+            return result[: ev.bound - len(_CUT_MARK)] + _CUT_MARK
+        return result
+
+    def _held_note(self, ev: EvidenceLimits, name: str, args: dict) -> str | None:
+        key = json.dumps([name, args], sort_keys=True, default=str)
+        if key in ev.seen:
+            return registry.render(
+                "tools.repeat_call", tool=name, args=json.dumps(args, default=str)[:_REPEAT_ARGS_CHARS]
+            )
+        ev.seen.add(key)
+        if name == "read_file" and self._is_whole_changed_read(ev, args):
+            return registry.entry("tools.whole_file_held")
+        return None
+
+    def _is_whole_changed_read(self, ev: EvidenceLimits, args: dict) -> bool:
+        rel = relative_path(args["path"])
+        if self.shas is None or args["snapshot"] != "pr" or rel not in ev.changed or args["start_line"] > 1:
+            return False
+        done = read_committed_blob(self.repo, self.shas["pr"], rel, self.config.git_timeout)
+        if done is None or done.returncode != 0:
+            return False
+        return args["end_line"] <= 0 or args["end_line"] >= len(done.stdout.splitlines())
 
     def charge(self, tool_name: str, args: dict) -> bool:
         """Spend one slot for an attempted call. Returns False once the budget is spent.
@@ -436,32 +488,34 @@ class AgentToolbox:
         @_registered_tool("read_file")
         def read_file(path: str, start_line: int = 0, end_line: int = 0, snapshot: str = "base") -> str:
             args = {"path": path, "start_line": start_line, "end_line": end_line, "snapshot": snapshot}
-            if not toolbox.charge("read_file", args):
-                return toolbox.BUDGET_MESSAGE
-            return toolbox.read_file_impl(
-                path, start_line or None, end_line or None, snapshot
+            return toolbox._serve(
+                "read_file",
+                args,
+                lambda: toolbox.read_file_impl(path, start_line or None, end_line or None, snapshot),
             )
 
         @_registered_tool("grep_repo")
         def grep_repo(pattern: str, file_glob: str = "", snapshot: str = "base") -> str:
             args = {"pattern": pattern, "file_glob": file_glob, "snapshot": snapshot}
-            if not toolbox.charge("grep_repo", args):
-                return toolbox.BUDGET_MESSAGE
-            return toolbox.grep_repo_impl(pattern, file_glob or None, snapshot)
+            return toolbox._serve(
+                "grep_repo", args, lambda: toolbox.grep_repo_impl(pattern, file_glob or None, snapshot)
+            )
 
         @_registered_tool("search_policy")
         def search_policy(query: str) -> str:
-            if not toolbox.charge("search_policy", {"query": query}):
-                return toolbox.BUDGET_MESSAGE
-            return toolbox.search_policy_impl(query)
+            return toolbox._serve("search_policy", {"query": query}, lambda: toolbox.search_policy_impl(query))
 
         @_registered_tool("investigate_base_code")
         def investigate_base_code(query: str) -> str:
-            return toolbox._investigate("base", query)
+            return toolbox._serve(
+                "investigate_base_code", {"query": query}, lambda: toolbox._investigate("base", query), charges=False
+            )
 
         @_registered_tool("investigate_pr_code")
         def investigate_pr_code(query: str) -> str:
-            return toolbox._investigate("pr", query)
+            return toolbox._serve(
+                "investigate_pr_code", {"query": query}, lambda: toolbox._investigate("pr", query), charges=False
+            )
 
         tools = [read_file, grep_repo, search_policy]
         if graph and self.shas is not None and self.session is not None and not self._missing_at_startup:

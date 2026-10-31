@@ -275,7 +275,10 @@ def _chars(messages):
 
 def test_reask_after_a_context_full_stop_is_fitted_sent_and_recorded(config, toolbox):
     big_cut = CUT + " " * 4000
-    llm = FillerLLM(_full_context(config), answer(VALID))
+    config.investigator_result_chars = 200
+    filler = _full_context(config)
+    filler.content = "x" * 1000
+    llm = FillerLLM(filler, answer(VALID))
     llm.script = [answer(big_cut), answer(VALID)]
 
     result = run(config, toolbox, llm)
