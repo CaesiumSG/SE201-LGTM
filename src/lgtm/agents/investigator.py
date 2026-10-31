@@ -109,7 +109,7 @@ def run_investigator(
         )
         overflow = len(user) - user_prompt_budget(investigator_config, system, final)
         if overflow > 0 and diff_section:
-            # Leaves room for one result at the bound, so a read of a file whose diff was cut can be served and closed.
+            # Room for one result at the bound after a cut: whole-file reads of cut files.
             diff_text = cut_to_fit(diff_text, max(0, len(diff_text) - overflow - config.investigator_result_chars))
             user = registry.render(
                 "investigator.user_prompt",

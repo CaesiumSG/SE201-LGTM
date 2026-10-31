@@ -533,10 +533,11 @@ def cut_to_fit(text: str, budget: int) -> str:
     """Keep the start and end of ``text`` within ``budget`` characters; a marker stating the cut size replaces the middle."""
     if len(text) <= budget:
         return text
+    # The marker for len(text) cut characters is the longest one the cut can need.
     keep = max(0, budget - len(registry.render("shared.prompt_cut", chars=len(text))))
     head = keep // 2
     marker = registry.render("shared.prompt_cut", chars=len(text) - keep)
-    return text[:head] + marker + text[len(text) - (keep - head) :]
+    return (text[:head] + marker + text[len(text) - (keep - head) :])[: max(0, budget)]
 
 
 def user_prompt_budget(config: LGTMConfig, system_prompt: str, final: FinalAnswerSpec) -> int:
@@ -560,12 +561,37 @@ def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
     return total <= allowance
 
 
-def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
+def _trim_prose(message, excess: int) -> str | None:
+    """The text of ``message`` with ``excess`` characters cut from the end of its prose; tool-call markup stays whole.
+
+    None when the prose is shorter than ``excess``.
+    """
+    text = message.content
+    if not isinstance(text, str):
+        return None
+    if message.tool_calls:
+        prose = [(0, len(text))]
+    else:
+        tags = [m.span() for m in TOOL_CALL_TAG_RE.finditer(text)]
+        if not tags:
+            return None
+        bounds = [0, *(edge for span in tags for edge in span), len(text)]
+        prose = list(zip(bounds[0::2], bounds[1::2]))
+    if sum(end - start for start, end in prose) < excess:
+        return None
+    for start, end in reversed(prose):
+        take = min(end - start, excess)
+        text = text[: end - take] + text[end:]
+        excess -= take
+    return text
+
+
+def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int, closing: bool = False) -> bool:
     """Shorten older tool results, oldest first, until the request fits; the results right before the final message stay.
 
-    Covers ToolMessage results and text-form results (marked HumanMessages). Then the text of the assistant turn that
-    precedes those results is cut to the room left, its tool calls kept. Replaces list entries instead of editing them.
-    False when the request still does not fit.
+    Covers ToolMessage results and text-form results (marked HumanMessages). With ``closing``, the prose of the
+    assistant turn that precedes those results is then cut to the room left; its tool calls, native or text-form,
+    stay whole. Replaces list entries instead of editing them. False when the request still does not fit.
     """
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -590,10 +616,10 @@ def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int) 
                 messages[i] = HumanMessage(content=stub, additional_kwargs={_TEXT_RESULT: True})
     stop_turn = recent - 1
     excess = total - allowance
-    if excess > 0 and stop_turn > 1 and isinstance(messages[stop_turn], AIMessage):
-        text = messages[stop_turn].content
-        if isinstance(text, str) and len(text) >= excess:
-            messages[stop_turn] = messages[stop_turn].model_copy(update={"content": text[: len(text) - excess]})
+    if closing and excess > 0 and stop_turn > 1 and isinstance(messages[stop_turn], AIMessage):
+        trimmed = _trim_prose(messages[stop_turn], excess)
+        if trimmed is not None:
+            messages[stop_turn] = messages[stop_turn].model_copy(update={"content": trimmed})
             total = allowance
     return total <= allowance
 
@@ -857,7 +883,9 @@ def run_tool_loop(
     else:
         logger.warning("Agent hit iteration cap (%d); forcing final answer", config.max_agent_iterations)
     messages.append(HumanMessage(content=registry.entry(final.forced_final)))
-    if not fit_closing_request(messages, config, final.options.get("num_predict", config.llm_max_output_tokens)):
+    if not fit_closing_request(
+        messages, config, final.options.get("num_predict", config.llm_max_output_tokens), closing=True
+    ):
         logger.warning("Closing request does not fit the context allowance; not sent")
         return _close_run(
             toolbox,

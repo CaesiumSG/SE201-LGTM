@@ -462,7 +462,8 @@ def test_a_request_that_cannot_be_fitted_is_not_sent_and_is_an_invalid_answer_wi
     cfg = tight(config, prompt_chars, bound, slots=0)
     files["old.py"] = body("OLD", BIG_LINES)
 
-    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py")), answer(VALID)])
+    stop_text = "stop text"
+    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py"), content=stop_text), answer(VALID)])
 
     assert result.status == "failed"
     assert result.proposed is None
@@ -470,6 +471,9 @@ def test_a_request_that_cannot_be_fitted_is_not_sent_and_is_an_invalid_answer_wi
     assert all(chars(request) <= final_window(cfg) or request is llm.seen[0] for request in llm.seen[1:])
     assert len(llm.seen) == 1
     assert len(result.run_record.turns) == 1
+    assert [t["assistant"] for t in result.run_record.turns][0] == stop_text
+    assert len(result.run_record.tool_calls) == 1
+    assert len(recorded_results(result)) == 1
 
 
 def test_a_stop_turn_text_larger_than_the_room_left_is_trimmed_in_the_closing_request_and_the_run_completes(files, config):

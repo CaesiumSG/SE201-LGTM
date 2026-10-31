@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage
 
 from lgtm.agents import registry
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
-from lgtm.agents.base import CHARS_PER_TOKEN, RunRecord
+from lgtm.agents.base import CHARS_PER_TOKEN, RunRecord, cut_to_fit
 from lgtm.agents.investigator import run_investigator
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.config import LGTMConfig
@@ -31,10 +31,12 @@ from tests.test_investigator_evidence import (  # noqa: F401 - fixtures
     forced_final,
     largest_full_prompt,
     make_toolbox,
+    probe,
     read,
     recorded_results,
     reply,
     run,
+    tight,
     tool_texts,
 )
 from tests.test_investigator_final_answer import FillerLLM
@@ -294,21 +296,21 @@ def run_authz(git_repo, cfg, llm, big=False):
     lines = tuple("z" * 150 for _ in range(HUGE_LINES // 2)) if big else ("a = 1", "b = 2", "c = 3")
     agent = AuthzReviewerAgent(_snapshot_toolbox(git_repo, cfg), cfg, llm=llm)
     findings = agent.review_section(_section([_hunk(lines=lines)]))
-    return findings, agent.errors, "s1"
+    return findings, agent.errors, "s1", agent.run_records
 
 
 def run_sast(git_repo, cfg, llm, big=False):
     diff = huge_diffs(HUGE_LINES // 2)[0] if big else None
     agent = SASTTriageAgent(_snapshot_toolbox(git_repo, cfg), cfg, llm=llm)
     finding = agent.triage(SEMGREP_HIT, diff)
-    return ([] if finding is None else [finding]), agent.errors, SEMGREP_HIT.finding_id
+    return ([] if finding is None else [finding]), agent.errors, SEMGREP_HIT.finding_id, agent.run_records
 
 
 RUNNERS = {"authz": (run_authz, AUTHZ_ANSWER), "sast": (run_sast, SAST_ANSWER)}
 
 
-def agent_config(window_chars=None, fraction=None):
-    cfg = LGTMConfig(llm_retries=0)
+def agent_config(window_chars=None, fraction=None, **overrides):
+    cfg = LGTMConfig(llm_retries=0, **overrides)
     if window_chars is not None:
         cfg.llm_context_tokens = window_chars // CHARS_PER_TOKEN + cfg.llm_max_output_tokens
     return cfg if fraction is None else pinned(cfg, fraction)
@@ -338,18 +340,21 @@ def test_a_request_between_eighty_and_a_hundred_percent_of_the_window_degrades_w
     window = whole_chars(chars(roomy.requests[-1]) + len(registry.entry("shared.forced_final")), 1.0)
 
     whole = Script(*script)
-    _, whole_errors, _ = run_agent(git_repo, agent_config(window, 1.0), whole)
+    _, whole_errors, _, _ = run_agent(git_repo, agent_config(window, 1.0), whole)
     assert whole_errors == []
     assert chars(whole.requests[-1]) > DEFAULT_HEADROOM * window
 
     llm = Script(*script)
-    findings, errors, source = run_agent(git_repo, agent_config(window), llm)
+    findings, errors, source, records = run_agent(git_repo, agent_config(window), llm)
 
     assert findings == []
     assert [e["source"] for e in errors] == [source]
     assert "context" in errors[0]["message"].lower()
     assert len(llm.requests) == 1
     assert all(chars(request) <= DEFAULT_HEADROOM * window for request in llm.requests)
+    assert len(records) == 1
+    assert len(records[0].tool_calls) == 1
+    assert [len(t["tool_calls"]) for t in records[0].turns] == [1]
 
 
 @pytest.mark.parametrize("agent", list(RUNNERS))
@@ -364,7 +369,7 @@ def test_a_first_request_over_the_headroom_window_is_bounded_before_any_tool_cal
     assert chars(full.requests[0]) > DEFAULT_HEADROOM * window
 
     llm = Script(AIMessage(content=final))
-    findings, errors, _ = run_agent(git_repo, agent_config(window), llm, big=True)
+    findings, errors, _, _ = run_agent(git_repo, agent_config(window), llm, big=True)
 
     sent = llm.requests[0]
     full_user, sent_user = str(full.requests[0][1].content), str(sent[1].content)
@@ -389,9 +394,117 @@ def test_the_request_built_for_a_retry_is_bounded_like_the_first(git_repo):
     window = whole_chars(kept + forced + 600, DEFAULT_HEADROOM)
 
     llm = Script(*script)
-    _, errors, _ = run_agent(git_repo, agent_config(window), llm, big=True)
+    _, errors, _, _ = run_agent(git_repo, agent_config(window), llm, big=True)
 
     assert errors == []
     assert len(llm.requests) == 2
     assert "ghost_module.py" in str(llm.requests[1][1].content)
     assert all(chars(request) + forced <= DEFAULT_HEADROOM * window for request in llm.requests)
+
+
+# --- AC-US8-1: only the closing request may lose the stop turn's assistant text ----------------------------
+
+
+@pytest.mark.parametrize("agent", list(RUNNERS))
+def test_a_tool_round_request_over_the_window_does_not_trim_the_previous_assistant_text(git_repo, agent):
+    run_agent, final = RUNNERS[agent]
+    fat = "y" * 4000
+    script = (AIMessage(content=fat), AIMessage(content=final))
+    roomy = Script(*script)
+    run_agent(git_repo, agent_config(10**7, require_tool_use=True), roomy)
+    push = len(roomy.requests[1][-1].content)
+    forced = len(registry.entry("shared.forced_final"))
+    # The first request fits; the second holds the long text and the push-back, which only trimming that text could fit.
+    window = whole_chars(chars(roomy.requests[0]) + forced + push + 200, DEFAULT_HEADROOM)
+    assert chars(roomy.requests[1]) > DEFAULT_HEADROOM * window
+
+    llm = Script(*script)
+    findings, errors, source, records = run_agent(git_repo, agent_config(window, require_tool_use=True), llm)
+
+    assert findings == []
+    assert [e["source"] for e in errors] == [source]
+    assert "context" in errors[0]["message"].lower()
+    assert len(llm.requests) == 1
+    assert [t["assistant"] for t in records[0].turns] == [fat]
+
+
+# --- AC-US8-1: the closing request's stop-turn text trim ----------------------------------------------------
+
+TEXT_CALL = '<tool_call>{"name": "read_file", "arguments": {"path": "new.py", "snapshot": "base"}}</tool_call>'
+
+
+def stop_turn_run(files, config, content):
+    prompt_chars, bound = probe(config, files)
+    cfg = tight(config, prompt_chars, bound, slots=2.5)
+    files["old.py"] = body("OLD", BIG_LINES)
+    files["new.py"] = body("NEW", BIG_LINES)
+    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py")), AIMessage(content=content), answer(VALID)])
+    return result, llm, cfg
+
+
+def test_the_trimmed_stop_turn_text_is_the_longest_prefix_that_fits_the_closing_request(files, config):
+    prompt_chars, bound = probe(config, files)
+    cfg = tight(config, prompt_chars, bound, slots=2.5)
+    files["old.py"] = body("OLD", BIG_LINES)
+    files["new.py"] = body("NEW", BIG_LINES)
+    fat = "y" * (3 * bound)
+
+    result, llm = run(cfg, make_toolbox(cfg), [reply(read("old.py")), reply(read("new.py"), content=fat), answer(VALID)])
+
+    closing = llm.seen[-1]
+    sent = str(next(m for m in closing if isinstance(m, AIMessage) and m.tool_calls and m.content).content)
+    assert result.status == "ok"
+    assert fat.startswith(sent)
+    assert chars(closing) == final_window(cfg)
+
+
+def test_a_text_form_stop_turn_keeps_its_tool_call_markup_whole_when_its_text_is_trimmed(files, config):
+    _, bound = probe(config, files)
+    # The tail after the markup is shorter than the excess: a plain tail cut would reach into the markup.
+    content = "p" * (2 * bound) + TEXT_CALL + "q" * (bound // 2)
+
+    result, llm, cfg = stop_turn_run(files, config, content)
+
+    sent = [str(m.content) for m in llm.seen[-1] if isinstance(m, AIMessage) and "<tool_call>" in str(m.content)]
+    assert result.status == "ok"
+    assert len(sent) == 1
+    assert TEXT_CALL in sent[0]
+    assert len(sent[0]) < len(content)
+    assert chars(llm.seen[-1]) <= final_window(cfg)
+    assert [t["assistant"] for t in result.run_record.turns][1] == content
+
+
+def test_a_text_form_stop_turn_without_prose_to_trim_never_sends_cut_markup(files, config):
+    result, llm, cfg = stop_turn_run(files, config, TEXT_CALL)
+
+    assert all(chars(request) <= final_window(cfg) for request in llm.seen[1:])
+    for request in llm.seen:
+        texts = [str(m.content) for m in request if isinstance(m, AIMessage) and "<tool_call>" in str(m.content)]
+        assert all(TEXT_CALL in text for text in texts)
+    assert [t["assistant"] for t in result.run_record.turns][1] == TEXT_CALL
+
+
+# --- cut_to_fit never exceeds its budget ---------------------------------------------------------------------
+
+
+def marker_length(cut):
+    return len(registry.render("shared.prompt_cut", chars=cut))
+
+
+@pytest.mark.parametrize("length", [150, 1010, 10100])
+def test_cut_to_fit_never_exceeds_its_budget_at_any_budget_including_digit_count_boundaries(length):
+    text = "".join(chr(97 + i % 26) for i in range(length))
+
+    for budget in range(0, length + 2):
+        cut = cut_to_fit(text, budget)
+        assert len(cut) <= budget, (length, budget)
+        if budget >= length:
+            assert cut == text
+        elif budget >= marker_length(length) + 2:
+            assert cut[0] == text[0] and cut[-1] == text[-1], (length, budget)
+
+
+@pytest.mark.parametrize("budget", [0, 1, 5])
+def test_cut_to_fit_with_a_budget_smaller_than_the_marker_stays_within_the_budget(budget):
+    assert budget < marker_length(10)
+    assert len(cut_to_fit("x" * 5000, budget)) <= budget
