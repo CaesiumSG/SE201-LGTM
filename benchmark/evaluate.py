@@ -1023,8 +1023,7 @@ def main() -> None:
     if args.gpu_model:
         apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.gpu_cluster:
-        config.ollama_model = "qwen3.8:27b"
-        config.ollama_base_url = "http://127.0.0.1:11435"
+        apply_gpu_model(config, "qwen3.8-27b")
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:

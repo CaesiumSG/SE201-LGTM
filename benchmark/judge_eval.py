@@ -73,20 +73,23 @@ def _validate_labels(unit_ids: Sequence[str], labels: dict) -> dict[str, dict]:
     return units
 
 
-def citation_support(unit_ids: Sequence[str], labels: dict, outcomes: list[dict]) -> dict:
+def citation_support(
+    unit_ids: Sequence[str], labels: dict, outcomes: list[dict], stale: tuple[str, ...] = (),
+) -> dict:
     units = _validate_labels(unit_ids, labels)
     judged_ids = [o["unit_id"] for o in outcomes if o["judged"] and o["supported"]]
 
     def population(ids: Sequence[str]) -> dict:
-        labelled = [units[i]["supports"] for i in ids if i in units]
+        labelled = [units[i]["supports"] for i in ids if i in units and units[i].get("verdict") != UNDETERMINED]
         n = len(labelled)
         return {
             "n": n,
-            "unlabelled": len(ids) - n,
+            "unlabelled": sum(1 for i in ids if i not in units),
             "percent_yes": _percent(labelled.count("yes"), n),
         }
 
-    return {"before_judging": population(list(unit_ids)), "judged": population(judged_ids)}
+    fresh = [i for i in unit_ids if _case_of(i) not in stale]
+    return {"before_judging": population(fresh), "judged": population([i for i in judged_ids if _case_of(i) not in stale])}
 
 
 def confidence_agreement(labels: dict, outcomes: list[dict]) -> dict:
@@ -242,7 +245,7 @@ def quote_absence(
                 lines = item.get("lines")
                 if text is None or (lines and lines[0] > len(text.splitlines())):
                     cause = "repository_mismatch"
-                elif (item.get("content") or "") in text:
+                elif citation_export._norm(item.get("content")) in citation_export._norm(text):
                     cause = None
                 else:
                     cause = "agent_quote"
@@ -514,6 +517,7 @@ def report(
     labels = json.loads(Path(labels_path).read_text(encoding="utf-8"))
     labels = {**labels, "units": _validate_labels(unit_ids, labels)}
     outcomes = run_outcomes(run_dir)
+    fresh = [o for o in outcomes if _case_of(o["unit_id"]) not in stale]
     records = citation_export.read_records(run_dir)
     modes = {r.get("mode") for r in records}
     findings = [f for r in records for f in r["findings"]]
@@ -531,9 +535,9 @@ def report(
             absence = quote_absence(records, _pr_file_reader(Path(tmp)))
     return {
         "quote_absence": absence,
-        "citation_support": citation_support(unit_ids, labels, outcomes),
-        "confidence_agreement": confidence_agreement(labels, outcomes),
-        "supported_agreement": supported_agreement(labels, outcomes),
+        "citation_support": citation_support(unit_ids, labels, outcomes, stale),
+        "confidence_agreement": confidence_agreement(labels, fresh),
+        "supported_agreement": supported_agreement(labels, fresh),
         "case_accuracy": verdict_accuracy(records),
         "not_judged_by_reason": not_judged_by_reason(
             [f for r in records if r.get("mode") in evaluate.JUDGED_MODES for f in r["findings"]]

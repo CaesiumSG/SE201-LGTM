@@ -126,11 +126,12 @@ python benchmark/guard.py <results-root>
 ```
 
 `batch.py` runs the next unrun batch only, `lgtm` over its cases, into
-`<results-root>/batch-<n>/` (n = 1 to 4). The `llm-only` control of every case
-is written once under `<results-root>/control/`. A finished batch writes
-`<results-root>/batch-<n>/bundle.json`: the batch number, the commit it ran on,
-per-case correctness of `lgtm` and of the control against the labels, batch
-totals, and the paths of the per-case `lgtm` result files. Running the same
+`<results-root>/batch-<n>/` (n = 1 to 4), with the `qwen3.8-27b` GPU model. The
+`llm-only` control of every case is written once under `<results-root>/control/`.
+A finished batch writes `<results-root>/batch-<n>/bundle.json`: the batch
+number, the commit it ran on, per-case scope, correctness of `lgtm` and of the
+control against the labels and the commit each control ran on, totals over the
+in-scope cases, and the paths of the per-case `lgtm` result files. Running the same
 command again resumes with the next unrun batch; when none remains it says so
 and exits 0.
 
@@ -139,7 +140,8 @@ and exits 0.
 that went from correct to wrong against the previous complete guard run, the
 case id and category. Cases that errored in either run are reported as
 unscored. The first run is the reference and reports no flips. It exits 0
-whatever the flips.
+whatever the flips; `flips.json` records the evaluator's exit code, and a
+non-zero one is printed without the evaluator's output.
 
 `policies/<project>.md` are short access-control policies written only from
 each project's public documentation. They and `fetch.py --policies` are

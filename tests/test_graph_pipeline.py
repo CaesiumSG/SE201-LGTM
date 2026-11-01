@@ -1560,7 +1560,7 @@ class TestSectionPipeline:
 
         review = json.loads(result.json_path.read_text(encoding="utf-8"))["review"]
         assert review["coverage"]["sections_scheduled"] == 5
-        assert result.meta.endpoints_reviewed == 2
+        assert result.meta.changed_endpoints == 2
         assert "hunks_total" not in result.md_path.read_text(encoding="utf-8")
 
     def test_llm_only_mode_is_unchanged_and_runs_no_sections(

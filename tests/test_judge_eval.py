@@ -2275,3 +2275,28 @@ class TestMixedOriginLabelsGiveTheSameResultsAsOwnUnitsOnly:
         assert mixed == own
         assert mixed["shoply"]["n"] == 3
         assert mixed["real_world"]["n"] == 0
+
+
+def test_citation_support_leaves_out_stale_and_undetermined_units(je):
+    ids = ["sqli_04_safe/0.0", "a/0.0", "b/0.0"]
+    labels = {"units": {
+        "sqli_04_safe/0.0": {"supports": "no"},
+        "a/0.0": {"supports": "yes"},
+        "b/0.0": {"supports": "no", "verdict": "undetermined"},
+    }}
+    outcomes = [_outcome(i) for i in ids]
+
+    result = je.citation_support(ids, labels, outcomes, stale=("sqli_04_safe",))
+
+    assert result["before_judging"] == {"n": 1, "unlabelled": 0, "percent_yes": 100.0}
+    assert result["judged"]["n"] == 1
+
+
+def test_quote_absence_ignores_whitespace_and_case_like_the_export(je):
+    record = {"id": "authz_10_vulnerable", "findings": [{"evidence": [
+        {"type": "code", "file": "app.py", "lines": [1, 2], "content": "if   user:\n  return OK"},
+    ]}]}
+
+    rows = je.quote_absence([record], lambda case, file: "if user:\n    return ok\n")
+
+    assert rows[0]["absent"] is False

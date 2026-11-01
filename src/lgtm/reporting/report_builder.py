@@ -43,6 +43,7 @@ class ReviewMetadata:
     extra: dict = field(default_factory=dict)
     coverage: dict | None = None
     agent_errors: list[dict[str, str]] = field(default_factory=list)
+    changed_endpoints: int = 0
 
 
 class ReportBuilder:

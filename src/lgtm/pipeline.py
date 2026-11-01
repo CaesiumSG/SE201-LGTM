@@ -70,7 +70,7 @@ SQL_SINK_RE = re.compile(
 )
 
 
-MITIGATED_MODES = ("lgtm", "lgtm-no-sast")
+LGTM_MODES = ("lgtm", "lgtm-no-sast")
 
 
 def mitigations_apply(mode: str, config: LGTMConfig) -> dict[str, bool]:
@@ -81,7 +81,7 @@ def mitigations_apply(mode: str, config: LGTMConfig) -> dict[str, bool]:
     on the raw diff (proposal, Baseline B) and must stay that way for the
     comparison to mean anything; ``sast-only`` never prompts a model.
     """
-    active = mode in MITIGATED_MODES
+    active = mode in LGTM_MODES
     return {
         "strip_comments": active and config.strip_comments,
         "detect_prompt_injection": active and config.detect_prompt_injection,
@@ -128,7 +128,7 @@ class ReviewPipeline:
     def run(
         self, base: str, pr: str, output_dir: str | Path | None = None
     ) -> ReviewResult:
-        if self.config.mode not in ("lgtm", "lgtm-no-sast"):
+        if self.config.mode not in LGTM_MODES:
             return self._review(base, pr, base, pr, output_dir)
 
         # Lazy import: sast-only and llm-only do not load lgtm.graph.
@@ -176,7 +176,7 @@ class ReviewPipeline:
         logger.info("PR changes %d file(s)", len(diffs))
 
         retriever: PolicyRetriever | None = None
-        if mode in ("lgtm", "lgtm-no-sast"):
+        if mode in LGTM_MODES:
             retriever = PolicyRetriever(self.repo, self.config)
             if not retriever.is_available():
                 logger.warning(
@@ -257,7 +257,7 @@ class ReviewPipeline:
             )
             findings.extend(section_stage.findings)
             meta.agent_errors.extend(section_stage.errors)
-            meta.endpoints_reviewed = len(extract_changed_endpoints(diffs))
+            meta.changed_endpoints = len(extract_changed_endpoints(diffs))
             meta.graph_state = toolbox.graph_state() if session is not None else "disabled"
             meta.graph_index_seconds = (
                 round(session.init_seconds, 2) if session is not None else 0.0
@@ -275,7 +275,7 @@ class ReviewPipeline:
             shas={"base": base_rev, "pr": pr_rev} if shas is not None else None,
         )
         findings = validator.validate_all(findings)
-        if mode in ("lgtm", "lgtm-no-sast"):
+        if mode in LGTM_MODES:
             findings = judge_candidates(
                 findings,
                 validator.read_cited_code,

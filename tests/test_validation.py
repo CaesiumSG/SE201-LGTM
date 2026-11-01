@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from lgtm.config import LGTMConfig
+
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.diff.git_diff import get_pr_diff, parse_unified_diff
 from lgtm.validation.evidence import EvidenceValidator
@@ -283,6 +285,12 @@ class TestSnippetResolutionTolerance:
         sanitized_view = "def charge(user, amount):\n    ledger.append(amount)\n    return amount"
 
         assert commented_validator.resolves(_billing_item(sanitized_view)) is True
+
+    def test_sanitized_text_is_not_matched_when_strip_comments_is_off(self, commented_validator):
+        sanitized_view = "def charge(user, amount):\n    ledger.append(amount)\n    return amount"
+        commented_validator.config = LGTMConfig(strip_comments=False)
+
+        assert commented_validator.resolves(_billing_item(sanitized_view)) is False
 
     def test_snippet_in_neither_the_file_nor_its_sanitized_text_does_not_resolve(
         self, commented_validator

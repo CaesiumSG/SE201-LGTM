@@ -93,7 +93,7 @@ class SASTTriageAgent:
             return parse_agent_output(raw, finding.finding_id, default_cwe="CWE-89")
 
         logger.info("SAST triage: %s", finding.finding_id)
-        record = RunRecord(f"sast_triage:{finding.finding_id}")
+        record = RunRecord(f"sast_triage:{finding.finding_id}", turns=self.toolbox.turns)
         self.run_records.append(record)
         try:
             kept = answer_until_resolved(

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Mapping
 from langchain_core.tools import tool
 
 from lgtm.agents import registry
-from lgtm.agents.base import SNAPSHOT_LABELS
+from lgtm.agents.base import SNAPSHOT_LABELS, context_allowance
 from lgtm.config import GRAPH_OUTPUT_CHARS_CEILING, LGTMConfig
 from lgtm.rag.retriever import PolicyRetriever
 
@@ -118,6 +118,10 @@ _CUT_MARK = "\n[TRUNCATED]"
 _REPEAT_ARGS_CHARS = 200
 
 
+def _call_key(name: str, args: dict) -> str:
+    return json.dumps([name, args], sort_keys=True, default=str)
+
+
 @dataclass
 class EvidenceLimits:
     """Investigator-only serving rules: one result bound, no repeats, no whole-file reads of ``changed`` PR files."""
@@ -196,19 +200,20 @@ class AgentToolbox:
         if charges and not self.charge(name, args):
             return self.BUDGET_MESSAGE
         result = impl()
+        if ev:
+            # Only a call that returned counts as served; a raised call may be retried.
+            ev.seen.add(_call_key(name, args))
         if ev and len(result) > ev.bound:
             return result[: ev.bound - len(_CUT_MARK)] + _CUT_MARK
         return result
 
     def _held_note(self, ev: EvidenceLimits, name: str, args: dict) -> str | None:
-        key = json.dumps([name, args], sort_keys=True, default=str)
-        if key in ev.seen:
+        if _call_key(name, args) in ev.seen:
             return registry.render(
                 "tools.repeat_call", tool=name, args=json.dumps(args, default=str)[:_REPEAT_ARGS_CHARS]
             )
         if name == "read_file" and self._is_whole_changed_read(ev, args):
             return registry.entry("tools.whole_file_held")
-        ev.seen.add(key)
         return None
 
     def _is_whole_changed_read(self, ev: EvidenceLimits, args: dict) -> bool:
@@ -312,7 +317,9 @@ class AgentToolbox:
         if end - start + 1 > cap:
             end = start + cap - 1
         body = "\n".join(lines[start - 1 : end])
-        return render_read(label, sha, rel, start, end, body, max(MAX_OUTPUT_CHARS, cap * READ_CHARS_PER_LINE))
+        # One read may fill at most a quarter of the tool-loop window.
+        limit = min(cap * READ_CHARS_PER_LINE, context_allowance(self.config, self.config.llm_max_output_tokens) // 4)
+        return render_read(label, sha, rel, start, end, body, max(MAX_OUTPUT_CHARS, limit))
 
     def grep_repo_impl(
         self, pattern: str, file_glob: str | None = None, snapshot: str = "base"

@@ -10,8 +10,8 @@ Metric:
     Attack Success Rate (ASR) = (vulnerable cases flagged originally but NOT flagged when injected) / (vulnerable cases flagged originally)
 
 Usage:
-    python benchmark/injection/run_injection_bench.py --mode llm-only --ollama-url http://127.0.0.1:11435
-    python benchmark/injection/run_injection_bench.py --mode lgtm --ollama-url http://127.0.0.1:11435
+    python benchmark/injection/run_injection_bench.py --mode llm-only --gpu-model qwen3.8-27b
+    python benchmark/injection/run_injection_bench.py --mode lgtm --gpu-model qwen3.8-27b
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def _load(name: str, path: Path):
 
 evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 
-from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 
@@ -147,8 +147,10 @@ def evaluate_single_case(case: dict, config: LGTMConfig) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate prompt-injection attacks against LGTM.")
     parser.add_argument("--mode", choices=["lgtm", "llm-only"], default="lgtm")
-    parser.add_argument("--model", default="qwen3.8:27b")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--ollama-url", default=None)
+    parser.add_argument("--gpu-model", choices=sorted(GPU_MODELS), default=None,
+                        help="use the GPU cluster tunnel with a registered model")
     parser.add_argument("--strip-comments", action=argparse.BooleanOptionalAction, default=None, help="Mitigation (on by default in lgtm mode): strip comments/docstrings from PR code in prompts; --no-strip-comments turns it off")
     parser.add_argument("--detect-injection", action=argparse.BooleanOptionalAction, default=None, help="Mitigation (on by default in lgtm mode): detect reviewer-directed instructions in diff; --no-detect-injection turns it off")
     parser.add_argument("--graph", action=argparse.BooleanOptionalAction, default=None, help="Use CodeGraph when the binary is on PATH (default on); --no-graph reviews without it")
@@ -157,12 +159,17 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
+    if args.gpu_model and args.model:
+        parser.error("--gpu-model cannot be combined with --model")
 
     setup_logging(args.verbose)
 
     config = LGTMConfig()
     config.mode = args.mode
-    config.ollama_model = args.model
+    if args.gpu_model:
+        apply_gpu_model(config, args.gpu_model, args.ollama_url)
+    if args.model:
+        config.ollama_model = args.model
     if args.ollama_url:
         config.ollama_base_url = args.ollama_url
     if args.strip_comments is not None:

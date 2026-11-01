@@ -373,6 +373,13 @@ class TestExitAndCommit:
         assert res.rc == 0
         assert env.flips_path().is_file()
 
+    def test_evaluator_failure_is_reported_without_its_output(self, env, capsys):
+        env.rc = 3
+        res = env.run(capsys)
+        assert res.rc == 0
+        assert env.report()["evaluator_exit"] == 3
+        assert "code 3" in res.err
+
     # AC-US3-6
     def test_report_names_the_commit_of_that_run(self, env, capsys):
         env.commit = "aaa1111"

@@ -1,12 +1,7 @@
-"""Route-decorator gating for the authorization review (checkpoint behaviour).
+"""Route-decorator gating for the authorization review (``authz_planner = "endpoint"``).
 
-Until 24 Oct the authz agent only looked at hunks that contained a Flask or
-FastAPI route decorator. The real-world CVE evaluation and the field trial
-showed that this misses most authorization changes (the check is usually far
-from the decorator), so the default is now the investigator-planned section
-review. This module keeps the old gating available as ``authz_planner =
-"endpoint"`` so the checkpoint numbers can be reproduced and the two can be
-compared on the same cases.
+Only hunks that contain a Flask or FastAPI route decorator are reviewed, one
+section per file, with no investigator.
 """
 
 from __future__ import annotations
@@ -33,7 +28,6 @@ class ChangedEndpoint:
     file: str
     route_path: str
     http_methods: list[str] = field(default_factory=list)
-    decorator_line: int = 0  # new-file line number of the decorator
     endpoint_id: str = ""
 
     def __post_init__(self) -> None:
@@ -49,8 +43,7 @@ def _hunk_has_route(hunk) -> bool:
 def extract_changed_endpoints(diffs: list[FileDiff]) -> list[ChangedEndpoint]:
     """Route definitions in or around the added lines of a PR diff.
 
-    Reported in the review metadata (``endpoints_reviewed``) so a run shows
-    how many of its sections the old gating would have reviewed.
+    Counted in the review metadata as ``changed_endpoints``.
     """
     endpoints: list[ChangedEndpoint] = []
     seen: set[str] = set()
@@ -74,7 +67,6 @@ def extract_changed_endpoints(diffs: list[FileDiff]) -> list[ChangedEndpoint]:
                     file=fd.path,
                     route_path=match.group("path"),
                     http_methods=methods,
-                    decorator_line=change.new_lineno or hunk.new_start,
                 )
                 if ep.endpoint_id not in seen:
                     seen.add(ep.endpoint_id)

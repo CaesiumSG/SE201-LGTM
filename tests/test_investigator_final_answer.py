@@ -316,3 +316,18 @@ def test_reask_that_cannot_be_fitted_is_invalid_like_an_exhausted_cap_and_not_re
     assert result.proposed is None
     assert result.error == capped.error
     assert assistant_turns(result)[-1] == huge_cut
+
+
+@pytest.mark.parametrize(
+    ("text", "valid"),
+    [
+        ('[note] {"sections": []}', True),
+        ('```json\n{"sections": []}\n```', True),
+        ('[{"sections": []}]', False),
+        ('```json\n[\n  {"sections": []}\n]\n```', False),
+    ],
+)
+def test_sections_object_rejects_only_a_top_level_array(text, valid):
+    from lgtm.agents.investigator import is_sections_object
+
+    assert is_sections_object(text) is valid

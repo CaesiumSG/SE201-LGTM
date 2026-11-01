@@ -11,7 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from lgtm.agents import registry
-from lgtm.agents.base import fit_closing_request
+from lgtm.agents.base import context_allowance, fit_closing_request
 from lgtm.agents.investigator import run_investigator
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
@@ -530,7 +530,9 @@ def test_default_callers_of_a_toolbox_the_investigator_used_get_the_same_results
 
     for name, args in requests:
         assert tools[name].invoke(args) == fresh_tools[name].invoke(args)
-    assert last_line_marker("BIG", BIG_LINES) in tools["read_file"].invoke({"path": "big.py"})
+    assert len(tools["read_file"].invoke({"path": "big.py"})) <= context_allowance(
+        config, config.llm_max_output_tokens
+    ) // 4
 
 
 # --- repair: whole-file refusal proven against the per-call bound ------------------
@@ -786,3 +788,24 @@ def test_text_form_closing_request_after_each_non_context_stop_is_fitted_by_shor
     assert not any(results[0] in str(m.content) for m in closing)
     assert any(str(m.content) == registry.entry("tools.result_elided") for m in closing)
     assert len(results) == len(second_turn) + 1
+
+
+def test_a_call_that_raised_is_served_when_retried(files, config, monkeypatch):
+    files["f.py"] = body("RETRY", SMALL_LINES)
+    toolbox = make_toolbox(config)
+    real = toolbox.read_file_impl
+    attempts = []
+
+    def flaky(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("transient read failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(toolbox, "read_file_impl", flaky)
+
+    result, _ = run(config, toolbox, [reply(read("f.py")), reply(read("f.py")), answer(VALID)])
+
+    failed, retried = recorded_results(result)
+    assert "transient read failure" in failed
+    assert retried == default_read(config, "f.py")

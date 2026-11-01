@@ -4,7 +4,8 @@ Usage: python benchmark/real_world/batch.py <results root>
 
 Batches 1-4 walk cases.json in order (6 cases each, two passes). Results land
 under <results root>/batch-<n>/; the llm-only control of each case lives once
-under <results root>/control/.
+under <results root>/control/. Every run uses the qwen3.8-27b GPU model, and
+bundle totals count in-scope cases only.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lgtm.config import LGTMConfig  # noqa: E402
+from lgtm.config import GPU_MODELS  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", REPO_ROOT / "benchmark" / "evaluate.py")
 evaluate = importlib.util.module_from_spec(_spec)
@@ -30,10 +31,13 @@ is_done, load_result = evaluate.is_done, evaluate.load_result
 
 BATCH_SIZE = 6
 BATCHES = 4
+GPU_MODEL = "qwen3.8-27b"
 
 
 def _evaluate(*args: str) -> None:
-    subprocess.run([sys.executable, str(HERE / "evaluate_real.py"), *args], check=False)
+    subprocess.run(
+        [sys.executable, str(HERE / "evaluate_real.py"), "--gpu-model", GPU_MODEL, *args], check=False
+    )
 
 
 def _cite(path: Path) -> str:
@@ -59,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         print("No batch remains: all four batches are finished.")
         return 0
 
-    endpoint = LGTMConfig().ollama_base_url
+    endpoint = GPU_MODELS[GPU_MODEL].base_url
     try:
         urllib.request.urlopen(endpoint, timeout=10)
     except OSError as exc:
@@ -68,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))["cases"]
     ids = [c["id"] for c in cases]
+    scope = {c["id"]: c.get("scope", "in") for c in cases}
     start = ((n - 1) % 2) * BATCH_SIZE
     batch_ids = ids[start:start + BATCH_SIZE]
     out = root / f"batch-{n}"
@@ -88,19 +93,24 @@ def main(argv: list[str] | None = None) -> int:
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
     rows = []
     for i in batch_ids:
+        control_result = load_result(control / f"{i}.json") or {}
         rows.append({
             "id": i,
+            "scope": scope[i],
             "lgtm_correct": (load_result(lgtm_dir / f"{i}.json") or {}).get("correct"),
-            "control_correct": (load_result(control / f"{i}.json") or {}).get("correct"),
+            "control_correct": control_result.get("correct"),
+            "control_commit": (control_result.get("pin") or {}).get("code_sha"),
             "lgtm_result": _cite(lgtm_dir / f"{i}.json"),
         })
+    in_scope = [r for r in rows if r["scope"] == "in"]
     bundle = {
         "batch": n,
         "pass": 1 if n <= 2 else 2,
         "commit": commit,
         "cases": rows,
-        "totals": {"lgtm": sum(r["lgtm_correct"] is True for r in rows),
-                   "control": sum(r["control_correct"] is True for r in rows)},
+        "totals": {"cases": len(in_scope),
+                   "lgtm": sum(r["lgtm_correct"] is True for r in in_scope),
+                   "control": sum(r["control_correct"] is True for r in in_scope)},
     }
     path = out / "bundle.json"
     path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")

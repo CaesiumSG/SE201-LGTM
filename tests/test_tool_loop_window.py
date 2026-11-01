@@ -508,3 +508,24 @@ def test_cut_to_fit_never_exceeds_its_budget_at_any_budget_including_digit_count
 def test_cut_to_fit_with_a_budget_smaller_than_the_marker_stays_within_the_budget(budget):
     assert budget < marker_length(10)
     assert len(cut_to_fit("x" * 5000, budget)) <= budget
+
+
+def test_a_fitted_reask_drops_the_results_of_a_dropped_tool_call_turn():
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+    from lgtm.agents.base import _fit_reask, context_allowance
+
+    config = LGTMConfig(llm_context_tokens=4096, llm_max_output_tokens=1024, llm_window_headroom=1.0)
+    room = context_allowance(config, 1024)
+    messages = [
+        SystemMessage(content="s"),
+        HumanMessage(content="u"),
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "c1"}]),
+        ToolMessage(content="r" * (room // 2), tool_call_id="c1"),
+        AIMessage(content="a" * (room // 2)),
+        HumanMessage(content="reask"),
+    ]
+
+    assert _fit_reask(messages, config, 1024) is True
+    assert not any(isinstance(m, ToolMessage) for m in messages)
+    assert [type(m).__name__ for m in messages] == ["SystemMessage", "HumanMessage", "AIMessage", "HumanMessage"]

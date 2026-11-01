@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     shutil.rmtree(run_dir, ignore_errors=True)
     run_dir.mkdir(parents=True)
-    subprocess.run(
+    evaluator = subprocess.run(
         [sys.executable, str(REPO_ROOT / "benchmark" / "evaluate.py"), "--mode", "lgtm",
          "--split", "eval", "--gpu-model", GPU_MODEL, "--output", str(run_dir)],
         check=False, cwd=REPO_ROOT, capture_output=True)
@@ -66,13 +66,16 @@ def main(argv: list[str] | None = None) -> int:
              for cid in eval_cases if reference and reference.get(cid) is True and correct.get(cid) is False]
 
     first_reference = reference is None and not unscored
-    report = {"commit": commit, "reference": first_reference, "flips": flips, "unscored": unscored}
+    report = {"commit": commit, "reference": first_reference, "flips": flips, "unscored": unscored,
+              "evaluator_exit": evaluator.returncode}
     (guard_dir / "flips.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     if not unscored:
         reference_path.write_text(json.dumps({"commit": commit, "correct": correct}), encoding="utf-8")
 
     print(f"Guard {'reference run' if first_reference else 'run'} on {commit}: "
           f"{len(flips)} flipped, {len(unscored)} unscored.")
+    if evaluator.returncode != 0:
+        print(f"Evaluator exited with code {evaluator.returncode}; its output is withheld.", file=sys.stderr)
     return 0
 
 

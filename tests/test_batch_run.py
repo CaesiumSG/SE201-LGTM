@@ -16,14 +16,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from lgtm.config import LGTMConfig
+from lgtm.config import GPU_MODELS
 
 RW = Path(__file__).resolve().parent.parent / "benchmark" / "real_world"
 _spec = importlib.util.spec_from_file_location("rw_test_evaluate", RW.parent / "evaluate.py")
 evaluate = importlib.util.module_from_spec(_spec)
 sys.modules["rw_test_evaluate"] = evaluate
 _spec.loader.exec_module(evaluate)
-CASE_IDS = [c["id"] for c in json.loads((RW / "cases.json").read_text(encoding="utf-8"))["cases"]]
+CASE_LIST = json.loads((RW / "cases.json").read_text(encoding="utf-8"))["cases"]
+CASE_IDS = [c["id"] for c in CASE_LIST]
+IN_SCOPE = {c["id"] for c in CASE_LIST if c.get("scope", "in") == "in"}
 FIRST, SECOND = CASE_IDS[:6], CASE_IDS[6:]
 
 # Bundle field names beyond batch/pass/commit are not fixed by CT-batch-run-1.
@@ -276,8 +278,8 @@ class TestEndpointPreflight:
         res = env.run(capsys)
         assert res.rc != 0
         assert env.calls == []
-        assert env.endpoints == [LGTMConfig().ollama_base_url]
-        assert LGTMConfig().ollama_base_url in res.out + res.err
+        assert env.endpoints == [GPU_MODELS["qwen3.8-27b"].base_url]
+        assert GPU_MODELS["qwen3.8-27b"].base_url in res.out + res.err
         assert env.bundles() == []
 
     def test_batch_is_not_marked_run_after_unreachable_endpoint(self, env, capsys):
@@ -286,7 +288,7 @@ class TestEndpointPreflight:
         env.reachable = True
         env.reset()
         assert env.run(capsys).rc == 0
-        assert env.endpoints[-1] == LGTMConfig().ollama_base_url
+        assert env.endpoints[-1] == GPU_MODELS["qwen3.8-27b"].base_url
         assert sorted(env.ran_ids("lgtm")) == sorted(FIRST)
         assert (env.root / "batch-1" / "bundle.json").is_file()
 
@@ -323,8 +325,18 @@ class TestBundle:
         for cid in FIRST:
             assert by_id[cid][LGTM_OK] is _lgtm_correct(cid)
             assert by_id[cid][CONTROL_OK] is _control_correct(cid)
-        assert bundle[TOTALS][LGTM_TOTAL] == sum(_lgtm_correct(c) for c in FIRST)
-        assert bundle[TOTALS][CONTROL_TOTAL] == sum(_control_correct(c) for c in FIRST)
+        in_scope = [c for c in FIRST if c in IN_SCOPE]
+        assert len(in_scope) < len(FIRST)
+        assert bundle[TOTALS]["cases"] == len(in_scope)
+        assert bundle[TOTALS][LGTM_TOTAL] == sum(_lgtm_correct(c) for c in in_scope)
+        assert bundle[TOTALS][CONTROL_TOTAL] == sum(_control_correct(c) for c in in_scope)
+        assert {c[ID] for c in bundle[CASES] if c["scope"] == "out"} == set(FIRST) - IN_SCOPE
+
+    def test_every_evaluator_run_uses_the_gpu_model(self, env, capsys):
+        env.run(capsys)
+        assert env.calls
+        for args in env.calls:
+            assert args[args.index("--gpu-model") + 1] == "qwen3.8-27b"
 
     # AC-US2-9
     def test_commit_change_between_batches_is_accepted_and_each_bundle_names_its_own(self, env, capsys):

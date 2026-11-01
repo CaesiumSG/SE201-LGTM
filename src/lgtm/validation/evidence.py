@@ -23,8 +23,8 @@ from pathlib import Path
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.agents.tools import read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
-from lgtm.diff.git_diff import FileDiff, GitError, Hunk, LineChange, read_file_at_ref
-from lgtm.diff.sanitizer import sanitize_file_diff
+from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
+from lgtm.diff.sanitizer import sanitize_source
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +33,6 @@ FUZZY_THRESHOLD = 0.75
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def _sanitized_text(path: str, lines: list[str]) -> str:
-    """``lines`` as the model saw them: comments and docstrings stripped."""
-    changes = [LineChange("add", line, None, n) for n, line in enumerate(lines, 1)]
-    hunk = Hunk(1, 0, 1, len(lines), changes=changes)
-    return sanitize_file_diff(FileDiff(path, hunks=[hunk])).added_text
 
 
 def _locator_candidates(path: str) -> list[str]:
@@ -170,10 +163,13 @@ class EvidenceValidator:
         return False
 
     def _snippet_in_file(self, snippet: str, path: str, lines: list[str]) -> bool:
-        """Fuzzy match against the raw file, then against its sanitized text."""
-        if self._snippet_in_text(snippet, _normalize("\n".join(lines))):
+        """Fuzzy match against the raw file, then, with ``strip_comments`` on, against its sanitized text."""
+        text = "\n".join(lines)
+        if self._snippet_in_text(snippet, _normalize(text)):
             return True
-        return self._snippet_in_text(snippet, _normalize(_sanitized_text(path, lines)))
+        return self.config.strip_comments and self._snippet_in_text(
+            snippet, _normalize(sanitize_source(path, text))
+        )
 
     # ------------------------------------------------------------------
     def _snapshot_lines(self, label: str, path: str) -> list[str] | None:

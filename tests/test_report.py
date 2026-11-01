@@ -112,9 +112,9 @@ class TestJsonReport:
         assert report["stats"]["not_real"] == 1
         assert report["stats"]["supported"] == 1
 
-    def test_stats_omit_endpoints_reviewed(self):
+    def test_stats_omit_changed_endpoints(self):
         payload = ReportBuilder(sample_findings(), meta()).build_json()
-        assert "endpoints_reviewed" not in payload["stats"]
+        assert "changed_endpoints" not in payload["stats"]
         assert payload["stats"]["semgrep_findings_total"] == 5
         assert payload["stats"]["semgrep_findings_in_diff"] == 2
         assert payload["stats"]["sast_error"] is None

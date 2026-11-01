@@ -524,7 +524,7 @@ def _with_options(llm, options: dict):
 _TEXT_RESULT = "text_call_result"
 
 
-def _allowance(config: LGTMConfig, output_tokens: int) -> int:
+def context_allowance(config: LGTMConfig, output_tokens: int) -> int:
     """Characters a tool-loop request may hold: the headroom share of the usable window, rounded down."""
     return math.floor((config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN * config.llm_window_headroom)
 
@@ -543,19 +543,22 @@ def cut_to_fit(text: str, budget: int) -> str:
 def user_prompt_budget(config: LGTMConfig, system_prompt: str, final: FinalAnswerSpec) -> int:
     """Characters left for the user prompt of a first request, with room for the closing instruction."""
     window = min(
-        _allowance(config, config.llm_max_output_tokens),
-        _allowance(config, final.options.get("num_predict", config.llm_max_output_tokens)),
+        context_allowance(config, config.llm_max_output_tokens),
+        context_allowance(config, final.options.get("num_predict", config.llm_max_output_tokens)),
     )
     return window - len(system_prompt) - len(registry.entry(final.forced_final))
 
 
 def _fit_reask(messages: list, config: LGTMConfig, output_tokens: int) -> bool:
     """Drop the oldest messages after the system and user pair until the request fits; the failed answer and the re-ask stay."""
-    allowance = _allowance(config, output_tokens)
+    from langchain_core.messages import ToolMessage
+
+    allowance = context_allowance(config, output_tokens)
     total = _message_chars(messages)
     drop = 2
-    while total > allowance and drop < len(messages) - 2:
-        total -= len(str(messages[drop].content))
+    # Results of a dropped tool-call turn go with it.
+    while drop < len(messages) - 2 and (total > allowance or isinstance(messages[drop], ToolMessage)):
+        total -= _message_chars([messages[drop]])
         drop += 1
     del messages[2:drop]
     return total <= allowance
@@ -598,7 +601,7 @@ def fit_closing_request(messages: list, config: LGTMConfig, output_tokens: int, 
     def is_result(message) -> bool:
         return isinstance(message, ToolMessage) or bool(getattr(message, "additional_kwargs", {}).get(_TEXT_RESULT))
 
-    allowance = _allowance(config, output_tokens)
+    allowance = context_allowance(config, output_tokens)
     total = _message_chars(messages)
     recent = len(messages) - 1
     while recent > 0 and is_result(messages[recent - 1]):
@@ -680,13 +683,6 @@ class RunRecord:
     limit_hit: Literal["tool_calls", "steps"] | None = None
     turns: list[dict] = field(default_factory=list)
 
-    def __post_init__(self) -> None:
-        # The tool loop writes turns here as they happen, so a run that raises keeps them.
-        _open_record.set(self)
-
-
-_open_record: ContextVar[RunRecord | None] = ContextVar("open_run_record", default=None)
-
 
 def _close_run(
     toolbox: Any, answer: str, steps_exhausted: bool, budget_spent: bool = False, closing_unfitted: bool = False
@@ -754,21 +750,18 @@ def run_tool_loop(
     budget_spent = False
     context_full = False
     cap = config.max_invalid_tool_inputs
-    window_chars = _allowance(config, config.llm_max_output_tokens)
+    window_chars = context_allowance(config, config.llm_max_output_tokens)
     final_chars = len(registry.entry(final.forced_final))
     stop_chars = (
         max(len(registry.entry("tools.context_full")), len(toolbox.BUDGET_MESSAGE)) if result_bound else 0
     )
-    final_window_chars = _allowance(config, final.options.get("num_predict", config.llm_max_output_tokens))
-    open_record = _open_record.get()
-    # Consumed by this run; a later run without a new RunRecord must not append to it.
-    _open_record.set(None)
-    sinks = [s for s in (getattr(toolbox, "turns", None), open_record and open_record.turns) if s is not None]
+    final_window_chars = context_allowance(config, final.options.get("num_predict", config.llm_max_output_tokens))
+    turns = getattr(toolbox, "turns", None)
 
     def log_turn(text: str) -> dict:
         turn = {"assistant": text, "tool_calls": []}
-        for sink in sinks:
-            sink.append(turn)
+        if turns is not None:
+            turns.append(turn)
         return turn
 
     for iteration in range(config.max_agent_iterations):
@@ -858,9 +851,7 @@ def run_tool_loop(
         if cap > 0 and invalid_inputs >= cap:
             break
         if toolbox is not None and toolbox.calls_used >= toolbox.budget:
-            # The budget is spent: every further tool call would be refused
-            # and still cost a full model call (a third of all calls in the
-            # 24 Oct Shoply run). Ask for the verdict now.
+            # Every further tool call would be refused and still cost a model call.
             budget_spent = True
             break
         if context_full:

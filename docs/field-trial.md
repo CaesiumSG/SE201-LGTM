@@ -213,7 +213,7 @@ hand (`benchmark/runs/archive/field_trial/<mode>/<case>.json`).
 
 ```bash
 python benchmark/field_trial/run_field_trial.py --fetch                 # shallow clones (29 MB)
-python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only --model qwen3.8:27b
+python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only --gpu-model qwen3.8-27b
 python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8783 --resume
 ```
 

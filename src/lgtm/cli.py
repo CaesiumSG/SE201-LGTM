@@ -101,7 +101,7 @@ def review(
     setup_logging(verbose)
     if gpu_model and (gpu_cluster or model):
         raise click.UsageError("--gpu-model cannot be combined with --gpu-cluster or --model.")
-    from lgtm.pipeline import ReviewPipeline
+    from lgtm.pipeline import LGTM_MODES, ReviewPipeline
 
     if gpu_cluster:
         model = model or "qwen3.8:27b"
@@ -136,7 +136,7 @@ def review(
         click.echo(f"ERROR: {exc}", err=True)
         sys.exit(2)
 
-    baseline = config.mode not in ("lgtm", "lgtm-no-sast")
+    baseline = config.mode not in LGTM_MODES
     supported = sum(
         1 for f in result.findings
         if f.kev_verdict != "not_real"

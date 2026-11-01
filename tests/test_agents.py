@@ -1267,6 +1267,32 @@ class TestEnclosingDefinitionInInitialInput:
         assert "ADD_TOP" in text and "ADD_BOTTOM" in text
         assert "COMMENT_MARKER" not in text
 
+    def test_a_function_longer_than_the_line_cap_is_labelled_with_the_lines_shown(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("long_handler", "LONG")
+        snapshots(base=_padding(), pr=pr)
+        section = _section([_change_hunk(pr, _target_line(pr, "LONG"), "add")])
+
+        text, _, _ = _initial_input(section, tmp_path, config=LGTMConfig(read_file_max_lines=5))
+
+        assert "app.py lines 1-5 (pr snapshot)" in text
+        assert "LONG_BOTTOM" not in text.split("## Section code")[0]
+
+    def test_enclosing_definitions_past_the_section_size_are_left_out(self, snapshots, tmp_path):
+        pr = _function("first", "ONE") + _function("second", "TWO")
+        snapshots(base=_padding(), pr=pr)
+        hunks = [_change_hunk(pr, _target_line(pr, tag), "add") for tag in ("ONE", "TWO")]
+        one_item = len("\n".join(_function("first", "ONE"))) + 200
+
+        text, _, _ = _initial_input(
+            _section(hunks), tmp_path, config=LGTMConfig(section_max_chars=one_item, strip_comments=False)
+        )
+
+        enclosing = text.split("## Section code")[0]
+        assert "ONE_BOTTOM" in enclosing
+        assert "TWO_TOP" not in enclosing
+
     def test_hunk_outside_any_function_is_still_reviewed(self, snapshots, tmp_path):
         pr = [f"SETTING_{i} = {i}" for i in range(20)] + _function("later", "LATE")
         snapshots(base=_padding(), pr=pr)

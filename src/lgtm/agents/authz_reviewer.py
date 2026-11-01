@@ -10,6 +10,7 @@ policy to detect authorization flaws:
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -27,6 +28,7 @@ from lgtm.agents.base import (
 )
 from lgtm.agents.tools import AgentToolbox, read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
+from lgtm.diff.sanitizer import sanitize_source
 
 if TYPE_CHECKING:
     # Circular import: lgtm.review.sections imports lgtm.agents.base.
@@ -82,12 +84,12 @@ def _hunk_lines(hunk: HunkRef) -> list[tuple[str, list[int]]]:
     return [("pr", added), ("base", removed)]
 
 
-def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, str]]:
-    """Innermost function (start, end, qualified name such as "A.get") around each line, in source order."""
+@functools.lru_cache(maxsize=32)
+def _function_spans(source: str) -> tuple[tuple[int, int, str], ...]:
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
-        return []
+        return ()
     spans: list[tuple[int, int, str]] = []
 
     def visit(node: ast.AST, prefix: str) -> None:
@@ -102,6 +104,12 @@ def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, 
                 visit(child, prefix)
 
     visit(tree, "")
+    return tuple(spans)
+
+
+def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, str]]:
+    """Innermost function (start, end, qualified name) around each line, in source order."""
+    spans = _function_spans(source)
     found: set[tuple[int, int, str]] = set()
     for line in lines:
         inside = [s for s in spans if s[0] <= line <= s[1]]
@@ -110,17 +118,10 @@ def _enclosing_functions(source: str, lines: list[int]) -> list[tuple[int, int, 
     return sorted(found)
 
 
-def _strip_comments(code: str, path: str) -> str:
-    from lgtm.diff.git_diff import FileDiff, Hunk, LineChange
-    from lgtm.diff.sanitizer import sanitize_file_diff
-
-    hunk = Hunk(1, 0, 1, 0, changes=[LineChange("add", text) for text in code.split("\n")])
-    return "\n".join(c.content for c in sanitize_file_diff(FileDiff(path, hunks=[hunk])).hunks[0].changes)
-
-
 def _enclosing_block(toolbox: AgentToolbox, section: Section) -> str:
     found: list[tuple[str, str, str, int, int, str, str]] = []
     seen: set[tuple[str, str, int]] = set()
+    sources: dict[tuple[str, str], str | None] = {}
     cap = toolbox.config.read_file_max_lines
     for hunk in section.hunks:
         rel = relative_path(hunk.file)
@@ -129,40 +130,55 @@ def _enclosing_block(toolbox: AgentToolbox, section: Section) -> str:
         for label, lines in _hunk_lines(hunk):
             if not lines or (toolbox.shas is None and label == "pr"):
                 continue
-            try:
-                sha = toolbox._snapshot_sha(label)
-            except KeyError:
+            if (label, rel) not in sources:
+                sources[label, rel] = _committed_source(toolbox, label, rel)
+            source = sources[label, rel]
+            if source is None:
                 continue
-            if sha is None:
-                continue
-            done = read_committed_blob(toolbox.repo, sha, rel, toolbox.config.git_timeout)
-            if done is None or done.returncode != 0:
-                continue
-            source_lines = done.stdout.splitlines()
-            for start, end, name in _enclosing_functions(done.stdout, lines):
+            source_lines = source.splitlines()
+            for start, end, name in _enclosing_functions(source, lines):
                 if (label, rel, start) in seen:
                     continue
                 seen.add((label, rel, start))
-                code = "\n".join(source_lines[start - 1 : min(end, start + cap - 1)])
-                found.append((label, rel, hunk.file, start, end, name, code))
+                shown_end = min(end, start + cap - 1)
+                code = "\n".join(source_lines[start - 1 : shown_end])
+                found.append((label, rel, hunk.file, start, shown_end, name, code))
     pr_names = {(rel, name) for label, rel, _, _, _, name, _ in found if label == "pr"}
-    items = [
-        registry.render(
+    items: list[str] = []
+    room = toolbox.config.section_max_chars
+    for label, rel, file, start, end, name, code in found:
+        if label != "pr" and (rel, name) in pr_names:
+            continue
+        item = registry.render(
             "authz_reviewer.enclosing_item",
             file=prompt_parts.escape_control(file),
             start=start,
             end=end,
             snapshot=label,
             code=prompt_parts.code_fence(
-                _strip_comments(code, file) if toolbox.config.strip_comments else code, "python"
+                sanitize_source(file, code) if toolbox.config.strip_comments else code, "python"
             ),
         )
-        for label, rel, file, start, end, name, code in found
-        if label == "pr" or (rel, name) not in pr_names
-    ]
+        if len(item) > room:
+            break
+        room -= len(item)
+        items.append(item)
     if not items:
         return ""
     return registry.render("authz_reviewer.enclosing_block", items="\n".join(items))
+
+
+def _committed_source(toolbox: AgentToolbox, label: str, rel: str) -> str | None:
+    try:
+        sha = toolbox._snapshot_sha(label)
+    except KeyError:
+        return None
+    if sha is None:
+        return None
+    done = read_committed_blob(toolbox.repo, sha, rel, toolbox.config.git_timeout)
+    if done is None or done.returncode != 0:
+        return None
+    return done.stdout
 
 
 def _changed_span(section: Section) -> tuple[int, int]:
@@ -284,7 +300,7 @@ class AuthzReviewerAgent:
             return findings
 
         logger.info("Authz section review: %s", section.section_id)
-        record = RunRecord(section.section_id)
+        record = RunRecord(section.section_id, turns=self.toolbox.turns)
         self.run_records.append(record)
         try:
             findings = answer_until_resolved(

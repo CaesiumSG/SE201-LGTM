@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -50,7 +51,7 @@ class InvestigatorResult:
 def is_sections_object(text: str) -> bool:
     """True when the answer is one object whose top-level ``sections`` is a list."""
     start = text.find("{")
-    if start == -1 or "[" in text[:start]:
+    if start == -1 or re.search(r"\[\s*$", text[:start]):
         return False
     data = extract_json_object(text[start:])
     return isinstance(data, dict) and isinstance(data.get("sections"), list)
@@ -69,9 +70,9 @@ def run_investigator(
     input_mode: InputMode = "manifest_only" if manifest_only else "full"
 
     logger.info("Investigator: %d hunks, input %s", len(refs), input_mode)
-    record = RunRecord("investigator")
+    toolbox.reset_budget(config.investigator_max_tool_calls)
+    record = RunRecord("investigator", turns=toolbox.turns)
     try:
-        toolbox.reset_budget(config.investigator_max_tool_calls)
         toolbox.evidence = EvidenceLimits(
             config.investigator_result_chars,
             frozenset()

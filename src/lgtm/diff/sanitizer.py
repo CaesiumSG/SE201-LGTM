@@ -12,6 +12,7 @@ Mitigations against prompt injection:
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import re
 from typing import Sequence
@@ -125,6 +126,14 @@ def sanitize_file_diff(fd: FileDiff) -> FileDiff:
         hunk.changes = new_changes
 
     return sanitized
+
+
+@functools.lru_cache(maxsize=64)
+def sanitize_source(path: str, text: str) -> str:
+    """``text`` (the source of ``path``) with comments and docstrings stripped, as the model sees PR code."""
+    lines = text.split("\n")
+    changes = [LineChange("add", line, None, n) for n, line in enumerate(lines, 1)]
+    return sanitize_file_diff(FileDiff(path, hunks=[Hunk(1, 0, 1, len(lines), changes=changes)])).added_text
 
 
 def sanitize_diffs(diffs: Sequence[FileDiff]) -> list[FileDiff]:

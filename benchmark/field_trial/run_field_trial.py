@@ -16,7 +16,7 @@ cache, so a case costs one tree download, not the project's history.
 
 Usage:
     python benchmark/field_trial/run_field_trial.py --fetch            # clones only
-    python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only
+    python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only --gpu-model qwen3.8-27b
     python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8811 --resume
     python benchmark/field_trial/run_field_trial.py --summarize-only
 """
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import statistics
 import subprocess
@@ -39,10 +40,15 @@ REPO_ROOT = BENCH.parent
 CASES_FILE = HERE / "cases.json"
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", BENCH / "evaluate.py")
+evaluate = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = evaluate
+_spec.loader.exec_module(evaluate)
 
 MODES = ["lgtm", "llm-only"]
 
@@ -158,22 +164,26 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         })
         return record
     findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+    judged = mode in evaluate.JUDGED_MODES
+    verdicts = [evaluate.finding_verdict(f, judged) for f in findings]
+    infra = evaluate.infra_failure_ids(findings)
     record.update({
-        "crashed": False, "error": None,
+        "crashed": bool(infra),
+        "error": f"infrastructure failure: {', '.join(infra)}" if infra else None,
         "latency_seconds": round(time.monotonic() - started, 1),
         **index_info,
         "semgrep_findings_total": result.meta.semgrep_findings_total,
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
-        "endpoints_reviewed": getattr(result.meta, "endpoints_reviewed", 0),
+        "changed_endpoints": result.meta.changed_endpoints,
         "n_findings": len(findings),
-        "verdicts": dict(Counter(f["verdict"] for f in findings)),
+        "verdicts": dict(Counter(verdicts)),
         "vulnerable_findings": [
             {"finding_id": f["finding_id"], "agent": f["agent"],
              "category": f["category"], "file": f["file"], "line": f["line"],
-             "cwe_id": f["cwe_id"], "confidence": f["confidence"],
-             "evidence_valid": f["evidence_valid"],
+             "cwe_id": f["cwe_id"], "supported": f["supported"],
+             "kev_verdict": f["kev_verdict"],
              "explanation": f["explanation"][:400]}
-            for f in findings if f["verdict"] == "vulnerable"
+            for f, verdict in zip(findings, verdicts) if verdict == "vulnerable"
         ],
         "tool_calls_total": sum(f.get("tool_calls_used", 0) for f in findings),
         "investigator_tool_calls": sum(
@@ -220,9 +230,9 @@ def summarize(records: list[dict]) -> dict:
         "vulnerable_findings_total": sum(len(r.get("vulnerable_findings", [])) for r in ran),
         "findings_total": sum(r.get("n_findings", 0) for r in ran),
         "grounded_vulnerable_findings": sum(
-            1 for r in ran for f in r.get("vulnerable_findings", []) if f["evidence_valid"]),
+            1 for r in ran for f in r.get("vulnerable_findings", []) if f.get("supported")),
         "semgrep_in_diff_total": sum(r.get("semgrep_findings_in_diff", 0) for r in ran),
-        "endpoints_reviewed_total": sum(r.get("endpoints_reviewed", 0) for r in ran),
+        "changed_endpoints_total": sum(r.get("changed_endpoints", 0) for r in ran),
         "latency_median_seconds": round(statistics.median(lat), 1) if lat else None,
         "latency_max_seconds": max(lat) if lat else None,
         "index_seconds_total": round(sum(r.get("index_seconds", 0) for r in ran), 1),
@@ -256,8 +266,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=BENCH / "results" / "field_trial")
     parser.add_argument("--model", default=None)
     parser.add_argument("--ollama-url", default=None)
+    parser.add_argument("--gpu-model", choices=sorted(GPU_MODELS), default=None,
+                        help="use the GPU cluster tunnel with a registered model")
     parser.add_argument("--fetch", action="store_true", help="only fetch the clones")
-    parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON")
+    parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON that did not crash")
     parser.add_argument("--summarize-only", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -270,7 +282,11 @@ def main(argv: list[str] | None = None) -> int:
         missing = wanted - {c["id"] for c in cases}
         if missing:
             parser.error(f"unknown case ids: {sorted(missing)}")
+    if args.gpu_model and args.model:
+        parser.error("--gpu-model cannot be combined with --model")
     config = LGTMConfig()
+    if args.gpu_model:
+        apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:
@@ -289,8 +305,9 @@ def main(argv: list[str] | None = None) -> int:
         records: list[dict] = []
         for i, case in enumerate(cases, 1):
             path = out_dir / f"{case['id']}.json"
-            if (args.resume or args.summarize_only) and path.is_file():
-                records.append(json.loads(path.read_text(encoding="utf-8")))
+            stored = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+            if stored is not None and (args.summarize_only or (args.resume and not stored.get("crashed"))):
+                records.append(stored)
                 continue
             if args.summarize_only:
                 continue
