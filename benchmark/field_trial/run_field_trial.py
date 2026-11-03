@@ -185,7 +185,8 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         **index_info,
         "semgrep_findings_total": result.meta.semgrep_findings_total,
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
-        "endpoints_reviewed": result.meta.endpoints_reviewed,
+        # Set only on the lgtm path; the baselines review no endpoints.
+        "endpoints_reviewed": getattr(result.meta, "endpoints_reviewed", 0),
         "graph_state": result.meta.graph_state,
         "coverage": coverage_brief(result.meta.coverage),
         "judged": judge_counts(findings),

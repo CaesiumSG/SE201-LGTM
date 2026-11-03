@@ -82,6 +82,24 @@ def test_judge_counts_only_when_findings_carry_a_judge_result():
     assert counts == {"supported": 1, "unsupported": 1, "not_judged": 1}
 
 
+def test_run_case_records_a_baseline_mode_without_endpoints_reviewed(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from lgtm.config import LGTMConfig
+    from lgtm.reporting.report_builder import ReviewMetadata
+
+    mod = _load()
+    meta = ReviewMetadata(mode="llm-only")  # only the lgtm path sets endpoints_reviewed
+    monkeypatch.setattr(mod, "ensure_case", lambda case, cache: ("base", "pr"))
+    monkeypatch.setattr(mod, "get_pr_diff", lambda *a, **k: [])
+    monkeypatch.setattr(mod, "ReviewPipeline", lambda repo, cfg: SimpleNamespace(
+        run=lambda base, pr, output_dir=None: SimpleNamespace(findings=[], meta=meta)))
+    case = {"id": "x-1", "repo": "o/x", "pr": 1}
+    record = mod.run_case(case, "llm-only", tmp_path, LGTMConfig())
+    assert record["crashed"] is False
+    assert record["endpoints_reviewed"] == 0
+
+
 def test_scrub_replaces_cache_paths():
     mod = _load()
     out = mod.scrub({"x": ["/Users/me/cache/repo/file.py"]}, ["/Users/me/cache"])
