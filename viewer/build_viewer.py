@@ -133,6 +133,7 @@ def norm_case(record: dict) -> dict:
         "graph_state": record.get("graph_state"),
         "coverage": coverage_brief(record.get("coverage")),
         "scope": record.get("scope"),
+        "on_target": record.get("on_target"),
         "code_sha": (record.get("pin") or {}).get("code_sha"),
         "findings": [norm_finding(f) for f in record.get("findings") or []],
         "trace": norm_trace(record),
@@ -269,13 +270,23 @@ def build_benchmark(bench: dict) -> dict:
         per_mode[mode] = cases
         if summary:
             summaries[mode] = norm_summary(summary)
+    order = list(labels)
+
+    def label_key(cid: str) -> str | None:
+        """Real-PR rows are ``<advisory>-vulnerable`` / ``-fixed``; their label is the advisory."""
+        if cid in labels:
+            return cid
+        advisory = next((per_mode[m][cid].get("advisory") for m in modes if cid in per_mode[m]), None)
+        return advisory if advisory in labels else None
+
     ids = sorted({cid for cases in per_mode.values() for cid in cases},
-                 key=lambda cid: (list(labels).index(cid) if cid in labels else len(labels), cid))
+                 key=lambda cid: (order.index(label_key(cid)) if label_key(cid) else len(order),
+                                 cid.endswith("-fixed"), cid))
     cases_out = []
     for cid in ids:
         records = [per_mode[m][cid] for m in modes if cid in per_mode[m]]
         first = records[0]
-        label = labels.get(cid, {})
+        label = labels.get(label_key(cid) or "", {})
         diff, truncated = case_diff(bench, cid, records, labels)
         cases_out.append({
             "id": cid,
@@ -284,6 +295,9 @@ def build_benchmark(bench: dict) -> dict:
             "split": first.get("split") or label.get("split", ""),
             "expected": first.get("expected") or label.get("expected_verdict"),
             "url": first.get("url") or label.get("url"),
+            "advisory_url": label.get("advisory_url"),
+            "ghsa": first.get("ghsa") or label.get("ghsa"),
+            "vulnerable_files": first.get("vulnerable_files") or label.get("vulnerable_files") or [],
             "modes": {m: norm_case(per_mode[m][cid]) for m in modes if cid in per_mode[m]},
             "diff": diff,
             "diff_truncated": truncated,
