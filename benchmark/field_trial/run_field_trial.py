@@ -83,7 +83,12 @@ def has_commit(repo: Path, sha: str) -> bool:
 
 
 def ensure_case(case: dict, cache: Path) -> tuple[str, str]:
-    """Shallow-fetch the merge commit and its parent; return (base, pr) SHAs."""
+    """Shallow-fetch the merge commit and its parent; return (base, pr) SHAs.
+
+    A case may name its base explicitly (``base_commit``), for a PR that was
+    rebase-merged or is one commit inside a larger PR; then the diff is
+    ``base_commit..merge_commit`` and both commits are fetched at depth 1.
+    """
     clone = cache / project_of(case)
     if not (clone / ".git").is_dir():
         clone.mkdir(parents=True, exist_ok=True)
@@ -91,10 +96,16 @@ def ensure_case(case: dict, cache: Path) -> tuple[str, str]:
         git(clone, "remote", "add", "origin", f"https://github.com/{case['repo']}.git")
         git(clone, "config", "core.autocrlf", "false")
     merge = case["merge_commit"]
-    if not has_commit(clone, merge) or not has_commit(clone, f"{merge}^"):
+    explicit = case.get("base_commit")
+    if explicit:
+        for sha in (explicit, merge):
+            if not has_commit(clone, sha):
+                print(f"  fetching {case['repo']}@{sha[:10]} (depth 1) ...", flush=True)
+                git(clone, "fetch", "--quiet", "--depth", "1", "origin", sha)
+    elif not has_commit(clone, merge) or not has_commit(clone, f"{merge}^"):
         print(f"  fetching {case['repo']}@{merge[:10]} (depth 2) ...", flush=True)
         git(clone, "fetch", "--quiet", "--depth", "2", "origin", merge)
-    base = git(clone, "rev-parse", f"{merge}^1").strip()
+    base = git(clone, "rev-parse", explicit or f"{merge}^1").strip()
     pr = git(clone, "rev-parse", merge).strip()
     # Named refs, so a result JSON reads like the other benchmarks
     git(clone, "update-ref", f"refs/heads/ft/{case['id']}/base", base)
