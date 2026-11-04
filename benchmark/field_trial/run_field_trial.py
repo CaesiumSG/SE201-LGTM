@@ -42,7 +42,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
-from lgtm.pipeline import ReviewPipeline  # noqa: E402
+from lgtm.pipeline import LGTM_MODES, ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", BENCH / "evaluate.py")
@@ -175,7 +175,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         })
         return record
     findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-    judged = mode in evaluate.JUDGED_MODES
+    judged = mode in LGTM_MODES  # every mode the Kev judge ran in, benchmarked or not
     verdicts = [evaluate.finding_verdict(f, judged) for f in findings]
     infra = evaluate.infra_failure_ids(findings)
     record.update({
