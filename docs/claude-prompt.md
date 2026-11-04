@@ -203,7 +203,7 @@ All tools operate on the **base branch** only (PR changes are untrusted). Enforc
   - Cited line numbers are within the file's range.
   - Cited code snippets match the actual file content (fuzzy match OK).
   - Cited policy references exist in the indexed documents.
-- Mark findings with `evidence_valid: true/false` and `evidence_issues: [...]`.
+- Mark findings with `supported: true/false` and `provenance_confidence`.
 
 #### 9. Report Builder (`src/lgtm/reporting/report_builder.py`)
 

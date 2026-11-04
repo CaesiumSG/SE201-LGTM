@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -10,6 +11,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 from lgtm.graph.runner import GraphOutcome
@@ -245,3 +247,186 @@ class FakeRunner:
 
     def roots(self) -> set[Path]:
         return {c["root"] for c in self.calls}
+
+
+class _BlockedStream:
+    """Pipe that yields no data until its process ends or the pipe is closed."""
+
+    def __init__(self, process: "FakeGitProcess") -> None:
+        self._process = process
+        self._closed = False
+
+    def read(self, amount: int = -1) -> bytes:
+        while not self._closed and self._process.returncode is None:
+            time.sleep(0.01)
+        return b""
+
+    read1 = read
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class FakeGitProcess:
+    def __init__(self, args, *, hangs: bool, exit_code: int) -> None:
+        self.args = args
+        self.returncode = None if hangs else exit_code
+        self.stdout = _BlockedStream(self) if hangs else io.BytesIO(b"")
+        self.stderr = io.BytesIO()
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        if self.returncode is None:
+            self.returncode = -15
+
+    def kill(self) -> None:
+        if self.returncode is None:
+            self.returncode = -9
+
+    def wait(self, timeout=None):
+        deadline = time.monotonic() + (timeout if timeout is not None else 3600)
+        while self.returncode is None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(0.005)
+        return self.returncode
+
+
+class FakeGit:
+    """In-process stand-in for the subprocess module used by the graph exporter.
+
+    Each export consumes one plan that maps a stage ("inventory" or "archive") to
+    "fail", "timeout" or "create"; an unlisted stage succeeds with no output.
+    """
+
+    def __init__(self, *plans: dict[str, str]) -> None:
+        self._plans = list(plans)
+        self._current: dict[str, str] = {}
+        self.processes: list[FakeGitProcess] = []
+        self.alive_at_export_start: list[list[FakeGitProcess]] = []
+        self.namespace = SimpleNamespace(
+            run=self._run, Popen=self._popen, PIPE=subprocess.PIPE,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        )
+
+    def _run(self, args, **kwargs):
+        self._current = self._plans.pop(0) if self._plans else {}
+        self.alive_at_export_start.append(self.running())
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    def _popen(self, args, **kwargs) -> FakeGitProcess:
+        mode = self._current.get("inventory" if "ls-tree" in args else "archive", "ok")
+        if mode == "create":
+            raise OSError("cannot create process")
+        process = FakeGitProcess(
+            args, hangs=mode == "timeout", exit_code=128 if mode == "fail" else 0
+        )
+        self.processes.append(process)
+        return process
+
+    def running(self) -> list[FakeGitProcess]:
+        return [p for p in self.processes if p.poll() is None]
+
+    def kill_all(self) -> None:
+        for process in self.processes:
+            process.kill()
+
+
+class FakeCodegraphProcess:
+    """In-process CodeGraph child with real pipe descriptors; its descendant dies only with the tree."""
+
+    def __init__(self, pid: int, *, hangs: bool, exit_code: int, descendant: bool, interrupt: bool) -> None:
+        self.pid = pid
+        self.returncode = None if hangs else exit_code
+        self.descendant_alive = descendant
+        self._interrupt = interrupt
+        out_r, self._out_w = os.pipe()
+        err_r, self._err_w = os.pipe()
+        self.stdout = os.fdopen(out_r, "rb")
+        self.stderr = os.fdopen(err_r, "rb")
+        if not hangs:
+            self._close_writers()
+
+    def _close_writers(self) -> None:
+        for fd in (self._out_w, self._err_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def end(self, code: int) -> None:
+        if self.returncode is None:
+            self.returncode = code
+        self._close_writers()
+
+    @property
+    def alive(self) -> bool:
+        return self.returncode is None or self.descendant_alive
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self) -> None:
+        self.end(-9)
+
+    def wait(self, timeout=None):
+        if self._interrupt:
+            raise KeyboardInterrupt
+        deadline = time.monotonic() + (timeout if timeout is not None else 3600)
+        while self.returncode is None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(["codegraph"], timeout)
+            time.sleep(0.005)
+        return self.returncode
+
+
+class FakeCodegraph:
+    """Stand-in for the subprocess, process-group and job-object calls of the CodeGraph runner.
+
+    Each launch consumes one plan with the keys hangs, exit_code, descendant and interrupt;
+    an unlisted launch exits 0 at once.
+    """
+
+    def __init__(self, *plans: dict[str, object]) -> None:
+        self._plans = list(plans)
+        self.processes: list[FakeCodegraphProcess] = []
+        self.namespace = SimpleNamespace(
+            Popen=self._popen, run=self._taskkill, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            CREATE_NEW_PROCESS_GROUP=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+
+    def _popen(self, args, **kwargs) -> FakeCodegraphProcess:
+        plan = self._plans.pop(0) if self._plans else {}
+        process = FakeCodegraphProcess(
+            2_000_000_000 + len(self.processes),
+            hangs=bool(plan.get("hangs")), exit_code=int(plan.get("exit_code", 0)),
+            descendant=bool(plan.get("descendant")), interrupt=bool(plan.get("interrupt")),
+        )
+        self.processes.append(process)
+        return process
+
+    def kill_tree(self, pid: int) -> None:
+        for process in self.processes:
+            if process.pid == pid:
+                process.descendant_alive = False
+                process.end(-9)
+                return
+        raise ProcessLookupError(pid)
+
+    def _taskkill(self, args, **kwargs):
+        self.kill_tree(int(args[args.index("/PID") + 1]))
+        return subprocess.CompletedProcess(args, 0)
+
+    def killpg(self, pid: int, _signal: int) -> None:
+        self.kill_tree(pid)
+
+    def running(self) -> list[FakeCodegraphProcess]:
+        return [p for p in self.processes if p.alive]
+
+    def kill_all(self) -> None:
+        for process in self.processes:
+            process.descendant_alive = False
+            process.end(-9)

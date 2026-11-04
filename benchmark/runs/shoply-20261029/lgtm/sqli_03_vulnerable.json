@@ -1,0 +1,656 @@
+{
+  "id": "sqli_03_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 167.51,
+  "est_tokens": 2487,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:65",
+      "cwe_id": "CWE-89",
+      "explanation": "The new endpoint sorted_orders() (app/routes/orders.py:59-68) reads sort_by directly from user-controlled request input via request.args.get(\"sort_by\", \"created_at\") (line 63) and interpolates it into a raw SQL string with an f-string: text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\") (lines 65-67). There is no whitelist/allowlist validation of sort_by anywhere in the code (grep for ALLOWED_SORT/allowlist/whitelist/SORT_COLUMNS/sort_columns found no such validation in the PR snapshot), so an attacker with the manager role can inject arbitrary SQL into the ORDER BY clause (e.g. sort_by=1; DROP TABLE orders-- or a subquery). This directly violates security-policy.md \u00a75, which forbids f-string interpolation of request-derived values into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist. The @require_role(\"manager\") decorator limits who can reach the code but does not sanitize the input, so the SQL injection is real.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            68
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/sorted\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef sorted_orders():\n    \"\"\"List orders sorted by the requested column.\"\"\"\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate sort_by against a hard-coded allowlist of permitted column names before building the query, e.g. ALLOWED_SORT = {\"created_at\", \"total\", \"status\", \"id\"}; if sort_by not in ALLOWED_SORT: abort(400), then use the validated identifier in the ORDER BY clause. Do not interpolate raw request input into SQL. (Bound parameters cannot be used for identifiers, so an allowlist is the correct control here.)",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9554,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 65,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 983
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:66",
+      "cwe_id": "CWE-89",
+      "explanation": "The new endpoint sorted_orders() (app/routes/orders.py:59-68) reads sort_by directly from the request query string (line 63: request.args.get(\"sort_by\", \"created_at\")) and interpolates it into a SQLAlchemy text() query via an f-string (line 66: text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")). There is no allowlist/whitelist validation of sort_by anywhere in the codebase (grep for sort_by/whitelist/ALLOWED_SORT/allowed_columns only matched these two lines), and no bound parameter is used. Because ORDER BY column identifiers cannot be bound as parameters, the only safe approach is validating against a hard-coded allowlist, which is absent. This is a genuine SQL injection: an attacker with the manager role can supply arbitrary SQL in the sort_by parameter (e.g. a subquery or stacked clause) that is executed. This also directly violates the project security policy, which forbids f-string interpolation of request-derived values into SQL and requires dynamic sort keys to be validated against a hard-coded allowlist.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            68
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/sorted\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef sorted_orders():\n    \"\"\"List orders sorted by the requested column.\"\"\"\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            43,
+            51
+          ],
+          "source": null,
+          "content": "class Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True)\n    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n    status = Column(String(20), nullable=False, default=\"pending\")\n    total = Column(Float, nullable=False, default=0.0)\n    shipping_address = Column(String(500))\n    created_at = Column(DateTime, default=datetime.datetime.utcnow)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate sort_by against a hard-coded allowlist of permitted column names before building the query, and reject any value not in the list. For example: ALLOWED_SORT = {\"id\", \"user_id\", \"status\", \"total\", \"created_at\"}; if sort_by not in ALLOWED_SORT: abort(400); then use text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\"). Optionally also support an explicit ASC/DESC direction from a separate validated parameter. Never interpolate unvalidated request input into the SQL string.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9207,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1111
+    },
+    {
+      "finding_id": "authz:sorted-orders-endpoint:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new GET /orders/sorted endpoint interpolates the user-controlled `sort_by` query parameter directly into a raw SQL ORDER BY clause via an f-string (orders.py:63, 66) with no allowlist validation. security-policy.md \u00a75 explicitly forbids 'String interpolation, f-strings ... of request-derived values into SQL' and requires that 'Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.' This is a newly introduced line in the PR and enables SQL injection (CWE-89), which is an incorrect/unsafe handling of the request input in a protected operation.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            68
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/sorted\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef sorted_orders():\n    sort_by = request.args.get(\"sort_by\", \"created_at\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate `sort_by` against a hard-coded allowlist of permitted column names (e.g. {\"id\", \"user_id\", \"status\", \"total\", \"created_at\"}) and reject any value not in the set; only then place it in the ORDER BY clause. Do not interpolate raw request input into the SQL string.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9559,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 853
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/orders.py:65",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "sort_by",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters ORDER BY whitelist"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ALLOWED_SORT|allowlist|whitelist|SORT_COLUMNS|sort_columns",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ALLOWED_SORT|allowlist|whitelist|SORT_COLUMNS|sort_columns",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/orders.py:65\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new endpoint sorted_orders() (app/routes/orders.py:59-68) reads sort_by directly from user-controlled request input via request.args.get(\\\"sort_by\\\", \\\"created_at\\\") (line 63) and interpolates it into a raw SQL string with an f-string: text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\") (lines 65-67). There is no whitelist/allowlist validation of sort_by anywhere in the code (grep for ALLOWED_SORT/allowlist/whitelist/SORT_COLUMNS/sort_columns found no such validation in the PR snapshot), so an attacker with the manager role can inject arbitrary SQL into the ORDER BY clause (e.g. sort_by=1; DROP TABLE orders-- or a subquery). This directly violates security-policy.md \u00a75, which forbids f-string interpolation of request-derived values into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist. The @require_role(\\\"manager\\\") decorator limits who can reach the code but does not sanitize the input, so the SQL injection is real.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 68], \"content\": \"@orders_bp.route(\\\"/sorted\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef sorted_orders():\\n    \\\"\\\"\\\"List orders sorted by the requested column.\\\"\\\"\\\"\\n    sort_by = request.args.get(\\\"sort_by\\\", \\\"created_at\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n  ],\n  \"suggested_fix\": \"Validate sort_by against a hard-coded allowlist of permitted column names before building the query, e.g. ALLOWED_SORT = {\\\"created_at\\\", \\\"total\\\", \\\"status\\\", \\\"id\\\"}; if sort_by not in ALLOWED_SORT: abort(400), then use the validated identifier in the ORDER BY clause. Do not interpolate raw request input into SQL. (Bound parameters cannot be used for identifiers, so an allowlist is the correct control here.)\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:66",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "sort_by",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "sort_by|whitelist|ALLOWED_SORT|allowed_columns",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection ORDER BY dynamic column whitelist validation"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/orders.py:66\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new endpoint sorted_orders() (app/routes/orders.py:59-68) reads sort_by directly from the request query string (line 63: request.args.get(\\\"sort_by\\\", \\\"created_at\\\")) and interpolates it into a SQLAlchemy text() query via an f-string (line 66: text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\")). There is no allowlist/whitelist validation of sort_by anywhere in the codebase (grep for sort_by/whitelist/ALLOWED_SORT/allowed_columns only matched these two lines), and no bound parameter is used. Because ORDER BY column identifiers cannot be bound as parameters, the only safe approach is validating against a hard-coded allowlist, which is absent. This is a genuine SQL injection: an attacker with the manager role can supply arbitrary SQL in the sort_by parameter (e.g. a subquery or stacked clause) that is executed. This also directly violates the project security policy, which forbids f-string interpolation of request-derived values into SQL and requires dynamic sort keys to be validated against a hard-coded allowlist.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 68], \"content\": \"@orders_bp.route(\\\"/sorted\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef sorted_orders():\\n    \\\"\\\"\\\"List orders sorted by the requested column.\\\"\\\"\\\"\\n    sort_by = request.args.get(\\\"sort_by\\\", \\\"created_at\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [43, 51], \"content\": \"class Order(Base):\\n    __tablename__ = \\\"orders\\\"\\n\\n    id = Column(Integer, primary_key=True)\\n    user_id = Column(Integer, ForeignKey(\\\"users.id\\\"), nullable=False)\\n    status = Column(String(20), nullable=False, default=\\\"pending\\\")\\n    total = Column(Float, nullable=False, default=0.0)\\n    shipping_address = Column(String(500))\\n    created_at = Column(DateTime, default=datetime.datetime.utcnow)\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n  ],\n  \"suggested_fix\": \"Validate sort_by against a hard-coded allowlist of permitted column names before building the query, and reject any value not in the list. For example: ALLOWED_SORT = {\\\"id\\\", \\\"user_id\\\", \\\"status\\\", \\\"total\\\", \\\"created_at\\\"}; if sort_by not in ALLOWED_SORT: abort(400); then use text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\"). Optionally also support an explicit ASC/DESC direction from a separate validated parameter. Never interpolate unvalidated request input into the SQL string.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin authorization helpers"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters ORDER BY sorting security policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 36,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "sort_by|ORDER BY",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/sorted|sorted_orders",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "allowlist|ALLOWED_SORT|SORT_COLUMNS",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 52,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"sorted-orders-endpoint\",\n      \"title\": \"New GET /orders/sorted endpoint: manager-gated raw-SQL order listing with user-controlled ORDER BY\",\n      \"rationale\": \"Both hunks together introduce a single new endpoint. Hunk #0 adds the `from sqlalchemy import text` import that the new handler depends on; hunk #1 adds the `sorted_orders` route, its `@require_role(\\\"manager\\\")` authorization gate, and the raw-SQL query that interpolates the request-derived `sort_by` value directly into the ORDER BY clause. They are inseparable: the import is only used by the new handler, and the handler is the sole new access-control surface. The authorization concern is twofold: (1) the endpoint exposes all users' order data (id, user_id, status, total) to any manager/admin, consistent with the existing /orders/all rule but not documented in api-spec.md; and (2) the unvalidated `sort_by` parameter is string-interpolated into SQL, violating security-policy.md \u00a75 (bound parameters / allowlist for dynamic identifiers, CWE-89), which is a security-relevant defect on this new access path.\",\n      \"hunks\": [\"app/routes/orders.py#0\", \"app/routes/orders.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Authorization decorator applied to the new endpoint; enforces manager-or-above role via ROLE_RANK before the handler runs.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"ROLE_RANK\", \"start_line\": 21, \"end_line\": 21, \"snapshot\": \"base\", \"why\": \"Role hierarchy (user<manager<admin) that require_role uses to gate the new endpoint.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"all_orders\", \"start_line\": 50, \"end_line\": 56, \"snapshot\": \"base\", \"why\": \"Existing manager-gated all-orders listing; the new /sorted endpoint mirrors its access level and data scope, so it is the closest authorization precedent.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Defines the orders table columns (id, user_id, status, total, created_at) that the raw SELECT and the user-controlled ORDER BY reference.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"pr\", \"why\": \"Registers orders_bp under /orders, confirming the new route is exposed at GET /orders/sorted.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sorted-orders-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 90,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 65,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "sorted",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/sorted|/sorted",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "The authorization model is clear: `require_role(\"manager\")` correctly enforces manager-or-above (auth.py:69-85), matching the policy for listing all orders. The new `/sorted` endpoint mirrors `/all` in access level and data scope, so its authorization is consistent with policy \u00a73.\n\nThe genuine defect in this section is the SQL injection: `sort_by` is taken directly from the query string and interpolated via an f-string into the `ORDER BY` clause (orders.py:63, 66), with no allowlist validation. This violates security-policy.md \u00a75, which forbids f-string interpolation of request-derived values into SQL and requires dynamic sort keys to be validated against a hard-coded allowlist. This is a changed line newly introduced by the PR.\n\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new GET /orders/sorted endpoint interpolates the user-controlled `sort_by` query parameter directly into a raw SQL ORDER BY clause via an f-string (orders.py:63, 66) with no allowlist validation. security-policy.md \u00a75 explicitly forbids 'String interpolation, f-strings ... of request-derived values into SQL' and requires that 'Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.' This is a newly introduced line in the PR and enables SQL injection (CWE-89), which is an incorrect/unsafe handling of the request input in a protected operation.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 68], \"content\": \"@orders_bp.route(\\\"/sorted\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef sorted_orders():\\n    sort_by = request.args.get(\\\"sort_by\\\", \\\"created_at\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(f\\\"SELECT id, user_id, status, total FROM orders ORDER BY {sort_by}\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n      ],\n      \"suggested_fix\": \"Validate `sort_by` against a hard-coded allowlist of permitted column names (e.g. {\\\"id\\\", \\\"user_id\\\", \\\"status\\\", \\\"total\\\", \\\"created_at\\\"}) and reject any value not in the set; only then place it in the ORDER BY clause. Do not interpolate raw request input into the SQL string.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 66\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "a0876ef9e67f9ca4f03e943f4be38b7536e7626f",
+    "pr_sha": "737bfa88c98d232b81b5a550a18b53c109ac617c",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "sorted-orders-endpoint",
+        "origin": "investigator",
+        "title": "New GET /orders/sorted endpoint: manager-gated raw-SQL order listing with user-controlled ORDER BY",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 56,
+            "new_count": 13,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:sorted-orders-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.7,
+  "base_sha": "a0876ef9e67f9ca4f03e943f4be38b7536e7626f",
+  "pr_sha": "737bfa88c98d232b81b5a550a18b53c109ac617c",
+  "sast_error": null,
+  "semgrep_findings_total": 2,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "sorted-orders-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:sorted-orders-endpoint:1"
+  ]
+}

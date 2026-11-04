@@ -144,6 +144,20 @@ def seeded_bench(bench) -> Path:
     return bench
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [bytes.fromhex("00410d0a4200"), bytes.fromhex("41000d000a004200")],
+    ids=["nul-binary", "utf16le"],
+)
+def test_build_base_repo_preserves_binary_asset_bytes(gen, bench, tmp_path, payload):
+    (bench / "app" / "asset.bin").write_bytes(payload)
+    destination = tmp_path / "base"
+
+    gen.build_base_repo(destination)
+
+    assert (destination / "app" / "asset.bin").read_bytes() == payload
+
+
 @pytest.fixture
 def repo(tmp_path, gen, seeded_bench) -> Path:
     path = tmp_path / "repo"
@@ -903,3 +917,58 @@ class TestNewVulnerableCasesCarryLines:
             f"{label['id']}: {sorted(set(lines) - set(new))} are not added lines "
             f"of {label['file']}"
         )
+
+
+ROOT = BENCH.parent
+
+
+def _doc(path: Path) -> str:
+    return re.sub(r"\s+", " ", path.read_text(encoding="utf-8")).lower()
+
+
+@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "docs" / "project-proposal.md"],
+                         ids=["README", "project-proposal"])
+def test_scope_statement_names_both_jobs_and_the_exclusions(path):
+    text = _doc(path)
+    assert "semgrep" in text and "sql injection" in text
+    assert "authz" in text or "authorization" in text
+    assert re.search(r"out[- ]of[- ]scope", text), "other vulnerability classes are not marked out of scope"
+
+
+def test_benchmark_readme_lists_out_of_scope_cases():
+    text = _doc(BENCH / "README.md")
+    assert re.search(r"out[- ]of[- ]scope", text)
+    for item in ("alerta_sqli", "postgraas_sqli_safe"):
+        assert item in text, f"{item} is not listed as out of scope"
+
+
+SHOPLY_SAFE_SQL = ["sqli_04_safe", "sqli_07_safe", "sqli_11_safe"]
+
+
+@pytest.mark.skipif(shutil.which("semgrep", path=str(Path(sys.executable).parent)) is None
+                    and shutil.which("semgrep") is None, reason="semgrep not installed")
+@pytest.mark.parametrize("case_id", SHOPLY_SAFE_SQL)
+def test_shoply_safe_sql_case_triggers_semgrep_in_the_diff(base_repo, tmp_path, case_id):
+    """Real Semgrep binary with the bundled rules, the way the pipeline scans a PR."""
+    from lgtm.diff.git_diff import get_pr_diff, read_file_at_ref
+    from lgtm.sast.semgrep_runner import filter_to_diff, run_semgrep
+
+    case = next(c for c in LABELS["cases"] if c["id"] == case_id)
+    repo = tmp_path / "repo"
+    shutil.copytree(base_repo, repo)
+    git(repo, "checkout", "-q", "-b", "pr")
+    git(repo, "apply", str(BENCH / case["patch_file"]))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "pr change")
+
+    diffs = get_pr_diff(repo, "main", "pr")
+    scan = tmp_path / "scan"
+    files = [d.path for d in diffs if d.path.endswith(".py")]
+    for rel in files:
+        (scan / rel).parent.mkdir(parents=True, exist_ok=True)
+        (scan / rel).write_text(read_file_at_ref(repo, "pr", rel), encoding="utf-8")
+    rules = ROOT / "src" / "lgtm" / "sast" / "rules"
+    in_diff = filter_to_diff(run_semgrep(scan, files, str(rules)), diffs)
+
+    assert in_diff, f"{case_id}: Semgrep reports no in-diff warning"
+    assert all(f.is_sqli for f in in_diff)

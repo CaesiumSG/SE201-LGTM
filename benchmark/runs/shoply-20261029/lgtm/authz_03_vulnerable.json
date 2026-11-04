@@ -1,0 +1,439 @@
+{
+  "id": "authz_03_vulnerable",
+  "category": "authz",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 99.7,
+  "est_tokens": 1042,
+  "findings": [
+    {
+      "finding_id": "authz:set-user-role-authorization:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new endpoint PUT /users/<id>/role only applies @require_auth, which merely verifies a valid bearer token (app/auth.py:55-66) and performs no role check. Policy \u00a72 states 'Changing a user's role requires the admin role. A user must NEVER be able to change their own role or grant themselves additional privileges,' and api-spec.md lists '/users/<id>/role | PUT | admin only; self-promotion forbidden'. The endpoint writes user.role = new_role (line 66) with no @require_role(\"admin\") and no self-promotion guard, so any authenticated user (role 'user') can set their own role to 'admin' or 'manager' \u2014 a direct privilege-escalation. The sibling endpoints (get_user, update_user) enforce is_owner_or_admin, and list_users uses @require_role(\"manager\"), showing the established pattern this endpoint omits.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            56,
+            68
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/<int:user_id>/role\", methods=[\"PUT\"])\n@require_auth\ndef set_user_role(user_id: int):\n    \"\"\"Update a user's role.\"\"\"\n    payload = request.get_json(silent=True) or {}\n    new_role = payload.get(\"role\", \"user\")\n    session = get_session()\n    user = session.get(User, user_id)\n    if user is None:\n        return jsonify({\"error\": \"not found\"}), 404\n    user.role = new_role\n    session.commit()\n    return jsonify(user.to_dict())",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Changing a user's role requires the **admin** role. A user must NEVER be able to change their own role or grant themselves additional privileges.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Apply @require_role(\"admin\") to set_user_role (in addition to or instead of @require_auth), and add a guard rejecting the request when g.current_user.id == user_id to forbid self-promotion, e.g. `if g.current_user.id == user_id: return jsonify({\"error\": \"self-promotion forbidden\"}), 403`.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9224,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 57,
+      "tool_calls_used": 3,
+      "pr_graph_ok": true,
+      "input_tokens": 1172
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_auth decorator definition and role-based authorization checks"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "changing user roles requires admin role authorization"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_role\\(\"admin\"\\)",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\\.role\\s*=",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/auth.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/auth.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/auth.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "role",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"set-user-role-authorization\",\n      \"title\": \"New PUT /users/<id>/role endpoint changes a user's role with only @require_auth\",\n      \"rationale\": \"This single hunk adds a new endpoint that mutates the `User.role` field. It is the only changed hunk and constitutes one access-control concern: the endpoint is protected only by `@require_auth` (any authenticated user), whereas the project's security policy and API spec require the admin role and forbid self-promotion. The grouping depends on the authorization helpers and the role field it writes to.\",\n      \"hunks\": [\"app/routes/users.py#0\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"The decorator actually applied to set_user_role; it only verifies a valid token, not the admin role required by policy.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"The role-enforcement decorator that the endpoint should have used (e.g. @require_role(\\\"admin\\\")) but does not.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"Per-object ownership/role check used by sibling endpoints (get_user, update_user) to gate access; absent from set_user_role.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User.role\", \"start_line\": 30, \"end_line\": 30, \"snapshot\": \"base\", \"why\": \"The privilege field (user|manager|admin) that the new endpoint writes to, making this a privilege-escalation surface.\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"update_user\", \"start_line\": 41, \"end_line\": 55, \"snapshot\": \"base\", \"why\": \"Sibling endpoint showing the established pattern of enforcing is_owner_or_admin before mutating a user; set_user_role omits any equivalent check.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "set-user-role-authorization",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "changing a user's role requires admin role self-promotion forbidden"
+          }
+        }
+      ],
+      "raw_answer": "```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The new endpoint PUT /users/<id>/role only applies @require_auth, which merely verifies a valid bearer token (app/auth.py:55-66) and performs no role check. Policy \u00a72 states 'Changing a user's role requires the admin role. A user must NEVER be able to change their own role or grant themselves additional privileges,' and api-spec.md lists '/users/<id>/role | PUT | admin only; self-promotion forbidden'. The endpoint writes user.role = new_role (line 66) with no @require_role(\\\"admin\\\") and no self-promotion guard, so any authenticated user (role 'user') can set their own role to 'admin' or 'manager' \u2014 a direct privilege-escalation. The sibling endpoints (get_user, update_user) enforce is_owner_or_admin, and list_users uses @require_role(\\\"manager\\\"), showing the established pattern this endpoint omits.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [56, 68], \"content\": \"@users_bp.route(\\\"/<int:user_id>/role\\\", methods=[\\\"PUT\\\"])\\n@require_auth\\ndef set_user_role(user_id: int):\\n    \\\"\\\"\\\"Update a user's role.\\\"\\\"\\\"\\n    payload = request.get_json(silent=True) or {}\\n    new_role = payload.get(\\\"role\\\", \\\"user\\\")\\n    session = get_session()\\n    user = session.get(User, user_id)\\n    if user is None:\\n        return jsonify({\\\"error\\\": \\\"not found\\\"}), 404\\n    user.role = new_role\\n    session.commit()\\n    return jsonify(user.to_dict())\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n\\n    return wrapper\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [69, 85], \"content\": \"def require_role(minimum_role: str):\\n    \\\"\\\"\\\"Require at least the given role (user < manager < admin).\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            user = get_current_user()\\n            if user is None:\\n                return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\\n                return jsonify({\\\"error\\\": \\\"insufficient role\\\"}), 403\\n            g.current_user = user\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"Changing a user's role requires the **admin** role. A user must NEVER be able to change their own role or grant themselves additional privileges.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\"}\n      ],\n      \"suggested_fix\": \"Apply @require_role(\\\"admin\\\") to set_user_role (in addition to or instead of @require_auth), and add a guard rejecting the request when g.current_user.id == user_id to forbid self-promotion, e.g. `if g.current_user.id == user_id: return jsonify({\\\"error\\\": \\\"self-promotion forbidden\\\"}), 403`.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 57\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "9a6fe2f8f6265d8701412f24537bb80ce6e21a29",
+    "pr_sha": "a4c7a7b219397e1f52b9a674ec11547612816e18",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "set-user-role-authorization",
+        "origin": "investigator",
+        "title": "New PUT /users/<id>/role endpoint changes a user's role with only @require_auth",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 53,
+            "new_count": 16,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:set-user-role-authorization:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.01,
+  "base_sha": "9a6fe2f8f6265d8701412f24537bb80ce6e21a29",
+  "pr_sha": "a4c7a7b219397e1f52b9a674ec11547612816e18",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "set-user-role-authorization"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

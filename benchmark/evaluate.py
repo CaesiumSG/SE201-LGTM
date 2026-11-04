@@ -9,13 +9,13 @@ For every case in labels.json:
 
 Metrics: precision / recall / F1 (overall, per category, and per dev/eval
 split), false-positive rate on safe controls, evidence grounding rate,
-"grounded" metrics that only count a detection when its evidence validated,
+"grounded" metrics that only count a detection when its finding is supported,
 possible- and insufficient-evidence rates, median latency, and estimated
 tokens per PR.
 
 Usage:
     python benchmark/evaluate.py --mode lgtm
-    python benchmark/evaluate.py --mode sast-only --cases sqli_01_vulnerable
+    python benchmark/evaluate.py --mode llm-only --cases sqli_01_vulnerable
     python benchmark/evaluate.py --mode lgtm --rescore   # re-score saved run
 """
 
@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 import shutil
 import statistics
 import subprocess
@@ -31,6 +32,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
@@ -43,11 +45,14 @@ from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.coverage import location_overlaps  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
+from lgtm.validation.judge import REASON_JUDGE_FAILED, http_judge  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 ERROR = "ERROR"
 INFRA_PREFIXES = ("Agent execution failed", "LLM call failed", "Agent did not produce parsable")
 CASE_FIELDS = ("file", "vulnerable_locations", "diff_shape")
-COVERAGE_MODES = ("lgtm", "lgtm-no-sast")
+COVERAGE_MODES = ("lgtm",)
 
 
 def infra_failure_ids(findings: list[dict], skip_authz: bool = False) -> list[str]:
@@ -70,6 +75,14 @@ def result_infra_ids(result: dict) -> list[str]:
     return infra_failure_ids(result.get("findings") or [], skip_authz=has_coverage(result))
 
 
+def authz_scan_failed(result: dict) -> bool:
+    return (
+        has_coverage(result)
+        and result.get("category") == "authz"
+        and _scan_failed(result["coverage"])
+    )
+
+
 def result_is_error(result: dict) -> bool:
     return (
         result.get("predicted") == "error"
@@ -77,7 +90,9 @@ def result_is_error(result: dict) -> bool:
         or bool(result.get("error"))
         or bool(result.get("sast_error"))
         or (result.get("infra_failures") or 0) > 0
+        or (result.get("triage_errors") or 0) > 0
         or bool(result_infra_ids(result))
+        or authz_scan_failed(result)
     )
 
 
@@ -91,8 +106,28 @@ def mark_error(result: dict, message: str) -> dict:
         error=message,
         case_label="scan_failure",
         case_label_grounded="scan_failure",
+        **scope_fields(result),
     )
     return result
+
+
+def scope_fields(result: dict) -> dict:
+    """Headline scope and off-category finding ids of one case result.
+
+    SQL injection rows are out of scope for cases flagged ``case_scope: out``
+    (no in-diff Semgrep warning on either side).
+    """
+    out = result.get("category") == "sqli" and result.get("case_scope") == "out"
+    judged = is_judged_row(result)
+    return {
+        "scope": "out" if out else "in",
+        "off_category": [
+            f.get("finding_id") or "unknown"
+            for f in result.get("findings") or []
+            if finding_verdict(f, judged) == "vulnerable"
+            and f.get("category") not in (result.get("category"), "", "sast", None)
+        ],
+    }
 
 
 def graph_fields(review=None) -> dict:
@@ -106,11 +141,80 @@ def graph_fields(review=None) -> dict:
     }
 
 
+def run_record_fields(review=None) -> list[dict]:
+    return [
+        {k: v for k, v in asdict(r).items() if k != "turns"}
+        for r in getattr(review, "run_records", None) or []
+    ]
+
+
+def trace_fields(mode: str, review=None) -> dict:
+    """The ``trace`` key of a judged-mode row: turns per agent run and the Kev answer per finding."""
+    if mode not in JUDGED_MODES:
+        return {}
+    return {"trace": {
+        "runs": [
+            {"section": r.section, "turns": r.turns}
+            for r in getattr(review, "run_records", None) or []
+        ],
+        "kev": [
+            {
+                "finding_id": row.get("finding_id"),
+                "judged": row.get("judged"),
+                "kev_verdict": row.get("kev_verdict"),
+                "kev_severity": row.get("kev_severity"),
+                "supported": row.get("supported"),
+                "provenance_confidence": row.get("provenance_confidence"),
+                "not_judged_reason": row.get("not_judged_reason"),
+            }
+            for f in getattr(review, "findings", None) or []
+            for row in [_dump_or_empty(f)]
+        ],
+    }}
+
+
+def _dump_or_empty(finding) -> dict:
+    try:
+        return finding.model_dump(exclude={"raw_response"})
+    except Exception:  # noqa: BLE001 - the trace entry keeps its keys with empty values
+        logger.exception("Could not serialise finding for the trace")
+        return {}
+
+
+def partial_fields(mode: str, review=None) -> dict:
+    """What a judged-mode review gathered, kept on an error row."""
+    if mode not in JUDGED_MODES or review is None:
+        return {}
+    parts = {
+        "findings": lambda: [f.model_dump(exclude={"raw_response"}) for f in review.findings],
+        "run_records": lambda: run_record_fields(review),
+        "trace": lambda: trace_fields(mode, review).get("trace"),
+    }
+    built = {}
+    for key, build in parts.items():
+        try:
+            value = build()
+        except Exception:  # noqa: BLE001 - one unserialisable part never costs the others or the error row
+            logger.exception("Could not serialise partial %s", key)
+            continue
+        if value is not None:
+            built[key] = value
+    fields = {k: v for k, v in built.items() if k != "findings"}
+    if "findings" in built:
+        # Error rows keep ``findings`` empty; scoring and Kev metrics read that key.
+        fields["trace"] = {**fields.get("trace", {}), "findings": built["findings"]}
+    return fields
+
+
 def sast_fields(review=None) -> dict:
     meta = getattr(review, "meta", None)
     return {
         "sast_error": getattr(meta, "sast_error", None),
         "semgrep_findings_total": getattr(meta, "semgrep_findings_total", None),
+        # SAST triage failures leave no finding, so coverage cannot surface them.
+        "triage_errors": sum(
+            1 for e in getattr(meta, "agent_errors", None) or [] if e.get("stage") == "sast_triage"
+        ),
     }
 
 
@@ -153,6 +257,14 @@ def load_result(path: Path) -> dict | None:
 def is_done(path: Path) -> bool:
     data = load_result(path)
     if data is None or result_is_error(data) or data.get("case_label") == "scan_failure":
+        return False
+    if "pin" not in data and data.get("coverage") is None:
+        return False
+    if is_judged_row(data) and any(
+        (f.get("judged") and not f.get("unsupported_reason") and f.get("kev_verdict") is None)
+        or f.get("not_judged_reason") == REASON_JUDGE_FAILED
+        for f in data.get("findings") or []
+    ):
         return False
     coverage = data.get("coverage") if has_coverage(data) else {}
     return (
@@ -215,28 +327,101 @@ def build_case_repo(tmp: Path, patch_path: Path) -> None:
     run(["git", "checkout", "-q", "main"], tmp)
 
 
+def is_judged_row(row: dict) -> bool:
+    """Judged-mode rows score on ``supported``; baselines and legacy rows on ``verdict``."""
+    if "pin" not in row or row.get("mode", "lgtm") not in JUDGED_MODES:
+        return False
+    return not any(
+        "verdict" in f and "supported" not in f and "judged" not in f
+        for f in row.get("findings") or []
+    )
+
+
+def _claim_key(claim: str) -> str:
+    return (claim.splitlines() or [""])[0]
+
+
+def record_input_tokens(pipeline, config) -> dict[str, list]:
+    """Wrap the pipeline's judge; the returned map holds each reply's input_tokens per claim, in call order."""
+    tokens: dict[str, list] = {}
+    judge = getattr(pipeline, "_judge", None) or http_judge(config)
+
+    def call(request: dict):
+        reply = judge(request)
+        claim = _claim_key(request["state"].splitlines()[0].removeprefix("Claim: "))
+        tokens.setdefault(claim, []).append(reply.get("input_tokens"))
+        return reply
+
+    pipeline._judge = call
+    return tokens
+
+
+def with_kev_fields(
+    dumped: list[dict], findings: list, judged: bool, tokens: dict[str, list] | None = None
+) -> list[dict]:
+    """Add the Kev answers, which model_dump leaves out, to the dumped findings of a judged mode."""
+    if not judged:
+        return dumped
+    tokens = {claim: list(values) for claim, values in (tokens or {}).items()}
+    out = []
+    for d, f in zip(dumped, findings):
+        kev_verdict = getattr(f, "kev_verdict", None)
+        row = {**d, "kev_verdict": kev_verdict, "kev_severity": getattr(f, "kev_severity", None)}
+        queue = tokens.get(_claim_key(getattr(f, "explanation", "")))
+        if kev_verdict and queue:
+            row["input_tokens"] = queue.pop(0)
+        out.append(row)
+    return out
+
+
+KEV_INPUT_TOKEN_LIMIT = 8192
+
+
+def kev_metrics(findings: list[dict]) -> dict:
+    """Metrics over the judged candidates that carry a Kev answer; the rest are counted by reason."""
+    answered = [f for f in findings if f.get("judged") and f.get("kev_verdict")]
+    confidences = [
+        f["provenance_confidence"] for f in answered if f.get("provenance_confidence") is not None
+    ]
+    return {
+        "judged": len(answered),
+        "verdicts": dict(Counter(f["kev_verdict"] for f in answered)),
+        "severities": dict(Counter(f.get("kev_severity") or "unknown" for f in answered)),
+        "provenance_confidence_mean": statistics.fmean(confidences) if confidences else None,
+        "not_judged": dict(Counter(
+            f.get("not_judged_reason") or "unknown" for f in findings if f.get("judged") is False)),
+        f"requests_over_{KEV_INPUT_TOKEN_LIMIT}_input_tokens": sum(
+            1 for f in answered if (f.get("input_tokens") or 0) > KEV_INPUT_TOKEN_LIMIT),
+    }
+
+
+def finding_verdict(f: dict, judged: bool) -> str | None:
+    if judged:
+        return "vulnerable" if f.get("supported") and f.get("kev_verdict") != "not_real" else "safe"
+    return f.get("verdict")
+
+
 def predict_case_verdict(
-    findings: list[dict], category: str, require_grounded: bool = False
+    findings: list[dict], category: str, require_grounded: bool = False,
+    judged: bool = False,
 ) -> str:
     """Collapse per-finding verdicts into one case-level prediction.
 
     Only findings of the case's own category count (a case tests one task);
     uncategorized findings count for either. With ``require_grounded``, a
-    "vulnerable" finding only counts if its evidence passed validation —
-    an ungrounded accusation is treated as "possible".
+    verdict-keyed "vulnerable" finding only counts if it is ``supported``;
+    otherwise it is treated as "possible".
     """
     relevant = [
         f for f in findings
         if f.get("category") in (category, "", "sast", None)
     ]
-    if require_grounded:
-        relevant = [
-            {**f, "verdict": "possible"}
-            if f.get("verdict") == "vulnerable" and not f.get("evidence_valid")
-            else f
-            for f in relevant
+    verdicts = [finding_verdict(f, judged) for f in relevant]
+    if require_grounded and not judged:
+        verdicts = [
+            "possible" if v == "vulnerable" and not f.get("supported") else v
+            for v, f in zip(verdicts, relevant)
         ]
-    verdicts = [f.get("verdict") for f in relevant]
     if "vulnerable" in verdicts:
         return "vulnerable"
     if "possible" in verdicts:
@@ -287,16 +472,17 @@ def outcome_for_label(label: str, expected: str) -> str:
 
 
 def _relevant_verdicts(
-    row: dict, grounded: bool = False, files: set[str] | None = None
+    row: dict, files: set[str] | None = None, grounded: bool = False
 ) -> list:
+    judged = is_judged_row(row)
     verdicts = []
     for f in row.get("findings", []):
         if f.get("category") not in (row["category"], "", "sast", None):
             continue
         if files is not None and f.get("file") and f["file"] not in files:
             continue
-        verdict = f.get("verdict")
-        if grounded and verdict == "vulnerable" and not f.get("evidence_valid"):
+        verdict = finding_verdict(f, judged)
+        if grounded and not judged and verdict == "vulnerable" and not f.get("supported"):
             verdict = "possible"
         verdicts.append(verdict)
     return verdicts
@@ -338,20 +524,17 @@ def _target_files(row: dict) -> set[str]:
 
 
 def _scan_failed(cov: dict) -> bool:
-    scheduled = cov["sections_scheduled"]
-    return (scheduled > 0 and cov["sections_completed"] == 0) or (
-        bool(cov["investigator_error"]) and scheduled == 0
-    )
+    scheduled = cov.get("sections_scheduled") or 0
+    return (scheduled > 0 and cov.get("sections_completed", 1) == 0) or (
+        "sections_scheduled" in cov and cov.get("sections_scheduled") == 0
+        and "sections_completed" in cov and cov.get("sections_completed") == 0
+    ) or (bool(cov.get("investigator_error")) and scheduled == 0)
 
 
 def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     if "coverage" not in row:
-        return (
-            _findings_label(_relevant_verdicts(row)),
-            _findings_label(_relevant_verdicts(row, grounded=True)),
-            [],
-            False,
-        )
+        label = _findings_label(_relevant_verdicts(row))
+        return label, _findings_label(_relevant_verdicts(row, grounded=True)), [], False
     cov = row["coverage"]
     if cov is None:
         return "scan_failure", "scan_failure", [], False
@@ -359,12 +542,9 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     target_ids = [s["section_id"] for s in targets]
     if row["category"] != "authz":
         files = _target_files(row)
-        return (
-            _findings_label(_relevant_verdicts(row, files=files)),
-            _findings_label(_relevant_verdicts(row, grounded=True, files=files)),
-            target_ids,
-            False,
-        )
+        label = _findings_label(_relevant_verdicts(row, files=files))
+        grounded_label = _findings_label(_relevant_verdicts(row, files=files, grounded=True))
+        return label, grounded_label, target_ids, False
     if _scan_failed(cov):
         return "scan_failure", "scan_failure", target_ids, False
     if not targets:
@@ -373,8 +553,7 @@ def derive_case_labels(row: dict) -> tuple[str, str, list[str], bool]:
     files = {h["file"] for s in targets for h in s["hunks"]} | {row.get("file")}
     label = _verdict_label(_relevant_verdicts(row, files=files), missing)
     grounded_label = _verdict_label(
-        _relevant_verdicts(row, grounded=True, files=files), missing
-    )
+        _relevant_verdicts(row, files=files, grounded=True), missing)
     gap = label == "detected_vulnerability" and (
         not cov["complete"] or cov["sections_failed"] > 0 or cov["hunks_leftover"] > 0
     )
@@ -393,18 +572,27 @@ def score_case(result: dict) -> dict:
         message = result.get("error") or (
             "infra failure: " + ", ".join(ids) if ids
             else "SAST failed: " + result["sast_error"] if result.get("sast_error")
+            else f"SAST triage failed for {result['triage_errors']} hit(s)" if result.get("triage_errors")
+            else "review failed: no section completed" if authz_scan_failed(result)
             else "unknown error")
         mark_error(result, message)
         if legacy:
             result.update(case_label=None, case_label_grounded=None)
         else:
             result.update(target_sections=[], coverage_gap=False)
+    elif legacy and result.get("coverage") is None:
+        result.update(
+            predicted="unknown", predicted_grounded="unknown",
+            outcome="UNKNOWN", outcome_grounded="UNKNOWN", correct=None,
+            case_label=None, case_label_grounded=None,
+        )
     elif legacy:
-        result["predicted"] = predict_case_verdict(findings, result["category"])
+        judged = is_judged_row(result)
+        result["predicted"] = predict_case_verdict(findings, result["category"], judged=judged)
         result["outcome"] = outcome_for(result["predicted"], result["expected"])
         result["correct"] = result["outcome"] in ("TP", "TN")
         result["predicted_grounded"] = predict_case_verdict(
-            findings, result["category"], require_grounded=True
+            findings, result["category"], require_grounded=True, judged=judged
         )
         result["outcome_grounded"] = outcome_for(
             result["predicted_grounded"], result["expected"]
@@ -418,9 +606,10 @@ def score_case(result: dict) -> dict:
         # different scoring rule (a `vulnerable` verdict on another file is
         # still a false alarm on a safe PR).
         label, grounded_label, targets, gap = derive_case_labels(result)
-        predicted = predict_case_verdict(findings, result["category"])
+        judged = is_judged_row(result)
+        predicted = predict_case_verdict(findings, result["category"], judged=judged)
         predicted_grounded = predict_case_verdict(
-            findings, result["category"], require_grounded=True
+            findings, result["category"], require_grounded=True, judged=judged
         )
         outcome = outcome_for(predicted, result["expected"])
         result.update(
@@ -435,6 +624,7 @@ def score_case(result: dict) -> dict:
             outcome_grounded=outcome_for(predicted_grounded, result["expected"]),
             correct=outcome in ("TP", "TN"),
         )
+    result.update(scope_fields(result))
     return result
 
 
@@ -462,9 +652,9 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
     ) as tmpdir:
         tmp = Path(tmpdir)
         build_case_repo(tmp, patch_path)
-        if config.mode != "sast-only":
-            index_repo_docs(tmp, config)
+        index_repo_docs(tmp, config)
         pipeline = ReviewPipeline(tmp, config)
+        tokens = record_input_tokens(pipeline, config) if config.mode in JUDGED_MODES else None
         result = pipeline.run("main", "pr", output_dir=None)
     latency = time.monotonic() - started
 
@@ -474,20 +664,25 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
         {"base": review_fields["base_sha"], "pr": review_fields["pr_sha"]},
     )
     try:
+        judged = config.mode in JUDGED_MODES
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        grounded = [f for f in findings if f.get("evidence_valid")]
+        est_tokens = estimate_tokens(findings, {})
+        findings = with_kev_fields(findings, result.findings, judged, tokens)
+        grounded = [f for f in findings if f.get("supported")]
         return score_case({
             "id": case["id"],
             "category": case["category"],
             "split": case.get("split", "eval"),
             "expected": case["expected_verdict"],
             "n_findings": len(findings),
-            "verdicts": [f["verdict"] for f in findings],
+            "verdicts": [finding_verdict(f, judged) for f in findings],
             "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
-            "est_tokens": estimate_tokens(findings, {}),
+            "est_tokens": est_tokens,
             "findings": findings,
+            "run_records": run_record_fields(result),
+            **trace_fields(config.mode, result),
             "mode": config.mode,
             "pin": pin,
             **case_fields(case),
@@ -496,13 +691,17 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             **sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
-        return score_case(mark_error(
+        row = score_case(mark_error(
             error_record(case, config.mode, pin, result), str(exc)))
+        return {**row, **partial_fields(config.mode, result)}
 
 
 def coverage_summary(results: list[dict]) -> dict:
     scored = [r for r in results if not result_is_error(r)]
-    covs = [r["coverage"] for r in scored if has_coverage(r)]
+    covs = [
+        r["coverage"] for r in results
+        if has_coverage(r) and (not result_is_error(r) or authz_scan_failed(r))
+    ]
     complete = sum(1 for c in covs if c["complete"])
 
     def total(field: str) -> int:
@@ -530,7 +729,60 @@ def coverage_summary(results: list[dict]) -> dict:
     }
 
 
+JUDGED_MODES = ("lgtm",)
+
+
+def not_judged_count(row: dict) -> int:
+    """Candidates the judge did not rule on, for rows of the judged modes only."""
+    if row.get("mode") not in JUDGED_MODES:
+        return 0
+    return sum(1 for f in row.get("findings", []) if f.get("judged") is False)
+
+
+def tool_call_counts(rows: list[dict]) -> dict:
+    """Investigator, SAST triage and reviewer tool calls summed from the rows' run records."""
+    per_row = {k: [0] * len(rows) for k in ("investigator", "sast_triage", "reviewer")}
+    units = dict.fromkeys(per_row, 0)
+    for i, r in enumerate(rows):
+        for rec in r.get("run_records") or []:
+            section = rec.get("section") or ""
+            if section == "investigator":
+                kind = "investigator"
+            elif section.startswith("sast_triage:"):
+                kind = "sast_triage"
+            else:
+                kind = "reviewer"
+            per_row[kind][i] += len(rec.get("tool_calls") or [])
+            units[kind] += 1
+
+    def part(kind: str) -> dict:
+        total, n = sum(per_row[kind]), units[kind]
+        return {
+            "total": total,
+            "per_case_mean": round(total / len(rows), 2) if rows else None,
+            "per_unit_mean": round(total / n, 2) if n else None,
+        }
+
+    return {
+        "investigator": part("investigator"),
+        "sast_triage": part("sast_triage"),
+        "reviewer": part("reviewer"),
+        "reviewer_units": units["reviewer"],
+    }
+
+
 def summarize(results: list[dict]) -> dict:
+    kev = kev_metrics([
+        f for r in results
+        if r.get("mode") in JUDGED_MODES
+        for f in r.get("findings", [])
+    ])
+    not_judged_cases = [
+        {"id": r["id"], "not_judged": n} for r in results if (n := not_judged_count(r))
+    ]
+    results = [r for r in results if not not_judged_count(r)]
+    headline = [r for r in results if r.get("scope", "in") == "in"]
+
     def metrics(
         rows: list[dict], key: str = "outcome", label_key: str = "case_label"
     ) -> dict:
@@ -550,7 +802,7 @@ def summarize(results: list[dict]) -> dict:
             f1 = None
         safe_rows = [
             r for r in scored_rows
-            if r["expected"] == "safe" and r[key] != "EXCLUDED"
+            if r["expected"] == "safe" and r[key] not in ("EXCLUDED", "UNKNOWN")
         ]
         excluded_on_safe = sum(
             1 for r in scored_rows
@@ -561,7 +813,9 @@ def summarize(results: list[dict]) -> dict:
             if safe_rows
             else None
         )
-        counted = len(scored_rows) - excluded_on_safe
+        counted = len(scored_rows) - excluded_on_safe - sum(
+            1 for r in scored_rows if r[key] == "UNKNOWN"
+        )
         return {
             "cases": len(rows),
             "scored": len(scored_rows),
@@ -574,8 +828,10 @@ def summarize(results: list[dict]) -> dict:
             "false_positive_rate_on_safe": round(fpr, 3) if fpr is not None else None,
             "accuracy": round((tp + tn) / counted, 3) if counted else None,
             "vulnerable_scored": sum(
-                1 for r in scored_rows if r["expected"] == "vulnerable"),
+                1 for r in scored_rows
+                if r["expected"] == "vulnerable" and r[key] != "UNKNOWN"),
             "safe_scored": len(safe_rows),
+            "unknown_rows": sum(1 for r in scored_rows if r[key] == "UNKNOWN"),
             "abstentions": sum(
                 1 for r in scored_rows
                 if r.get(label_key) in ("insufficient_evidence", "possible_vulnerability")
@@ -589,18 +845,14 @@ def summarize(results: list[dict]) -> dict:
         # A "vulnerable" verdict in the category the case does NOT test. The
         # benchmark PRs are single-flaw, so these are unlabelled (and, on
         # inspection, spurious) alarms that case-level scoring cannot see.
-        return any(
-            f.get("verdict") == "vulnerable"
-            and f.get("category") not in (r["category"], "", "sast", None)
-            for f in r["findings"]
-        )
+        return bool(scope_fields(r)["off_category"])
 
     scored: list[dict] = []
     errs: list[dict] = []
     for r in results:
         (errs if result_is_error(r) else scored).append(r)
     all_findings = [f for r in scored for f in r["findings"]]
-    grounded = sum(1 for f in all_findings if f.get("evidence_valid"))
+    grounded = sum(1 for f in all_findings if f.get("supported"))
     possible = sum(1 for r in scored if r["predicted"] == "possible")
     insufficient = sum(1 for r in scored if r["predicted"] == "insufficient_evidence")
     latencies = [r["latency_seconds"] for r in scored]
@@ -608,22 +860,26 @@ def summarize(results: list[dict]) -> dict:
 
     def by(field: str, key: str = "outcome", label_key: str = "case_label") -> dict:
         return {
-            val: metrics([r for r in results if r.get(field) == val], key, label_key)
-            for val in sorted({r.get(field) for r in results if r.get(field)})
+            val: metrics([r for r in headline if r.get(field) == val], key, label_key)
+            for val in sorted({r.get(field) for r in headline if r.get(field)})
         }
 
     case_labels = Counter(r.get("case_label") or "legacy" for r in results)
 
     return {
-        "overall": metrics(results),
+        "overall": metrics(headline),
+        "out_of_scope_cases": sorted(r["id"] for r in results if r.get("scope", "in") != "in"),
+        "off_category": {
+            r["id"]: ids for r in results if (ids := scope_fields(r)["off_category"])
+        },
         "per_category": by("category"),
         "per_split": by("split"),
         "graph_states": dict(Counter(
             r.get("graph_state") or "unknown" for r in results)),
-        # Same scoring, but a "vulnerable" verdict only counts as a detection
-        # when the evidence validator accepted its citations.
+        # Same scoring in judged modes; legacy verdict rows count a detection
+        # only when the finding is supported.
         "grounded_only": {
-            "overall": metrics(results, "outcome_grounded", "case_label_grounded"),
+            "overall": metrics(headline, "outcome_grounded", "case_label_grounded"),
             "per_category": by("category", "outcome_grounded", "case_label_grounded"),
             "per_split": by("split", "outcome_grounded", "case_label_grounded"),
         },
@@ -651,6 +907,8 @@ def summarize(results: list[dict]) -> dict:
             round(grounded / len(all_findings), 3) if all_findings else None
         ),
         "possible_rate": round(possible / len(scored), 3) if scored else None,
+        "possible_findings": sum(1 for f in all_findings if f.get("verdict") == "possible"),
+        "tool_calls": tool_call_counts(scored),
         "insufficient_evidence_rate": (
             round(insufficient / len(scored), 3) if scored else None
         ),
@@ -663,6 +921,8 @@ def summarize(results: list[dict]) -> dict:
         "case_labels": dict(case_labels),
         "legacy_rows": case_labels.get("legacy", 0),
         "coverage": coverage_summary(results),
+        "not_judged_cases": not_judged_cases,
+        "kev": kev,
     }
 
 
@@ -670,7 +930,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate LGTM on the benchmark")
     parser.add_argument(
         "--mode",
-        choices=["lgtm", "sast-only", "llm-only", "lgtm-no-sast"],
+        choices=["lgtm", "llm-only"],
         default="lgtm",
     )
     parser.add_argument("--model", default=None, help="Ollama model override")
@@ -763,8 +1023,7 @@ def main() -> None:
     if args.gpu_model:
         apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.gpu_cluster:
-        config.ollama_model = "qwen3.8:27b"
-        config.ollama_base_url = "http://127.0.0.1:11435"
+        apply_gpu_model(config, "qwen3.8-27b")
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:
@@ -840,7 +1099,7 @@ def main() -> None:
         r for c in cases
         if (r := load_result(out_dir / f"{c['id']}.json")) is not None
     ]
-    model = config.ollama_model if args.mode != "sast-only" else "none"
+    model = config.ollama_model
     write_summary(
         out_dir, results, args.mode, model,
         {"split": args.split, "reasoning": config.reasoning,
@@ -931,7 +1190,7 @@ def rescore(out_dir: Path, cases: list[dict], mode: str) -> None:
     payload = {k: v for k, v in old.items() if k not in ("outcomes", "summary")}
     payload.setdefault("cases_expected", len(cases))
     payload.setdefault("mode", mode)
-    payload.setdefault("model", "none" if mode == "sast-only" else "unknown")
+    payload.setdefault("model", "unknown")
     payload.pop("rescored_from_run_at", None)  # superseded key from earlier versions
     payload["rescored_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     payload["rescored_at_commit"] = git_commit()

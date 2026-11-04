@@ -116,7 +116,7 @@ every LGTM mode on it, and document the results, including failures.
    comparison with the synthetic results. Expect the numbers to drop. Explain
    why: bigger diffs, unfamiliar frameworks, no policy, multi-file flaws,
    Semgrep rules that don't match. Commit curated outputs to
-   benchmark/runs/real_world/ (no absolute paths).
+   benchmark/runs/archive/real_world/ (no absolute paths).
 
 Do NOT tune prompts on these cases. This is a held-out real-world test.
 Done = reproducible cases, results for all modes, and an honest write-up.

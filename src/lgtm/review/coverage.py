@@ -17,7 +17,7 @@ InvestigatorInput = Literal["full", "manifest_only", "none"]
 @dataclass
 class SectionResult:
     status: SectionStatus
-    verdicts: list[str]
+    supported: list[bool | None]
     finding_ids: list[str]
     error: str | None
 
@@ -104,10 +104,10 @@ def _ranges_overlap(first: tuple[int, int], second: Sequence[int]) -> bool:
 
 
 def _section_row(section: Section, result: SectionResult | None) -> dict[str, Any]:
-    status, verdicts, finding_ids, error = (
+    status, supported, finding_ids, error = (
         (None, [], [], None)
         if result is None
-        else (result.status, list(result.verdicts), list(result.finding_ids), result.error)
+        else (result.status, list(result.supported), list(result.finding_ids), result.error)
     )
     return {
         "section_id": section.section_id,
@@ -118,7 +118,7 @@ def _section_row(section: Section, result: SectionResult | None) -> dict[str, An
         "partial_hunk": section.partial_hunk,
         "hunks": [_hunk_row(h) for h in section.hunks],
         "status": status,
-        "verdicts": verdicts,
+        "supported": supported,
         "finding_ids": finding_ids,
         "error": error,
     }
