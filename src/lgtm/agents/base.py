@@ -358,7 +358,11 @@ def answer_until_resolved(
 
 
 def build_llm(config: LGTMConfig):
-    """Construct the ChatOllama LLM from config."""
+    """Construct the reviewer LLM from config: ChatOllama, or Claude on Bedrock."""
+    if config.llm_backend == "bedrock":
+        from lgtm.agents.bedrock_llm import BedrockClaude
+
+        return BedrockClaude(config)
     from langchain_ollama import ChatOllama
 
     kwargs = {} if config.reasoning is None else {"reasoning": config.reasoning}

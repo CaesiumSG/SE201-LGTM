@@ -164,7 +164,7 @@ def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypat
         "--model", "qwen2.5:7b", "--mode", "llm-only",
     ]
     if experiments:
-        argv.extend(["--require-tool-use", "--static-facts", "--authz-role-guidance"])
+        argv.extend(["--require-tool-use", "--static-facts", "--authz-role-guidance", "--no-sqli-review"])
     monkeypatch.setattr("sys.argv", argv)
 
     evaluate.main()
@@ -175,10 +175,12 @@ def test_benchmark_cli_keeps_remote_url_and_experiment_flags(tmp_path, monkeypat
     assert config.require_tool_use is experiments
     assert config.static_facts is experiments
     assert config.authz_role_guidance is experiments
+    assert config.sqli_review is not experiments
     assert summary.call_args.args[4]["experiments"] == {
         "require_tool_use": experiments,
         "static_facts": experiments,
         "authz_role_guidance": experiments,
+        "sqli_review": not experiments,
     }
     # Mitigations are on by default and recorded in the run summary
     assert config.strip_comments is True
