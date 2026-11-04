@@ -46,7 +46,7 @@ ft = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = ft
 _spec.loader.exec_module(ft)
 
-MODES = ["lgtm", "llm-only", "sast-only"]
+MODES = ["lgtm", "llm-only", "sast-only", "lgtm-no-sast"]
 
 
 def load_cases(path: Path = CASES_FILE) -> list[dict]:

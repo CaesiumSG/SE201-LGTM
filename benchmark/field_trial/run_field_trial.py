@@ -160,7 +160,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "diff_chars": sum(len(d.hunk_text()) for d in py),
     }
     index_info: dict = {}
-    if mode == "lgtm":
+    if mode in ("lgtm", "lgtm-no-sast"):
         idx_dir = cache / ".index" / project_of(case)
         index_info = ensure_index(clone, base, idx_dir, cfg)
         cfg.chroma_persist_dir = str(idx_dir)
@@ -209,6 +209,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
             1 for r in result.run_records
             if r.section != "investigator" and not _is_triage(r)),
         "findings": findings,
+        **evaluate.trace_fields(mode, result),
     })
     return record
 
