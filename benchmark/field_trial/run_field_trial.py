@@ -16,7 +16,7 @@ cache, so a case costs one tree download, not the project's history.
 
 Usage:
     python benchmark/field_trial/run_field_trial.py --fetch            # clones only
-    python benchmark/field_trial/run_field_trial.py --modes sast-only lgtm
+    python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only --gpu-model qwen3.8-27b
     python benchmark/field_trial/run_field_trial.py --modes lgtm --cases mealie-8811 --resume
     python benchmark/field_trial/run_field_trial.py --summarize-only
 """
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import statistics
 import subprocess
@@ -39,12 +40,17 @@ REPO_ROOT = BENCH.parent
 CASES_FILE = HERE / "cases.json"
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lgtm.config import LGTMConfig, setup_logging  # noqa: E402
+from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 
-MODES = ["sast-only", "llm-only", "lgtm"]
+_spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", BENCH / "evaluate.py")
+evaluate = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = evaluate
+_spec.loader.exec_module(evaluate)
+
+MODES = ["lgtm", "llm-only"]
 
 
 class FetchError(RuntimeError):
@@ -123,6 +129,10 @@ def scrub(obj, needles: list[str]):
     return obj
 
 
+def _is_triage(record) -> bool:
+    return record.section.startswith("sast_triage:")
+
+
 def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
     clone = cache / project_of(case)
     base, pr = ensure_case(case, cache)
@@ -139,7 +149,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "diff_chars": sum(len(d.hunk_text()) for d in py),
     }
     index_info: dict = {}
-    if mode in ("lgtm", "lgtm-no-sast"):
+    if mode == "lgtm":
         idx_dir = cache / ".index" / project_of(case)
         index_info = ensure_index(clone, base, idx_dir, cfg)
         cfg.chroma_persist_dir = str(idx_dir)
@@ -154,24 +164,39 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         })
         return record
     findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
+    judged = mode in evaluate.JUDGED_MODES
+    verdicts = [evaluate.finding_verdict(f, judged) for f in findings]
+    infra = evaluate.infra_failure_ids(findings)
     record.update({
-        "crashed": False, "error": None,
+        "crashed": bool(infra),
+        "error": f"infrastructure failure: {', '.join(infra)}" if infra else None,
         "latency_seconds": round(time.monotonic() - started, 1),
         **index_info,
         "semgrep_findings_total": result.meta.semgrep_findings_total,
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
-        "endpoints_reviewed": result.meta.endpoints_reviewed,
+        "changed_endpoints": result.meta.changed_endpoints,
         "n_findings": len(findings),
-        "verdicts": dict(Counter(f["verdict"] for f in findings)),
+        "verdicts": dict(Counter(verdicts)),
         "vulnerable_findings": [
             {"finding_id": f["finding_id"], "agent": f["agent"],
              "category": f["category"], "file": f["file"], "line": f["line"],
-             "cwe_id": f["cwe_id"], "confidence": f["confidence"],
-             "evidence_valid": f["evidence_valid"],
+             "cwe_id": f["cwe_id"], "supported": f["supported"],
+             "kev_verdict": f["kev_verdict"],
              "explanation": f["explanation"][:400]}
-            for f in findings if f["verdict"] == "vulnerable"
+            for f, verdict in zip(findings, verdicts) if verdict == "vulnerable"
         ],
         "tool_calls_total": sum(f.get("tool_calls_used", 0) for f in findings),
+        "investigator_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records if r.section == "investigator"),
+        "sast_triage_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records if _is_triage(r)),
+        "sast_triage_units": sum(1 for r in result.run_records if _is_triage(r)),
+        "reviewer_tool_calls": sum(
+            len(r.tool_calls) for r in result.run_records
+            if r.section != "investigator" and not _is_triage(r)),
+        "reviewer_units": sum(
+            1 for r in result.run_records
+            if r.section != "investigator" and not _is_triage(r)),
         "findings": findings,
     })
     return record
@@ -181,16 +206,33 @@ def summarize(records: list[dict]) -> dict:
     ran = [r for r in records if not r.get("crashed")]
     lat = [r["latency_seconds"] for r in ran]
     flagged = [r for r in ran if r.get("verdicts", {}).get("vulnerable")]
+    inv = sum(r.get("investigator_tool_calls", 0) for r in ran)
+    rev = sum(r.get("reviewer_tool_calls", 0) for r in ran)
+    units = sum(r.get("reviewer_units", 0) for r in ran)
+    tri = sum(r.get("sast_triage_tool_calls", 0) for r in ran)
+    tri_units = sum(r.get("sast_triage_units", 0) for r in ran)
     return {
         "cases": len(records),
         "crashed": sum(1 for r in records if r.get("crashed")),
+        "possible_findings": sum(r.get("verdicts", {}).get("possible", 0) for r in ran),
+        "tool_calls": {
+            "investigator": {
+                "total": inv, "per_case_mean": round(inv / len(ran), 2) if ran else None},
+            "sast_triage": {
+                "total": tri, "per_case_mean": round(tri / len(ran), 2) if ran else None,
+                "per_unit_mean": round(tri / tri_units, 2) if tri_units else None},
+            "reviewer": {
+                "total": rev, "per_case_mean": round(rev / len(ran), 2) if ran else None,
+                "per_unit_mean": round(rev / units, 2) if units else None},
+            "reviewer_units": units,
+        },
         "prs_with_vulnerable_verdict": len(flagged),
         "vulnerable_findings_total": sum(len(r.get("vulnerable_findings", [])) for r in ran),
         "findings_total": sum(r.get("n_findings", 0) for r in ran),
         "grounded_vulnerable_findings": sum(
-            1 for r in ran for f in r.get("vulnerable_findings", []) if f["evidence_valid"]),
+            1 for r in ran for f in r.get("vulnerable_findings", []) if f.get("supported")),
         "semgrep_in_diff_total": sum(r.get("semgrep_findings_in_diff", 0) for r in ran),
-        "endpoints_reviewed_total": sum(r.get("endpoints_reviewed", 0) for r in ran),
+        "changed_endpoints_total": sum(r.get("changed_endpoints", 0) for r in ran),
         "latency_median_seconds": round(statistics.median(lat), 1) if lat else None,
         "latency_max_seconds": max(lat) if lat else None,
         "index_seconds_total": round(sum(r.get("index_seconds", 0) for r in ran), 1),
@@ -206,7 +248,7 @@ def summarize(records: list[dict]) -> dict:
 
 def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> None:
     payload = {
-        "mode": mode, "model": model if mode != "sast-only" else "none",
+        "mode": mode, "model": model,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "git_commit": subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
@@ -218,14 +260,16 @@ def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=["sast-only", "lgtm"])
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=MODES)
     parser.add_argument("--cases", nargs="+", default=None)
     parser.add_argument("--cache", type=Path, default=HERE / ".cache")
     parser.add_argument("--output", type=Path, default=BENCH / "results" / "field_trial")
     parser.add_argument("--model", default=None)
     parser.add_argument("--ollama-url", default=None)
+    parser.add_argument("--gpu-model", choices=sorted(GPU_MODELS), default=None,
+                        help="use the GPU cluster tunnel with a registered model")
     parser.add_argument("--fetch", action="store_true", help="only fetch the clones")
-    parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON")
+    parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON that did not crash")
     parser.add_argument("--summarize-only", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -238,7 +282,11 @@ def main(argv: list[str] | None = None) -> int:
         missing = wanted - {c["id"] for c in cases}
         if missing:
             parser.error(f"unknown case ids: {sorted(missing)}")
+    if args.gpu_model and args.model:
+        parser.error("--gpu-model cannot be combined with --model")
     config = LGTMConfig()
+    if args.gpu_model:
+        apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:
@@ -257,8 +305,9 @@ def main(argv: list[str] | None = None) -> int:
         records: list[dict] = []
         for i, case in enumerate(cases, 1):
             path = out_dir / f"{case['id']}.json"
-            if (args.resume or args.summarize_only) and path.is_file():
-                records.append(json.loads(path.read_text(encoding="utf-8")))
+            stored = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+            if stored is not None and (args.summarize_only or (args.resume and not stored.get("crashed"))):
+                records.append(stored)
                 continue
             if args.summarize_only:
                 continue

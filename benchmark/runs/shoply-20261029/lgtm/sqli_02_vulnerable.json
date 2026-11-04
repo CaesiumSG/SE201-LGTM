@@ -1,0 +1,587 @@
+{
+  "id": "sqli_02_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 133.76,
+  "est_tokens": 1810,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/orders.py:66",
+      "cwe_id": "CWE-89",
+      "explanation": "The new orders_by_status() endpoint (app/routes/orders.py:59-67) reads the user-controlled query parameter `status` via request.args.get (line 63) and directly concatenates it into a raw SQL string (line 65: `query = \"SELECT ... WHERE status = '\" + status + \"'\"`), then executes it with session.execute(text(query)) at line 66. No bound parameter is used \u2014 the value is interpolated into the query string, so an attacker can inject arbitrary SQL (e.g. status=pending' OR '1'='1). This is a genuine SQL injection (CWE-89) and directly violates the project security policy, which mandates bound parameters and forbids string concatenation of request-derived values into SQL. The @require_role(\"manager\") decorator limits exposure to manager/admin users but does not prevent injection by a compromised or malicious manager account.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            67
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/by-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef orders_by_status():\n    \"\"\"List orders filtered by status.\"\"\"\n    status = request.args.get(\"status\", \"pending\")\n    session = get_session()\n    query = \"SELECT id, user_id, status, total FROM orders WHERE status = '\" + status + \"'\"\n    rows = session.execute(text(query))\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            43,
+            49
+          ],
+          "source": null,
+          "content": "class Order(Base):\n    __tablename__ = \"orders\"\n    id = Column(Integer, primary_key=True)\n    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n    status = Column(String(20), nullable=False, default=\"pending\")\n    total = Column(Float, nullable=False, default=0.0)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Use a bound parameter instead of string concatenation: `query = text(\"SELECT id, user_id, status, total FROM orders WHERE status = :status\")` and `rows = session.execute(query, {\"status\": status})`. Optionally validate `status` against a hard-coded allowlist (e.g. {\"pending\", \"shipped\", \"delivered\", \"cancelled\"}) before executing.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9608,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1003
+    },
+    {
+      "finding_id": "authz:orders-by-status-endpoint:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new GET /orders/by-status endpoint (app/routes/orders.py:59-67) is gated only by @require_role(\"manager\") and then returns ALL users' orders (id, user_id, status, total) filtered by a user-supplied status, with no ownership scoping. security-policy.md \u00a73 states 'A user may view ONLY their own orders' and 'Listing another user's orders is restricted to that user themselves and administrators.' The sanctioned manager/admin listing path is the existing GET /orders/all (app/routes/orders.py:50-56). This new endpoint is a distinct, unsanctioned path that lets a manager (who is not an admin) read other users' orders, violating the policy's restriction that listing another user's orders is limited to that user and administrators. The role check exists but is the wrong authorization for this operation.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            59,
+            67
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/by-status\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef orders_by_status():\n    \"\"\"List orders filtered by status.\"\"\"\n    status = request.args.get(\"status\", \"pending\")\n    session = get_session()\n    query = \"SELECT id, user_id, status, total FROM orders WHERE status = '\" + status + \"'\"\n    rows = session.execute(text(query))\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            50,
+            56
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/all\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef all_orders():\n    \"\"\"List every order. Managers and admins only.\"\"\"\n    session = get_session()\n    orders = session.query(Order).order_by(Order.created_at.desc()).all()\n    return jsonify([o.to_dict() for o in orders])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            43,
+            51
+          ],
+          "source": null,
+          "content": "class Order(Base):\n    __tablename__ = \"orders\"\n    id = Column(Integer, primary_key=True)\n    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n    status = Column(String(20), nullable=False, default=\"pending\")\n    total = Column(Float, nullable=False, default=0.0)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.\n- Managers and admins may list all orders (`GET /orders/all`).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Remove the new /orders/by-status endpoint, or restrict it to the admin role and/or scope results to the caller's own orders (filter by g.current_user.id) so a manager cannot read other users' orders. If a manager-level status filter is genuinely required, it must be added to the policy and api-spec as a sanctioned path; otherwise reuse the existing GET /orders/all which is the only authorized manager/admin listing path.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.92,
+      "kev_verdict": "real",
+      "kev_severity": "medium",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 60,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1093
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/orders.py:66",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/models.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 62,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/orders.py:66\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new orders_by_status() endpoint (app/routes/orders.py:59-67) reads the user-controlled query parameter `status` via request.args.get (line 63) and directly concatenates it into a raw SQL string (line 65: `query = \\\"SELECT ... WHERE status = '\\\" + status + \\\"'\\\"`), then executes it with session.execute(text(query)) at line 66. No bound parameter is used \u2014 the value is interpolated into the query string, so an attacker can inject arbitrary SQL (e.g. status=pending' OR '1'='1). This is a genuine SQL injection (CWE-89) and directly violates the project security policy, which mandates bound parameters and forbids string concatenation of request-derived values into SQL. The @require_role(\\\"manager\\\") decorator limits exposure to manager/admin users but does not prevent injection by a compromised or malicious manager account.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 67], \"content\": \"@orders_bp.route(\\\"/by-status\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef orders_by_status():\\n    \\\"\\\"\\\"List orders filtered by status.\\\"\\\"\\\"\\n    status = request.args.get(\\\"status\\\", \\\"pending\\\")\\n    session = get_session()\\n    query = \\\"SELECT id, user_id, status, total FROM orders WHERE status = '\\\" + status + \\\"'\\\"\\n    rows = session.execute(text(query))\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [43, 49], \"content\": \"class Order(Base):\\n    __tablename__ = \\\"orders\\\"\\n    id = Column(Integer, primary_key=True)\\n    user_id = Column(Integer, ForeignKey(\\\"users.id\\\"), nullable=False)\\n    status = Column(String(20), nullable=False, default=\\\"pending\\\")\\n    total = Column(Float, nullable=False, default=0.0)\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a bound parameter instead of string concatenation: `query = text(\\\"SELECT id, user_id, status, total FROM orders WHERE status = :status\\\")` and `rows = session.execute(query, {\\\"status\\\": status})`. Optionally validate `status` against a hard-coded allowlist (e.g. {\\\"pending\\\", \\\"shipped\\\", \\\"delivered\\\", \\\"cancelled\\\"}) before executing.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters security policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "by-status",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders",
+            "file_glob": "api-spec.md",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders",
+            "file_glob": "security-policy.md",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 52,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 48,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 46,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 44,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 42,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 40,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 38,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 36,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 34,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 32,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 30,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 28,
+            "end_line": 58,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-by-status-endpoint\",\n      \"title\": \"New GET /orders/by-status endpoint: manager-gated raw-SQL order listing with SQL injection\",\n      \"rationale\": \"Both hunks are the single new feature: hunk #0 adds the `from sqlalchemy import text` import that the new handler depends on, and hunk #1 adds the `orders_by_status` route. They are inseparable because the handler calls `text(query)` and the import is only used by this handler. The change raises two authorization/security concerns that must be reviewed together: (1) it is a new data-access endpoint exposing all users' orders (id, user_id, status, total) gated only by `@require_role(\\\"manager\\\")`, which is not documented in api-spec.md or security-policy.md \u00a73 (the only sanctioned manager/admin order-listing path is `GET /orders/all`); and (2) it builds the SQL by string-concatenating the request-derived `status` value into the query, violating security-policy.md \u00a75 (bound parameters required; string concatenation of request-derived values into SQL is forbidden, CWE-89). The `text` import (hunk #0) is the enabling dependency for the raw-SQL execution in hunk #1, so both belong in one review section.\",\n      \"hunks\": [\"app/routes/orders.py#0\", \"app/routes/orders.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to the new endpoint; enforces manager-or-above role via ROLE_RANK. Confirms the endpoint is authenticated and role-gated, but does not scope results to the caller's own orders.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"ROLE_RANK\", \"start_line\": 21, \"end_line\": 21, \"snapshot\": \"base\", \"why\": \"Defines user<manager<admin ranking used by require_role to decide access for the new endpoint.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"The `orders` table the raw SQL SELECT targets; confirms columns id, user_id, status, total exist and that user_id is the ownership key the new endpoint ignores.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"all_orders\", \"start_line\": 50, \"end_line\": 56, \"snapshot\": \"base\", \"why\": \"Existing manager-gated order-listing endpoint (GET /orders/all) that the new /by-status endpoint duplicates in access level; the sanctioned manager/admin listing path per security-policy.md \u00a73.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"base\", \"why\": \"Shows the ownership-scoped pattern (filter by g.current_user.id) that the new endpoint bypasses by returning all users' orders.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"pr\", \"why\": \"Registers orders_bp under url_prefix /orders, so the new route is exposed at GET /orders/by-status.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-by-status-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 65,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new GET /orders/by-status endpoint (app/routes/orders.py:59-67) is gated only by @require_role(\\\"manager\\\") and then returns ALL users' orders (id, user_id, status, total) filtered by a user-supplied status, with no ownership scoping. security-policy.md \u00a73 states 'A user may view ONLY their own orders' and 'Listing another user's orders is restricted to that user themselves and administrators.' The sanctioned manager/admin listing path is the existing GET /orders/all (app/routes/orders.py:50-56). This new endpoint is a distinct, unsanctioned path that lets a manager (who is not an admin) read other users' orders, violating the policy's restriction that listing another user's orders is limited to that user and administrators. The role check exists but is the wrong authorization for this operation.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [59, 67], \"content\": \"@orders_bp.route(\\\"/by-status\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef orders_by_status():\\n    \\\"\\\"\\\"List orders filtered by status.\\\"\\\"\\\"\\n    status = request.args.get(\\\"status\\\", \\\"pending\\\")\\n    session = get_session()\\n    query = \\\"SELECT id, user_id, status, total FROM orders WHERE status = '\\\" + status + \\\"'\\\"\\n    rows = session.execute(text(query))\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [50, 56], \"content\": \"@orders_bp.route(\\\"/all\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef all_orders():\\n    \\\"\\\"\\\"List every order. Managers and admins only.\\\"\\\"\\\"\\n    session = get_session()\\n    orders = session.query(Order).order_by(Order.created_at.desc()).all()\\n    return jsonify([o.to_dict() for o in orders])\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [43, 51], \"content\": \"class Order(Base):\\n    __tablename__ = \\\"orders\\\"\\n    id = Column(Integer, primary_key=True)\\n    user_id = Column(Integer, ForeignKey(\\\"users.id\\\"), nullable=False)\\n    status = Column(String(20), nullable=False, default=\\\"pending\\\")\\n    total = Column(Float, nullable=False, default=0.0)\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 3. Order data access rules\\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\\n- Listing another user's orders is restricted to that user themselves and administrators.\\n- Managers and admins may list all orders (`GET /orders/all`).\"}\n      ],\n      \"suggested_fix\": \"Remove the new /orders/by-status endpoint, or restrict it to the admin role and/or scope results to the caller's own orders (filter by g.current_user.id) so a manager cannot read other users' orders. If a manager-level status filter is genuinely required, it must be added to the policy and api-spec as a sanctioned path; otherwise reuse the existing GET /orders/all which is the only authorized manager/admin listing path.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 60\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "2ee82361b04c3624d0ba9eab45d4010b319872b2",
+    "pr_sha": "6c05eda6c254649f9727d6ddb2cbeb8befb9cbbd",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-by-status-endpoint",
+        "origin": "investigator",
+        "title": "New GET /orders/by-status endpoint: manager-gated raw-SQL order listing with SQL injection",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 56,
+            "new_count": 12,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-by-status-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.2,
+  "base_sha": "2ee82361b04c3624d0ba9eab45d4010b319872b2",
+  "pr_sha": "6c05eda6c254649f9727d6ddb2cbeb8befb9cbbd",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "orders-by-status-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:orders-by-status-endpoint:1"
+  ]
+}

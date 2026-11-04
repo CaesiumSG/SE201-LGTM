@@ -3,7 +3,7 @@
 
 Reuses ``benchmark/evaluate.py`` for scoring and summaries (imported, not
 copied), so the numbers are computed exactly as for the synthetic Shoply
-benchmark. For every (case, variant, mode) it checks out the case's base
+benchmark. For every (case, mode) it checks out the case's base
 branch in the cached clone, indexes it for the modes that use the index, runs
 ``ReviewPipeline`` and writes one result JSON.
 
@@ -12,18 +12,12 @@ units with a completed (non-error) result JSON and re-runs error results, and
 ``--budget`` stops starting new cases after N seconds so a call ends well
 inside a shell time limit.
 
-Variants:
-- ``own``: only the repository's own docs are indexed (default branch pair).
-- ``policy``: the same trees plus ``policies/<project>.md`` as
-  ``security-policy.md`` (``fetch.py --policies``); authz cases, and only for
-  the modes that retrieve documents (lgtm, lgtm-no-sast).
-
-Index skipping: lgtm and lgtm-no-sast always build the index and run the authz
-scan; coverage and pin are recorded. ``index_skipped`` and
-``index_skip_reason`` are recorded in every result.
+Index skipping: lgtm always builds the index and runs the authz scan;
+coverage and pin are recorded. ``index_skipped`` and ``index_skip_reason``
+are recorded in every result.
 
 Usage (Windows needs UTF-8 mode; see docs/real-world-eval.md):
-    PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes sast-only
+    PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes llm-only
     PYTHONUTF8=1 python benchmark/real_world/evaluate_real.py --modes lgtm \
         --cases aegra_authz_safe --resume --budget 300
 """
@@ -62,13 +56,14 @@ evaluate = _load("lgtm_bench_evaluate", BENCH / "evaluate.py")
 fetch = _load("lgtm_rw_fetch", HERE / "fetch.py")
 
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
-from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
+from lgtm.diff.git_diff import GitError, get_pr_diff  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 from lgtm.review.provenance import run_pin  # noqa: E402
 
-MODES = ("sast-only", "llm-only", "lgtm", "lgtm-no-sast")
-DOC_MODES = ("lgtm", "lgtm-no-sast")  # modes whose agents retrieve from the index
+MODES = ("lgtm", "llm-only")
+DOC_MODES = ("lgtm",)  # modes whose agents retrieve from the index
+GIT_START_FAILURES = ("exit 3221225794", "git executable not found")
 DEFAULT_OUTPUT = BENCH / "results" / "real_world"
 INFRA_PREFIXES = evaluate.INFRA_PREFIXES
 
@@ -115,37 +110,28 @@ def path_replacements(cache: Path, output: Path) -> list[tuple[str, str]]:
 # ----------------------------------------------------------------------
 # Planning
 # ----------------------------------------------------------------------
-def variant_suffix(variant: str) -> str:
-    return "-policy" if variant == "policy" else ""
+def out_dir_for(output: Path, mode: str) -> Path:
+    return output / mode
 
 
-def out_dir_for(output: Path, mode: str, variant: str) -> Path:
-    return output / f"{mode}{variant_suffix(variant)}"
-
-
-def work_units(cases, modes, variants):
-    """(case, variant, mode) triples, case-major so one clone is used at a time."""
+def work_units(cases, modes):
+    """(case, mode) pairs, case-major so one clone is used at a time."""
     for case in cases:
-        for variant in variants:
-            if variant == "policy" and fetch.policy_text(case) is None:
-                continue
-            for mode in modes:
-                if variant == "policy" and mode not in DOC_MODES:
-                    continue
-                yield case, variant, mode
+        for mode in modes:
+            yield case, mode
 
 
 def pending_units(units, output: Path, resume: bool):
     """Drop units with a completed result JSON when resuming."""
-    for case, variant, mode in units:
-        path = out_dir_for(output, mode, variant) / f"{case['id']}.json"
+    for case, mode in units:
+        path = out_dir_for(output, mode) / f"{case['id']}.json"
         if resume and evaluate.is_done(path):
             continue
-        yield case, variant, mode
+        yield case, mode
 
 
-def expected_ids(cases, mode: str, variant: str) -> set[str]:
-    return {c["id"] for c, _v, _m in work_units(cases, [mode], [variant])}
+def expected_ids(cases, mode: str) -> set[str]:
+    return {c["id"] for c, _m in work_units(cases, [mode])}
 
 
 # ----------------------------------------------------------------------
@@ -174,7 +160,7 @@ def ensure_index(clone: Path, base_branch: str, idx_dir: Path,
     """Build (or reuse) the index for one base branch; returns marker data.
 
     The index lives outside the clone so it survives checkouts, and is shared
-    by lgtm and lgtm-no-sast. A marker is written only after a build
+    by every mode that retrieves from it. A marker is written only after a build
     finishes, so an interrupted build is redone, never reused.
     """
     marker = idx_dir / "index.json"
@@ -211,7 +197,7 @@ def diff_stats(diffs) -> dict:
     }
 
 
-def error_result(case: dict, mode: str, variant: str, exc: Exception,
+def error_result(case: dict, mode: str, exc: Exception,
                  review=None, pin: dict | None = None) -> dict:
     """A crash is recorded as an error result and is not scored."""
     base = {
@@ -219,22 +205,23 @@ def error_result(case: dict, mode: str, variant: str, exc: Exception,
         "expected": case["expected_verdict"],
         "n_findings": 0, "verdicts": [], "grounded": 0, "grounding_rate": None,
         "latency_seconds": 0.0, "est_tokens": 0, "findings": [],
-        "mode": mode, "variant": variant,
+        "mode": mode,
         "project": fetch.project_of(case), "infra_failures": 0,
+        "case_scope": case.get("scope", "in"),
         **evaluate.case_fields(case), "pin": pin,
         **evaluate.graph_fields(review),
         **evaluate.sast_fields(review),
     }
-    return evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
+    row = evaluate.mark_error(base, f"{type(exc).__name__}: {exc}")
+    return {**row, **evaluate.partial_fields(mode, review)}
 
 
-def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
+def run_unit(case: dict, mode: str, cache: Path, output: Path,
              config: LGTMConfig, index_only: bool = False) -> dict | None:
     cid = case["id"]
     clone = cache / fetch.project_of(case)
-    suffix = variant_suffix(variant)
-    base_b = fetch.branch(cid, "base" + suffix)
-    pr_b = fetch.branch(cid, "pr" + suffix)
+    base_b = fetch.branch(cid, "base")
+    pr_b = fetch.branch(cid, "pr")
     cfg = copy.copy(config)
     cfg.mode = mode
     case_started = time.monotonic()
@@ -242,9 +229,11 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     diffs = [d for d in get_pr_diff(clone, base_b, pr_b, cfg.git_timeout)
              if d.status != "deleted"]
     pipeline = ReviewPipeline(clone, cfg)
+    tokens = evaluate.record_input_tokens(pipeline, cfg) if mode in evaluate.JUDGED_MODES else None
 
     extra: dict = {
-        "project": fetch.project_of(case), "mode": mode, "variant": variant,
+        "project": fetch.project_of(case), "mode": mode,
+        "case_scope": case.get("scope", "in"),
         **evaluate.case_fields(case),
         **diff_stats(diffs),
         "index_seconds": None, "index_chunks": None, "index_reused": None,
@@ -252,7 +241,7 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     }
 
     if mode in DOC_MODES:
-        idx_dir = output / ".index" / f"{cid}{suffix}"
+        idx_dir = output / ".index" / cid
         info = ensure_index(clone, base_b, idx_dir, cfg)
         cfg.chroma_persist_dir = str(idx_dir)  # same object the pipeline holds
         extra.update(index_skipped=False, index_skip_reason="",
@@ -273,8 +262,11 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
     pin = run_pin(cfg, REPO_ROOT, {"base": graph["base_sha"], "pr": graph["pr_sha"]})
     extra["pin"] = pin
     try:
+        judged = mode in evaluate.JUDGED_MODES
         findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-        grounded = [f for f in findings if f.get("evidence_valid")]
+        est_tokens = evaluate.estimate_tokens(findings, {})
+        findings = evaluate.with_kev_fields(findings, result.findings, judged, tokens)
+        grounded = [f for f in findings if f.get("supported")]
         extra["semgrep_findings_in_diff"] = result.meta.semgrep_findings_in_diff
         if mode in DOC_MODES:
             coverage = getattr(result.meta, "coverage", None)
@@ -283,44 +275,58 @@ def run_unit(case: dict, variant: str, mode: str, cache: Path, output: Path,
         return evaluate.score_case({
             "id": cid, "category": case["category"], "split": "real_world",
             "expected": case["expected_verdict"], "n_findings": len(findings),
-            "verdicts": [f["verdict"] for f in findings], "grounded": len(grounded),
+            "verdicts": [evaluate.finding_verdict(f, judged) for f in findings], "grounded": len(grounded),
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
             "case_seconds": round(time.monotonic() - case_started, 2),
-            "est_tokens": evaluate.estimate_tokens(findings, {}),
-            "findings": findings, **extra, **graph, **evaluate.sast_fields(result),
+            "est_tokens": est_tokens,
+            "findings": findings, "run_records": evaluate.run_record_fields(result),
+            **evaluate.trace_fields(mode, result),
+            **extra, **graph, **evaluate.sast_fields(result),
         })
     except Exception as exc:  # noqa: BLE001 - a post-review failure keeps the review's metadata
         kept = {k: extra[k] for k in ("coverage", "coverage_summary") if k in extra}
-        return {**error_result(case, mode, variant, exc, review=result, pin=pin), **kept}
+        return {**error_result(case, mode, exc, review=result, pin=pin), **kept}
 
 
 # ----------------------------------------------------------------------
 # Summaries
 # ----------------------------------------------------------------------
-def write_dir_summary(out_dir: Path, mode: str, variant: str, expected: set[str],
-                      model: str, extra: dict | None = None) -> dict | None:
-    """Rebuild summary.json from every case JSON in ``out_dir``."""
+def write_dir_summary(out_dir: Path, mode: str, expected: set[str],
+                      model: str, extra: dict | None = None,
+                      unrun: frozenset = frozenset()) -> dict | None:
+    """Rebuild summary.json from every case JSON in ``out_dir``.
+
+    ``unrun`` ids count as missing even when an earlier run left a row for them.
+    """
     results = []
     for path in sorted(out_dir.glob("*.json")):
         if path.name in ("summary.json", "run.json"):
             continue
         results.append(json.loads(path.read_text(encoding="utf-8")))
-    if not results:
-        return None
     present = {r["id"] for r in results}
     payload_extra = {
-        "split": "real_world", "variant": variant,
+        "split": "real_world",
         "experiments": {"require_tool_use": False, "static_facts": False,
                         "authz_role_guidance": False},
         "cases_expected": len(expected), "cases_present": len(present),
-        "complete": present >= expected,
-        "missing": sorted(expected - present),
+        "complete": present >= expected and not unrun,
+        "missing": sorted((expected - present) | unrun),
+        "sql_cases_semgrep_warns_on": sum(
+            1 for r in results
+            if r.get("category") == "sqli" and (r.get("semgrep_findings_in_diff") or 0) > 0),
         **(extra or {}),
     }
+    if not results:
+        if not unrun:
+            return None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"mode": mode, **payload_extra}
+        (out_dir / "summary.json").write_text(json.dumps(payload, indent=2),
+                                              encoding="utf-8")
+        return payload
     with contextlib.redirect_stdout(io.StringIO()):  # write_summary prints it all
-        evaluate.write_summary(out_dir, results, mode,
-                               "none" if mode == "sast-only" else model, payload_extra)
+        evaluate.write_summary(out_dir, results, mode, model, payload_extra)
     return json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
 
 
@@ -336,7 +342,7 @@ def preflight(modes, config: LGTMConfig) -> dict:
         )
     info: dict = {"python": sys.version.split()[0],
                   "utf8_mode": bool(sys.flags.utf8_mode)}
-    if any(m in ("sast-only", "lgtm") for m in modes):
+    if "lgtm" in modes:
         from lgtm.sast.semgrep_runner import _semgrep_executable
 
         check = subprocess.run([*_semgrep_executable(), "--version"],
@@ -344,7 +350,7 @@ def preflight(modes, config: LGTMConfig) -> dict:
         if check.returncode != 0:
             raise SystemExit(f"semgrep is not runnable: {check.stderr.strip()[:300]}")
         info["semgrep"] = check.stdout.strip().splitlines()[0]
-    if any(m != "sast-only" for m in modes):
+    if modes:
         base = config.ollama_base_url.rstrip("/")
         try:
             tags = json.loads(urllib.request.urlopen(f"{base}/api/tags", timeout=10).read())
@@ -365,7 +371,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory holding the fetch.py clones")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--modes", nargs="*", choices=MODES, default=list(MODES))
-    parser.add_argument("--variants", choices=("own", "policy", "both"), default="both")
     parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--resume", action="store_true",
                         help="skip units with a completed (non-error) result JSON; "
@@ -402,23 +407,21 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             parser.error(f"unknown case ids: {sorted(unknown)}")
         cases = [c for c in all_cases if c["id"] in args.cases]
-    variants = ["own", "policy"] if args.variants == "both" else [args.variants]
     scrubs = path_replacements(args.cache, args.output)
     args.output.mkdir(parents=True, exist_ok=True)
 
-    # Also for --summarize-only: every summary.json records the environment it
-    # was built in, and a rebuild must not drop those fields.
-    env_info = preflight(args.modes, config)
     if not args.summarize_only:
         missing = [fetch.project_of(c) for c in cases
                    if not (args.cache / fetch.project_of(c) / ".git").is_dir()]
         if missing:
             raise SystemExit(
                 f"no clone for {sorted(set(missing))} under {args.cache}; "
-                "run benchmark/real_world/fetch.py --policies first"
+                "run benchmark/real_world/fetch.py first"
             )
+    # Also runs for --summarize-only; every summary.json records this environment.
+    env_info = preflight(args.modes, config)
 
-    units = list(pending_units(work_units(cases, args.modes, variants),
+    units = list(pending_units(work_units(cases, args.modes),
                                args.output, args.resume and not args.index_only))
     if not args.summarize_only and not args.index_only:
         evaluate.write_run_manifest(
@@ -428,37 +431,64 @@ def main(argv: list[str] | None = None) -> int:
              "pin": run_pin(config, REPO_ROOT, {})},
             args.resume, parser)
     started = time.monotonic()
-    touched: set[tuple[str, str]] = set()
+    touched: set[str] = set()
     done = 0
-    for i, (case, variant, mode) in enumerate(units, 1):
+    held = None  # a git start failure is recorded only once the next unit shows it was not the second in a row
+    aborted = False
+    held_at = 0
+    unrun: dict[str, set[str]] = {}
+
+    def record(case, mode, result):
+        out_dir = out_dir_for(args.output, mode)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{case['id']}.json").write_text(
+            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
+        touched.add(mode)
+
+    for i, (case, mode) in enumerate(units, 1):
         if args.summarize_only:
             break
         if args.budget is not None and time.monotonic() - started > args.budget:
             print(f"budget of {args.budget:.0f}s reached after {done} unit(s); "
                   f"{len(units) - i + 1} left, re-run with --resume")
             break
-        print(f"[{i}/{len(units)}] {case['id']} {mode}{variant_suffix(variant)} ...",
+        print(f"[{i}/{len(units)}] {case['id']} {mode} ...",
               flush=True)
         try:
-            result = run_unit(case, variant, mode, args.cache, args.output,
+            result = run_unit(case, mode, args.cache, args.output,
                               config, index_only=args.index_only)
         except KeyboardInterrupt:
             print("\ninterrupted", file=sys.stderr)
             return 3
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
             result = error_result(
-                case, mode, variant, exc,
+                case, mode, exc,
                 pin=run_pin(config, REPO_ROOT, {}))
+            if isinstance(exc, OSError) or (
+                    isinstance(exc, GitError) and any(s in str(exc) for s in GIT_START_FAILURES)):
+                if held is not None:
+                    print("git cannot start (two units in a row); aborting. Re-run with "
+                          "--resume once git works.", file=sys.stderr)
+                    held = None
+                    aborted = True
+                    for c, m in units[held_at - 1:]:
+                        unrun.setdefault(m, set()).add(c["id"])
+                    break
+                held = (case, mode, result)
+                held_at = i
+                print(f"    ERROR: {scrub(result['error'], scrubs)}")
+                done += 1
+                continue
+        if held is not None:
+            if not args.index_only:
+                record(*held)
+            held = None
         if result is not None and evaluate.result_is_error(result):
             print(f"    ERROR: {scrub(result['error'], scrubs)}")
         done += 1
         if result is None or args.index_only:
             continue  # an index-only failure is printed, never a case result
-        out_dir = out_dir_for(args.output, mode, variant)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{case['id']}.json").write_text(
-            json.dumps(scrub(result, scrubs), indent=2, default=str), encoding="utf-8")
-        touched.add((mode, variant))
+        record(case, mode, result)
         if not evaluate.result_is_error(result):
             if result.get("index_seconds") is not None:
                 index_note = f"index {result['index_seconds']}s"
@@ -469,23 +499,25 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result['predicted']}; review {result['latency_seconds']}s, "
                   f"{index_note}; {result['n_findings']} finding(s))")
 
+    if held is not None and not args.index_only:
+        record(*held)
     if args.index_only:
-        return 0
-    targets = touched if not args.summarize_only else {
-        (m, v) for m in args.modes for v in variants
-        if out_dir_for(args.output, m, v).is_dir()}
-    for mode, variant in sorted(targets):
+        return 4 if aborted else 0
+    targets = (touched | unrun.keys()) if not args.summarize_only else {
+        m for m in args.modes if out_dir_for(args.output, m).is_dir()}
+    for mode in sorted(targets):
         summary = write_dir_summary(
-            out_dir_for(args.output, mode, variant), mode, variant,
-            expected_ids(all_cases, mode, variant), config.ollama_model,
-            {**env_info, "reasoning": config.reasoning})
-        if summary:
+            out_dir_for(args.output, mode), mode,
+            expected_ids(all_cases, mode), config.ollama_model,
+            {**env_info, "reasoning": config.reasoning},
+            frozenset(unrun.get(mode, ())))
+        if summary and "summary" in summary:
             o = summary["summary"]["overall"]
-            print(f"summary {mode}{variant_suffix(variant)}: cases={o['cases']} "
+            print(f"summary {mode}: cases={o['cases']} "
                   f"scored={o['scored']} errors={o['errors']} "
                   f"tp={o['tp']} fp={o['fp']} fn={o['fn']} tn={o['tn']} "
                   f"f1={o['f1']} complete={summary['complete']}")
-    return 0
+    return 4 if aborted else 0
 
 
 if __name__ == "__main__":

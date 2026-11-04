@@ -1,0 +1,664 @@
+{
+  "id": "sqli_12_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 3,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable",
+    "safe"
+  ],
+  "grounded": 3,
+  "grounding_rate": 1.0,
+  "latency_seconds": 150.88,
+  "est_tokens": 2999,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/users.py:67",
+      "cwe_id": "CWE-89",
+      "explanation": "The new filter_users() endpoint (app/routes/users.py:58-70) builds a SQL WHERE clause by directly interpolating raw request query parameters into the query string. At line 63-64, `for field, value in request.args.items(): clauses.append(f\"{field} = '{value}'\")` takes both the field name and the value straight from `request.args` (fully attacker-controlled) with no sanitization, escaping, or allowlist validation. The resulting `where` string is concatenated into the SQL at line 68: `text(\"SELECT id, username, role FROM users WHERE \" + where)`. No bound parameters (`:name` placeholders or a separate params argument) are used, and a repo-wide grep confirms there is no allowlist/whitelist of permitted fields anywhere in the codebase. This is a textbook SQL injection: an attacker with the manager role can supply e.g. `?role='admin' OR '1'='1` or `?x=1; DROP TABLE users--` to alter query semantics, bypass filters, or execute arbitrary SQL. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids string interpolation/f-strings of request-derived values into SQL, and requires dynamic identifiers to be validated against a hard-coded allowlist. The finding is a true positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    \"\"\"Filter users by field=value query parameters.\"\"\"\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            23,
+            31
+          ],
+          "source": null,
+          "content": "class User(Base):\n    __tablename__ = \"users\"\n\n    id = Column(Integer, primary_key=True)\n    username = Column(String(80), unique=True, nullable=False)\n    email = Column(String(255), unique=True, nullable=False)\n    password_hash = Column(String(255), nullable=False)\n    role = Column(String(20), nullable=False, default=\"user\")  # user|manager|admin",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Do not interpolate request values into the SQL string. (1) Validate the field name against a hard-coded allowlist of permitted columns (e.g. {\"id\", \"username\", \"role\"}) and reject anything else. (2) Use bound parameters for the value: build `text(\"SELECT id, username, role FROM users WHERE \" + where)` where `where` is composed of `:p0 AND :p1 ...` placeholders, and pass the values via `session.execute(stmt, {\"p0\": value0, ...})`. Example:\n\n    ALLOWED = {\"id\", \"username\", \"role\"}\n    clauses, params = [], {}\n    for i, (field, value) in enumerate(request.args.items()):\n        if field not in ALLOWED:\n            return jsonify({\"error\": \"invalid field\"}), 400\n        clauses.append(f\"{field} = :p{i}\")\n        params[f\"p{i}\"] = value\n    where = \" AND \".join(clauses) or \"1=1\"\n    stmt = text(f\"SELECT id, username, role FROM users WHERE {where}\")\n    rows = session.execute(stmt, params)\n\nThis keeps the column name from a trusted allowlist and binds all user-supplied values as parameters, satisfying security-policy.md \u00a75.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9504,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 67,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1198
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:68",
+      "cwe_id": "CWE-89",
+      "explanation": "The new filter_users() endpoint (app/routes/users.py:58-70) builds a SQL WHERE clause by directly interpolating raw request query parameters into the query string. At line 63-64 it iterates request.args.items() and appends f\"{field} = '{value}'\" \u2014 both the column name (field) and the value are taken verbatim from user input with no sanitization, no bound parameters, and no allowlist validation. The resulting string is concatenated into the SQLAlchemy text() query at line 68 (text(\"SELECT id, username, role FROM users WHERE \" + where)). This is a classic SQL injection: an attacker with the manager role can supply a value like \"' OR '1'='1\" or \"' UNION SELECT ... --\" to break out of the string literal and execute arbitrary SQL. I confirmed via grep that no allowlist/whitelist of valid fields exists anywhere in the codebase, and the security policy explicitly forbids this pattern. The @require_role(\"manager\") decorator limits who can trigger it but does not mitigate the injection. This is a genuine, exploitable SQL injection (CWE-89), not a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    \"\"\"Filter users by field=value query parameters.\"\"\"\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            23,
+            31
+          ],
+          "source": null,
+          "content": "class User(Base):\n    __tablename__ = \"users\"\n\n    id = Column(Integer, primary_key=True)\n    username = Column(String(80), unique=True, nullable=False)\n    email = Column(String(255), unique=True, nullable=False)\n    password_hash = Column(String(255), nullable=False)\n    role = Column(String(20), nullable=False, default=\"user\")  # user|manager|admin\n    created_at = Column(DateTime, default=datetime.datetime.utcnow)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Rewrite filter_users() to use bound parameters and a hard-coded allowlist of permitted columns. Example: define ALLOWED_FIELDS = {\"id\": \"id\", \"username\": \"username\", \"role\": \"role\"}; for each request arg, reject any field not in ALLOWED_FIELDS (return 400), build a clause like f\"{ALLOWED_FIELDS[field]} = :p{i}\" and collect the values into a params dict, then execute text(\"SELECT id, username, role FROM users WHERE \" + where) with the params dict passed as the second argument to session.execute(). Never interpolate raw request values or unvalidated column names into the SQL string.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.942,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 68,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1176
+    },
+    {
+      "finding_id": "authz:filter-users-sqli:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new GET /users/filter endpoint is not documented in the API spec (api-spec.md lists only /users, /users/<id>, /users/search for user data) and is not covered by any explicit policy rule. It is gated only by @require_role(\"manager\"), which is the same role required to list all users, so it does not itself violate the documented manager/admin access rule. However, it is a new, undocumented data-access path that exposes user records (id, username, role) and is not authorized by any specific policy clause, making it a candidate missing-authorization concern requiring security-champion review per policy \u00a77.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            70
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/filter\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef filter_users():\n    clauses = []\n    for field, value in request.args.items():\n        clauses.append(f\"{field} = '{value}'\")\n    where = \" AND \".join(clauses) or \"1=1\"\n    session = get_session()\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE \" + where)\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "## Users\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 7. Review requirements\n- Security-relevant changes (auth code, SQL, new endpoints) require review by a security champion before merge.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Document the /users/filter endpoint in api-spec.md with its intended access level, or remove it; ensure it is reviewed by a security champion and that its access rule matches the documented policy for user data.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8667,
+      "kev_verdict": "not_real",
+      "kev_severity": "medium",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/users.py",
+      "line": 58,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 939
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/users.py:67",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ALLOWED|allowlist|whitelist|VALID_FIELDS|_FIELDS",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ALLOWED|allowlist|whitelist|VALID_FIELDS|_FIELDS",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/users.py:67\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new filter_users() endpoint (app/routes/users.py:58-70) builds a SQL WHERE clause by directly interpolating raw request query parameters into the query string. At line 63-64, `for field, value in request.args.items(): clauses.append(f\\\"{field} = '{value}'\\\")` takes both the field name and the value straight from `request.args` (fully attacker-controlled) with no sanitization, escaping, or allowlist validation. The resulting `where` string is concatenated into the SQL at line 68: `text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)`. No bound parameters (`:name` placeholders or a separate params argument) are used, and a repo-wide grep confirms there is no allowlist/whitelist of permitted fields anywhere in the codebase. This is a textbook SQL injection: an attacker with the manager role can supply e.g. `?role='admin' OR '1'='1` or `?x=1; DROP TABLE users--` to alter query semantics, bypass filters, or execute arbitrary SQL. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids string interpolation/f-strings of request-derived values into SQL, and requires dynamic identifiers to be validated against a hard-coded allowlist. The finding is a true positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [58, 70], \"content\": \"@users_bp.route(\\\"/filter\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef filter_users():\\n    \\\"\\\"\\\"Filter users by field=value query parameters.\\\"\\\"\\\"\\n    clauses = []\\n    for field, value in request.args.items():\\n        clauses.append(f\\\"{field} = '{value}'\\\")\\n    where = \\\" AND \\\".join(clauses) or \\\"1=1\\\"\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [23, 31], \"content\": \"class User(Base):\\n    __tablename__ = \\\"users\\\"\\n\\n    id = Column(Integer, primary_key=True)\\n    username = Column(String(80), unique=True, nullable=False)\\n    email = Column(String(255), unique=True, nullable=False)\\n    password_hash = Column(String(255), nullable=False)\\n    role = Column(String(20), nullable=False, default=\\\"user\\\")  # user|manager|admin\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 5. Database access (SQL)\\n\\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\\n- Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n  ],\n  \"suggested_fix\": \"Do not interpolate request values into the SQL string. (1) Validate the field name against a hard-coded allowlist of permitted columns (e.g. {\\\"id\\\", \\\"username\\\", \\\"role\\\"}) and reject anything else. (2) Use bound parameters for the value: build `text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)` where `where` is composed of `:p0 AND :p1 ...` placeholders, and pass the values via `session.execute(stmt, {\\\"p0\\\": value0, ...})`. Example:\\n\\n    ALLOWED = {\\\"id\\\", \\\"username\\\", \\\"role\\\"}\\n    clauses, params = [], {}\\n    for i, (field, value) in enumerate(request.args.items()):\\n        if field not in ALLOWED:\\n            return jsonify({\\\"error\\\": \\\"invalid field\\\"}), 400\\n        clauses.append(f\\\"{field} = :p{i}\\\")\\n        params[f\\\"p{i}\\\"] = value\\n    where = \\\" AND \\\".join(clauses) or \\\"1=1\\\"\\n    stmt = text(f\\\"SELECT id, username, role FROM users WHERE {where}\\\")\\n    rows = session.execute(stmt, params)\\n\\nThis keeps the column name from a trusted allowlist and binds all user-supplied values as parameters, satisfying security-policy.md \u00a75.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:68",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters SQLAlchemy text query policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ALLOWED|allowlist|whitelist|VALID_FIELDS|_FIELDS",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "filter_users|/filter",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:68\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new filter_users() endpoint (app/routes/users.py:58-70) builds a SQL WHERE clause by directly interpolating raw request query parameters into the query string. At line 63-64 it iterates request.args.items() and appends f\\\"{field} = '{value}'\\\" \u2014 both the column name (field) and the value are taken verbatim from user input with no sanitization, no bound parameters, and no allowlist validation. The resulting string is concatenated into the SQLAlchemy text() query at line 68 (text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)). This is a classic SQL injection: an attacker with the manager role can supply a value like \\\"' OR '1'='1\\\" or \\\"' UNION SELECT ... --\\\" to break out of the string literal and execute arbitrary SQL. I confirmed via grep that no allowlist/whitelist of valid fields exists anywhere in the codebase, and the security policy explicitly forbids this pattern. The @require_role(\\\"manager\\\") decorator limits who can trigger it but does not mitigate the injection. This is a genuine, exploitable SQL injection (CWE-89), not a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [58, 70], \"content\": \"@users_bp.route(\\\"/filter\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef filter_users():\\n    \\\"\\\"\\\"Filter users by field=value query parameters.\\\"\\\"\\\"\\n    clauses = []\\n    for field, value in request.args.items():\\n        clauses.append(f\\\"{field} = '{value}'\\\")\\n    where = \\\" AND \\\".join(clauses) or \\\"1=1\\\"\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [23, 31], \"content\": \"class User(Base):\\n    __tablename__ = \\\"users\\\"\\n\\n    id = Column(Integer, primary_key=True)\\n    username = Column(String(80), unique=True, nullable=False)\\n    email = Column(String(255), unique=True, nullable=False)\\n    password_hash = Column(String(255), nullable=False)\\n    role = Column(String(20), nullable=False, default=\\\"user\\\")  # user|manager|admin\\n    created_at = Column(DateTime, default=datetime.datetime.utcnow)\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 5. Database access (SQL)\\n\\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument).\\n- String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\\n- Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n  ],\n  \"suggested_fix\": \"Rewrite filter_users() to use bound parameters and a hard-coded allowlist of permitted columns. Example: define ALLOWED_FIELDS = {\\\"id\\\": \\\"id\\\", \\\"username\\\": \\\"username\\\", \\\"role\\\": \\\"role\\\"}; for each request arg, reject any field not in ALLOWED_FIELDS (return 400), build a clause like f\\\"{ALLOWED_FIELDS[field]} = :p{i}\\\" and collect the values into a params dict, then execute text(\\\"SELECT id, username, role FROM users WHERE \\\" + where) with the params dict passed as the second argument to session.execute(). Never interpolate raw request values or unvalidated column names into the SQL string.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection raw query parameter filtering users endpoint"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "search",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"filter-users-sqli\",\n      \"title\": \"New /users/filter endpoint builds SQL via string interpolation of request args\",\n      \"rationale\": \"Both hunks together introduce a new GET /users/filter endpoint. Hunk #0 adds the `from sqlalchemy import text` import that the new handler depends on; hunk #1 adds the `filter_users` route which iterates `request.args.items()` and builds a WHERE clause with f-string interpolation (`f\\\"{field} = '{value}'\\\"`) and string concatenation into a raw `text()` query. This is a single access-control / injection concern: the endpoint is gated by `@require_role(\\\"manager\\\")` (so it is reachable by any manager/admin), but the query construction violates security-policy.md \u00a75 (bound parameters required; string interpolation of request-derived values into SQL is forbidden, CWE-89) and the dynamic column names are not validated against an allowlist. The import and the handler are inseparable \u2014 the import exists solely to support this handler \u2014 so they belong in one section.\",\n      \"hunks\": [\"app/routes/users.py#0\", \"app/routes/users.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to filter_users; enforces manager-or-above role, so the endpoint is reachable by any manager/admin and the SQLi is exploitable by a broad class of authenticated users.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 40, \"snapshot\": \"base\", \"why\": \"Defines the `users` table and its columns (id, username, email, password_hash, role, created_at); the raw query targets this table and the unvalidated `field` values could reference any column or be injected.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_session\", \"start_line\": 100, \"end_line\": 101, \"snapshot\": \"base\", \"why\": \"Session factory used by filter_users to execute the raw text() query.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "filter-users-sqli",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 40,
+            "end_line": 65,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 20,
+            "end_line": 40,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "filter",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The new GET /users/filter endpoint is not documented in the API spec (api-spec.md lists only /users, /users/<id>, /users/search for user data) and is not covered by any explicit policy rule. It is gated only by @require_role(\\\"manager\\\"), which is the same role required to list all users, so it does not itself violate the documented manager/admin access rule. However, it is a new, undocumented data-access path that exposes user records (id, username, role) and is not authorized by any specific policy clause, making it a candidate missing-authorization concern requiring security-champion review per policy \u00a77.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [58, 70], \"content\": \"@users_bp.route(\\\"/filter\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef filter_users():\\n    clauses = []\\n    for field, value in request.args.items():\\n        clauses.append(f\\\"{field} = '{value}'\\\")\\n    where = \\\" AND \\\".join(clauses) or \\\"1=1\\\"\\n    session = get_session()\\n    rows = session.execute(\\n        text(\\\"SELECT id, username, role FROM users WHERE \\\" + where)\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"## Users\\n| Endpoint | Method | Access |\\n|---|---|---|\\n| `/users` | GET | manager, admin |\\n| `/users/<id>` | GET | owner or admin |\\n| `/users/<id>` | PUT | owner or admin |\\n| `/users/<id>` | DELETE | admin only |\\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\\n| `/users/<id>/orders` | GET | owner or admin |\\n| `/users/search` | GET | manager, admin |\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 7. Review requirements\\n- Security-relevant changes (auth code, SQL, new endpoints) require review by a security champion before merge.\"}\n      ],\n      \"suggested_fix\": \"Document the /users/filter endpoint in api-spec.md with its intended access level, or remove it; ensure it is reviewed by a security champion and that its access rule matches the documented policy for user data.\",\n      \"file\": \"app/routes/users.py\",\n      \"line\": 58\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "b1289a38a46a66596f9f5c126f88a27199682223",
+    "pr_sha": "6f47005feed6dcbdd5bab739032610f30422fe90",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "filter-users-sqli",
+        "origin": "investigator",
+        "title": "New /users/filter endpoint builds SQL via string interpolation of request args",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/users.py#1",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 55,
+            "new_count": 16,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:filter-users-sqli:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.04,
+  "base_sha": "b1289a38a46a66596f9f5c126f88a27199682223",
+  "pr_sha": "6f47005feed6dcbdd5bab739032610f30422fe90",
+  "sast_error": null,
+  "semgrep_findings_total": 2,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "filter-users-sqli"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

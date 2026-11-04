@@ -12,6 +12,7 @@ Mitigations against prompt injection:
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import re
 from typing import Sequence
@@ -127,6 +128,14 @@ def sanitize_file_diff(fd: FileDiff) -> FileDiff:
     return sanitized
 
 
+@functools.lru_cache(maxsize=64)
+def sanitize_source(path: str, text: str) -> str:
+    """``text`` (the source of ``path``) with comments and docstrings stripped, as the model sees PR code."""
+    lines = text.split("\n")
+    changes = [LineChange("add", line, None, n) for n, line in enumerate(lines, 1)]
+    return sanitize_file_diff(FileDiff(path, hunks=[Hunk(1, 0, 1, len(lines), changes=changes)])).added_text
+
+
 def sanitize_diffs(diffs: Sequence[FileDiff]) -> list[FileDiff]:
     """Sanitize all diffs for LLM ingestion."""
     return [sanitize_file_diff(d) for d in diffs]
@@ -161,8 +170,6 @@ def detect_prompt_injections(diffs: Sequence[FileDiff]) -> list[AgentFinding]:
                         findings.append(
                             AgentFinding(
                                 finding_id=finding_id,
-                                verdict="vulnerable",
-                                confidence=0.95,
                                 cwe_id="CWE-862",  # Authorization bypass / review subversion
                                 explanation=(
                                     f"Potential prompt injection detected: added line contains "
@@ -182,7 +189,7 @@ def detect_prompt_injections(diffs: Sequence[FileDiff]) -> list[AgentFinding]:
                                 agent="injection_detector",
                                 file=fd.path,
                                 line=lineno,
-                                evidence_valid=True,
+                                verdict="vulnerable",
                             )
                         )
                         break

@@ -1,0 +1,477 @@
+{
+  "id": "authz_06_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 104.95,
+  "est_tokens": 881,
+  "findings": [
+    {
+      "finding_id": "authz:orders-report-authz:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new GET /orders/report endpoint authorizes only on the presence of an API key (get_api_key() != None) and never verifies the key's scope. security-policy.md \u00a76 mandates: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' and 'Report exports are readable only with the reports:read scope.' api-spec.md likewise lists /orders/report as requiring 'API key with reports:read scope'. Because ApiKey.scope defaults to 'orders:read' (models.py:72), a key without reports:read still passes the presence-only check and can read every order, including user_id and shipping_address PII (models.py:55-62). The mandated decorator require_api_key_scope (auth.py:88-104) is defined but never used anywhere in the codebase (grep confirms only its definition).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            71
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/report\", methods=[\"GET\"])\ndef orders_report():\n    key = get_api_key()\n    if key is None:\n        return jsonify({\"error\": \"valid API key required\"}), 401\n    session = get_session()\n    orders = session.query(Order).all()\n    return jsonify({\"order_count\": len(orders), \"revenue\": sum(o.total for o in orders), \"orders\": [o.to_dict() for o in orders]})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            46,
+            52
+          ],
+          "source": null,
+          "content": "def get_api_key() -> ApiKey | None:\n    raw = request.headers.get(\"X-Api-Key\", \"\")\n    if not raw:\n        return None\n    session = get_session()\n    return session.query(ApiKey).filter(ApiKey.key == raw).first()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            71,
+            72
+          ],
+          "source": null,
+          "content": "# Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n    scope = Column(String(50), nullable=False, default=\"orders:read\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization. Report exports are readable only with the `reports:read` scope.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/report` | GET | API key with `reports:read` scope |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Replace the hand-rolled presence check with the mandated decorator: decorate orders_report with @require_api_key_scope(\"reports:read\") and remove the manual get_api_key()/None check, so the key's scope is enforced before any data is returned.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8936,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 60,
+      "tool_calls_used": 4,
+      "pr_graph_ok": true,
+      "input_tokens": 1078
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key scope requirements for order report endpoints"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "scope",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 60,
+            "end_line": 85,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "get_api_key",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp|register_blueprint",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 56,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 71,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 62,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 16,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-report-authz\",\n      \"title\": \"New /orders/report endpoint authorizes via raw API-key presence instead of the required reports:read scope\",\n      \"rationale\": \"Hunk #1 adds a new GET /orders/report endpoint that returns every order (order_count, total revenue, and the full order list including user_id and shipping_address) to any caller presenting a valid API key. It calls get_api_key() directly and only checks that the key is not None, never verifying the key's scope. Hunk #0 is the supporting change that imports get_api_key into the module to enable this hand-rolled check. Both hunks together implement the same access-control concern: the endpoint's authorization. This violates security-policy.md \u00a76 ('An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization' and 'Report exports are readable only with the reports:read scope') and \u00a71 (endpoints MUST use the provided decorators; hand-rolled header checks are forbidden). The api-spec.md confirms /orders/report requires an API key with the reports:read scope. Because ApiKey.scope defaults to 'orders:read' (models.py:72), a key lacking reports:read would still be accepted here, exposing all users' orders and PII (shipping_address) to a lower-privileged scope. The existing require_api_key_scope decorator (auth.py:88) is the mandated mechanism but is unused by this endpoint.\",\n      \"hunks\": [\"app/routes/orders.py#0\", \"app/routes/orders.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"get_api_key\", \"start_line\": 46, \"end_line\": 52, \"snapshot\": \"pr\", \"why\": \"The helper the new endpoint calls; it only resolves the key from the X-Api-Key header and returns it without any scope check, so the caller must enforce scope itself.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 88, \"end_line\": 104, \"snapshot\": \"pr\", \"why\": \"The mandated decorator that enforces key.scope == required_scope; the new endpoint bypasses it, which is the core authorization gap.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"ApiKey\", \"start_line\": 65, \"end_line\": 75, \"snapshot\": \"pr\", \"why\": \"Shows ApiKey.scope defaults to 'orders:read' (line 72), so a key without reports:read would still pass the endpoint's presence-only check.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order.to_dict\", \"start_line\": 55, \"end_line\": 62, \"snapshot\": \"pr\", \"why\": \"The report serializes every order via to_dict(), exposing user_id and shipping_address (PII) for all users, raising the sensitivity of the missing scope check.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"all_orders\", \"start_line\": 50, \"end_line\": 56, \"snapshot\": \"base\", \"why\": \"The existing /orders/all endpoint that already lists all orders but is correctly gated by @require_role('manager'); the new /report duplicates this data exposure with weaker authorization.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-report-authz",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 40,
+            "end_line": 110,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 50,
+            "end_line": 80,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The new `/orders/report` endpoint only checks for the presence of an API key (via `get_api_key()`) and never verifies the key's scope. The policy explicitly requires `@require_api_key_scope(...)` for API-key endpoints and states that report exports require the `reports:read` scope. Since `ApiKey.scope` defaults to `orders:read`, a key lacking `reports:read` would still pass the presence-only check and expose all orders (including PII).\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new GET /orders/report endpoint authorizes only on the presence of an API key (get_api_key() != None) and never verifies the key's scope. security-policy.md \u00a76 mandates: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' and 'Report exports are readable only with the reports:read scope.' api-spec.md likewise lists /orders/report as requiring 'API key with reports:read scope'. Because ApiKey.scope defaults to 'orders:read' (models.py:72), a key without reports:read still passes the presence-only check and can read every order, including user_id and shipping_address PII (models.py:55-62). The mandated decorator require_api_key_scope (auth.py:88-104) is defined but never used anywhere in the codebase (grep confirms only its definition).\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [57, 71], \"content\": \"@orders_bp.route(\\\"/report\\\", methods=[\\\"GET\\\"])\\ndef orders_report():\\n    key = get_api_key()\\n    if key is None:\\n        return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n    session = get_session()\\n    orders = session.query(Order).all()\\n    return jsonify({\\\"order_count\\\": len(orders), \\\"revenue\\\": sum(o.total for o in orders), \\\"orders\\\": [o.to_dict() for o in orders]})\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [46, 52], \"content\": \"def get_api_key() -> ApiKey | None:\\n    raw = request.headers.get(\\\"X-Api-Key\\\", \\\"\\\")\\n    if not raw:\\n        return None\\n    session = get_session()\\n    return session.query(ApiKey).filter(ApiKey.key == raw).first()\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [71, 72], \"content\": \"# Scopes: \\\"reports:read\\\", \\\"orders:read\\\", \\\"orders:write\\\"\\n    scope = Column(String(50), nullable=False, default=\\\"orders:read\\\")\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization. Report exports are readable only with the `reports:read` scope.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/report` | GET | API key with `reports:read` scope |\"}\n      ],\n      \"suggested_fix\": \"Replace the hand-rolled presence check with the mandated decorator: decorate orders_report with @require_api_key_scope(\\\"reports:read\\\") and remove the manual get_api_key()/None check, so the key's scope is enforced before any data is returned.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 60\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "75852a29ab42b5fe5410a16a54edfd00403da73d",
+    "pr_sha": "853e3ff69ab9ce496d8477b13353a588cc1c7d5e",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-report-authz",
+        "origin": "investigator",
+        "title": "New /orders/report endpoint authorizes via raw API-key presence instead of the required reports:read scope",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 10,
+            "old_count": 7,
+            "new_start": 10,
+            "new_count": 7,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 54,
+            "new_count": 18,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-report-authz:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "75852a29ab42b5fe5410a16a54edfd00403da73d",
+  "pr_sha": "853e3ff69ab9ce496d8477b13353a588cc1c7d5e",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "orders-report-authz"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

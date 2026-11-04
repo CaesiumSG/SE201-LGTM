@@ -1,0 +1,554 @@
+{
+  "id": "sqli_07_safe",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "safe",
+  "n_findings": 2,
+  "verdicts": [
+    "safe",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 143.71,
+  "est_tokens": 1557,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-fstring:app/routes/orders.py:66",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query at app/routes/orders.py:66-69 is built with an f-string. The value-filter part (status_filter, sourced from the user-controlled X-Report-Filter header at line 61) is correctly passed as a bound parameter via the `?` placeholder and the `(status_filter,)` params argument, so that portion is safe. However, the dynamic identifier `order_column` is interpolated directly into the SQL string via `{order_column}` (line 67). In this PR, `order_column` is hard-coded to the literal string \"id\" (line 62) and grep confirms it is never assigned from any request-derived source, so no user-controlled input currently reaches the interpolated part. This matches the false-positive condition where the dynamic part is a fixed constant. That said, the code still violates the project's explicit policy: security-policy.md \u00a75 forbids f-string interpolation into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist. Because the interpolated identifier is a constant rather than user input, this is a low-risk finding, but it is a policy violation and a latent injection risk if the constant is later replaced with request-derived input.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            61,
+            69
+          ],
+          "source": null,
+          "content": "    status_filter = request.headers.get(\"X-Report-Filter\", \"shipped\")\n    order_column = \"id\"\n    conn = get_engine().raw_connection()\n    try:\n        cursor = conn.cursor()\n        cursor.execute(\n            f\"SELECT id, user_id, status, total FROM orders WHERE status = ? ORDER BY {order_column}\",\n            (status_filter,),\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Avoid f-string interpolation entirely. Define a hard-coded allowlist of permitted sort columns (e.g., ALLOWED_ORDER_COLUMNS = {\"id\", \"created_at\", \"total\"}) and validate `order_column` against it before use, or better, use SQLAlchemy's `text()` with a bound parameter for the value filter and a validated identifier for the ORDER BY clause. If the sort column is always fixed, simply inline the literal column name in the query string rather than interpolating a variable.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8252,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/orders.py",
+      "line": 66,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 987
+    },
+    {
+      "finding_id": "authz:orders-export-authz:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new GET /orders/export endpoint is gated only by @require_role(\"manager\"), which permits any manager (not just admins) to read all users' orders. The security policy restricts cross-user order listing to managers/admins for /orders/all, but the API spec and policy treat report exports as a distinct, more privileged operation: 'Report exports are readable only with the reports:read scope' (security-policy.md \u00a76), and the only export endpoint in the API spec is /admin/export which is 'admin only'. The new export endpoint returns all users' orders (id, user_id, status, total) to a manager, bypassing the reports:read scope requirement and the admin-only export access rule. This is an incorrect authorization check: the role gate is weaker than the policy requires for an export operation.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            57,
+            73
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/export\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef export_orders():\n    status_filter = request.headers.get(\"X-Report-Filter\", \"shipped\")\n    ...\n    return jsonify([list(r) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "Report exports are readable only with the `reports:read` scope.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/admin/export` | GET | admin only |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            88,
+            104
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    ...\n    if key.scope != required_scope:\n        return jsonify({\"error\": \"API key lacks required scope\"}), 403",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Gate the export endpoint with @require_api_key_scope(\"reports:read\") (and/or @require_role(\"admin\")) so that report exports are only accessible with the reports:read scope, per security-policy.md \u00a76 and the admin-only export rule in the API spec.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8122,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 58,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1032
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-fstring:app/routes/orders.py:66",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 50,
+            "end_line": 80,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "order_column",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries ORDER BY whitelist"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "order_column",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "X-Report-Filter",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:app/routes/orders.py:66\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at app/routes/orders.py:66-69 is built with an f-string. The value-filter part (status_filter, sourced from the user-controlled X-Report-Filter header at line 61) is correctly passed as a bound parameter via the `?` placeholder and the `(status_filter,)` params argument, so that portion is safe. However, the dynamic identifier `order_column` is interpolated directly into the SQL string via `{order_column}` (line 67). In this PR, `order_column` is hard-coded to the literal string \\\"id\\\" (line 62) and grep confirms it is never assigned from any request-derived source, so no user-controlled input currently reaches the interpolated part. This matches the false-positive condition where the dynamic part is a fixed constant. That said, the code still violates the project's explicit policy: security-policy.md \u00a75 forbids f-string interpolation into SQL and requires dynamic identifiers (sort keys) to be validated against a hard-coded allowlist. Because the interpolated identifier is a constant rather than user input, this is a low-risk finding, but it is a policy violation and a latent injection risk if the constant is later replaced with request-derived input.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [61, 69], \"content\": \"    status_filter = request.headers.get(\\\"X-Report-Filter\\\", \\\"shipped\\\")\\n    order_column = \\\"id\\\"\\n    conn = get_engine().raw_connection()\\n    try:\\n        cursor = conn.cursor()\\n        cursor.execute(\\n            f\\\"SELECT id, user_id, status, total FROM orders WHERE status = ? ORDER BY {order_column}\\\",\\n            (status_filter,),\\n        )\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89). Dynamic identifiers (table or column names, sort keys) MUST be validated against a hard-coded allowlist before being placed in a query.\"}\n  ],\n  \"suggested_fix\": \"Avoid f-string interpolation entirely. Define a hard-coded allowlist of permitted sort columns (e.g., ALLOWED_ORDER_COLUMNS = {\\\"id\\\", \\\"created_at\\\", \\\"total\\\"}) and validate `order_column` against it before use, or better, use SQLAlchemy's `text()` with a bound parameter for the value filter and a validated identifier for the ORDER BY clause. If the sort column is always fixed, simply inline the literal column name in the query string rather than interpolating a variable.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "order export access control manager role raw SQL bound parameters"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "get_engine raw_connection in app/models.py"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/export|/export",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 45,
+            "end_line": 120,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "export",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/export|/export",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/report|reports:read",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "raw_connection",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "X-Report-Filter",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search|/search",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/search|/search",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/<id>|orders/<int",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/<",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-export-authz\",\n      \"title\": \"New GET /orders/export endpoint: role gate, data scoping, and raw-SQL injection\",\n      \"rationale\": \"Hunk #1 adds a new order-export endpoint that returns every user's order rows (id, user_id, status, total) filtered by a client-supplied X-Report-Filter header, and hunk #0 adds the get_engine import that the new endpoint depends on. Both hunks are inseparable for authorization review: the endpoint's access control (only @require_role(\\\"manager\\\"), no per-user scoping, no API-key scope check), its data exposure (cross-user order data including user_id), and its SQL construction (f-string interpolation of order_column into the query, raw_connection bypassing the ORM) are all part of one new access-control surface. The import change is the enabling dependency for the raw-connection path, so it belongs in the same section.\",\n      \"hunks\": [\"app/routes/orders.py#0\", \"app/routes/orders.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"The decorator applied to export_orders; defines the role-rank check (user<manager<admin) that is the only authorization gate on the new endpoint.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The per-object ownership helper the policy requires for order access; notably NOT used by the new export endpoint, which returns all users' orders.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_engine\", \"start_line\": 96, \"end_line\": 97, \"snapshot\": \"base\", \"why\": \"Returns the SQLAlchemy engine whose raw_connection() the new endpoint uses to run a hand-built SQL query, bypassing the ORM/session layer.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"The orders table (id, user_id, status, total, shipping_address) whose rows the export endpoint returns for all users.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"all_orders\", \"start_line\": 50, \"end_line\": 56, \"snapshot\": \"base\", \"why\": \"The existing manager-gated /orders/all endpoint; the new /orders/export duplicates its cross-user data exposure but via raw SQL and an extra client-controlled filter header.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"pr\", \"why\": \"Registers orders_bp under url_prefix=/orders, confirming the new route is exposed at GET /orders/export.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-export-authz",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 60,
+            "end_line": 115,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/export|/export",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "export",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "security-policy.md",
+            "start_line": 55,
+            "end_line": 65,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new GET /orders/export endpoint is gated only by @require_role(\\\"manager\\\"), which permits any manager (not just admins) to read all users' orders. The security policy restricts cross-user order listing to managers/admins for /orders/all, but the API spec and policy treat report exports as a distinct, more privileged operation: 'Report exports are readable only with the reports:read scope' (security-policy.md \u00a76), and the only export endpoint in the API spec is /admin/export which is 'admin only'. The new export endpoint returns all users' orders (id, user_id, status, total) to a manager, bypassing the reports:read scope requirement and the admin-only export access rule. This is an incorrect authorization check: the role gate is weaker than the policy requires for an export operation.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [57, 73], \"content\": \"@orders_bp.route(\\\"/export\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef export_orders():\\n    status_filter = request.headers.get(\\\"X-Report-Filter\\\", \\\"shipped\\\")\\n    ...\\n    return jsonify([list(r) for r in rows])\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"Report exports are readable only with the `reports:read` scope.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/admin/export` | GET | admin only |\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    ...\\n    if key.scope != required_scope:\\n        return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\"}\n      ],\n      \"suggested_fix\": \"Gate the export endpoint with @require_api_key_scope(\\\"reports:read\\\") (and/or @require_role(\\\"admin\\\")) so that report exports are only accessible with the reports:read scope, per security-policy.md \u00a76 and the admin-only export rule in the API spec.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 58\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "34ea4b48f48bfd175e1534731279435dcf892f56",
+    "pr_sha": "818dd49b23e5fbd8e881613ebcaf354b2c274ae8",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-export-authz",
+        "origin": "investigator",
+        "title": "New GET /orders/export endpoint: role gate, data scoping, and raw-SQL injection",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 11,
+            "old_count": 7,
+            "new_start": 11,
+            "new_count": 7,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/orders.py#1",
+            "file": "app/routes/orders.py",
+            "old_start": 54,
+            "old_count": 3,
+            "new_start": 54,
+            "new_count": 20,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-export-authz:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.03,
+  "base_sha": "34ea4b48f48bfd175e1534731279435dcf892f56",
+  "pr_sha": "818dd49b23e5fbd8e881613ebcaf354b2c274ae8",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "explicit_safe",
+  "case_label_grounded": "explicit_safe",
+  "target_sections": [
+    "orders-export-authz"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "safe",
+  "predicted_grounded": "safe",
+  "outcome": "TN",
+  "outcome_grounded": "TN",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:orders-export-authz:1"
+  ]
+}

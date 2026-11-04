@@ -31,6 +31,13 @@ class LGTMConfig:
     max_invalid_tool_inputs: int = 3
     max_answer_reasks: int = 3
     llm_max_output_tokens: int = 2048  # num_predict: stops runaway generations
+    llm_context_tokens: int = 32768  # num_ctx: the context window served to the model
+    llm_window_headroom: float = 0.8  # share of the usable window the tool-loop agents fill
+
+    # Judge (Kev-4B, base URL; the client appends /v1/systemone)
+    judge_endpoint: str = "http://127.0.0.1:8008"
+    judge_model: str = "jaredpalmer/kev-4b"
+    judge_timeout: float = 60.0  # seconds per judge call
 
     # SAST
     semgrep_config: str = "auto"  # "auto" or a path to custom rules
@@ -39,19 +46,19 @@ class LGTMConfig:
     # Agents
     max_tool_calls: int = 5  # per agent invocation
     max_agent_iterations: int = 8  # hard stop on the reasoning loop
-    investigator_max_tool_calls: int = 12
-    investigator_max_iterations: int = 16
+    investigator_max_tool_calls: int = 24
+    investigator_max_iterations: int = 32
+    read_file_max_lines: int = 600
     investigator_diff_chars: int = 30000
     investigator_max_sections: int = 12
+    investigator_final_output_tokens: int = 8192  # num_predict for the forced-final and re-ask turns
+    investigator_result_chars: int = 8000  # per-call bound on every investigator tool result
     section_max_chars: int = 12000
     max_sections: int = 24
     # How the authorization review decides what to look at:
-    # - "investigator": an LLM groups every changed Python hunk into review
-    #   sections (the default since 24 Oct; reviews the whole PR);
-    # - "endpoint": only hunks that contain a Flask/FastAPI route decorator
-    #   are reviewed, one section per file, no investigator. This reproduces
-    #   the gating of the checkpoint pipeline (docs/evaluation-log.md rounds
-    #   1-7) and is the ablation for what full coverage adds.
+    # - "investigator": an LLM groups every changed Python hunk into review sections;
+    # - "endpoint": only hunks that define a Flask/FastAPI route are reviewed,
+    #   one section per file, no investigator.
     authz_planner: str = "investigator"
     # Experiments (round 4, off by default — see docs/evaluation-log.md):
     # push back once if an agent answers before using any tool
@@ -61,10 +68,7 @@ class LGTMConfig:
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
     authz_role_guidance: bool = False
-    # Prompt-injection mitigations (on by default since the red-teaming in
-    # docs/prompt-injection.md: unmitigated, PR comments talked the triage
-    # agent out of 3/3 SQLi detections). They apply to the LGTM modes only;
-    # the llm-only baseline keeps the raw diff, as the proposal defines it.
+    # Prompt-injection mitigations; LGTM modes only, the llm-only baseline keeps the raw diff.
     strip_comments: bool = True
     detect_prompt_injection: bool = True
 
@@ -95,8 +99,11 @@ class LGTMConfig:
         positive_fields = (
             "investigator_max_tool_calls",
             "investigator_max_iterations",
+            "read_file_max_lines",
             "investigator_diff_chars",
             "investigator_max_sections",
+            "investigator_final_output_tokens",
+            "investigator_result_chars",
             "section_max_chars",
             "max_sections",
             "graph_init_timeout_s",
@@ -107,8 +114,14 @@ class LGTMConfig:
         for key in positive_fields:
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if not 0 < self.llm_window_headroom <= 1:
+            raise ValueError("llm_window_headroom must be above 0 and at most 1")
         if self.authz_planner not in ("investigator", "endpoint"):
             raise ValueError("authz_planner must be 'investigator' or 'endpoint'")
+        if not self.judge_model:
+            raise ValueError("judge_model must not be empty")
+        if self.judge_timeout <= 0:
+            raise ValueError("judge_timeout must be positive")
         if self.graph_max_output_chars < 1024:
             raise ValueError("graph_max_output_chars must be at least 1024")
         self.graph_max_output_chars = min(self.graph_max_output_chars, GRAPH_OUTPUT_CHARS_CEILING)

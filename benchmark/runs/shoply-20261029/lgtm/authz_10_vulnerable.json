@@ -1,0 +1,779 @@
+{
+  "id": "authz_10_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 187.97,
+  "est_tokens": 1756,
+  "findings": [
+    {
+      "finding_id": "authz:api-key-scope-removal:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The PR replaces app/auth.py's require_api_key_scope (which enforced `key.scope != required_scope` and returned 403 on mismatch) with a new app/auth/api_keys.py version that only checks key existence and then sets `g.api_key = key` and proceeds, dropping the scope comparison entirely. This directly violates security-policy.md \u00a76, which states an endpoint accepting API keys MUST verify the key's scope matches the operation and that 'Possession of a valid key alone is NOT sufficient authorization.' Because the decorator is the mandated enforcement point (re-exported via app/auth/__init__.py and used by API-key endpoints such as the reports:read report export), any key with a different scope (e.g. orders:read) can now access operations requiring reports:read \u2014 an incorrect/bypassable authorization check.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/auth/api_keys.py",
+          "lines": [
+            21,
+            35
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            g.api_key = key\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            88,
+            104
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            if key.scope != required_scope:\n                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n            g.api_key = key\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 6. API keys\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the scope comparison in the new decorator: after resolving the key, add `if key.scope != required_scope: return jsonify({\"error\": \"API key lacks required scope\"}), 403` before setting `g.api_key = key` and calling the wrapped function, matching the original app/auth.py implementation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8955,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/auth/api_keys.py",
+      "line": 30,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1037
+    },
+    {
+      "finding_id": "authz:auth-package-reexport:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new app/auth/__init__.py re-exports require_api_key_scope from app.auth.api_keys (line 2). The PR's app/auth/api_keys.py version of require_api_key_scope (lines 21-35) only checks that an API key exists and returns 401 if missing; it never compares key.scope to required_scope. The base implementation in app/auth.py (lines 88-104) correctly enforces the scope with `if key.scope != required_scope: return 403`. Because the package re-export is the live import path (per context pointers, callers import from app.auth), endpoints decorated with @require_api_key_scope now accept any valid API key regardless of scope. This violates the policy: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.'",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/auth/__init__.py",
+          "lines": [
+            2,
+            2
+          ],
+          "source": null,
+          "content": "from app.auth.api_keys import get_api_key, require_api_key_scope",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth/api_keys.py",
+          "lines": [
+            21,
+            35
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            g.api_key = key\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            88,
+            104
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            if key.scope != required_scope:\n                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n            g.api_key = key\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the scope comparison in app/auth/api_keys.py require_api_key_scope: after resolving the key, add `if key.scope != required_scope: return jsonify({\"error\": \"API key lacks required scope\"}), 403` before setting g.api_key, matching the base app/auth.py implementation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8498,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/auth/__init__.py",
+      "line": 2,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1029
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "Where are require_api_key_scope, require_role, require_auth, get_api_key, get_current_user imported and used in routes?"
+          }
+        },
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "Where are require_api_key_scope, require_role, require_auth, get_api_key, get_current_user imported and used in routes?"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key scope requirement for machine integrations"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from app.auth import|from app\\.auth\\.",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders/report|reports:read",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/tokens.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/roles.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "report",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ApiKey",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 55,
+            "end_line": 95,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/main.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 40,
+            "end_line": 120,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 56,
+            "end_line": 130,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_owner_or_admin",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 55,
+            "end_line": 120,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 55,
+            "end_line": 110,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 55,
+            "end_line": 100,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"api-key-scope-removal\",\n      \"title\": \"API-key scope enforcement removed from require_api_key_scope\",\n      \"rationale\": \"The refactor moves the API-key helpers from app/auth.py into app/auth/api_keys.py, but the new require_api_key_scope drops the `key.scope != required_scope` check that the old decorator enforced. The decorator now only verifies that a key exists (401) and then sets g.api_key, so any valid key passes regardless of scope. This directly violates security-policy.md \u00a76 ('An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization') and the api-spec.md requirement that /orders/report requires the reports:read scope. The deleted app/auth.py#0 is the source of the removed check, and app/auth/api_keys.py#0 is where the weakened decorator now lives.\",\n      \"hunks\": [\n        \"app/auth.py#0\",\n        \"app/auth/api_keys.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 88, \"end_line\": 104, \"snapshot\": \"base\", \"why\": \"Original decorator that enforced key.scope == required_scope before allowing the request\"},\n        {\"path\": \"app/auth/api_keys.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 21, \"end_line\": 35, \"snapshot\": \"pr\", \"why\": \"New decorator that no longer checks key.scope, only key existence\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"ApiKey\", \"start_line\": 65, \"end_line\": 75, \"snapshot\": \"pr\", \"why\": \"ApiKey model with a single scope column (reports:read / orders:read / orders:write) that the removed check was meant to validate\"},\n        {\"path\": \"security-policy.md\", \"symbol\": \"\u00a76 API keys\", \"start_line\": 55, \"end_line\": 60, \"snapshot\": \"pr\", \"why\": \"Policy requiring scope verification via @require_api_key_scope and stating possession of a valid key alone is not sufficient\"}\n      ]\n    },\n    {\n      \"id\": \"token-auth-refactor\",\n      \"title\": \"Bearer-token auth helpers relocated to app/auth/tokens.py\",\n      \"rationale\": \"The token-related helpers (hash_password, issue_token, get_current_user, require_auth) and the in-memory _TOKENS store are moved verbatim from app/auth.py into app/auth/tokens.py. The logic is unchanged: get_current_user still resolves the Bearer token against _TOKENS, require_auth still 401s when no user is resolved, and hash_password still uses SHA-256. Grouped together because they form the single authentication primitive that require_role and the routes depend on, and the deletion of app/auth.py#0 is what makes this relocation the source of truth.\",\n      \"hunks\": [\n        \"app/auth.py#0\",\n        \"app/auth/tokens.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"get_current_user\", \"start_line\": 34, \"end_line\": 43, \"snapshot\": \"base\", \"why\": \"Original bearer-token resolver that the new tokens.py mirrors\"},\n        {\"path\": \"app/auth/tokens.py\", \"symbol\": \"get_current_user\", \"start_line\": 27, \"end_line\": 36, \"snapshot\": \"pr\", \"why\": \"New location of the bearer-token resolver; logic identical to base\"},\n        {\"path\": \"app/auth/tokens.py\", \"symbol\": \"require_auth\", \"start_line\": 39, \"end_line\": 50, \"snapshot\": \"pr\", \"why\": \"New location of the require_auth decorator used by orders/users routes\"},\n        {\"path\": \"app/main.py\", \"symbol\": \"login\", \"start_line\": 19, \"end_line\": 28, \"snapshot\": \"pr\", \"why\": \"Caller of hash_password and issue_token via the app.auth package, confirming the token helpers are the live auth path\"}\n      ]\n    },\n    {\n      \"id\": \"role-gate-refactor\",\n      \"title\": \"Role and ownership helpers relocated to app/auth/roles.py\",\n      \"rationale\": \"require_role, ROLE_RANK, and is_owner_or_admin are moved verbatim from app/auth.py into app/auth/roles.py. The role-rank comparison (ROLE_RANK.get(user.role,0) < ROLE_RANK.get(minimum_role,99)) and the ownership check (user.id == owner_id or user.role == 'admin') are unchanged. Grouped together because they are the authorization primitives consumed by the admin, orders, and users routes, and the deletion of app/auth.py#0 is what makes this relocation the source of truth.\",\n      \"hunks\": [\n        \"app/auth.py#0\",\n        \"app/auth/roles.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Original role decorator that the new roles.py mirrors\"},\n        {\"path\": \"app/auth/roles.py\", \"symbol\": \"require_role\", \"start_line\": 15, \"start_line_note\": \"decorator\", \"end_line\": 31, \"snapshot\": \"pr\", \"why\": \"New location of require_role; logic identical to base\"},\n        {\"path\": \"app/auth/roles.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 34, \"end_line\": 36, \"snapshot\": \"pr\", \"why\": \"New location of the per-object ownership check used by users.py and orders.py\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"stats\", \"start_line\": 18, \"end_line\": 29, \"snapshot\": \"pr\", \"why\": \"Caller of require_role('admin'), confirming the role gate is the live admin access path\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"pr\", \"why\": \"Caller of is_owner_or_admin for per-object profile access\"}\n      ]\n    },\n    {\n      \"id\": \"auth-package-reexport\",\n      \"title\": \"app/auth package re-exports the relocated helpers\",\n      \"rationale\": \"The new app/auth/__init__.py re-exports the symbols from api_keys, roles, and tokens so that existing `from app.auth import ...` statements in main.py, routes/admin.py, routes/orders.py, and routes/users.py continue to resolve. This hunk is the glue that ties the three relocated modules together and is the single point where the weakened require_api_key_scope (from api_keys.py) is exposed to the rest of the app, so it must be reviewed alongside the scope-removal section.\",\n      \"hunks\": [\n        \"app/auth/__init__.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth/__init__.py\", \"symbol\": \"__all__\", \"start_line\": 17, \"end_line\": 27, \"snapshot\": \"pr\", \"why\": \"Public surface of the auth package; re-exports require_api_key_scope from the weakened api_keys module\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"create_order\", \"start_line\": 19, \"end_line\": 33, \"snapshot\": \"pr\", \"why\": \"Caller importing require_auth/require_role/is_owner_or_admin from app.auth, confirming the package re-export is the live import path\"},\n        {\"path\": \"app/main.py\", \"symbol\": \"login\", \"start_line\": 19, \"end_line\": 28, \"snapshot\": \"pr\", \"why\": \"Caller importing hash_password/issue_token from app.auth, confirming the package re-export is the live import path\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "api-key-scope-removal",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key scope verification require_api_key_scope possession of valid key not sufficient"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope|reports:read|orders/report",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "report",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR replaces app/auth.py's require_api_key_scope (which enforced `key.scope != required_scope` and returned 403 on mismatch) with a new app/auth/api_keys.py version that only checks key existence and then sets `g.api_key = key` and proceeds, dropping the scope comparison entirely. This directly violates security-policy.md \u00a76, which states an endpoint accepting API keys MUST verify the key's scope matches the operation and that 'Possession of a valid key alone is NOT sufficient authorization.' Because the decorator is the mandated enforcement point (re-exported via app/auth/__init__.py and used by API-key endpoints such as the reports:read report export), any key with a different scope (e.g. orders:read) can now access operations requiring reports:read \u2014 an incorrect/bypassable authorization check.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 6. API keys\\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or `orders:write`.\\n- An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\\n- Report exports are readable only with the `reports:read` scope.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope comparison in the new decorator: after resolving the key, add `if key.scope != required_scope: return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403` before setting `g.api_key = key` and calling the wrapped function, matching the original app/auth.py implementation.\",\n      \"file\": \"app/auth/api_keys.py\",\n      \"line\": 30\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "token-auth-refactor",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/tokens.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_auth|require_role|require_api_key_scope",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/roles.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The section is a pure refactor: `app/auth/tokens.py` is a byte-for-byte copy of the base `app/auth.py` token helpers (`hash_password`, `issue_token`, `get_current_user`, `require_auth`), and the package `__init__.py` re-exports them so routes still import from `app.auth`. The `require_auth` decorator correctly rejects unauthenticated requests (401) and sets `g.current_user`, matching the policy's authentication requirement. No authorization check is removed, weakened, or bypassed by this section, and no new endpoint or access path is introduced. The `hash_password` SHA-256 weakness is pre-existing in unchanged base code and is not an authorization flaw.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "role-gate-refactor",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 120,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/roles.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from app.auth.roles import|from app.auth import|import roles",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_current_user",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/tokens.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The new `app/auth/roles.py` is a faithful relocation of the base `app/auth.py` helpers. I verified:\n\n- `require_role` (roles.py:15-31) is byte-for-byte identical in logic to base `app/auth.py:69-85` (same `ROLE_RANK` comparison, same 401/403 handling, same `g.current_user` assignment).\n- `is_owner_or_admin` (roles.py:34-36) is identical to base `app/auth.py:107-109` and matches the policy-mandated check `is_owner_or_admin(current_user, user_id)`.\n- `get_current_user` is imported from `app.auth.tokens` (roles.py:9), which is the same token-resolution logic as base `app/auth.py:34-43`.\n- Callers (`app/routes/admin.py`, `users.py`, `orders.py`) import via `app.auth`, which re-exports from `app.auth.roles` (`app/auth/__init__.py:9`), so the live admin path and per-object ownership checks resolve to this code.\n\nThe logic is unchanged from base and conforms to the policy (role hierarchy `user < manager < admin`, admin-only admin panel, owner-or-admin per-object access). No new authorization weakness is introduced by this section.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "auth-package-reexport",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 80,
+            "end_line": 115,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new app/auth/__init__.py re-exports require_api_key_scope from app.auth.api_keys (line 2). The PR's app/auth/api_keys.py version of require_api_key_scope (lines 21-35) only checks that an API key exists and returns 401 if missing; it never compares key.scope to required_scope. The base implementation in app/auth.py (lines 88-104) correctly enforces the scope with `if key.scope != required_scope: return 403`. Because the package re-export is the live import path (per context pointers, callers import from app.auth), endpoints decorated with @require_api_key_scope now accept any valid API key regardless of scope. This violates the policy: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.'\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/__init__.py\", \"lines\": [2, 2], \"content\": \"from app.auth.api_keys import get_api_key, require_api_key_scope\"},\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope comparison in app/auth/api_keys.py require_api_key_scope: after resolving the key, add `if key.scope != required_scope: return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403` before setting g.api_key, matching the base app/auth.py implementation.\",\n      \"file\": \"app/auth/__init__.py\",\n      \"line\": 2\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "f4f5524e7310baa22f3a0e8b6e10393c62ffc878",
+    "pr_sha": "9da33723b28dc3efccfbace005fd5866669b287d",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/auth/api_keys.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/auth.py",
+      "old_range": [
+        88,
+        104
+      ],
+      "new_range": null
+    },
+    {
+      "file": "app/auth/api_keys.py",
+      "old_range": null,
+      "new_range": [
+        21,
+        35
+      ]
+    }
+  ],
+  "diff_shape": "deleted_file",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 5,
+    "files_in_scope": 5,
+    "hunks_total": 5,
+    "hunks_assigned": 5,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 5,
+    "sections_scheduled": 4,
+    "sections_completed": 4,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [
+      "app/auth.py#0",
+      "app/auth.py#0"
+    ],
+    "sections": [
+      {
+        "section_id": "api-key-scope-removal",
+        "origin": "investigator",
+        "title": "API-key scope enforcement removed from require_api_key_scope",
+        "files": [
+          "app/auth.py",
+          "app/auth/api_keys.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth.py#0",
+            "file": "app/auth.py",
+            "old_start": 1,
+            "old_count": 109,
+            "new_start": 0,
+            "new_count": 0,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "app/auth/api_keys.py#0",
+            "file": "app/auth/api_keys.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 35,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:api-key-scope-removal:1"
+        ],
+        "error": null
+      },
+      {
+        "section_id": "token-auth-refactor",
+        "origin": "investigator",
+        "title": "Bearer-token auth helpers relocated to app/auth/tokens.py",
+        "files": [
+          "app/auth/tokens.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth/tokens.py#0",
+            "file": "app/auth/tokens.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 50,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "role-gate-refactor",
+        "origin": "investigator",
+        "title": "Role and ownership helpers relocated to app/auth/roles.py",
+        "files": [
+          "app/auth/roles.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth/roles.py#0",
+            "file": "app/auth/roles.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 36,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "auth-package-reexport",
+        "origin": "investigator",
+        "title": "app/auth package re-exports the relocated helpers",
+        "files": [
+          "app/auth/__init__.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth/__init__.py#0",
+            "file": "app/auth/__init__.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 27,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:auth-package-reexport:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 2.09,
+  "base_sha": "f4f5524e7310baa22f3a0e8b6e10393c62ffc878",
+  "pr_sha": "9da33723b28dc3efccfbace005fd5866669b287d",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "api-key-scope-removal"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}
