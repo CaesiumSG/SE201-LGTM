@@ -15,3 +15,11 @@ class Entry:
 
 
 REGISTRY: dict[str, Entry] = {}
+def _retrieval_aggregate(units, results_dir, labels_dir=None):
+    from benchmark.component_bench import retrieval  # deferred: pulls in chromadb
+
+    return retrieval.aggregate(units, results_dir, labels_dir)
+
+
+REGISTRY["retrieval"] = Entry("retrieval", source="cases", aggregate=_retrieval_aggregate)
+

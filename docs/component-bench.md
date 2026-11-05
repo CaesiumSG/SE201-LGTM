@@ -31,3 +31,17 @@ Unit status is `scored`, `error` (model, judge or dependency failure; excluded f
 
 Add `benchmark/component_bench/<name>.py` exposing `run_item(item, ctx)` and `score(item, output)`, and one line in `benchmark/component_bench/registry.py`: `REGISTRY["<name>"] = Entry("<name>", applicable=frozenset({"<case id>", ...}))`. `applicable` is the set of case ids the component's labels may use; omit it to allow every case. `InfraError` and `NotScored` are imported from `benchmark.component_bench.outcomes`.
 
+## Policy retrieval
+
+`--components retrieval` runs one unit per case over the 6 authz cases (aegra, langflow, litellm; vulnerable and safe). The 6 sqli cases are recorded as `not_scored` (not applicable). Each authz case indexes its project policy from `benchmark/real_world/policies/` into a temporary Chroma directory and queries it with the case description at `rag_top_k`. No model is called.
+
+Gold labels in `labels/retrieval.json` are policy passages (`gold`: `source`, `start_line`, `end_line`; source `security-policy.md` is the indexed policy name). A retrieved chunk is a hit when it is in the same source and its line range overlaps a gold passage.
+
+| Score | Meaning |
+| --- | --- |
+| `hit_at_k` | 1 when any gold passage is retrieved in the top k, else 0. |
+| `recall_at_k` | Fraction of the case's gold passages retrieved in the top k. |
+| `mrr` | Reciprocal rank of the first chunk overlapping a gold passage, 0 when none. |
+
+The summary section `aggregate` lists the draft and approved label counts and the gold label ids of each case.
+
