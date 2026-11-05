@@ -537,7 +537,6 @@ exec "$(dirname "$0")/ssh-real" "$@"
 class Bench:
     def __init__(self, sb: Sandbox, root: Path):
         self.sb = sb
-        self.out = root / "bench-out"
         self.results = root / "results"
         (sb.bin / "fakepy").write_bytes(FAKE_PY.encode())
         (sb.bin / "fakepy").chmod(0o755)
@@ -567,7 +566,6 @@ class Bench:
     def run(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
         return self.sb.run(
             WRAPPER,
-            "--out", self.out.as_posix(),
             "--wait-seconds", "30",
             *extra,
             PYTHON=(self.sb.bin / "fakepy").as_posix(),
@@ -642,7 +640,6 @@ def test_interrupt_during_any_step_cancels_the_job_before_exit_and_stops_later_s
 def test_job_that_never_becomes_ready_is_cancelled_without_running_any_step(bench, state):
     result = bench.sb.run(
         WRAPPER,
-        "--out", bench.out.as_posix(),
         "--wait-seconds", "0",
         PYTHON=(bench.sb.bin / "fakepy").as_posix(),
         STUB_JOB_STATE=state,
@@ -651,7 +648,6 @@ def test_job_that_never_becomes_ready_is_cancelled_without_running_any_step(benc
     assert bench.py_steps() == []
     assert len(sbatch_calls(bench.sb.calls())) == 1
     assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
-    assert not bench.out.exists()
 
 
 def test_failed_submission_issues_no_cancel_runs_no_step_and_exits_non_zero(bench):
@@ -686,10 +682,8 @@ def test_without_results_directory_evaluate_steps_run_their_normal_reviewer_path
 
 def test_readme_documents_the_wrapper_arguments_steps_and_cancel_behaviour():
     readme = (MODEL / "README.md").read_text(encoding="utf-8")
-    for needle in (WRAPPER, "--results-dir", "--out", "--wait-seconds", "evaluate.py", "evaluate_real.py"):
+    for needle in (WRAPPER, "--results-dir", "--wait-seconds", "evaluate.py", "evaluate_real.py"):
         assert needle in readme, needle
-    for retired in ("--run-dir", "--export", "--labels", "runner.py"):
-        assert retired not in readme, retired
     assert re.search(r"cancel", readme, re.I)
 
 
@@ -729,18 +723,6 @@ def test_tunnel_that_exits_cancels_the_job_and_runs_no_step(bench, dead_port):
     assert "tunnel" in (result.stdout + result.stderr).lower()
     assert bench.py_steps() == []
     assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
-
-
-# Input validation before submission
-
-@pytest.mark.parametrize("flag", ["--export", "--labels", "--run-dir"])
-def test_retired_flag_is_rejected_before_any_submission(bench, flag):
-    result = bench.run(flag, bench.out.as_posix())
-    assert result.returncode != 0
-    assert f"unknown argument: {flag}" in (result.stdout + result.stderr)
-    assert sbatch_calls(bench.sb.calls()) == []
-    assert bench.scancels() == []
-    assert bench.py_steps() == []
 
 
 # Python steps run in UTF-8 mode

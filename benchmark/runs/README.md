@@ -24,7 +24,7 @@ including Semgrep) and llm-only.
 
 Prompt-injection results are in `benchmark/runs/archive/injection-results/`. The findings
 of the `shoply-20261029/lgtm` run are labelled by Claude Opus 5.5 in
-`benchmark/kev_model_labels.json`.
+`benchmark/component_bench/labels/kev-judge.json`.
 
 Earlier runs are in `benchmark/runs/archive/`. They use earlier models and
 conditions (sast-only, lgtm-no-sast, policy variants, lgtm-mitigated) and are

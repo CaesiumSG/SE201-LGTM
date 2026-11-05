@@ -204,7 +204,7 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
 - **Combined job:** `jobs/judged-serve.sbatch` (`judged-serve`, one 48 GB A40)
   starts Kev-4B first, then Ollama with `DEFAULT_MODEL`, and writes both
   endpoint files; measured at about 17.5 GB for qwen3.8:27b plus Kev-4B in bf16.
-- **Benchmark command:** `model/deploy/judged-bench.sh --out OUTDIR [--results-dir DIR] [--wait-seconds N]`,
+- **Benchmark command:** `model/deploy/judged-bench.sh [--results-dir DIR] [--wait-seconds N]`,
   run from the repo root with `PYTHON` naming the interpreter (default `python`).
   It submits one `judged-serve` job through `judged-up.sh`, waits for both
   endpoint files, opens the qwen3.8 and Kev-4B tunnels, then runs in order:

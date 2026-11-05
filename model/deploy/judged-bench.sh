@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # Start one judged job (qwen3.8 + Kev-4B), run the evaluators against it, and always cancel the job.
-# Usage: judged-bench.sh --out OUTDIR [--results-dir DIR] [--wait-seconds N]
+# Usage: judged-bench.sh [--results-dir DIR] [--wait-seconds N]
 # Run from the repo root. PYTHON names the interpreter (default: python).
 source "$(dirname "$0")/lib.sh"
 
-out="" results="" wait_seconds=1800
+results="" wait_seconds=1800
 while (($#)); do
   case "$1" in
-    --out) out=${2:?--out needs a value}; shift 2 ;;
     --results-dir) results=${2:?--results-dir needs a value}; shift 2 ;;
     --wait-seconds) wait_seconds=${2:?--wait-seconds needs a value}; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$out" ]] || die "--out is required"
 
 export PYTHONUTF8=1
 py=${PYTHON:-python}
