@@ -71,3 +71,9 @@ Scores per unit: `tp`, `fn`, `fp`, `tn`.
 
 The reviewer's tools read the case repository from the clone under `benchmark/real_world/.cache/<project>`.
 
+## SAST SQLi
+
+`sast-sqli` runs `SASTTriageAgent.triage` on one Semgrep hit per label and scores keep or drop. Semgrep is not run. Labels cover the 6 sqli cases: `gold_input` holds the `SemgrepFinding` fields (`rule_id`, `path`, `start_line`, `end_line`, `message`, `severity`, `matched_code`) plus `excerpt` (`start_line` and the exact source `lines` around the hit, from the upstream file). The run writes the excerpt into a temporary local git repo at `path`, blank-padded so the lines keep their real numbers, and triages against it. The triage result then goes through the production judge step (`judge_candidates` with `ctx.judge`, request format `current`); a hit is kept when the judge marks it supported, so a candidate with no evidence is dropped without a judge call. `gold` is `{"keep": true}` for a gold hit at the gold sink. A distractor hit on parameterised code carries `"distractor": true` and `{"keep": false}`.
+
+Per unit scores: `tp`, `fp`, `fn`, `tn` and `correct`. The aggregate reports `precision`, `recall` and `f1` over the scored units. An unreachable model endpoint, a judge that does not answer, or a failed temporary repo setup records the unit as `error`; an unparsable answer records it as `not_scored`.
+
