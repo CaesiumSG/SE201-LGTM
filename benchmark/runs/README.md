@@ -21,6 +21,7 @@ including Semgrep) and llm-only.
 | Shoply run folder | lgtm, llm-only on the 36 committed Shoply cases | Written by `benchmark/evaluate.py --gpu-cluster` |
 | `archive/real_world/` | lgtm, llm-only on 12 real-world CVE cases | Held-out: no tuning. Per-case JSON also holds diff size, detected endpoints, index time and `index_skipped`. Which commit produced which case is in [`docs/real-world-eval.md`](../../docs/real-world-eval.md) |
 | `archive/field_trial/` | lgtm, llm-only on 12 ordinary merged PRs (mealie, alerta, redash) | Crash / latency / false-alarm trial; nothing tuned. Write-up in [`docs/field-trial.md`](../../docs/field-trial.md) |
+| `component-bench-2026-11-05/`, `component-bench-kev-2026-11-05/`, `component-bench-kev-2026-11-05-r2/` | Component benchmark on the 12 real-world cases; Kev-only reruns | Results in [`docs/component-bench-results.md`](../../docs/component-bench-results.md) |
 
 Prompt-injection results are in `benchmark/runs/archive/injection-results/`. The findings
 of the `shoply-20261029/lgtm` run are labelled by Claude Opus 5.5 in

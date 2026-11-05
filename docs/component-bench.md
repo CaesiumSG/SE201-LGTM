@@ -1,6 +1,6 @@
 # Component benchmark
 
-Scores each pipeline component separately over the 12 real-world cases in `benchmark/real_world/cases.json`, against gold labels.
+Scores each pipeline component separately over the 12 real-world cases in `benchmark/real_world/cases.json`, against gold labels. Results: [`component-bench-results.md`](component-bench-results.md).
 
 ## Command
 
