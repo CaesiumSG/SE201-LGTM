@@ -31,3 +31,4 @@ REGISTRY["sast-sqli"] = Entry("sast_sqli", aggregate=lambda units, results_dir: 
 
 REGISTRY["evidence"] = Entry("evidence", aggregate=__import__("benchmark.component_bench.evidence", fromlist=["aggregate"]).aggregate)
 
+REGISTRY["kev-judge"] = Entry("kev_judge")

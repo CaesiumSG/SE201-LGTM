@@ -85,3 +85,13 @@ Component `evidence`. Each label is one citation: a gold finding's correct evide
 
 The positive class is accept. Gold accepted is `tp`, gold rejected is `fn`, distractor accepted is `fp`, distractor rejected is `tn`. The aggregate reports precision, recall and F1.
 
+## kev-judge
+
+Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings derived from all 12 cases. Labels: `benchmark/component_bench/labels/kev-judge.json`.
+
+- Each label is one candidate: `gold_input` holds the claim, CWE and cited code; `gold` holds `verdict` (`real`, `not_real` or `undetermined`) and, on `real`, `severity` (`low`, `medium`, `high` or `critical`). Criteria: `docs/kev-labeling-criteria.md`.
+- Real candidates cite a vulnerable location, including known issues in the case tree. Not-real candidates cite the fixed code of a safe case as a flaw.
+- Scores: `verdict_correct` with `real_verdict_correct` and `not_real_verdict_correct`, and `severity_correct` over gold-real candidates only. A gold-real candidate judged `not_real` is a severity miss.
+- An `undetermined` candidate is not judged and is counted as not scored.
+- An unreachable judge, or a reply without a `real` or `not_real` verdict, is an error.
+- Needs the Kev endpoint (`judge_endpoint`); input tokens are taken from the judge reply, output tokens show as not recorded.
