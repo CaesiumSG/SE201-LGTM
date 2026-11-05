@@ -146,8 +146,9 @@ def test_outputs_and_ratings_resolve_under_a_non_default_results_dir(inv, tmp_pa
     default = PKG / "results" / "investigator"
     before = sorted(p.name for p in default.rglob("*")) if default.exists() else []
     run_dir = tmp_path / "runs" / "component-bench-x"
+    run_all(inv, tmp_path, results=run_dir)
     write_rating(run_dir, "pyload_sqli_vulnerable", 0.7)
-    section, _ = run_all(inv, tmp_path, results=run_dir)
+    section, _ = run_all(inv, tmp_path, results=run_dir, resume=True)
     assert len(result_files(run_dir / "investigator")) == 12
     assert (run_dir / "investigator" / "investigator_rubric.md").is_file()
     agg = section["aggregate"]
@@ -156,6 +157,16 @@ def test_outputs_and_ratings_resolve_under_a_non_default_results_dir(inv, tmp_pa
     assert (agg["rated"], agg["with_result"]) == (1, 12)
     after = sorted(p.name for p in default.rglob("*")) if default.exists() else []
     assert after == before
+
+
+def test_rerunning_a_case_discards_its_existing_rating(inv, tmp_path):
+    run_all(inv, tmp_path)
+    write_rating(tmp_path / "results", "pyload_sqli_vulnerable", 0.7)
+    write_rating(tmp_path / "results", "aegra_authz_vulnerable", 0.4)
+    section, _ = run_all(inv, tmp_path)
+    agg = section["aggregate"]
+    assert agg["ratings"] == {}
+    assert {"pyload_sqli_vulnerable", "aegra_authz_vulnerable"} <= set(agg["unrated"])
 
 
 # AC-S3-5

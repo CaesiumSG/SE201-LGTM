@@ -68,6 +68,7 @@ def run_item(item: dict, ctx) -> dict | NotScored:
     out = Path(ctx.results_dir) / "investigator"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{case['id']}.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    (out / "ratings" / f"{case['id']}.json").unlink(missing_ok=True)
     shutil.copyfile(RUBRIC, out / RUBRIC.name)
     return doc
 
