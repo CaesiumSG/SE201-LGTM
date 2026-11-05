@@ -269,7 +269,7 @@ reviewer.
 
 
 *The entries below, 28 Oct – 5 Nov, were drafted on 5 Nov by Claude from
-the session records and the PRs, for me to check before merging.*
+the session records and the PRs, and checked by me the same day.*
 
 ## 2026-10-28 · Freeze decision and the v1.0-eval tag
 - **Tool (model):** Claude Code (Claude Opus 5.5)
