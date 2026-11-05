@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from lgtm.agents.registry import render
+
 ROOT = Path(__file__).resolve().parents[1]
 FILE = "app/runs.py"
 OTHER_FILE = "app/other.py"
@@ -179,6 +181,38 @@ def test_known_issue_finding_does_not_hide_another_false_positive():
     assert s["fp"] == 1
 
 
+@pytest.mark.parametrize(
+    "item, findings, expect",
+    [
+        (vulnerable_item(), [finding(55)], 1.0),
+        (vulnerable_item(), [], 0.0),
+        (safe_item(), [], 1.0),
+        (safe_item(), [finding(5)], 0.0),
+    ],
+    ids=["vuln-hit", "vuln-miss", "safe-clean", "safe-false-positive"],
+)
+def test_verdict_correct_is_one_only_when_the_verdict_matches_gold(item, findings, expect):
+    assert score(item, findings)["verdict_correct"] == expect
+
+
+def unit(tp=0, fn=0, fp=0, tn=0, status="scored"):
+    scores = {"tp": tp, "fn": fn, "fp": fp, "tn": tn} if status == "scored" else None
+    return {"status": status, "scores": scores}
+
+
+def test_aggregate_pins_precision_recall_f1_over_summed_counts_of_scored_units(tmp_path):
+    units = [unit(tp=1)] * 3 + [unit(fn=1), unit(fp=1), unit(tn=1), unit(status="error")]
+    agg = bench("authz").aggregate(units, tmp_path)
+    assert (agg["precision"], agg["recall"], agg["f1"]) == (0.75, 0.75, 0.75)
+
+
+def test_aggregate_is_none_where_undefined(tmp_path):
+    agg = bench("authz").aggregate([unit(fn=1), unit(tn=1)], tmp_path)
+    assert agg["precision"] is None
+    assert agg["f1"] is None
+    assert agg["recall"] == 0.0
+
+
 # run_item
 
 
@@ -237,6 +271,13 @@ def test_agent_error_is_an_infra_error_not_an_empty_result(patched, monkeypatch)
         patched.run_item(RUN_ITEM, ctx)
 
 
+def test_unparsable_reviewer_answer_is_not_scored(patched, monkeypatch):
+    message = render("authz_reviewer.unparsable_explanation", where="section s")
+    monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([], [{"source": "s", "message": message}]))
+    ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy())
+    assert isinstance(patched.run_item(RUN_ITEM, ctx), bench("outcomes").NotScored)
+
+
 # AC-S4-6: only the authz cases run
 
 
@@ -254,6 +295,7 @@ def test_run_covers_only_the_six_authz_cases_with_case_and_label_ids(patched, mo
     assert {r["case_id"] for r in rows} == authz_ids()
     assert [(r["case_id"], r["label_id"]) for r in rows] == [(i["case_id"], i["label_id"]) for i in items]
     assert summary["components"]["authz"]["units_scored"] == len(items)
+    assert summary["components"]["authz"]["aggregate"]["recall"] == 0.0
 
 
 # final-01: removed-line findings cite base-side numbers

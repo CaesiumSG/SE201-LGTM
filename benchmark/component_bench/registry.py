@@ -25,7 +25,7 @@ REGISTRY["retrieval"] = Entry("retrieval", source="cases", aggregate=_retrieval_
 
 REGISTRY["investigator"] = Entry(module="investigator", source="cases", aggregate=__import__("benchmark.component_bench.investigator", fromlist=["aggregate"]).aggregate)
 
-REGISTRY["authz"] = Entry("authz", applicable=frozenset({"aegra_authz_vulnerable", "aegra_authz_safe", "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe"}))
+REGISTRY["authz"] = Entry("authz", aggregate=__import__("benchmark.component_bench.authz", fromlist=["aggregate"]).aggregate, applicable=frozenset({"aegra_authz_vulnerable", "aegra_authz_safe", "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe"}))
 
 REGISTRY["sast-sqli"] = Entry("sast_sqli", aggregate=lambda units, results_dir: __import__("benchmark.component_bench.sast_sqli", fromlist=["aggregate"]).aggregate(units, results_dir), applicable=frozenset({"pyload_sqli_vulnerable", "pyload_sqli_safe", "postgraas_sqli_vulnerable", "postgraas_sqli_safe", "alerta_sqli_vulnerable", "alerta_sqli_safe"}))
 

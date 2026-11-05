@@ -5,8 +5,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from benchmark.component_bench.outcomes import InfraError
+from benchmark.component_bench.outcomes import InfraError, NotScored
 from benchmark.component_bench.schema import load_cases
+from lgtm.agents import registry as prompts
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.diff.git_diff import LineChange
@@ -86,7 +87,11 @@ def run_item(item: dict, ctx) -> list[dict]:
     findings = agent.review_section(section)
     ctx.metrics.add_agent("reviewer", agent.run_records, toolbox.build_tools())
     if agent.errors:
-        raise InfraError("; ".join(e["message"] for e in agent.errors))
+        messages = [e["message"] for e in agent.errors]
+        unparsable = prompts.entry("authz_reviewer.unparsable_explanation").split("{where}")[0]
+        if all(m.startswith(unparsable) for m in messages):
+            return NotScored("; ".join(messages))
+        raise InfraError("; ".join(messages))
     return [{"file": f.file, "line": f.line} for f in findings]
 
 
@@ -100,6 +105,18 @@ def score(item: dict, output: list[dict]) -> dict:
         ranges = gold["locations"] + gold.get("old_locations", [])
         hit = any(_inside(f, ranges) for f in output)
         fp = sum(not _inside(f, ranges) for f in output)
-        return {"tp": int(hit), "fn": int(not hit), "fp": fp, "tn": 0}
+        return {"tp": int(hit), "fn": int(not hit), "fp": fp, "tn": 0, "verdict_correct": float(hit)}
     fp = sum(not _inside(f, gold["known_issues"]) for f in output)
-    return {"tp": 0, "fn": 0, "fp": fp, "tn": int(fp == 0)}
+    return {"tp": 0, "fn": 0, "fp": fp, "tn": int(fp == 0), "verdict_correct": float(fp == 0)}
+
+
+def aggregate(units, results_dir):
+    total = {k: sum(u["scores"][k] for u in units if u["status"] == "scored") for k in ("tp", "fn", "fp", "tn")}
+    tp, fn, fp = total["tp"], total["fn"], total["fp"]
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = tp / (tp + fn) if tp + fn else None
+    if precision is None or recall is None:
+        f1 = None
+    else:
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {**total, "precision": precision, "recall": recall, "f1": f1}
