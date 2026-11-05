@@ -111,8 +111,17 @@ def test_each_distractor_kind_is_rejected_with_both_reasons(ev, fault):
     stated = f"stated reason for {fault}"
     out = ev.run_item(item(evidence, accept=False, fault=fault, reason=stated), ctx())
     assert out["accepted"] is False
-    assert out["stated_reason"] == stated
-    assert any(fragment in r for r in out["validator_reasons"])
+    assert out["detail"]["stated_reason"] == stated
+    assert any(fragment in r for r in out["detail"]["validator_reasons"])
+
+
+# AC-S6-2: the runner persists the reasons on the unit record
+def test_evidence_unit_record_holds_reasons_under_detail(tmp_path, monkeypatch):
+    def verdict(it, c):
+        return {"accepted": False, "detail": {"validator_reasons": ["v"], "stated_reason": "s"}}
+
+    rows = run_registered(tmp_path, monkeypatch, verdict)
+    assert {json.dumps(r["detail"]) for r in rows} == {json.dumps({"validator_reasons": ["v"], "stated_reason": "s"})}
 
 
 # AC-S6-1, AC-S6-3

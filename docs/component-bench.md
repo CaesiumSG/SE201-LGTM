@@ -18,7 +18,7 @@ python benchmark/component_bench/run.py [--components NAME ...] [--resume] [--re
 
 ## Output
 
-- `<results-dir>/<component>.json`: label counts and one record per unit (`case_id`, `label_id`, `status`, `scores`, `wall_time_s`, `input_tokens`, `output_tokens`, `tools`).
+- `<results-dir>/<component>.json`: label counts and one record per unit (`case_id`, `label_id`, `status`, `scores`, `wall_time_s`, `input_tokens`, `output_tokens`, `tools`; scored units may also carry `label_ids` and `detail`, which for `evidence` holds `validator_reasons` and `stated_reason`).
 - `<results-dir>/summary.json`: per component, mean scores, units scored, errored and not scored, draft and approved label counts (`n/a` for the investigator), wall time total, token totals and tool calls.
 
 Unit status is `scored`, `error` (model, judge or dependency failure; excluded from scores, rerun on resume) or `not_scored` (counted separately). A metric scored `None` is left out of that metric's mean. Tokens the model did not return are stored as null and shown as `not recorded`.

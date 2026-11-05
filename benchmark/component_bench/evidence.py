@@ -33,7 +33,10 @@ def run_item(item, ctx):
     shas = {"base": _sha(repo, base), "pr": _sha(repo, pr)}
     validator = EvidenceValidator(repo, base, config=ctx.config, shas=shas)
     issues = validator.resolution_issues(EvidenceItem(**item["gold_input"]["evidence"]))
-    return {"accepted": not issues, "validator_reasons": issues, "stated_reason": item["gold"].get("reason")}
+    return {
+        "accepted": not issues,
+        "detail": {"validator_reasons": issues, "stated_reason": item["gold"].get("reason")},
+    }
 
 
 def score(item, output):

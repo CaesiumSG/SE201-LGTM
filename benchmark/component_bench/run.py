@@ -62,6 +62,8 @@ def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None
             unit.update(status="scored", scores=mod.score(item, output))
             if isinstance(output, dict) and "label_ids" in output:
                 unit["label_ids"] = output["label_ids"]
+            if isinstance(output, dict) and "detail" in output:
+                unit["detail"] = output["detail"]
     except InfraError as exc:
         unit.update(status="error", reason=str(exc), scores=None, wall_time_s=clock() - start)
     unit.update(

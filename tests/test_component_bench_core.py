@@ -225,6 +225,17 @@ def test_unit_error_keeps_wall_time_and_tokens_spent_before_failure(tmp_path):
     assert summary["components"]["alpha"]["wall_time_s"] == 5.0
 
 
+def test_component_detail_is_recorded_on_the_unit_only_when_output_has_it(tmp_path):
+    def run_item(item, ctx):
+        return {"detail": {"why": "r"}} if item["label_id"] == "with" else {"other": 1}
+
+    items = [label("with"), label("without", CASE_B)]
+    _, results = execute(tmp_path, {"alpha": (component(run_item), items)})
+    rec = {u["label_id"]: u for u in units(results, "alpha")}
+    assert rec["with"]["detail"] == {"why": "r"}
+    assert "detail" not in rec["without"]
+
+
 def test_not_scored_unit_is_counted_separately_with_reason(tmp_path):
     run = bench("run")
 
