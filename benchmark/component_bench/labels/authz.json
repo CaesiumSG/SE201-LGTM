@@ -1,0 +1,702 @@
+{
+  "component": "authz",
+  "items": [
+    {
+      "label_id": "authz-aegra-vulnerable",
+      "case_id": "aegra_authz_vulnerable",
+      "source": "benchmark/real_world/cases.json vulnerable_lines; hunks from git diff base_ref pr_ref of libs/aegra-api/src/aegra_api/api/runs.py; passages from benchmark/real_world/policies/aegra.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "aegra-vuln-1",
+          "title": "Run creation endpoints on a thread",
+          "rationale": "Changes to create_run, create_and_stream_run and wait_for_run in runs.py.",
+          "files": ["libs/aegra-api/src/aegra_api/api/runs.py"],
+          "hunks": [
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 15,
+              "new_start": 15,
+              "lines": [
+                " from aegra_api.core.auth_deps import auth_dependency, get_current_user",
+                " from aegra_api.core.auth_handlers import build_auth_context, handle_event",
+                " from aegra_api.core.orm import Run as RunORM",
+                "-from aegra_api.core.orm import Thread as ThreadORM",
+                " from aegra_api.core.orm import _get_session_maker, get_session",
+                " from aegra_api.core.sse import create_end_event, get_sse_headers",
+                " from aegra_api.models import Run, RunCreate, RunStatus, User"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 51,
+              "new_start": 50,
+              "lines": [
+                "     endpoint to follow progress. Provide either `input` or `command` (for",
+                "     human-in-the-loop resumption) but not both.",
+                "     \"\"\"",
+                "-    existing_thread = await session.scalar(",
+                "-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "-    )",
+                "-    if existing_thread and existing_thread.user_id != user.identity:",
+                "-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "-",
+                "     # Authorization check (create_run action on threads resource)",
+                "     ctx = build_auth_context(user, \"threads\", \"create_run\")",
+                "     value = {**request.model_dump(), \"thread_id\": thread_id}"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 99,
+              "new_start": 92,
+              "lines": [
+                "     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`",
+                "     to control which event types are emitted.",
+                "     \"\"\"",
+                "-    existing_thread = await session.scalar(",
+                "-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "-    )",
+                "-    if existing_thread and existing_thread.user_id != user.identity:",
+                "-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "-",
+                "     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+                " ",
+                "     # Default to cancel on disconnect - this matches user expectation that clicking"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 324,
+              "new_start": 311,
+              "lines": [
+                " ",
+                "     # Session block: all pre-execution DB work (validate, create run, submit)",
+                "     async with maker() as session:",
+                "-        existing_thread = await session.scalar(",
+                "-            select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "-        )",
+                "-        if existing_thread and existing_thread.user_id != user.identity:",
+                "-            raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "-",
+                "         run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+                " ",
+                "     # No pool connection held from here — safe for long waits"
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "A handler returns `None` or `True` to allow, `False` to deny with `403`, a dict to allow with filters applied to queries, or a modified `value`. \"Handlers only restrict access when they explicitly deny.\"",
+          "There is no built-in owner field or role system. Isolation is built from handlers: write an owner or team marker into `value[\"metadata\"]` on create, and filter on it for searches. A `threads` filter also applies to by-id reads and deletes, not only search.",
+          "There is no `runs` resource: run operations are authorized under their owning thread. `threads.create_run`: `POST /threads/{id}/runs`, `/runs/stream`, `/runs/wait`, commands, and stateless `POST /runs*`. Omitting `thread_id` does not bypass thread rules.",
+          "Not specified in the documentation: the status code returned when a caller reaches another user's resource."
+        ]
+      },
+      "gold": {
+        "vulnerable": true,
+        "locations": [
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 53, "end": 53},
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 95, "end": 95},
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 314, "end": 314}
+        ],
+        "old_locations": [
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 54, "end": 59},
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 102, "end": 107},
+          {"file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 327, "end": 332}
+        ],
+        "known_issues": []
+      }
+    },
+    {
+      "label_id": "authz-aegra-safe",
+      "case_id": "aegra_authz_safe",
+      "source": "benchmark/real_world/cases.json known_issues; hunks from git diff base_ref pr_ref of libs/aegra-api/src/aegra_api/api/runs.py; passages from benchmark/real_world/policies/aegra.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "aegra-safe-1",
+          "title": "Run creation endpoints on a thread",
+          "rationale": "Changes to create_run, create_and_stream_run and wait_for_run in runs.py.",
+          "files": ["libs/aegra-api/src/aegra_api/api/runs.py"],
+          "hunks": [
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 15,
+              "new_start": 15,
+              "lines": [
+                " from aegra_api.core.auth_deps import auth_dependency, get_current_user",
+                " from aegra_api.core.auth_handlers import build_auth_context, handle_event",
+                " from aegra_api.core.orm import Run as RunORM",
+                "+from aegra_api.core.orm import Thread as ThreadORM",
+                " from aegra_api.core.orm import _get_session_maker, get_session",
+                " from aegra_api.core.sse import create_end_event, get_sse_headers",
+                " from aegra_api.models import Run, RunCreate, RunStatus, User"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 50,
+              "new_start": 51,
+              "lines": [
+                "     endpoint to follow progress. Provide either `input` or `command` (for",
+                "     human-in-the-loop resumption) but not both.",
+                "     \"\"\"",
+                "+    existing_thread = await session.scalar(",
+                "+        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "+    )",
+                "+    if existing_thread and existing_thread.user_id != user.identity:",
+                "+        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "+",
+                "     # Authorization check (create_run action on threads resource)",
+                "     ctx = build_auth_context(user, \"threads\", \"create_run\")",
+                "     value = {**request.model_dump(), \"thread_id\": thread_id}"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 92,
+              "new_start": 99,
+              "lines": [
+                "     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`",
+                "     to control which event types are emitted.",
+                "     \"\"\"",
+                "+    existing_thread = await session.scalar(",
+                "+        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "+    )",
+                "+    if existing_thread and existing_thread.user_id != user.identity:",
+                "+        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "+",
+                "     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+                " ",
+                "     # Default to cancel on disconnect - this matches user expectation that clicking"
+              ]
+            },
+            {
+              "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+              "old_start": 311,
+              "new_start": 324,
+              "lines": [
+                " ",
+                "     # Session block: all pre-execution DB work (validate, create run, submit)",
+                "     async with maker() as session:",
+                "+        existing_thread = await session.scalar(",
+                "+            select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+                "+        )",
+                "+        if existing_thread and existing_thread.user_id != user.identity:",
+                "+            raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+                "+",
+                "         run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+                " ",
+                "     # No pool connection held from here — safe for long waits"
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "A handler returns `None` or `True` to allow, `False` to deny with `403`, a dict to allow with filters applied to queries, or a modified `value`. \"Handlers only restrict access when they explicitly deny.\"",
+          "There is no built-in owner field or role system. Isolation is built from handlers: write an owner or team marker into `value[\"metadata\"]` on create, and filter on it for searches. A `threads` filter also applies to by-id reads and deletes, not only search.",
+          "There is no `runs` resource: run operations are authorized under their owning thread. `threads.create_run`: `POST /threads/{id}/runs`, `/runs/stream`, `/runs/wait`, commands, and stateless `POST /runs*`. Omitting `thread_id` does not bypass thread rules.",
+          "Not specified in the documentation: the status code returned when a caller reaches another user's resource."
+        ]
+      },
+      "gold": {
+        "vulnerable": false,
+        "locations": [],
+        "known_issues": [
+          {"id": "aegra_stream_run_skips_auth_handlers", "file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 102, "end": 108},
+          {"id": "aegra_wait_run_skips_auth_handlers", "file": "libs/aegra-api/src/aegra_api/api/runs.py", "start": 327, "end": 333}
+        ]
+      }
+    },
+    {
+      "label_id": "authz-langflow-vulnerable",
+      "case_id": "langflow_authz_vulnerable",
+      "source": "benchmark/real_world/cases.json vulnerable_lines and vulnerable_locations; hunks from git diff base_ref pr_ref of the three touched source files; passages from benchmark/real_world/policies/langflow.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "langflow-vuln-1",
+          "title": "API key deletion route and CRUD helper",
+          "rationale": "Changes to the DELETE /api_key/{api_key_id} route, delete_api_key and its CLI caller.",
+          "files": [
+            "src/backend/base/langflow/__main__.py",
+            "src/backend/base/langflow/api/v1/api_key.py",
+            "src/backend/base/langflow/services/database/models/api_key/crud.py"
+          ],
+          "hunks": [
+            {
+              "file": "src/backend/base/langflow/__main__.py",
+              "old_start": 887,
+              "new_start": 887,
+              "lines": [
+                "             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)",
+                "             api_key = (await session.exec(stmt)).first()",
+                "             if api_key:",
+                "-                await delete_api_key(session, api_key.id, superuser.id)",
+                "+                await delete_api_key(session, api_key.id)",
+                " ",
+                "             api_key_create = ApiKeyCreate(name=\"CLI\")",
+                "             return await create_api_key(session, api_key_create, user_id=superuser.id)"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/api/v1/api_key.py",
+              "old_start": 1,
+              "new_start": 1,
+              "lines": [
+                " from uuid import UUID",
+                " ",
+                "-from fastapi import APIRouter, HTTPException, Response",
+                "+from fastapi import APIRouter, Depends, HTTPException, Response",
+                " ",
+                " from langflow.api.utils import CurrentActiveUser, DbSession",
+                " from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/api/v1/api_key.py",
+              "old_start": 41,
+              "new_start": 41,
+              "lines": [
+                "         raise HTTPException(status_code=400, detail=str(e)) from e",
+                " ",
+                " ",
+                "-@router.delete(\"/{api_key_id}\")",
+                "+@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])",
+                " async def delete_api_key_route(",
+                "     api_key_id: UUID,",
+                "     db: DbSession,",
+                "-    current_user: CurrentActiveUser,",
+                " ):",
+                "     try:",
+                "-        await delete_api_key(db, api_key_id, current_user.id)",
+                "+        await delete_api_key(db, api_key_id)",
+                "     except Exception as e:",
+                "         raise HTTPException(status_code=400, detail=str(e)) from e",
+                "     return {\"detail\": \"API Key deleted\"}"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+              "old_start": 41,
+              "new_start": 41,
+              "lines": [
+                "     return unmasked",
+                " ",
+                " ",
+                "-async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:",
+                "+async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:",
+                "     api_key = await session.get(ApiKey, api_key_id)",
+                "     if api_key is None:",
+                "         msg = \"API Key not found\"",
+                "         raise ValueError(msg)",
+                "-    if api_key.user_id != user_id:",
+                "-        msg = \"API Key not found\"",
+                "-        raise ValueError(msg)",
+                "     await session.delete(api_key)",
+                " ",
+                " "
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "\"A Langflow API key adopts the privileges of the user who created it.\" A key cannot reach resources outside its own Langflow server.",
+          "In multi-user mode, non-superusers cannot use their keys to reach other users' resources. `LANGFLOW_API_KEY_SOURCE=db` (default) validates keys per user in the database.",
+          "Revoking a key invalidates it immediately.",
+          "Not specified in the documentation: per-endpoint ownership rules beyond those listed above."
+        ]
+      },
+      "gold": {
+        "vulnerable": true,
+        "locations": [
+          {"file": "src/backend/base/langflow/api/v1/api_key.py", "start": 44, "end": 50},
+          {"file": "src/backend/base/langflow/services/database/models/api_key/crud.py", "start": 44, "end": 49}
+        ],
+        "known_issues": []
+      }
+    },
+    {
+      "label_id": "authz-langflow-safe",
+      "case_id": "langflow_authz_safe",
+      "source": "benchmark/real_world/cases.json; hunks from git diff base_ref pr_ref of the three touched source files; passages from benchmark/real_world/policies/langflow.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "langflow-safe-1",
+          "title": "API key deletion route and CRUD helper",
+          "rationale": "Changes to the DELETE /api_key/{api_key_id} route, delete_api_key and its CLI caller.",
+          "files": [
+            "src/backend/base/langflow/__main__.py",
+            "src/backend/base/langflow/api/v1/api_key.py",
+            "src/backend/base/langflow/services/database/models/api_key/crud.py"
+          ],
+          "hunks": [
+            {
+              "file": "src/backend/base/langflow/__main__.py",
+              "old_start": 887,
+              "new_start": 887,
+              "lines": [
+                "             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)",
+                "             api_key = (await session.exec(stmt)).first()",
+                "             if api_key:",
+                "-                await delete_api_key(session, api_key.id)",
+                "+                await delete_api_key(session, api_key.id, superuser.id)",
+                " ",
+                "             api_key_create = ApiKeyCreate(name=\"CLI\")",
+                "             return await create_api_key(session, api_key_create, user_id=superuser.id)"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/api/v1/api_key.py",
+              "old_start": 1,
+              "new_start": 1,
+              "lines": [
+                " from uuid import UUID",
+                " ",
+                "-from fastapi import APIRouter, Depends, HTTPException, Response",
+                "+from fastapi import APIRouter, HTTPException, Response",
+                " ",
+                " from langflow.api.utils import CurrentActiveUser, DbSession",
+                " from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/api/v1/api_key.py",
+              "old_start": 41,
+              "new_start": 41,
+              "lines": [
+                "         raise HTTPException(status_code=400, detail=str(e)) from e",
+                " ",
+                " ",
+                "-@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])",
+                "+@router.delete(\"/{api_key_id}\")",
+                " async def delete_api_key_route(",
+                "     api_key_id: UUID,",
+                "     db: DbSession,",
+                "+    current_user: CurrentActiveUser,",
+                " ):",
+                "     try:",
+                "-        await delete_api_key(db, api_key_id)",
+                "+        await delete_api_key(db, api_key_id, current_user.id)",
+                "     except Exception as e:",
+                "         raise HTTPException(status_code=400, detail=str(e)) from e",
+                "     return {\"detail\": \"API Key deleted\"}"
+              ]
+            },
+            {
+              "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+              "old_start": 41,
+              "new_start": 41,
+              "lines": [
+                "     return unmasked",
+                " ",
+                " ",
+                "-async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:",
+                "+async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:",
+                "     api_key = await session.get(ApiKey, api_key_id)",
+                "     if api_key is None:",
+                "         msg = \"API Key not found\"",
+                "         raise ValueError(msg)",
+                "+    if api_key.user_id != user_id:",
+                "+        msg = \"API Key not found\"",
+                "+        raise ValueError(msg)",
+                "     await session.delete(api_key)",
+                " ",
+                " "
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "\"A Langflow API key adopts the privileges of the user who created it.\" A key cannot reach resources outside its own Langflow server.",
+          "In multi-user mode, non-superusers cannot use their keys to reach other users' resources. `LANGFLOW_API_KEY_SOURCE=db` (default) validates keys per user in the database.",
+          "Revoking a key invalidates it immediately.",
+          "Not specified in the documentation: per-endpoint ownership rules beyond those listed above."
+        ]
+      },
+      "gold": {
+        "vulnerable": false,
+        "locations": [],
+        "known_issues": []
+      }
+    },
+    {
+      "label_id": "authz-litellm-vulnerable",
+      "case_id": "litellm_authz_vulnerable",
+      "source": "benchmark/real_world/cases.json vulnerable_lines and vulnerable_locations; hunks from git diff base_ref pr_ref of the touched source files, formatting-only hunks omitted; passages from benchmark/real_world/policies/litellm.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "litellm-vuln-1",
+          "title": "User role updates, bulk user updates and key spend updates",
+          "rationale": "Changes to _update_single_user_helper, bulk_user_update and _validate_update_key_data.",
+          "files": [
+            "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "litellm/proxy/management_endpoints/key_management_endpoints.py"
+          ],
+          "hunks": [
+            {
+              "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+              "old_start": 1131,
+              "new_start": 1131,
+              "lines": [
+                "     if prisma_client is None:",
+                "         raise Exception(\"Not connected to DB!\")",
+                " ",
+                "-    # Only proxy admins can modify user_role",
+                "-    if (",
+                "-        user_request.user_role is not None",
+                "-        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+                "-    ):",
+                "-        raise HTTPException(",
+                "-            status_code=403,",
+                "-            detail=\"Only proxy admins can modify user roles.\",",
+                "-        )",
+                "-",
+                "     # Validate user identifier",
+                "     if not user_request.user_id and not user_request.user_email:",
+                "         raise ValueError(\"Either user_id or user_email must be provided\")"
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+              "old_start": 1518,
+              "new_start": 1508,
+              "lines": [
+                "             detail={\"error\": \"Database not connected\"},",
+                "         )",
+                " ",
+                "-    # Only proxy admins can modify user_role in bulk updates",
+                "-    _bulk_role = (",
+                "-        getattr(data.user_updates, \"user_role\", None) if data.user_updates else None",
+                "-    )",
+                "-    if _bulk_role is None and data.users:",
+                "-        _bulk_role = next(",
+                "-            (u.user_role for u in data.users if u.user_role is not None), None",
+                "-        )",
+                "-    if (",
+                "-        _bulk_role is not None",
+                "-        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+                "-    ):",
+                "-        raise HTTPException(",
+                "-            status_code=403,",
+                "-            detail=\"Only proxy admins can modify user roles.\",",
+                "-        )",
+                "-",
+                "     # Determine the list of users to update",
+                "     users_to_update: Union[",
+                "         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]",
+                "     ] = []",
+                " ",
+                "     if data.all_users and data.user_updates:",
+                "-        # Only proxy admins can update all users at once",
+                "-        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:",
+                "-            raise HTTPException(",
+                "-                status_code=403,",
+                "-                detail=\"Only proxy admins can update all users at once.\",",
+                "-            )",
+                "         # Optimized path for updating all users directly in database",
+                "         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(",
+                "             order={\"created_at\": \"desc\"}"
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+              "old_start": 1961,
+              "new_start": 1961,
+              "lines": [
+                "         user_api_key_cache=user_api_key_cache,",
+                "     )",
+                " ",
+                "-    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget or spend",
+                "-    if (",
+                "-        data.max_budget is not None and data.max_budget != existing_key_row.max_budget",
+                "-    ) or (",
+                "-        data.spend is not None",
+                "-        and data.spend != getattr(existing_key_row, \"spend\", None)",
+                "-    ):",
+                "+    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget",
+                "+    if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:",
+                "         if prisma_client is not None:",
+                "             hashed_key = existing_key_row.token",
+                "             await _check_key_admin_access("
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+              "old_start": 1975,
+              "new_start": 1970,
+              "lines": [
+                "                 hashed_token=hashed_key,",
+                "                 prisma_client=prisma_client,",
+                "                 user_api_key_cache=user_api_key_cache,",
+                "-                route=\"/key/update (max_budget/spend)\",",
+                "+                route=\"/key/update (max_budget)\",",
+                "             )",
+                " ",
+                "     # Check team limits if key has a team_id (from request or existing key)"
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "`proxy_admin`: \"Admin over the entire platform\": full control over organizations, teams, users, keys and budgets. `internal_user`: can log in, view/create/delete their own keys and view their own spend. Cannot add new users.",
+          "`team_admin`: manages their own team's members, member permissions and keys. Cannot create new teams, raise `max_budget` unless a proxy admin enabled it, or add or remove global proxy models.",
+          "A proxy admin, or an admin of the team or its organization, can reset a member's spend; a team admin cannot reset their own spend.",
+          "\"management-route access is decided by the role of the owning user\". A key owned by a `proxy_admin` skips every non-admin route restriction.",
+          "Not specified in the documentation: a per-endpoint role matrix for the `/user/*` and `/key/*` management routes; the role descriptions above are the documented rules."
+        ]
+      },
+      "gold": {
+        "vulnerable": true,
+        "locations": [
+          {"file": "litellm/proxy/management_endpoints/internal_user_endpoints.py", "start": 1134, "end": 1134},
+          {"file": "litellm/proxy/management_endpoints/internal_user_endpoints.py", "start": 1511, "end": 1516},
+          {"file": "litellm/proxy/management_endpoints/key_management_endpoints.py", "start": 1964, "end": 1973}
+        ],
+        "old_locations": [
+          {"file": "litellm/proxy/management_endpoints/internal_user_endpoints.py", "start": 1134, "end": 1142},
+          {"file": "litellm/proxy/management_endpoints/internal_user_endpoints.py", "start": 1521, "end": 1536},
+          {"file": "litellm/proxy/management_endpoints/internal_user_endpoints.py", "start": 1544, "end": 1549},
+          {"file": "litellm/proxy/management_endpoints/key_management_endpoints.py", "start": 1964, "end": 1978}
+        ],
+        "known_issues": []
+      }
+    },
+    {
+      "label_id": "authz-litellm-safe",
+      "case_id": "litellm_authz_safe",
+      "source": "benchmark/real_world/cases.json; hunks from git diff base_ref pr_ref of the touched source files, formatting-only hunks omitted; passages from benchmark/real_world/policies/litellm.md",
+      "review_state": "draft",
+      "gold_input": {
+        "section": {
+          "section_id": "litellm-safe-1",
+          "title": "User role updates, bulk user updates and key spend updates",
+          "rationale": "Changes to _update_single_user_helper, bulk_user_update and _validate_update_key_data.",
+          "files": [
+            "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "litellm/proxy/management_endpoints/key_management_endpoints.py"
+          ],
+          "hunks": [
+            {
+              "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+              "old_start": 1131,
+              "new_start": 1131,
+              "lines": [
+                "     if prisma_client is None:",
+                "         raise Exception(\"Not connected to DB!\")",
+                " ",
+                "+    # Only proxy admins can modify user_role",
+                "+    if (",
+                "+        user_request.user_role is not None",
+                "+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+                "+    ):",
+                "+        raise HTTPException(",
+                "+            status_code=403,",
+                "+            detail=\"Only proxy admins can modify user roles.\",",
+                "+        )",
+                "+",
+                "     # Validate user identifier",
+                "     if not user_request.user_id and not user_request.user_email:",
+                "         raise ValueError(\"Either user_id or user_email must be provided\")"
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+              "old_start": 1508,
+              "new_start": 1518,
+              "lines": [
+                "             detail={\"error\": \"Database not connected\"},",
+                "         )",
+                " ",
+                "+    # Only proxy admins can modify user_role in bulk updates",
+                "+    _bulk_role = (",
+                "+        getattr(data.user_updates, \"user_role\", None) if data.user_updates else None",
+                "+    )",
+                "+    if _bulk_role is None and data.users:",
+                "+        _bulk_role = next(",
+                "+            (u.user_role for u in data.users if u.user_role is not None), None",
+                "+        )",
+                "+    if (",
+                "+        _bulk_role is not None",
+                "+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+                "+    ):",
+                "+        raise HTTPException(",
+                "+            status_code=403,",
+                "+            detail=\"Only proxy admins can modify user roles.\",",
+                "+        )",
+                "+",
+                "     # Determine the list of users to update",
+                "     users_to_update: Union[",
+                "         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]",
+                "     ] = []",
+                " ",
+                "     if data.all_users and data.user_updates:",
+                "+        # Only proxy admins can update all users at once",
+                "+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:",
+                "+            raise HTTPException(",
+                "+                status_code=403,",
+                "+                detail=\"Only proxy admins can update all users at once.\",",
+                "+            )",
+                "         # Optimized path for updating all users directly in database",
+                "         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(",
+                "             order={\"created_at\": \"desc\"}"
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+              "old_start": 1961,
+              "new_start": 1961,
+              "lines": [
+                "         user_api_key_cache=user_api_key_cache,",
+                "     )",
+                " ",
+                "-    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget",
+                "-    if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:",
+                "+    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget or spend",
+                "+    if (",
+                "+        data.max_budget is not None and data.max_budget != existing_key_row.max_budget",
+                "+    ) or (",
+                "+        data.spend is not None",
+                "+        and data.spend != getattr(existing_key_row, \"spend\", None)",
+                "+    ):",
+                "         if prisma_client is not None:",
+                "             hashed_key = existing_key_row.token",
+                "             await _check_key_admin_access("
+              ]
+            },
+            {
+              "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+              "old_start": 1970,
+              "new_start": 1975,
+              "lines": [
+                "                 hashed_token=hashed_key,",
+                "                 prisma_client=prisma_client,",
+                "                 user_api_key_cache=user_api_key_cache,",
+                "-                route=\"/key/update (max_budget)\",",
+                "+                route=\"/key/update (max_budget/spend)\",",
+                "             )",
+                " ",
+                "     # Check team limits if key has a team_id (from request or existing key)"
+              ]
+            }
+          ]
+        },
+        "policy_passages": [
+          "`proxy_admin`: \"Admin over the entire platform\": full control over organizations, teams, users, keys and budgets. `internal_user`: can log in, view/create/delete their own keys and view their own spend. Cannot add new users.",
+          "`team_admin`: manages their own team's members, member permissions and keys. Cannot create new teams, raise `max_budget` unless a proxy admin enabled it, or add or remove global proxy models.",
+          "A proxy admin, or an admin of the team or its organization, can reset a member's spend; a team admin cannot reset their own spend.",
+          "\"management-route access is decided by the role of the owning user\". A key owned by a `proxy_admin` skips every non-admin route restriction.",
+          "Not specified in the documentation: a per-endpoint role matrix for the `/user/*` and `/key/*` management routes; the role descriptions above are the documented rules."
+        ]
+      },
+      "gold": {
+        "vulnerable": false,
+        "locations": [],
+        "known_issues": []
+      }
+    }
+  ]
+}

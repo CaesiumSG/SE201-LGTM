@@ -54,3 +54,20 @@ Runs the investigator on each of the 12 cases and has no label file. The split i
 - Rating records: `<results-dir>/investigator/ratings/<case_id>.json` as `{"case_id": ..., "rating": ..., "reason": ...}`, written once per case by a Claude Code subagent. A `rating` outside 0.00 to 1.00, or a missing or empty `reason`, is rejected.
 - Summary: the `aggregate` section holds `ratings` per case, `mean` over rated cases (null when none), `rated`, `with_result`, `unrated` and `plan_invalid`.
 
+## authz
+
+Runs the authz reviewer on the gold section of each of the 6 authz cases (aegra, langflow, litellm; vulnerable and safe), with the gold policy passages as its policy input. Labels: `benchmark/component_bench/labels/authz.json`; `gold_input` holds `section` and `policy_passages`; `gold` holds `vulnerable`, `locations` (`file`, `start`, `end`, inclusive; new-side lines), optional `old_locations` (same shape; base-side lines of removed checks; a finding inside either range is a hit) and `known_issues` (`id`, `file`, `start`, `end`).
+
+Scores per unit: `tp`, `fn`, `fp`, `tn`.
+
+| Case | Finding | Score |
+| --- | --- | --- |
+| Vulnerable | on a gold location | `tp` 1 |
+| Vulnerable | none on a gold location | `fn` 1 |
+| Vulnerable | not on a gold location | `fp` 1 each |
+| Safe | none | `tn` 1 |
+| Safe | inside a known issue | not counted |
+| Safe | elsewhere | `fp` 1 each |
+
+The reviewer's tools read the case repository from the clone under `benchmark/real_world/.cache/<project>`.
+

@@ -25,3 +25,5 @@ REGISTRY["retrieval"] = Entry("retrieval", source="cases", aggregate=_retrieval_
 
 REGISTRY["investigator"] = Entry(module="investigator", source="cases", aggregate=__import__("benchmark.component_bench.investigator", fromlist=["aggregate"]).aggregate)
 
+REGISTRY["authz"] = Entry("authz", applicable=frozenset({"aegra_authz_vulnerable", "aegra_authz_safe", "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe"}))
+
