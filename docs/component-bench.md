@@ -77,3 +77,11 @@ The reviewer's tools read the case repository from the clone under `benchmark/re
 
 Per unit scores: `tp`, `fp`, `fn`, `tn` and `correct`. The aggregate reports `precision`, `recall` and `f1` over the scored units. An unreachable model endpoint, a judge that does not answer, or a failed temporary repo setup records the unit as `error`; an unparsable answer records it as `not_scored`.
 
+## Evidence validator
+
+Component `evidence`. Each label is one citation: a gold finding's correct evidence (`gold.accept` true) or a distractor with a single fault (`distractor` true, `gold.accept` false, `gold.fault` one of `snippet_not_in_file`, `nonexistent_file`, `lines_out_of_range`, `wrong_snapshot`, and `gold.reason` stating it).
+
+`run_item` resolves the citation with `EvidenceValidator` against the case branches `rw/<case_id>/base` and `rw/<case_id>/pr` in the clone cache (`CLONE_CACHE`, default `benchmark/real_world/.cache`). A missing clone or branch is recorded as an error unit.
+
+The positive class is accept. Gold accepted is `tp`, gold rejected is `fn`, distractor accepted is `fp`, distractor rejected is `tn`. The aggregate reports precision, recall and F1.
+

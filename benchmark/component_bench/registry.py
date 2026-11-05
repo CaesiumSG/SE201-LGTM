@@ -29,3 +29,5 @@ REGISTRY["authz"] = Entry("authz", applicable=frozenset({"aegra_authz_vulnerable
 
 REGISTRY["sast-sqli"] = Entry("sast_sqli", aggregate=lambda units, results_dir: __import__("benchmark.component_bench.sast_sqli", fromlist=["aggregate"]).aggregate(units, results_dir), applicable=frozenset({"pyload_sqli_vulnerable", "pyload_sqli_safe", "postgraas_sqli_vulnerable", "postgraas_sqli_safe", "alerta_sqli_vulnerable", "alerta_sqli_safe"}))
 
+REGISTRY["evidence"] = Entry("evidence", aggregate=__import__("benchmark.component_bench.evidence", fromlist=["aggregate"]).aggregate)
+
