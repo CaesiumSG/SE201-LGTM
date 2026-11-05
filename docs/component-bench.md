@@ -45,3 +45,12 @@ Gold labels in `labels/retrieval.json` are policy passages (`gold`: `source`, `s
 
 The summary section `aggregate` lists the draft and approved label counts and the gold label ids of each case.
 
+## Investigator
+
+Runs the investigator on each of the 12 cases and has no label file. The split is rated offline, not by the benchmark.
+
+- Written results: `<results-dir>/investigator/<case_id>.json` with `case_id`, `diff` (the PR diff) and `sections` (`id`, `title`, `rationale`, `hunks` with each hunk's id and lines). Only the investigator's own proposed sections are written, with no fallback sections. A case whose output fails plan validation, or has no section with a valid hunk, is `not_scored`, writes no result and is listed as `plan_invalid`; a model or dependency failure is `error`.
+- Rubric: `benchmark/component_bench/investigator_rubric.md`, copied to `<results-dir>/investigator/` on each run. It states the criteria and the 0.00, 0.50 and 1.00 anchors.
+- Rating records: `<results-dir>/investigator/ratings/<case_id>.json` as `{"case_id": ..., "rating": ..., "reason": ...}`, written once per case by a Claude Code subagent. A `rating` outside 0.00 to 1.00, or a missing or empty `reason`, is rejected.
+- Summary: the `aggregate` section holds `ratings` per case, `mean` over rated cases (null when none), `rated`, `with_result`, `unrated` and `plan_invalid`.
+

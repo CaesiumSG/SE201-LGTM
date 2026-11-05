@@ -23,3 +23,5 @@ def _retrieval_aggregate(units, results_dir, labels_dir=None):
 
 REGISTRY["retrieval"] = Entry("retrieval", source="cases", aggregate=_retrieval_aggregate)
 
+REGISTRY["investigator"] = Entry(module="investigator", source="cases", aggregate=__import__("benchmark.component_bench.investigator", fromlist=["aggregate"]).aggregate)
+
