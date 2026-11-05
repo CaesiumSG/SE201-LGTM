@@ -30,11 +30,24 @@ def run_item(item, ctx):
     return reply
 
 
+def acceptable(gold, key):
+    """Answers that count as correct: `gold.acceptable[key]`, else the single gold answer."""
+    accepted = gold.get("acceptable", {}).get(key)
+    if accepted:
+        return set(accepted)
+    return {gold[key]} if gold.get(key) else set()
+
+
 def score(item, output):
     gold = item["gold"]
     real = gold["verdict"] == "real"
-    correct = float(output["verdict"] == gold["verdict"])
-    severity = float(output["verdict"] == "real" and output.get("severity") == gold.get("severity"))
+    verdicts = acceptable(gold, "verdict")
+    correct = float(output["verdict"] in verdicts)
+    if output["verdict"] == "real":
+        severity = float(output.get("severity") in acceptable(gold, "severity"))
+    else:
+        # A defensible not_real answer leaves no severity to grade.
+        severity = None if "not_real" in verdicts else 0.0
     return {
         "verdict_correct": correct,
         "real_verdict_correct": correct if real else None,

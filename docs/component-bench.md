@@ -89,9 +89,9 @@ The positive class is accept. Gold accepted is `tp`, gold rejected is `fn`, dist
 
 Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings derived from all 12 cases. Labels: `benchmark/component_bench/labels/kev-judge.json`.
 
-- Each label is one candidate: `gold_input` holds the claim, CWE and cited code; `gold` holds `verdict` (`real`, `not_real` or `undetermined`) and, on `real`, `severity` (`low`, `medium`, `high` or `critical`). Criteria: `docs/kev-labeling-criteria.md`.
+- Each label is one candidate: `gold_input` holds the claim, CWE and cited code; `gold` holds `verdict` (`real`, `not_real` or `undetermined`) and, on `real`, `severity` (`low`, `medium`, `high` or `critical`). Where more than one answer is defensible, `gold.acceptable` lists every acceptable `verdict` and `severity`, and `gold.rationale` says why. Criteria: `docs/kev-labeling-criteria.md`.
 - Real candidates cite a vulnerable location, including known issues in the case tree. Not-real candidates cite the fixed code of a safe case as a flaw.
-- Scores: `verdict_correct` with `real_verdict_correct` and `not_real_verdict_correct`, and `severity_correct` over gold-real candidates only. A gold-real candidate judged `not_real` is a severity miss.
+- Scores: `verdict_correct` with `real_verdict_correct` and `not_real_verdict_correct`, and `severity_correct` over gold-real candidates only. An answer in the acceptable set is correct. A gold-real candidate judged `not_real` is a severity miss unless `not_real` is acceptable, in which case it has no severity score.
 - An `undetermined` candidate is not judged and is counted as not scored.
 - An unreachable judge, or a reply without a `real` or `not_real` verdict, is an error.
 - Needs the Kev endpoint (`judge_endpoint`); input tokens are taken from the judge reply, output tokens show as not recorded.

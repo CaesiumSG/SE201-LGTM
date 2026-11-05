@@ -31,6 +31,12 @@ Set only on `real` units.
 - `high`: exploitable by an ordinary user with significant data or integrity impact.
 - `critical`: unauthenticated or trivially exploitable with full compromise.
 
+## acceptable answers
+
+`verdict` and `severity` hold the single best answer. When the cited code supports more than one
+reading, `acceptable` lists every verdict and severity a careful reviewer could justify from the
+claim and the quoted code, and `rationale` gives the reason. An answer outside the set is wrong.
+
 ## kind
 
 The candidate's origin shape, for example `live_shaped` (a candidate as the live reviewer

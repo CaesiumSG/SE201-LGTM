@@ -20,10 +20,12 @@ NAME = "kev-judge"
 CASE = "pyload_sqli_vulnerable"
 
 
-def item(label_id="C1", case_id=CASE, verdict="real", severity="high"):
+def item(label_id="C1", case_id=CASE, verdict="real", severity="high", accept=None):
     gold = {"verdict": verdict}
     if severity is not None:
         gold["severity"] = severity
+    if accept is not None:
+        gold["acceptable"] = accept
     return {
         "label_id": label_id,
         "case_id": case_id,
@@ -225,6 +227,45 @@ def test_severity_accuracy_is_over_gold_real_candidates_only(tmp_path):
     assert section["scores"]["severity_correct"] == pytest.approx(1 / 2)
 
 
+# --- acceptable answer sets ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "answered, verdict_correct, severity_correct",
+    [
+        (reply("real", "medium"), 1.0, 1.0),
+        (reply("real", "low"), 1.0, 0.0),
+        (reply("not_real", "high"), 1.0, None),
+    ],
+)
+def test_any_acceptable_answer_is_correct(tmp_path, answered, verdict_correct, severity_correct):
+    accept = {"verdict": ["real", "not_real"], "severity": ["medium", "high"]}
+    _, units = bench(tmp_path, [item(accept=accept)], answers([answered]))
+    assert units["C1"]["scores"]["verdict_correct"] == verdict_correct
+    assert units["C1"]["scores"]["severity_correct"] == severity_correct
+
+
+def test_acceptable_severities_without_acceptable_verdicts_keep_not_real_a_miss(tmp_path):
+    accept = {"severity": ["high", "critical"]}
+    _, units = bench(
+        tmp_path,
+        [item("R1", accept=accept), item("R2", accept=accept)],
+        answers([reply("real", "critical"), reply("not_real", "high")]),
+    )
+    assert units["R1"]["scores"] == pytest.approx(
+        {"verdict_correct": 1.0, "real_verdict_correct": 1.0, "not_real_verdict_correct": None, "severity_correct": 1.0}
+    )
+    assert units["R2"]["scores"]["verdict_correct"] == 0.0
+    assert units["R2"]["scores"]["severity_correct"] == 0.0
+
+
+def test_not_real_gold_accepting_real_scores_a_real_answer_correct(tmp_path):
+    accept = {"verdict": ["not_real", "real"]}
+    _, units = bench(tmp_path, [item(verdict="not_real", severity=None, accept=accept)], answers([reply("real")]))
+    assert units["C1"]["scores"]["not_real_verdict_correct"] == 1.0
+    assert units["C1"]["scores"]["severity_correct"] is None
+
+
 # --- registry and shipped labels (AC-S1-6, AC-S1-10, AC-S7-5) ------------------------------
 
 
@@ -265,3 +306,18 @@ def test_every_candidate_has_a_documented_verdict_and_only_real_has_severity(shi
 
 def test_shipped_labels_include_not_real_candidates(shipped):
     assert any(i["gold"]["verdict"] == "not_real" for i in shipped["items"])
+
+
+def test_shipped_acceptable_sets_contain_the_gold_answer_and_carry_a_rationale(shipped):
+    for i in shipped["items"]:
+        gold = i["gold"]
+        accept = gold.get("acceptable")
+        if not accept:
+            continue
+        assert gold.get("rationale"), i["label_id"]
+        assert set(accept.get("verdict", [gold["verdict"]])) <= {"real", "not_real"}, i["label_id"]
+        assert gold["verdict"] in accept.get("verdict", [gold["verdict"]]), i["label_id"]
+        severities = accept.get("severity", [])
+        assert set(severities) <= {"low", "medium", "high", "critical"}, i["label_id"]
+        if gold.get("severity"):
+            assert gold["severity"] in severities, i["label_id"]
