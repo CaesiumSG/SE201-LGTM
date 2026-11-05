@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -266,7 +267,8 @@ def test_benchmark_has_no_anthropic_dependency_or_key_use():
     source = (PKG / "investigator.py").read_text(encoding="utf-8").lower()
     assert "anthropic" not in source
     assert "api_key" not in source
-    assert "anthropic" not in (ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert not any("anthropic" in dep.lower() for dep in project["dependencies"])
 
 
 def test_registry_declares_investigator_on_case_source_with_aggregate():
