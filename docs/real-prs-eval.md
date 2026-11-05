@@ -91,22 +91,29 @@ not change (identical on all 9).
 |---|---|---|---|
 | SQL injection: caught / exact | **4/4 / 4** | 2/4 / 0 | 3/4 / 3 |
 | Authorization: caught / exact | (as v2.0) | 7/9 / 7 | 4/9 / 3 |
-| False alarms on fixes | 1/4 (redash) | 2/13 (redash, pretix) | 0/13 |
-| Median seconds per diff | 184 | 138 | 11 |
+| False alarms on fixes | 1/4 (redash, which v2.0 also flags) | 2/13 (redash, pretix) | 0/13 |
+| Median seconds per diff | 184 (131 for v2.0 on the same 8 diffs) | 138 | 11 |
 
 ## What the numbers say
 
-- **v2.0 could not see SQL injection on real PRs.** Its only SQLi path triages
-  Semgrep hits, and Semgrep matched nothing in any of these diffs: the SQL is
-  built in helpers, template filters and `str.format` calls its rules do not
-  cover. v2.0's SQLi "catches" were mostly authorization findings that
-  happened to sit in the right file (taiga here; litellm and redash on the
-  development set).
+- **v2.0 sees SQL injection only where Semgrep does.** Its only SQLi path
+  triages Semgrep hits. On the development set Semgrep matched nothing in any
+  diff, and v2.0's two SQLi "catches" (litellm, redash) were authorization
+  findings that happened to sit in the right file. On the held-out set
+  Semgrep matched inside the diff for ormar, piccolo and rucio-oracle, and
+  those are three of v2.0's four SQLi catches; the fourth, taiga, is again an
+  authorization finding. Where the SQL is built in helpers, template filters
+  or `str.format` calls that no rule covers, v2.0 is blind.
 - **The SQLi reviewer closes most of that gap without hurting the rest.** On
   held-out data it found 7 of 8 SQLi advisories with the right CWE in the
   right file, against 3 for v2.0, and the authorization results were
-  identical. The cost is one false alarm (alerta's fix; on the development
-  set, redash's) and about 25 seconds per diff.
+  identical. The cost is one new false alarm (alerta's fix; on the
+  development set v2.1 flags redash's fix, which v2.0 already did) and about
+  25 seconds per diff on the held-out set.
+- **v2.1 is not purely v2.0 plus one pass.** With the SQLi reviewer on, the
+  final deduplication runs over the triage, authorization and SQLi findings
+  together, so overlapping triage findings are merged too (piccolo's
+  vulnerable diff: 7 triage findings in v2.0, 3 in v2.1).
 - **On authorization the agent pipeline beats the plain LLM** (7/9 exact
   against 3/9, and 7/9 against 3/9 on the development set). The plain LLM sees
   only the diff; the agents can open the views, permission classes and
@@ -131,7 +138,16 @@ not change (identical on all 9).
   even if the fixed code has a different real flaw; we did not check.
 - **Infrastructure.** A VPN drop during the first held-out run killed the GPU
   tunnels; the records written after the drop (5 diffs) were set aside and
-  re-run on a fresh job. Every reported record completed with no error.
+  re-run on a fresh job. No reported record crashed, but these runs did not
+  store section-level agent errors in the records (the runner now saves them
+  as `agent_errors`). From the run logs, in the reported runs no section
+  failed to reach the model; a few section reviews returned no parsable
+  answer and so counted as silence: 5 in v2.1 (alerta vulnerable 2, alerta
+  fixed 1, rucio-oracle vulnerable 1 in a test file, openedx vulnerable 1)
+  and 2 in v2.0 (alerta and openedx vulnerable). v2.0's alerta miss
+  coincides with an unparsable answer on the section that holds the
+  injection, so that miss may be an output failure rather than a reasoning
+  miss; the other affected advisories were caught anyway.
 
 ## Live hunt (no answer key)
 

@@ -375,14 +375,16 @@ class ReviewPipeline:
             error = authz_agent.errors[seen_errors:]
             for finding in reviewed:
                 finding.pr_graph_ok = toolbox.graph_stamp("pr")
-            results[section.section_id] = self._section_result(
-                reviewed, error[0]["message"] if error else None
-            )
             section_findings.extend(reviewed)
             if sqli_agent is not None and needs_sql_review(scoped, toolbox):
+                seen_sqli_errors = len(sqli_agent.errors)
                 for finding in sqli_agent.review_section(scoped, notes):
                     finding.pr_graph_ok = toolbox.graph_stamp("pr")
                     section_findings.append(finding)
+                error = error + sqli_agent.errors[seen_sqli_errors:]
+            results[section.section_id] = self._section_result(
+                reviewed, error[0]["message"] if error else None
+            )
 
         return _SectionStage(
             findings=dedup_findings(section_findings),

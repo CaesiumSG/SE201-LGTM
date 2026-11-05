@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lgtm.agents.base import FatalLLMError
 from lgtm.config import LGTMConfig
 
 # USD per million tokens (input, output), Anthropic list prices for the
@@ -36,8 +37,8 @@ PRICE_SAFETY = 1.10
 _LEDGER_LOCK = threading.Lock()
 
 
-class BedrockBudgetExceeded(RuntimeError):
-    pass
+class BedrockBudgetExceeded(FatalLLMError):
+    """Raised before a call once the ledger reaches the budget; never retried."""
 
 
 def price_of(model: str) -> tuple[float, float]:

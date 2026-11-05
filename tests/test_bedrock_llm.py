@@ -121,3 +121,17 @@ def test_build_llm_picks_the_bedrock_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "t")
     monkeypatch.setattr(bedrock_llm, "_Shared", lambda client: _Shared(client=None))
     assert isinstance(build_llm(_config(tmp_path)), BedrockClaude)
+
+
+def test_the_budget_stop_is_not_retried(tmp_path, monkeypatch):
+    from lgtm.agents import base
+
+    (tmp_path / "spend.jsonl").write_text(json.dumps({"usd": 5.0}) + "\n")
+    config = _config(tmp_path, budget=5.0)
+    config.llm_retries = 3
+    sleeps = []
+    monkeypatch.setattr(base, "_sleep", sleeps.append)
+    llm = BedrockClaude(config, shared=_Shared(client=FakeClient([])))
+    with pytest.raises(BedrockBudgetExceeded):
+        base.invoke_with_retry(llm, [HumanMessage(content="u")], config)
+    assert sleeps == []

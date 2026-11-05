@@ -83,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  -> {len(record.get('vulnerable_findings') or [])} flagged of "
                   f"{record.get('n_findings', 0)} findings, {record.get('latency_seconds')} s"
                   f"{' ERROR ' + str(record.get('error')) if record.get('crashed') else ''}", flush=True)
+        if "BedrockBudgetExceeded" in str(record.get("error") or ""):
+            print(f"stopped: {record['error']}", flush=True)
+            break
         if record.get("vulnerable_findings"):
             flagged.append(case["id"])
     print(f"flagged {len(flagged)} of {len(cases)} PRs: {', '.join(flagged) or 'none'}")
