@@ -46,15 +46,6 @@ ATTEMPTS = 4  # first attempt plus the three retries
 BENCHMARK = Path(__file__).resolve().parent.parent / "benchmark"
 
 
-@pytest.fixture(scope="module")
-def judge_eval():
-    spec = importlib.util.spec_from_file_location("e2e_judge_eval", BENCHMARK / "judge_eval.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["e2e_judge_eval"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def one_semgrep_hit(install_graph, monkeypatch):
     install_graph()
@@ -201,8 +192,8 @@ def test_review_keeps_unresolvable_references_logs_them_and_sends_the_candidate_
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
-def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benchmark_counts_it_per_reason(
-    repo, tmp_path, monkeypatch, start_kev, judge_eval
+def test_review_reports_the_oversize_candidate_as_request_too_large(
+    repo, tmp_path, monkeypatch, start_kev
 ):
     kev = start_kev(_answer_by_claim())
     oversize_claim = CLAIM_AUTHZ_A + CLAIM_OVERSIZE_PAD * (REQUEST_BOUND // len(CLAIM_OVERSIZE_PAD) + 100)
@@ -223,8 +214,6 @@ def test_review_reports_the_oversize_candidate_as_request_too_large_and_the_benc
         assert found[claim]["supported"] is KEV_ANSWERS[claim][0]
     assert len(kev.requests) == 2
     assert not any(CLAIM_OVERSIZE_PAD in json.dumps(r.body) for r in kev.requests)
-
-    assert judge_eval.not_judged_by_reason(report["findings"]) == {"request-too-large": 1}
 
 
 def _answer_with(verdict: str, severity: str):
@@ -285,7 +274,7 @@ def test_review_report_and_exit_code_change_with_the_kev_verdict_only_when_it_ru
 
 @pytest.mark.usefixtures("one_semgrep_hit")
 def test_saved_candidates_of_a_judged_review_carry_the_kev_verdict_and_severity_that_the_report_leaves_out(
-    repo, tmp_path, monkeypatch, start_kev, judge_eval
+    repo, tmp_path, monkeypatch, start_kev
 ):
     from lgtm.config import LGTMConfig
     from lgtm.pipeline import ReviewPipeline

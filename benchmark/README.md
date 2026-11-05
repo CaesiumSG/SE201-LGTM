@@ -163,9 +163,7 @@ and `docs/evaluation-log.md`.
 
 ## Citation support and judge quality
 
-Both populations (every cited unit before judging, and judged units the judge
-found supported) are computed from one recorded run directory, one export and
-one labels file. Committed runs stay read-only.
+Committed runs stay read-only.
 
 Export the units of a recorded run for labelling (one `--repo` per case):
 
@@ -175,106 +173,7 @@ python benchmark/citation_export.py RUN_DIR export.json --repo CASE_ID=REPO_PATH
 
 Each unit has a stable `unit_id` (`<case id>/<finding index>.<evidence index>`),
 `claim`, `file`, `lines`, `snapshot` and `code`; `unreadable: true` marks a
-location whose code could not be read. No judge output is exported. The
-question for each unit: does the code support the claim, yes or no.
-
-Labels file:
-
-```json
-{"units": {"<unit_id>": {"supports": "yes"}}}
-```
-
-`supports` is `yes` or `no`. An id outside the export or any other label value
-stops the report naming the entry. Units without a label are counted as
-unlabelled.
-
-Report:
-
-```bash
-python benchmark/judge_eval.py RUN_DIR export.json labels.json
-```
-
-It prints, as `citation_support`, percent yes before judging and for the judged
-population (with `n` and unlabelled counts); mean confidence for `yes` and `no`
-units; `supported_agreement`, the share of judged labelled units whose
-supported answer matches the label; `case_accuracy` on `supported`;
-`not_judged_by_reason`, the not-judged candidates per reason, with
-`request-too-large` apart from `judge-failed`; and the fallback rate.
-Recorded runs carry no per-candidate latency, so the latency median and 95th
-percentile appear only with `--judge-records RECORDS.json`, a JSON list written
-from `measure_judge_run` in `judge_eval.py`; without it the fallback rate comes
-from the recorded `judged` flags.
-
-Support perturbations need a live judge. `perturb_case` in `judge_eval.py`
-judges each judged candidate with a valid code citation and three copies known
-to be unsupported: `unrelated_code` (other code from the same repository),
-`mutated_claim` (a different claim, same code) and `safe_twin_code` (the fixed
-variant of a vulnerable case; skipped and counted when none exists).
-`perturbation_report` states, per perturbation, `n`, `skipped`,
-`support_rate_drop` and `confidence_drop` (original minus perturbed, over pairs
-the judge answered). Real-world cases pass `repo`, a clone prepared by
-`real_world/fetch.py`.
-
-## Kev validation benchmark
-
-`benchmark/kev_support/` sends authored cases through evidence validation and the production Kev judge
-request in two arms, `few_shot` and `zero_shot`. It starts no LGTM agent.
-
-- Cases (`fixtures.py`): 10 cases in each of `safe_twin`, `unrelated_code`, `missing_check`,
-  `sqli_no_sql`, `wrong_cwe`, `live_shaped` and `real_elsewhere`, and 20 `control` cases, citing two
-  small case repositories that the runner builds as temporary git repositories. Each case states
-  `verdict` (`real` or `not_real`), `severity` (a judge severity level, `None` when not real) and
-  `provenance` (`supported` or `unsupported`). Only `control` cases have verdict `real` and provenance
-  `supported`; every other kind, including `real_elsewhere`, has verdict `not_real` (judged against the
-  cited code), severity `None` and provenance `unsupported`.
-- A case whose evidence fails validation is listed under `evidence_failures`, gets status
-  `evidence_invalid` in both arms, and is never sent to the judge.
-- Each case and arm gets one judge call (`/v1/systemone`) answering the `supported`, `verdict` and
-  `severity` questions, then one permute call per question (`/v1/systemone/permute`, six option orders).
-  A request over the size limit has status `too_large`; a failed judge call has status `error`. A failed
-  permute call is recorded for that question and keeps the case `answered`.
-
-```bash
-# From the repository root (install LGTM first: pip install -e .)
-python benchmark/kev_support/runner.py --out DIR [--work-dir DIR]
-```
-
-The judge endpoint, model and timeout come from `LGTMConfig`. `--out` receives `report.json`; nothing
-else is written outside `--out` and the work directory.
-
-- `report["cases"]` holds, per case and arm, `status` (`answered`, `error`, `too_large` or
-  `evidence_invalid`), `reason`, the `supported`, `verdict` and `severity` answers, their option
-  `scores`, `noul`, `input_tokens` and a `permute` entry per question with `runs`, `argmax_stable`,
-  `spread`, `order_sensitive` and `plain_unstable`.
-- `report["cells"][arm][kind]` holds `cases`, `evaluated`, `errors`, `too_large`, `evidence_invalid`,
-  `permute_errors`, and `verdict` and `provenance` rates, each with `count`, `n` and a 95% Wilson
-  `wilson` interval; the rows sum to the 90 cases. `report["subrows"][arm]["wrong_cwe_other_flaw"]` has the
-  same shape for the `wrong_cwe` cases tagged `other_flaw`, whose cited code contains a different real
-  flaw; those cases also count in `cells[arm]["wrong_cwe"]`. A verdict is correct when it equals the ground-truth verdict; provenance is
-  correct when `noul >= 0.5` matches the ground-truth `supported`.
-- `report["severity"][arm]` holds `n`, `mae` in levels, and `exact` and `within_one` rates over cases
-  whose ground-truth verdict is `real`.
-- `report["input_tokens"][arm]["requests_over_8192_input_tokens"]` counts answered requests that reported more than 8192
-  input tokens.
-- A permute run is `order_sensitive` when its choices differ or `argmax_stable` is false;
-  `plain_unstable` is true when the plain answer differs from unanimous permute choices.
-- The runner exits 0 only when no case is in `error`, no permute call failed, and at least one case was
-  evaluated; otherwise it exits 1, after writing `report.json`.
-- `report["confidence"]` holds `epsilon` (1e-6, the clip of log loss), `metrics[arm][question]` for
-  `verdict`, `supported`, `provenance` and `severity`, each with `all` and `kinds[kind]` entries of `brier`,
-  `log_loss`, `ece` (10 equal-width bins), `mean_prob_correct` and `excluded`, `auroc[arm]` of
-  `provenance_confidence` (`all`, and `kinds[kind]` against the control cases; `null` when one class is
-  absent), `headline[arm]` (mean Brier of `verdict`, `provenance` and `severity`, lower is better) and
-  `left_out`. Severity is scored on `control` cases only. A question whose option probabilities or ground
-  truth are not in the report is listed in `left_out` with the reason and has no entry in `metrics`.
-
-```bash
-python benchmark/kev_support/runner.py --rescore PATH/report.json --out DIR
-```
-
-Re-score mode recomputes `report["confidence"]` from a recorded `report.json` without calling Kev, writes the
-report with the recomputed key to `DIR/<name of the report's directory>.json`, and leaves the source file
-unchanged. It exits 0.
+location whose code could not be read. No judge output is exported.
 
 ## Regenerating cases
 
@@ -455,37 +354,3 @@ candidates with a Kev answer, `judged`, `verdicts`, `severities` and `provenance
 `not_judged` counts the other candidates per reason, and `requests_over_8192_input_tokens` counts
 findings whose `input_tokens` exceeds 8192. Gating and the other summary keys read `supported`
 and `kev_verdict`: a supported candidate with verdict `not_real` is not a vulnerability. `input_tokens` is read from a finding when present and skipped when absent.
-
-`judge_eval.py` reports the same `kev` metrics plus `candidates`, one entry per judged unit with
-`kev_verdict`, `kev_severity` and `provenance_confidence`. `perturbation_report` adds
-`verdict_shift` per perturbation, counts of `<original verdict>-><perturbed verdict>`.
-`--live` judges the run's candidates again at the configured judge endpoint, reading code from
-the export, and reports on those answers:
-
-```bash
-python benchmark/judge_eval.py RUN_DIR export.json labels.json --live
-```
-
-### Kev measurement against model labels
-
-`kev_model_labels.json` holds labels written by Claude Opus 5.5 under `docs/kev-labeling-criteria.md`:
-`labeling_model`, `criteria`, and per unit (`case_id/finding.evidence`) `supports`, `verdict`,
-optional `severity`, `kind` and `origin` (`shoply` or `real_world`). The file covers the findings of the
-`runs/shoply-20261029/lgtm` run. The labels are model-generated, not human-reviewed.
-`judge_eval.py` adds these report keys:
-
-- `kev_accuracy`: `supported`, `verdict` and `severity` each with `n`, `correct`, `accuracy`.
-- `kev_agreement`: `verdict_vs_supported` (rate of disagreement) and `verdict_vs_agent`
-  (rate of equality with the agent's `vulnerable`/`safe` verdict, empty verdicts left out).
-- `labels`: label count per origin and the labeling model.
-- `undetermined`: sorted unit ids labelled `undetermined` (cited quote absent from the reviewed code); accuracy, agreement and acceptance leave them out.
-- `supported_by_kind`: supported accuracy per candidate kind.
-- `safe_case_acceptance`: share of safe-case candidates Kev supports, per origin.
-- `stale`: in the stored `runs/archive/run6-final/lgtm` run, `sqli_04_safe`, `sqli_07_safe` and `sqli_11_safe`
-  candidates are stale. Labels, accuracy and agreement leave
-  them out; benchmark scoring keeps them. Other runs, including the regenerated Shoply runs, score these
-  cases normally and the labels file covers them.
-
-The `quote_absence` report key lists, for `authz_10_vulnerable` and `authz_12_vulnerable`, each cited code quote
-absent from the PR file, with cause `repository_mismatch` (file unreadable or cited lines outside it)
-or `agent_quote`.

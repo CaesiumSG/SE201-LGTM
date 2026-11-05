@@ -204,34 +204,27 @@ binds `127.0.0.1` on a node-chosen port and is exposed on the laptop at
 - **Combined job:** `jobs/judged-serve.sbatch` (`judged-serve`, one 48 GB A40)
   starts Kev-4B first, then Ollama with `DEFAULT_MODEL`, and writes both
   endpoint files; measured at about 17.5 GB for qwen3.8:27b plus Kev-4B in bf16.
-- **Benchmark command:** `model/deploy/judged-bench.sh --export EXPORT --labels LABELS --run-dir RUNDIR --out OUTDIR [--results-dir DIR] [--wait-seconds N]`,
+- **Benchmark command:** `model/deploy/judged-bench.sh --out OUTDIR [--results-dir DIR] [--wait-seconds N]`,
   run from the repo root with `PYTHON` naming the interpreter (default `python`).
   It submits one `judged-serve` job through `judged-up.sh`, waits for both
   endpoint files, opens the qwen3.8 and Kev-4B tunnels, then runs in order:
-  1. `benchmark/kev_support/runner.py --out OUTDIR/kev-bench-<timestamp>`
-  2. `benchmark/judge_eval.py RUNDIR EXPORT LABELS --live`
-  3. `benchmark/evaluate.py`
-  4. `benchmark/real_world/evaluate_real.py`
+  1. `benchmark/evaluate.py`
+  2. `benchmark/real_world/evaluate_real.py`
 
-  `--export` and `--labels` are the judge eval inputs, and `--run-dir` is the
-  recorded reviewer run the export came from; `--out` is the base
-  directory for the standalone benchmark report; `--wait-seconds` bounds the
+  `--wait-seconds` bounds the
   wait for readiness (default 1800, `0` checks once). Every Python step runs
   with `PYTHONUTF8=1`. `evaluate_real.py` reads its clones from the real-world
   cache of the worktree, `benchmark/real_world/.cache`. Before submitting, the
   command exits non-zero when a clone of a case is missing there, naming the
   cache and `benchmark/real_world/fetch.py`. Run `benchmark/real_world/fetch.py`
   from the worktree before the job, or copy the clones into the cache. With
-  `--results-dir DIR`, step 3 gets `--output DIR/evaluate --resume` and step 4
+  `--results-dir DIR`, step 1 gets `--output DIR/evaluate --resume` and step 2
   gets `--output DIR/evaluate-real --resume`. Judged-mode units whose judged
   candidates carry no Kev answer are reviewed again; sast-only and llm-only
   units are reused. Without it they run their normal reviewer path. DIR must be
-  gitignored or outside the repo; its top level holds `judge-eval.json` and one
+  gitignored or outside the repo; its top level holds one
   subdirectory per evaluator, `evaluate` for the `evaluate.py` case files and
-  `evaluate-real` for the `evaluate_real.py` modes. Without `--results-dir`,
-  `judge-eval.json` is written in the run directory, `OUTDIR/kev-bench-<timestamp>`. The judge eval report is the step's
-  stdout; a report with no judged count or zero judged units marks the step failed, the remaining
-  steps still run, and the exit code is non-zero. The job is
+  `evaluate-real` for the `evaluate_real.py` modes. The job is
   cancelled on success, on a failing step (the step is named and the exit code
   is non-zero), on an interrupt, and when the job is not ready within the wait.
   If submission fails, nothing is cancelled and no step runs.

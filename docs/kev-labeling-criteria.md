@@ -1,6 +1,6 @@
 # Kev labeling criteria
 
-Labels for judge candidates (`benchmark/kev_model_labels.json`). Each unit is one cited code item
+Labels for judge candidates. Each unit is one cited code item
 of a candidate finding.
 
 Claude Opus 5.5 writes the labels under these criteria. Kev, the judge being measured, is not the

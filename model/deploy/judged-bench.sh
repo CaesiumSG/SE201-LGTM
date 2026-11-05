@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
-# Start one judged job (qwen3.8 + Kev-4B), run the Kev benchmarks against it, and always cancel the job.
-# Usage: judged-bench.sh --export EXPORT --labels LABELS --run-dir RUNDIR --out OUTDIR [--results-dir DIR] [--wait-seconds N]
+# Start one judged job (qwen3.8 + Kev-4B), run the evaluators against it, and always cancel the job.
+# Usage: judged-bench.sh --out OUTDIR [--results-dir DIR] [--wait-seconds N]
 # Run from the repo root. PYTHON names the interpreter (default: python).
 source "$(dirname "$0")/lib.sh"
 
-export_file="" labels="" out="" run_src="" results="" wait_seconds=1800
+out="" results="" wait_seconds=1800
 while (($#)); do
   case "$1" in
-    --run-dir) run_src=${2:?--run-dir needs a value}; shift 2 ;;
-    --export) export_file=${2:?--export needs a value}; shift 2 ;;
-    --labels) labels=${2:?--labels needs a value}; shift 2 ;;
     --out) out=${2:?--out needs a value}; shift 2 ;;
     --results-dir) results=${2:?--results-dir needs a value}; shift 2 ;;
     --wait-seconds) wait_seconds=${2:?--wait-seconds needs a value}; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$export_file" && -n "$labels" && -n "$out" && -n "$run_src" ]] || die "--export, --labels, --run-dir and --out are required"
-
-for p in "$export_file" "$labels" "$run_src"; do [[ -e "$p" ]] || die "path not found: $p"; done
+[[ -n "$out" ]] || die "--out is required"
 
 export PYTHONUTF8=1
 py=${PYTHON:-python}
@@ -77,22 +72,8 @@ step() {
   "$@" || { echo "step failed: $name" >&2; exit 1; }
 }
 
-run_dir="$out/kev-bench-$(date +%Y%m%dT%H%M%S)"
 resume=() resume_real=()
 [[ -z "$results" ]] || { resume=(--output "$results/evaluate" --resume); resume_real=(--output "$results/evaluate-real" --resume); }
-report="${results:-$run_dir}/judge-eval.json"
-
-step kev-bench "$py" "$bench/kev_support/runner.py" --out "$run_dir"
-
-echo "== judge-eval"
-mkdir -p "$(dirname "$report")"
-"$py" "$bench/judge_eval.py" "$run_src" "$export_file" "$labels" --live | tee "$report" || { echo "step failed: judge-eval" >&2; exit 1; }
-judged_nothing=0
-if ! grep -Eq '"judged"[[:space:]]*:[[:space:]]*[1-9]' "$report"; then
-  echo "step failed: judge-eval judged no units" >&2
-  judged_nothing=1
-fi
 
 step evaluate "$py" "$bench/evaluate.py" "${resume[@]}"
 step evaluate-real "$py" "$bench/real_world/evaluate_real.py" "${resume_real[@]}"
-((judged_nothing == 0)) || exit 1
