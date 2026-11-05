@@ -24,12 +24,8 @@ guarded, unreachable, or not a vulnerability. A supported claim can be `not_real
 
 ## severity
 
-Set only on `real` units.
-
-- `low`: limited impact or hard to reach.
-- `medium`: exploitable with constraints or partial data exposure.
-- `high`: exploitable by an ordinary user with significant data or integrity impact.
-- `critical`: unauthenticated or trivially exploitable with full compromise.
+Set only on `real` units. The levels and their wording are `SEVERITY_DESCRIPTIONS` in
+`src/lgtm/validation/judge.py`, the text Kev is given.
 
 ## acceptable answers
 

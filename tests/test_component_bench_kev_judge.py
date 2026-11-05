@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from benchmark.component_bench import registry, run, schema  # noqa: E402
+from benchmark.component_bench import kev_judge, registry, run, schema  # noqa: E402
+from benchmark.real_world.fetch import project_of  # noqa: E402
 from benchmark.component_bench.outcomes import InfraError  # noqa: E402
 
 LABELS = ROOT / "benchmark" / "component_bench" / "labels" / "kev-judge.json"
@@ -186,6 +188,30 @@ def test_run_item_raises_infra_error_when_judge_fails():
     ctx = type("Ctx", (), {"judge": staticmethod(down), "config": None, "metrics": None, "llm": None})()
     with pytest.raises(InfraError):
         mod.run_item(item(), ctx)
+
+
+def test_unit_detail_records_the_raw_kev_answers(tmp_path):
+    _, units = bench(tmp_path, [item()], answers([reply("real", "medium")]))
+    assert units["C1"]["detail"]["kev"] == {
+        "supported": "yes", "verdict": "real", "severity": "medium", "provenance_confidence": 0.9,
+    }
+
+
+def test_judge_sees_the_enclosing_function_with_its_decorators_from_the_case_clone(tmp_path, monkeypatch):
+    case = next(c for c in schema.load_cases() if c["id"] == CASE)
+    repo = tmp_path / project_of(case)
+    repo.mkdir()
+    function = "@login_required\ndef search(name):\n    cur.execute('select ' + name)\n    return cur"
+    (repo / "app.py").write_text(function + "\n")
+    git = lambda *args: subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    git("branch", f"rw/{CASE}/pr")
+    monkeypatch.setattr(kev_judge, "CLONE_CACHE", tmp_path)
+    seen = []
+    bench(tmp_path, [item()], lambda request: seen.append(request["state"]) or reply())
+    assert function in seen[0]
 
 
 # --- AC-S7-7 (DEC-21) --------------------------------------------------------------------

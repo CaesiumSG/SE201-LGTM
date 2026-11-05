@@ -21,6 +21,10 @@ EXAMPLES: dict[str, str] = {
         "Worked examples for the severity question:\n"
         "Example E. Any visitor can upload a script of any file type into the web served folder "
         "and have the server run it. Answer: critical.\n"
+        "Example E2. A route open to any logged-in user loads an order by the id in the URL and "
+        "returns it without checking that the order belongs to the caller. Answer: high.\n"
+        "Example E3. A route restricted to administrators builds SQL from its sort field by string "
+        "concatenation. Answer: medium.\n"
         "Example F. The session cookie of a site served only over HTTPS is missing the Secure "
         "flag. Answer: low."
     ),
