@@ -272,6 +272,10 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
 # ---------------------------------------------------------------------------
 # Text that goes to github.com
 # ---------------------------------------------------------------------------
+_WJ = "⁠"
+_CODE_SPLIT_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|``[\s\S]*?``|`[^`\n]*?`)")
+
+
 def safe_markdown(text: str, own_owner: str) -> str:
     """Make text safe to post: no @mentions, no cross-repository references or links.
 
@@ -279,9 +283,45 @@ def safe_markdown(text: str, own_owner: str) -> str:
     would mention whoever owns that login. Links or ``owner/repo#123`` shorthand
     to another project would put a "mentioned this" backlink on it.
     """
-    text = re.sub(r"@(?=[A-Za-z0-9-])", "@⁠", text)
-    text = re.sub(r"https?://(www\.)?github\.com/(?!" + re.escape(own_owner) + r"/)[^\s)>\]]+",
-                  "(link removed)", text)
-    text = re.sub(r"\b([A-Za-z0-9][\w.-]*)/([\w.-]+)(#|@)(?=\w)", lambda m: f"{m.group(1)}/{m.group(2)}{m.group(3)}⁠", text)
-    text = re.sub(r"(?<![\w/])(GH-|#)(?=\d)", lambda m: m.group(1) + "⁠", text)
-    return text
+    parts = _CODE_SPLIT_RE.split(text)
+    for i in range(0, len(parts), 2):
+        chunk = parts[i]
+
+        # 1. Markdown link syntax: [label](url)
+        def _replace_md_link(m: re.Match) -> str:
+            label, url = m.group(1), m.group(2)
+            if re.match(r"^https?://(?:www\.)?github\.com/" + re.escape(own_owner) + r"/", url):
+                return m.group(0)
+            if label.strip() == url.strip():
+                return "(link removed)"
+            return f"{label} (link removed)"
+
+        chunk = re.sub(
+            r"\[([^\]]+)\]\((https?://(?:www\.)?github\.com/[^\s)]+)\)",
+            _replace_md_link,
+            chunk,
+        )
+
+        # 2. Bare external GitHub URLs (excluding trailing punctuation)
+        chunk = re.sub(
+            r"https?://(?:www\.)?github\.com/(?!" + re.escape(own_owner) + r"/)[^\s)>\]]*[^\s)>\].,:;]",
+            "(link removed)",
+            chunk,
+        )
+
+        # 3. Defang @mentions (ignores email addresses where @ is preceded by word chars)
+        chunk = re.sub(r"(?<!\w)@(?=[A-Za-z0-9-])", f"@{_WJ}", chunk)
+
+        # 4. Cross-repository shorthand (owner/repo#123 or owner/repo@sha)
+        chunk = re.sub(
+            r"\b([A-Za-z0-9][\w.-]*)/([\w.-]+)(#|@)(?=\w)",
+            lambda m: f"{m.group(1)}/{m.group(2)}{m.group(3)}{_WJ}",
+            chunk,
+        )
+
+        # 5. Local issue/PR shorthand (#123 or GH-123)
+        chunk = re.sub(r"(?<![\w/])(GH-|#)(?=\d)", lambda m: f"{m.group(1)}{_WJ}", chunk)
+
+        parts[i] = chunk
+
+    return "".join(parts)
