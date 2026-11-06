@@ -655,6 +655,23 @@ class TestNoCitedSource:
         assert cited.supported is True
 
 
+    @staticmethod
+    def _missing(item):
+        raise FileNotFoundError(item.file)
+
+    @pytest.mark.parametrize("read_code", [lambda item: "", _missing])
+    def test_candidate_whose_cited_code_all_reads_empty_is_unsupported_without_a_judge_call(self, read_code):
+        candidate = _candidate(evidence=[_item(file="ghost.py"), _item(file="also_ghost.py")])
+        judge = _recording_judge()
+
+        _judge([candidate], read_code=read_code, judge=judge)
+
+        assert judge.requests == []
+        assert candidate.supported is False
+        assert candidate.judged is True
+        assert candidate.unsupported_reason == "no-cited-source"
+
+
 class TestPolicyOnlyCandidate:
     def test_policy_only_candidate_is_judged_with_the_cited_policy_text_as_its_source(self):
         policy = EvidenceItem(type="policy", source="auth_policy.md", content="POLICY_TEXT_SENTINEL")
