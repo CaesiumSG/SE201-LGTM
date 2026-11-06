@@ -1,16 +1,73 @@
-# Component benchmark results, 2026-11-05
+# Component benchmark results, 2026-11-05 and 2026-11-06
 
-Each pipeline component scored on its own over the 12 real-world cases, against draft labels written by Claude Opus 5.5. No label has been reviewed yet; every figure below is provisional. Benchmark design and label formats: [`component-bench.md`](component-bench.md).
+Each pipeline component scored on its own, against draft labels written by Claude Opus 5.5. No label has been reviewed yet; every figure below is provisional. Benchmark design and label formats: [`component-bench.md`](component-bench.md).
 
 Models: reviewer `qwen3.8:27b` (Ollama), judge Kev-4B, both on the Origami cluster.
 
-| Run | Commit | Components | Directory |
-| --- | --- | --- | --- |
-| Full run | `4815d3a` | all six | `benchmark/runs/component-bench-2026-11-05/` |
-| Kev rerun 1 | `0fccd5c` | kev-judge | `benchmark/runs/component-bench-kev-2026-11-05/` |
-| Kev rerun 2 | `eeb6a82` | kev-judge | `benchmark/runs/component-bench-kev-2026-11-05-r2/` |
+| Run | Commit | Components | Cases | Directory |
+| --- | --- | --- | --- | --- |
+| 2026-11-05 full run | `4815d3a` | all six | 12 real-world | `benchmark/runs/component-bench-2026-11-05/` |
+| Kev rerun 1 | `0fccd5c` | kev-judge | 12 real-world | `benchmark/runs/component-bench-kev-2026-11-05/` |
+| Kev rerun 2 | `eeb6a82` | kev-judge | 12 real-world | `benchmark/runs/component-bench-kev-2026-11-05-r2/` |
+| 2026-11-06 full run | `521cb4b` | all seven | 12 real-world, 13 real-PR development | `benchmark/runs/component-bench-2026-11-06/` |
 
-## Summary
+## 2026-11-06 run
+
+All seven components over 25 cases: the 12 real-world cases and the 13 real-PR development cases. Held-out cases are excluded. Every model-backed result file carries the setting `qwen3.8:27b@http://127.0.0.1:11435+jaredpalmer/kev-4b@http://127.0.0.1:8008`. No unit errored. Single run; no repeats, so no variance is reported.
+
+### Side by side
+
+Scored / not scored / errored units, with headline scores. The 2026-11-05 column is the full run; for kev-judge it is the full run, not the reruns. Scores are means over scored units. The two columns cover different case sets, so the figures are not like-for-like.
+
+| Component | 2026-11-05 units | 2026-11-06 units | 2026-11-05 headline | 2026-11-06 headline |
+| --- | --- | --- | --- | --- |
+| Policy retrieval | 6 / 6 / 0 | 6 / 19 / 0 | hit 1.00, recall 1.00, MRR 0.83 | hit 1.00, recall 1.00, MRR 0.83 |
+| Investigator | 2 / 0 / 10 | 24 / 1 / 0 | rated 2 of 12 | no scalar scores; none rated |
+| Authz reviewer | 6 / 0 / 0 | 15 / 0 / 0 | TP 0.50, FN 0, FP 0.33, TN 0.17, verdict correct 0.67 | TP 0.73, FN 0.07, FP 0.20, TN 0.07, verdict correct 0.80 |
+| SAST SQLi triage | 12 / 0 / 0 | 20 / 0 / 0 | TP 0.25, FP 0, FN 0.08, TN 0.67, correct 0.92 | TP 0.20, FP 0.05, FN 0.20, TN 0.55, correct 0.75 |
+| Evidence validator | 24 / 0 / 0 | 50 / 0 / 0 | TP 0.50, FN 0, FP 0, TN 0.50 | TP 0.50, FN 0, FP 0.04, TN 0.46 |
+| Kev judge | 16 / 1 / 0 | 28 / 1 / 0 | verdict 0.50, real 0.45, not-real 0.60, severity 0.36 | verdict 0.89, real 0.91, not-real 0.80, severity 0.55 |
+| SQLi reviewer | not run | 9 / 1 / 0 | | TP 0.67, FN 0, FP 0, TN 0.33, SAST also 0.67, reviewer only 0 |
+
+### Scoring rules since 2026-11-05
+
+| Component | Status |
+| --- | --- |
+| Policy retrieval | Unchanged |
+| Investigator | Unchanged |
+| Evidence validator | Unchanged |
+| Authz reviewer | Same-function hit rule, described in [`component-bench.md`](component-bench.md) |
+| SQLi reviewer | Same-function hit rule, described in [`component-bench.md`](component-bench.md) |
+| SAST SQLi triage | Unchanged; unparsable answers are read from the agent error kind |
+| Kev judge | Changed by earlier commits: labels accept defensible verdicts and severities; severity wording is reach-based; each cited item is sent with its enclosing function. Scores are not directly comparable with 2026-11-05. The case count also grew |
+
+### Fixes in the harness
+
+- Authz and SAST SQLi triage decide `not_scored` from the `kind` of the agent's error record (`unparsable` or `failed`) instead of matching the explanation text.
+- Each real-PR development case is checked for its local clone and ref before it runs; a missing clone is recorded as `error` with the fetch command.
+
+### Aggregate counts
+
+| Component | TP | FP | FN | TN | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Authz reviewer | 11 | 3 | 1 | 1 | 0.79 | 0.92 | 0.85 |
+| SAST SQLi triage | 4 | 1 | 4 | 11 | 0.80 | 0.50 | 0.62 |
+| Evidence validator | 25 | 2 | 0 | 23 | 0.93 | 1.00 | 0.96 |
+
+### SQLi reviewer
+
+Runs on the gold section of each of the 10 sqli cases; 9 are scored. Hits 6, false positives 0, precision 1.00, recall 1.00, F1 1.00. All 6 hits were also found by SAST triage; the reviewer found none that SAST missed.
+
+### Not scored
+
+- **Policy retrieval, 19**: policy retrieval does not apply to the non-policy cases.
+- **Investigator, 1** (`weblate-memory-api-authz`): the final answer was not a JSON object with a `sections` list.
+- **Kev judge, 1**: `kj-litellm-authz-safe`, gold `undetermined`.
+- **SQLi reviewer, 1** (`alerta_sqli_vulnerable`): the gold section has no SQL signal, so the pipeline would not route it to the SQLi reviewer.
+
+## 2026-11-05 summary
+
+Over the 12 real-world cases.
 
 | Component | Units scored | Headline | Reading |
 | --- | --- | --- | --- |
