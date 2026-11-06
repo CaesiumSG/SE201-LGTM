@@ -1,0 +1,188 @@
+{
+  "case_id": "weblate-memory-api-authz",
+  "diff": "--- a/docs/api.rst\n+++ b/docs/api.rst\n@@ -2009,6 +2009,24 @@ Translations\n     :>json string url: URL to access the translation (engagement URL)\n     :>json string url_translate: URL to access the translation (real translation URL)\n \n+\n+Memory\n+++++++\n+\n+.. versionadded:: 4.14\n+\n+.. http:get:: /api/memory/\n+\n+    Returns a list of memory results.\n+\n+.. http:delete:: /api/memory/(int:memory_object_id)/\n+\n+    Deletes a memory object\n+\n+    :param memory_object_id: Memory Object ID\n+    :type project: int\n+\n+\n Units\n +++++\n \n--- a/weblate/api/serializers.py\n+++ b/weblate/api/serializers.py\n@@ -27,6 +27,7 @@ from weblate.addons.models import ADDONS, Addon\n from weblate.auth.models import Group, Permission, Role, User\n from weblate.checks.models import CHECKS\n from weblate.lang.models import Language, Plural\n+from weblate.memory.models import Memory\n from weblate.screenshots.models import Screenshot\n from weblate.trans.defines import LANGUAGE_NAME_LENGTH, REPO_LENGTH\n from weblate.trans.models import (\n@@ -906,6 +907,22 @@ class PluralField(serializers.ListField):\n         return getattr(instance, f\"get_{self.field_name}_plurals\")()\n \n \n+class MemorySerializer(serializers.ModelSerializer):\n+    class Meta:\n+        model = Memory\n+        fields = (\n+            \"id\",\n+            \"source\",\n+            \"target\",\n+            \"source_language\",\n+            \"target_language\",\n+            \"origin\",\n+            \"project\",\n+            \"from_file\",\n+            \"shared\",\n+        )\n+\n+\n class UnitSerializer(serializers.ModelSerializer):\n     web_url = AbsoluteURLField(source=\"get_absolute_url\", read_only=True)\n     translation = MultiFieldHyperlinkedIdentityField(\n--- a/weblate/api/tests.py\n+++ b/weblate/api/tests.py\n@@ -31,6 +31,7 @@ from weblate_language_data.languages import LANGUAGES\n from weblate.accounts.models import Subscription\n from weblate.auth.models import Group, Role, User\n from weblate.lang.models import Language\n+from weblate.memory.models import Memory\n from weblate.screenshots.models import Screenshot\n from weblate.trans.models import (\n     Change,\n@@ -2183,6 +2184,32 @@ class LanguageAPITest(APIBaseTest):\n         self.assertEqual(Language.objects.get(code=\"cs\").name, \"New Language\")\n \n \n+class MemoryAPITest(APIBaseTest):\n+    def test_get(self):\n+        self.do_request(\n+            \"api:memory-list\",\n+            method=\"get\",\n+            superuser=True,\n+            code=200,\n+        )\n+\n+        self.do_request(\n+            \"api:memory-list\",\n+            method=\"get\",\n+            superuser=False,\n+            code=403,\n+        )\n+\n+    def test_delete(self):\n+        self.do_request(\n+            \"api:memory-detail\",\n+            kwargs={\"pk\": Memory.objects.first().pk},\n+            method=\"delete\",\n+            superuser=True,\n+            code=204,\n+        )\n+\n+\n class TranslationAPITest(APIBaseTest):\n     def test_list_translations(self):\n         response = self.client.get(reverse(\"api:translation-list\"))\n--- a/weblate/api/urls.py\n+++ b/weblate/api/urls.py\n@@ -28,6 +28,7 @@ from weblate.api.views import (\n     ComponentViewSet,\n     GroupViewSet,\n     LanguageViewSet,\n+    MemoryViewSet,\n     Metrics,\n     ProjectViewSet,\n     RoleViewSet,\n@@ -46,6 +47,7 @@ router.register(\"roles\", RoleViewSet)\n router.register(\"projects\", ProjectViewSet)\n router.register(\"components\", ComponentViewSet)\n router.register(\"translations\", TranslationViewSet)\n+router.register(\"memory\", MemoryViewSet)\n router.register(\"languages\", LanguageViewSet)\n router.register(\"component-lists\", ComponentListViewSet)\n router.register(\"changes\", ChangeViewSet)\n--- a/weblate/api/views.py\n+++ b/weblate/api/views.py\n@@ -64,6 +64,7 @@ from weblate.api.serializers import (\n     LanguageSerializer,\n     LockRequestSerializer,\n     LockSerializer,\n+    MemorySerializer,\n     MonolingualUnitSerializer,\n     NotificationSerializer,\n     ProjectSerializer,\n@@ -83,6 +84,7 @@ from weblate.auth.models import Group, Role, User\n from weblate.checks.models import Check\n from weblate.formats.models import EXPORTERS\n from weblate.lang.models import Language\n+from weblate.memory.models import Memory\n from weblate.screenshots.models import Screenshot\n from weblate.trans.exceptions import FileParseError\n from weblate.trans.forms import AutoForm\n@@ -982,6 +984,27 @@ class ComponentViewSet(\n         )\n \n \n+class MemoryViewSet(viewsets.ModelViewSet, DestroyModelMixin):\n+    \"\"\"Memory API.\"\"\"\n+\n+    queryset = Memory.objects.none()\n+    serializer_class = MemorySerializer\n+\n+    def get_queryset(self):\n+        if not self.request.user.is_superuser:\n+            self.permission_denied(self.request, \"Access not allowed\")\n+        return Memory.objects.order_by(\"id\")\n+\n+    def perm_check(self, request, instance):\n+        if not request.user.has_perm(\"memory.delete\", instance):\n+            self.permission_denied(request, \"Can not delete memory entry\")\n+\n+    def destroy(self, request, *args, **kwargs):\n+        instance = self.get_object()\n+        self.perm_check(request, instance)\n+        return super().destroy(request, *args, **kwargs)\n+\n+\n class TranslationViewSet(MultipleFieldMixin, WeblateViewSet, DestroyModelMixin):\n     \"\"\"Translation components API.\"\"\"\n ",
+  "sections": [
+    {
+      "id": "memory-api-endpoint",
+      "title": "Adds a new Memory API endpoint (list + delete) restricted to superusers",
+      "rationale": "These hunks together wire up a new MemoryViewSet with a serializer, URL registration, and imports that expose translation-memory entries via the REST API, gating all access behind is_superuser and the memory.delete permission.",
+      "hunks": [
+        {
+          "hunk_id": "weblate/api/serializers.py#0",
+          "lines": [
+            " from weblate.auth.models import Group, Permission, Role, User",
+            " from weblate.checks.models import CHECKS",
+            " from weblate.lang.models import Language, Plural",
+            "+from weblate.memory.models import Memory",
+            " from weblate.screenshots.models import Screenshot",
+            " from weblate.trans.defines import LANGUAGE_NAME_LENGTH, REPO_LENGTH",
+            " from weblate.trans.models import ("
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/serializers.py#1",
+          "lines": [
+            "         return getattr(instance, f\"get_{self.field_name}_plurals\")()",
+            " ",
+            " ",
+            "+class MemorySerializer(serializers.ModelSerializer):",
+            "+    class Meta:",
+            "+        model = Memory",
+            "+        fields = (",
+            "+            \"id\",",
+            "+            \"source\",",
+            "+            \"target\",",
+            "+            \"source_language\",",
+            "+            \"target_language\",",
+            "+            \"origin\",",
+            "+            \"project\",",
+            "+            \"from_file\",",
+            "+            \"shared\",",
+            "+        )",
+            "+",
+            "+",
+            " class UnitSerializer(serializers.ModelSerializer):",
+            "     web_url = AbsoluteURLField(source=\"get_absolute_url\", read_only=True)",
+            "     translation = MultiFieldHyperlinkedIdentityField("
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/urls.py#0",
+          "lines": [
+            "     ComponentViewSet,",
+            "     GroupViewSet,",
+            "     LanguageViewSet,",
+            "+    MemoryViewSet,",
+            "     Metrics,",
+            "     ProjectViewSet,",
+            "     RoleViewSet,"
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/urls.py#1",
+          "lines": [
+            " router.register(\"projects\", ProjectViewSet)",
+            " router.register(\"components\", ComponentViewSet)",
+            " router.register(\"translations\", TranslationViewSet)",
+            "+router.register(\"memory\", MemoryViewSet)",
+            " router.register(\"languages\", LanguageViewSet)",
+            " router.register(\"component-lists\", ComponentListViewSet)",
+            " router.register(\"changes\", ChangeViewSet)"
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/views.py#0",
+          "lines": [
+            "     LanguageSerializer,",
+            "     LockRequestSerializer,",
+            "     LockSerializer,",
+            "+    MemorySerializer,",
+            "     MonolingualUnitSerializer,",
+            "     NotificationSerializer,",
+            "     ProjectSerializer,"
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/views.py#1",
+          "lines": [
+            " from weblate.checks.models import Check",
+            " from weblate.formats.models import EXPORTERS",
+            " from weblate.lang.models import Language",
+            "+from weblate.memory.models import Memory",
+            " from weblate.screenshots.models import Screenshot",
+            " from weblate.trans.exceptions import FileParseError",
+            " from weblate.trans.forms import AutoForm"
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/views.py#2",
+          "lines": [
+            "         )",
+            " ",
+            " ",
+            "+class MemoryViewSet(viewsets.ModelViewSet, DestroyModelMixin):",
+            "+    \"\"\"Memory API.\"\"\"",
+            "+",
+            "+    queryset = Memory.objects.none()",
+            "+    serializer_class = MemorySerializer",
+            "+",
+            "+    def get_queryset(self):",
+            "+        if not self.request.user.is_superuser:",
+            "+            self.permission_denied(self.request, \"Access not allowed\")",
+            "+        return Memory.objects.order_by(\"id\")",
+            "+",
+            "+    def perm_check(self, request, instance):",
+            "+        if not request.user.has_perm(\"memory.delete\", instance):",
+            "+            self.permission_denied(request, \"Can not delete memory entry\")",
+            "+",
+            "+    def destroy(self, request, *args, **kwargs):",
+            "+        instance = self.get_object()",
+            "+        self.perm_check(request, instance)",
+            "+        return super().destroy(request, *args, **kwargs)",
+            "+",
+            "+",
+            " class TranslationViewSet(MultipleFieldMixin, WeblateViewSet, DestroyModelMixin):",
+            "     \"\"\"Translation components API.\"\"\"",
+            " "
+          ]
+        }
+      ]
+    },
+    {
+      "id": "memory-api-tests",
+      "title": "Adds API tests for the new Memory endpoint (superuser 200/403 and delete 204)",
+      "rationale": "These test hunks exercise the new MemoryViewSet's authorization behavior (superuser vs non-superuser list, and superuser delete) and import the Memory model they assert against.",
+      "hunks": [
+        {
+          "hunk_id": "weblate/api/tests.py#0",
+          "lines": [
+            " from weblate.accounts.models import Subscription",
+            " from weblate.auth.models import Group, Role, User",
+            " from weblate.lang.models import Language",
+            "+from weblate.memory.models import Memory",
+            " from weblate.screenshots.models import Screenshot",
+            " from weblate.trans.models import (",
+            "     Change,"
+          ]
+        },
+        {
+          "hunk_id": "weblate/api/tests.py#1",
+          "lines": [
+            "         self.assertEqual(Language.objects.get(code=\"cs\").name, \"New Language\")",
+            " ",
+            " ",
+            "+class MemoryAPITest(APIBaseTest):",
+            "+    def test_get(self):",
+            "+        self.do_request(",
+            "+            \"api:memory-list\",",
+            "+            method=\"get\",",
+            "+            superuser=True,",
+            "+            code=200,",
+            "+        )",
+            "+",
+            "+        self.do_request(",
+            "+            \"api:memory-list\",",
+            "+            method=\"get\",",
+            "+            superuser=False,",
+            "+            code=403,",
+            "+        )",
+            "+",
+            "+    def test_delete(self):",
+            "+        self.do_request(",
+            "+            \"api:memory-detail\",",
+            "+            kwargs={\"pk\": Memory.objects.first().pk},",
+            "+            method=\"delete\",",
+            "+            superuser=True,",
+            "+            code=204,",
+            "+        )",
+            "+",
+            "+",
+            " class TranslationAPITest(APIBaseTest):",
+            "     def test_list_translations(self):",
+            "         response = self.client.get(reverse(\"api:translation-list\"))"
+          ]
+        }
+      ]
+    }
+  ]
+}

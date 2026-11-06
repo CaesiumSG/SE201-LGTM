@@ -12,6 +12,7 @@ import logging
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
+    FatalLLMError,
     RunRecord,
     answer_until_resolved,
     build_llm,
@@ -105,14 +106,18 @@ class SASTTriageAgent:
                 parse,
                 self.toolbox,
             )
+        except FatalLLMError:
+            raise
         except Exception as exc:  # noqa: BLE001 - LLM/network failures must not kill the run
             logger.error("SAST triage agent failed for %s: %s", finding.finding_id, exc)
             message = registry.render("sast_triage.failed_explanation", error=exc)
             kept = None
+            kind = "failed"
         else:
             message = registry.entry("shared.unparsable_explanation")
+            kind = "unparsable"
         if kept is None:
-            self.errors.append({"source": finding.finding_id, "message": message})
+            self.errors.append({"source": finding.finding_id, "kind": kind, "message": message})
             return None
         result = kept[0]
 

@@ -15,6 +15,7 @@ import pytest
 
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
+from lgtm.agents.sqli_reviewer import SQLiReviewerAgent
 from lgtm.agents.base import (
     RunRecord,
     answer_until_parsed,
@@ -1047,6 +1048,50 @@ class TestUnresolvedReferencesAfterBudget:
         triage = _triage_agent(git_repo, _SequenceLLM(UNPARSABLE))
         assert triage.triage(SEMGREP_HIT, None) is None
         assert [e["source"] for e in triage.errors] == [SEMGREP_HIT.finding_id]
+
+
+def _sqli_agent(git_repo, llm):
+    config = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    return SQLiReviewerAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+
+
+def _run_for_error(agent):
+    if isinstance(agent, SASTTriageAgent):
+        assert agent.triage(SEMGREP_HIT, None) is None
+    else:
+        assert agent.review_section(_section()) == []
+    return agent.errors
+
+
+ERROR_KIND_AGENTS = pytest.mark.parametrize(
+    "make_agent", [_authz_agent, _sqli_agent, _triage_agent], ids=["authz", "sqli", "sast_triage"]
+)
+
+
+class TestAgentErrorKind:
+
+    @ERROR_KIND_AGENTS
+    def test_an_answer_that_stays_unparsable_is_recorded_with_kind_unparsable(self, git_repo, make_agent):
+        errors = _run_for_error(make_agent(git_repo, _SequenceLLM(UNPARSABLE)))
+        [error] = errors
+        assert error["kind"] == "unparsable"
+        assert error["source"] and error["message"]
+
+    @ERROR_KIND_AGENTS
+    def test_a_model_exception_is_recorded_with_kind_failed(self, git_repo, make_agent):
+        errors = _run_for_error(make_agent(git_repo, _SeeingLLM(UNPARSABLE, fail_on_call=1)))
+        [error] = errors
+        assert error["kind"] == "failed"
+        assert error["source"] and error["message"]
+
+    @ERROR_KIND_AGENTS
+    def test_a_parsable_answer_records_no_error(self, git_repo, make_agent):
+        agent = make_agent(git_repo, _SequenceLLM(_authz_reply() if make_agent is not _triage_agent else _triage_reply(evidence=[GOOD_PR])))
+        if isinstance(agent, SASTTriageAgent):
+            assert agent.triage(SEMGREP_HIT, None) is not None
+        else:
+            agent.review_section(_section())
+        assert agent.errors == []
 
 
 class TestGuardrailExemptions:

@@ -63,6 +63,7 @@ def index(repo: str, config_file: str | None, verbose: bool) -> None:
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
 @click.option("--graph/--no-graph", "graph_enabled", default=None, help="Use CodeGraph (npm: @colbymchenry/codegraph) for investigate_* tools when the binary is on PATH (default: on; agents fall back to read_file/grep_repo when it is missing).")
 @click.option("--authz-planner", type=click.Choice(["investigator", "endpoint"]), default=None, help="How the authz review picks what to look at: 'investigator' (default, every changed hunk) or 'endpoint' (checkpoint behaviour: only hunks with a route decorator).")
+@click.option("--sqli-review/--no-sqli-review", default=None, help="Review each section for SQL injection, not only lines Semgrep flags (default: on; --no-sqli-review reproduces v2.0-eval).")
 @click.option("--strip-comments/--no-strip-comments", default=None, help="Mitigation (on by default, LGTM modes only): strip comments and docstrings from PR code before it reaches the LLM.")
 @click.option("--detect-prompt-injection/--no-detect-prompt-injection", default=None, help="Mitigation (on by default, LGTM modes only): report reviewer-directed instructions in the diff as a finding.")
 @click.option("--judge-endpoint", default=None, help="Kev-4B judge base URL (default: config).")
@@ -83,6 +84,7 @@ def review(
     config_file: str | None,
     graph_enabled: bool | None,
     authz_planner: str | None,
+    sqli_review: bool | None,
     strip_comments: bool | None,
     detect_prompt_injection: bool | None,
     judge_endpoint: str | None,
@@ -122,6 +124,8 @@ def review(
         config.graph_enabled = graph_enabled
     if authz_planner is not None:
         config.authz_planner = authz_planner
+    if sqli_review is not None:
+        config.sqli_review = sqli_review
     if strip_comments is not None:
         config.strip_comments = strip_comments
     if detect_prompt_injection is not None:

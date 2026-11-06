@@ -171,7 +171,12 @@ def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
     doc_chunks = _chunk_files(repo, doc_files, config)
 
     client = chromadb.PersistentClient(path=str(persist_dir))
-    _replace_collection(client, config.chroma_collection, doc_chunks)
+    try:
+        _replace_collection(client, config.chroma_collection, doc_chunks)
+    finally:
+        close = getattr(client, "close", None)  # releases file locks Windows holds on persist_dir
+        if close is not None:
+            close()
 
     logger.info(
         "Indexed %d doc chunks from %d files into %s",

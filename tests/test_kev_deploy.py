@@ -506,8 +506,6 @@ def test_qwen_commands_issue_the_same_calls_and_port_as_base(tmp_path, script, a
 
 WRAPPER = "judged-bench.sh"
 STEP_SCRIPTS = {
-    "kev-bench": "runner.py",
-    "judge-eval": "judge_eval.py",
     "evaluate": "evaluate.py",
     "evaluate-real": "evaluate_real.py",
 }
@@ -520,9 +518,6 @@ script=$(basename "$1"); shift
 printf 'UTF8\t%s\t%s\n' "$script" "${PYTHONUTF8-unset}" >> "$STUB_LOG"
 if [[ "${FAKE_INTERRUPT:-}" == "$script" ]]; then kill -INT "$PPID"; exit 130; fi
 if [[ "${FAKE_FAIL:-}" == "$script" ]]; then echo "simulated failure" >&2; exit 3; fi
-if [[ "$script" == judge_eval.py ]]; then
-  printf '{"kev": {"judged": %s, "marker": "%s"}}\n' "${FAKE_JUDGED-3}" "${FAKE_MARKER-none}"
-fi
 exit 0
 """
 
@@ -542,14 +537,7 @@ exec "$(dirname "$0")/ssh-real" "$@"
 class Bench:
     def __init__(self, sb: Sandbox, root: Path):
         self.sb = sb
-        self.out = root / "bench-out"
-        self.export = root / "export.json"
-        self.labels = root / "labels.json"
         self.results = root / "results"
-        self.run_dir = root / "run"
-        self.run_dir.mkdir()
-        self.export.write_text("{}")
-        self.labels.write_text("{}")
         (sb.bin / "fakepy").write_bytes(FAKE_PY.encode())
         (sb.bin / "fakepy").chmod(0o755)
         real_world = sb.model.parent / "benchmark" / "real_world"
@@ -578,10 +566,6 @@ class Bench:
     def run(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
         return self.sb.run(
             WRAPPER,
-            "--run-dir", self.run_dir.as_posix(),
-            "--export", self.export.as_posix(),
-            "--labels", self.labels.as_posix(),
-            "--out", self.out.as_posix(),
             "--wait-seconds", "30",
             *extra,
             PYTHON=(self.sb.bin / "fakepy").as_posix(),
@@ -635,23 +619,6 @@ def test_wrapper_runs_all_steps_in_order_on_one_judged_job_and_cancels_it_once_a
     assert cancels[0] > last_step
 
 
-def test_kev_bench_step_receives_its_own_new_output_directory(bench):
-    ok(bench.run())
-    _, args = bench.py_steps()[0]
-    target = option(args, "--out")
-    assert inside(target, bench.out)
-    assert not Path(target).exists() or [p.name for p in Path(target).iterdir()] == ["judge-eval.json"]
-
-
-def test_judge_eval_step_receives_run_dir_export_labels_and_live_flag(bench):
-    ok(bench.run("--results-dir", bench.results.as_posix()))
-    args = dict(bench.py_steps())["judge_eval.py"]
-    positional = [a.replace("\\", "/") for a in args if not a.startswith("--")]
-    assert positional == [bench.run_dir.as_posix(), bench.export.as_posix(), bench.labels.as_posix()]
-    assert "--live" in args
-    assert "--results-dir" not in args
-
-
 @pytest.mark.parametrize("step", STEP_ORDER)
 def test_failing_step_cancels_the_job_exits_non_zero_and_names_the_step(bench, step):
     result = bench.run(FAKE_FAIL=STEP_SCRIPTS[step])
@@ -673,10 +640,6 @@ def test_interrupt_during_any_step_cancels_the_job_before_exit_and_stops_later_s
 def test_job_that_never_becomes_ready_is_cancelled_without_running_any_step(bench, state):
     result = bench.sb.run(
         WRAPPER,
-        "--run-dir", bench.run_dir.as_posix(),
-        "--export", bench.export.as_posix(),
-        "--labels", bench.labels.as_posix(),
-        "--out", bench.out.as_posix(),
         "--wait-seconds", "0",
         PYTHON=(bench.sb.bin / "fakepy").as_posix(),
         STUB_JOB_STATE=state,
@@ -685,7 +648,6 @@ def test_job_that_never_becomes_ready_is_cancelled_without_running_any_step(benc
     assert bench.py_steps() == []
     assert len(sbatch_calls(bench.sb.calls())) == 1
     assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
-    assert not bench.out.exists()
 
 
 def test_failed_submission_issues_no_cancel_runs_no_step_and_exits_non_zero(bench):
@@ -720,8 +682,7 @@ def test_without_results_directory_evaluate_steps_run_their_normal_reviewer_path
 
 def test_readme_documents_the_wrapper_arguments_steps_and_cancel_behaviour():
     readme = (MODEL / "README.md").read_text(encoding="utf-8")
-    for needle in (WRAPPER, "--results-dir", "--run-dir", "--export", "--labels", "--out", "--wait-seconds",
-                   "runner.py", "judge_eval.py", "evaluate.py", "evaluate_real.py"):
+    for needle in (WRAPPER, "--results-dir", "--wait-seconds", "evaluate.py", "evaluate_real.py"):
         assert needle in readme, needle
     assert re.search(r"cancel", readme, re.I)
 
@@ -764,20 +725,6 @@ def test_tunnel_that_exits_cancels_the_job_and_runs_no_step(bench, dead_port):
     assert len(bench.scancels()) == 1 and STUB_JOB_ID in bench.sb.calls()[bench.scancels()[0]]
 
 
-# Input validation before submission
-
-@pytest.mark.parametrize("missing", ["export", "labels", "run_dir"])
-def test_missing_input_path_fails_before_any_submission(bench, missing):
-    path = getattr(bench, missing)
-    path.rmdir() if path.is_dir() else path.unlink()
-    result = bench.run()
-    assert result.returncode != 0
-    assert str(path.name) in (result.stdout + result.stderr)
-    assert sbatch_calls(bench.sb.calls()) == []
-    assert bench.scancels() == []
-    assert bench.py_steps() == []
-
-
 # Python steps run in UTF-8 mode
 
 def test_every_python_step_starts_with_utf8_mode_on(bench):
@@ -808,32 +755,6 @@ def test_cache_holding_every_selected_clone_passes_the_check_and_runs_the_steps(
     assert len(sbatch_calls(calls)) == 1
     assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
     assert len(bench.scancels()) == 1
-
-
-# Judge-eval report
-
-def test_judge_eval_report_is_saved_in_the_results_directory(bench):
-    bench.results.mkdir()
-    ok(bench.run("--results-dir", bench.results.as_posix(), FAKE_MARKER="report-7f3a"))
-    assert "report-7f3a" in (bench.results / "judge-eval.json").read_text(encoding="utf-8")
-
-
-def test_judge_eval_report_without_a_results_directory_is_saved_as_judge_eval_json_in_the_run_directory(bench):
-    ok(bench.run(FAKE_MARKER="report-9c1d"))
-    _, args = bench.py_steps()[0]
-    report = Path(option(args, "--out")) / "judge-eval.json"
-    assert "report-9c1d" in report.read_text(encoding="utf-8")
-
-
-def test_judge_eval_that_judged_nothing_fails_the_step_runs_the_rest_cancels_once_and_exits_non_zero(bench):
-    result = bench.run(FAKE_JUDGED="0")
-    calls = bench.sb.calls()
-    assert result.returncode != 0
-    assert failed_steps(result) == {"judge-eval"}, result.stdout + result.stderr
-    assert [s for s, _ in bench.py_steps()] == list(STEP_SCRIPTS.values())
-    cancels = bench.scancels()
-    assert len(cancels) == 1 and STUB_JOB_ID in calls[cancels[0]]
-    assert cancels[0] > max(i for i, c in enumerate(calls) if c.startswith("PY\t"))
 
 
 # Temporary path with a space
