@@ -360,14 +360,14 @@ def test_shipped_label_scores_a_finding_on_the_removed_check_old_line(case_id, f
 # final-02: missing clone or unreachable SHA is an infra error, not a score
 
 
-def unscored_run(authz, monkeypatch):
+def unscored_run(authz, monkeypatch, tmp_path):
     class NeverRuns:
         def __init__(self, *a, **k):
             raise AssertionError("agent must not run without a usable clone")
 
     monkeypatch.setattr(authz, "build_section", lambda gold_input: SimpleNamespace(section_id="s"))
     monkeypatch.setattr(authz, "AuthzReviewerAgent", NeverRuns)
-    ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy())
+    ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy(), results_dir=tmp_path)
     item = {"case_id": "aegra_authz_vulnerable", "label_id": "L", "gold_input": {"policy_passages": ["p"]}}
     return item, ctx
 
@@ -375,7 +375,7 @@ def unscored_run(authz, monkeypatch):
 def test_missing_case_clone_is_an_infra_error(monkeypatch, tmp_path):
     authz = bench("authz")
     monkeypatch.setattr(authz, "CLONE_CACHE", tmp_path)
-    item, ctx = unscored_run(authz, monkeypatch)
+    item, ctx = unscored_run(authz, monkeypatch, tmp_path)
     with pytest.raises(bench("outcomes").InfraError):
         authz.run_item(item, ctx)
     assert ctx.metrics.calls == []
@@ -393,7 +393,7 @@ def test_unreachable_sha_in_existing_clone_is_an_infra_error(monkeypatch, tmp_pa
         return SimpleNamespace(returncode=1 if case[missing] in " ".join(cmd) else 0)
 
     monkeypatch.setattr(authz.subprocess, "run", fake_run)
-    item, ctx = unscored_run(authz, monkeypatch)
+    item, ctx = unscored_run(authz, monkeypatch, tmp_path)
     with pytest.raises(bench("outcomes").InfraError):
         authz.run_item(item, ctx)
     assert ctx.metrics.calls == []
@@ -610,3 +610,27 @@ def test_line_inside_the_exact_base_side_range_but_in_a_differently_named_pr_fun
 
     s = bench("authz").score(base_only_item(), [finding(205)], read_source=reader)
     assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+
+
+# AC-S1-2, AC-S4-1: production toolbox and per-unit verdict
+def test_search_policy_no_longer_answers_from_gold_policy_passages(bench_env):
+    result = bench_env.run("authz")
+    toolbox = result.agents.toolboxes[0]
+    answer = toolbox.search_policy_impl("who may delete")
+    assert "GOLD-PASSAGE-SENTINEL" not in answer
+    assert "pr only policy" in answer
+
+
+def test_scored_unit_carries_the_agent_verdict_and_explanation(bench_env):
+    result = bench_env.run("authz", findings=["delete route lacks an owner check"])
+    unit = result.unit
+    assert unit["status"] == "scored"
+    assert unit["verdict"] == "vulnerable"
+    assert "delete route lacks an owner check" in unit["explanation"]
+
+
+def test_scored_unit_without_findings_carries_the_safe_verdict(bench_env):
+    unit = bench_env.run("authz", findings=[]).unit
+    assert unit["status"] == "scored"
+    assert unit["verdict"] == "safe"
+    assert unit["explanation"] == "no finding reported"

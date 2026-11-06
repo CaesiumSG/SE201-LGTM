@@ -500,7 +500,7 @@ def test_missing_case_clone_is_an_infra_error(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "CLONE_CACHE", tmp_path)
     item = {"case_id": sorted(sqli_ids())[0]}
     with pytest.raises(outcomes().InfraError):
-        mod.build_toolbox(item, ctx())
+        mod.build_toolbox(item, SimpleNamespace(llm=object(), config=None, metrics=Spy(), results_dir=tmp_path))
 
 
 def sast_hit(start: int, end: int):
@@ -563,3 +563,19 @@ def test_run_path_passes_the_case_reader_to_score():
     assert unit["status"] == "scored"
     assert seen["read_source"] is reader
     assert callable(mod.case_reader)
+
+
+# AC-S1-2, AC-S4-1: production toolbox and per-unit verdict
+def test_scored_unit_carries_the_agent_verdict_and_explanation(bench_env):
+    result = bench_env.run("sqli-review", findings=["id is interpolated into the query"])
+    unit = result.unit
+    assert unit["status"] == "scored"
+    assert unit["verdict"] == "vulnerable"
+    assert "id is interpolated into the query" in unit["explanation"]
+
+
+def test_scored_unit_without_findings_carries_the_safe_verdict(bench_env):
+    unit = bench_env.run("sqli-review", findings=[]).unit
+    assert unit["status"] == "scored"
+    assert unit["verdict"] == "safe"
+    assert unit["explanation"] == "no finding reported"

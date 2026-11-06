@@ -58,6 +58,11 @@ def component(run_item=None, score=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def isolated_clone_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(bench("run"), "CLONE_CACHE", tmp_path / "no-clones", raising=False)
+
+
 def execute(tmp_path, comps, **kw):
     """Runs the benchmark over fake components; returns (summary, results_dir)."""
     run = bench("run")
@@ -145,6 +150,21 @@ def test_no_selection_runs_every_component_and_selection_runs_only_chosen(tmp_pa
 
 
 # AC-S8-3, AC-S1-5, AC-S8-6: errors and summary
+
+
+def test_summary_json_records_executing_commit_and_dirty_flag(tmp_path, monkeypatch):
+    run = bench("run")
+    answers = {"rev-parse": "abc123", "status": " M src/x.py"}
+    monkeypatch.setattr(run, "_git", lambda *args: answers[args[0]])
+    _, results = execute(tmp_path, {"alpha": (component(), [label()])})
+    written = json.loads((results / "summary.json").read_text())
+    assert written["commit"] == "abc123"
+    assert written["dirty"] is True
+
+    monkeypatch.setattr(run, "_git", lambda *args: None)
+    _, results = execute(tmp_path / "nogit", {"alpha": (component(), [label()])})
+    written = json.loads((results / "summary.json").read_text())
+    assert written["commit"] is None and written["dirty"] is None
 
 
 def test_infra_error_is_recorded_excluded_from_scores_and_counted(tmp_path):
@@ -752,3 +772,163 @@ def test_runner_errors_a_development_case_whose_branches_are_not_at_the_pinned_r
     row = rows[DEV_CASE]
     assert row["status"] == "error" and row["scores"] is None
     assert FETCH in row["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Production toolbox runs: AC-S1-3, AC-S1-4, AC-S1-7, AC-S4-2, AC-S5-1..3
+# ---------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+
+from tests.conftest import BENCH_TOOLBOX_COMPONENTS  # noqa: E402
+
+GRAPH_TOOLS = ("investigate_base_code", "investigate_pr_code")
+TOOLBOX_COMPONENTS = pytest.mark.parametrize("component", BENCH_TOOLBOX_COMPONENTS)
+PREVIOUS_RUN = ROOT / "benchmark" / "runs" / "component-bench-2026-11-06"
+
+
+@TOOLBOX_COMPONENTS
+@pytest.mark.parametrize("missing", ["clone", "ref"])
+def test_missing_case_clone_or_pinned_ref_is_an_error_with_reason_and_fetch_command(
+    bench_env, component, missing
+):
+    if missing == "clone":
+        bench_env.repo.rename(bench_env.cache / "elsewhere")
+    else:
+        bench_env.base = "1" * 40
+    result = bench_env.run(component)
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "fetch" in result.unit["reason"].lower()
+    assert result.agents.toolboxes == []
+
+
+@TOOLBOX_COMPONENTS
+def test_unavailable_codegraph_binary_is_an_error_not_a_score(bench_env, component, tmp_path):
+    result = bench_env.run(component, binary=str(tmp_path / "no-such-codegraph"))
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "unavailable" in result.unit["reason"]
+
+
+@TOOLBOX_COMPONENTS
+def test_missing_rag_index_is_an_error_naming_the_failing_step(bench_env, component):
+    result = bench_env.run(component, rag=False)
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert any(word in result.unit["reason"].lower() for word in ("rag", "index"))
+
+
+@TOOLBOX_COMPONENTS
+def test_degraded_graph_state_after_the_run_is_an_error_not_a_score(bench_env, component):
+    def degrade(toolbox):
+        toolbox.session._latched["pr"] = "export_failed"
+
+    result = bench_env.run(component, effect=degrade, findings=["x"])
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "degraded:pr:export_failed" in result.unit["reason"]
+    assert result.unit["graph_state"].startswith("degraded:pr")
+
+
+@TOOLBOX_COMPONENTS
+def test_healthy_run_records_graph_state_ok(bench_env, component):
+    assert bench_env.run(component).unit["graph_state"] == "ok"
+
+
+@TOOLBOX_COMPONENTS
+@pytest.mark.parametrize("fails", [False, True], ids=["succeeds", "fails"])
+def test_graph_sessions_opened_for_a_unit_are_closed_after_it(bench_env, monkeypatch, component, fails):
+    from benchmark.component_bench.outcomes import InfraError
+    from lgtm.graph.session import GraphSession
+
+    closed: list[int] = []
+    original = GraphSession.close
+
+    def spy_close(self):
+        closed.append(id(self))
+        original(self)
+
+    monkeypatch.setattr(GraphSession, "close", spy_close)
+
+    def boom(toolbox):
+        raise InfraError("model down")
+
+    bench_env.run(component, effect=boom if fails else None)
+    sessions = [id(t.session) for t in bench_env.agents.toolboxes]
+    assert sessions and set(sessions) <= set(closed)
+
+
+@TOOLBOX_COMPONENTS
+def test_unit_records_calls_and_invalid_calls_for_every_offered_tool_and_summary_totals_them(
+    bench_env, component
+):
+    if component == "sast-sqli":
+        calls = [{"tool": "grep_repo", "args": {"pattern": "q", "file_glob": "", "snapshot": "pr"}, "result": "r"}]
+        result = bench_env.run(component, tool_calls=calls)
+        (stats,) = result.unit["tools"].values()
+        assert set(stats) == {"read_file", "grep_repo", "search_policy"}
+        assert stats["grep_repo"] == {"calls": 1, "invalid": 0}
+        assert stats["search_policy"] == {"calls": 0, "invalid": 0}
+        return
+    calls = [{"tool": "investigate_pr_code", "args": {"query": "q"}, "result": "r"}]
+    result = bench_env.run(component, tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert {*GRAPH_TOOLS, "search_policy"} <= set(stats)
+    assert stats["investigate_pr_code"] == {"calls": 1, "invalid": 0}
+    for tool in ("investigate_base_code", "search_policy"):
+        assert stats[tool] == {"calls": 0, "invalid": 0}
+    assert result.summary["codegraph_calls"] == 1
+    assert result.summary["search_policy_calls"] == 0
+
+
+def test_invalid_search_policy_call_counts_as_invalid_in_unit_and_summary_total(bench_env):
+    calls = [{"tool": "search_policy", "args": {}, "result": ""}]
+    result = bench_env.run("authz", tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert stats["search_policy"] == {"calls": 1, "invalid": 1}
+    assert result.summary["search_policy_calls"] == 1
+    assert result.summary["codegraph_calls"] == 0
+
+
+def test_summary_keeps_codegraph_and_search_policy_totals_separate(bench_env):
+    calls = [
+        {"tool": "investigate_pr_code", "args": {"query": "q"}, "result": "r"},
+        {"tool": "investigate_base_code", "args": {"query": "q"}, "result": "r"},
+        {"tool": "search_policy", "args": {"query": "who may delete"}, "result": "r"},
+    ]
+    result = bench_env.run("authz", tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert stats["search_policy"] == {"calls": 1, "invalid": 0}
+    assert result.summary["codegraph_calls"] == 2
+    assert result.summary["search_policy_calls"] == 1
+
+
+@TOOLBOX_COMPONENTS
+def test_error_unit_records_no_verdict_and_keeps_its_reason(bench_env, component):
+    result = bench_env.run(component, rag=False)
+    assert result.unit["status"] == "error"
+    assert not result.unit.get("verdict")
+    assert not result.unit.get("explanation")
+    assert result.unit["reason"]
+
+
+def test_not_scored_unit_records_no_verdict_and_keeps_its_reason(bench_env):
+    result = bench_env.run("sast-sqli")
+    assert result.unit["status"] == "not_scored"
+    assert not result.unit.get("verdict")
+    assert not result.unit.get("explanation")
+    assert "no scripted answer" in result.unit["reason"]
+
+
+def test_running_the_benchmark_leaves_the_2026_11_06_results_untouched(bench_env):
+    def digest():
+        return {
+            str(p.relative_to(PREVIOUS_RUN)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in PREVIOUS_RUN.rglob("*")
+            if p.is_file()
+        }
+
+    before = digest()
+    bench_env.run("authz")
+    assert before and digest() == before

@@ -119,43 +119,59 @@ def test_shipped_labels_cover_each_sqli_case_with_a_gold_hit_and_no_authz_case()
     assert not authz & {i["case_id"] for i in doc["items"]}
 
 
-# AC-S5-3, AC-S5-4
+def stage_output(triage, judge="not_run"):
+    return {"stages": {"triage": {"decision": triage, "explanation": "e"}, "judge": {"decision": judge, "explanation": "e"}}}
+
+
+def stage_unit(distractor, triage, judge="not_run"):
+    return {
+        "status": "scored",
+        **stage_output(triage, judge),
+        "detail": {"gold_keep": not distractor},
+        "scores": sast_sqli.score(item(distractor), stage_output(triage, judge)),
+    }
+
+
+# AC-S3-3
 @pytest.mark.parametrize(
-    "distractor, kept, outcome",
+    "distractor, triage, judge, triage_correct, judge_correct",
     [
-        (False, True, "tp"),
-        (True, False, "tn"),
-        (True, True, "fp"),
-        (False, False, "fn"),
+        (False, "keep", "keep", 1.0, 1.0),
+        (True, "drop", "drop", 1.0, 1.0),
+        (True, "keep", "keep", 0.0, 0.0),
+        (False, "keep", "drop", 1.0, 0.0),
+        (True, "keep", "drop", 0.0, 1.0),
+        (False, "drop", "not_run", 0.0, None),
+        (True, "drop", "not_run", 1.0, None),
     ],
 )
-def test_keep_drop_outcome_per_hit(distractor, kept, outcome):
-    scores = sast_sqli.score(item(distractor), {"kept": kept})
-    assert {k: scores[k] for k in ("tp", "tn", "fp", "fn")} == {
-        k: float(k == outcome) for k in ("tp", "tn", "fp", "fn")
-    }
-    assert scores["correct"] == float(outcome in ("tp", "tn"))
+def test_keep_drop_outcome_per_hit(distractor, triage, judge, triage_correct, judge_correct):
+    scores = sast_sqli.score(item(distractor), stage_output(triage, judge))
+    assert scores == {"triage_correct": triage_correct, "judge_correct": judge_correct}
 
 
 def test_precision_recall_f1_from_unit_scores():
-    def unit(distractor, kept):
-        return {"status": "scored", "scores": sast_sqli.score(item(distractor), {"kept": kept})}
-
-    # 1 tp, 0 fp, 2 fn -> precision 1, recall 1/3, F1 1/2 (the arithmetic mean would be 2/3)
-    units = [unit(False, True), unit(False, False), unit(False, False), unit(True, False)]
-    units.append({"status": "not_scored", "reason": "unparsable"})
-    out = sast_sqli.aggregate(units, None)
-    assert out["precision"] == pytest.approx(1.0)
-    assert out["recall"] == pytest.approx(1 / 3)
-    assert out["f1"] == pytest.approx(0.5)
-
-
-@pytest.mark.parametrize("units", [[], [("tn", True, False)], [("fp", True, True)]])
-def test_aggregate_without_true_positives_is_zero(units):
-    scored = [
-        {"status": "scored", "scores": sast_sqli.score(item(d), {"kept": k})} for _, d, k in units
+    # judge stage: 1 tp, 0 fp, 2 fn -> precision 1, recall 1/3, F1 1/2 (the arithmetic mean would be 2/3)
+    units = [
+        stage_unit(False, "keep", "keep"),
+        stage_unit(False, "keep", "drop"),
+        stage_unit(False, "keep", "drop"),
+        stage_unit(True, "keep", "drop"),
+        {"status": "not_scored", "reason": "unparsable"},
     ]
-    assert sast_sqli.aggregate(scored, None) == {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    out = sast_sqli.aggregate(units, None)
+    assert out["judge"]["precision"] == pytest.approx(1.0)
+    assert out["judge"]["recall"] == pytest.approx(1 / 3)
+    assert out["judge"]["f1"] == pytest.approx(0.5)
+    # triage stage keeps every hit: 3 tp, 1 fp, 0 fn, unaffected by the judge decisions
+    assert out["triage"]["precision"] == pytest.approx(0.75)
+    assert out["triage"]["recall"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("units", [[], [(True, "keep", "drop")], [(True, "keep", "keep")]])
+def test_aggregate_without_true_positives_is_zero(units):
+    scored = [stage_unit(*u) for u in units]
+    assert sast_sqli.aggregate(scored, None)["judge"] == {"precision": 0.0, "recall": 0.0, "f1": 0.0}
 
 
 class ReplyLLM:
@@ -193,29 +209,20 @@ def agent_reply(evidence):
 CITED_HIT = [{"type": "code", "file": "app.py", "lines": [4, 4], "content": HIT_LINE}]
 
 
-# AC-S5-3, AC-S5-4
-@pytest.mark.parametrize("answer, kept", [("yes", True), ("no", False)])
-def test_judge_answer_on_a_cited_resolving_reply_decides_keep(answer, kept):
-    judge = FakeJudge(judge_answer(answer))
-    c = ctx(ReplyLLM(agent_reply(CITED_HIT)), judge)
-    assert sast_sqli.run_item(excerpt_item(), c) == {"kept": kept}
+# AC-S3-2, AC-S1-2: the judge answer on the case clone decides the judge stage
+@pytest.mark.parametrize("answer, decision", [("yes", "keep"), ("no", "drop")])
+def test_judge_answer_on_a_cited_resolving_reply_decides_the_judge_stage(bench_env, answer, decision):
+    result, judge = two_stage(bench_env, KEEP_REPLY, answer)
+    assert result.unit["stages"]["judge"]["decision"] == decision
     assert len(judge.requests) == 1
-    assert "sast_triage" in c.metrics.tools
+    assert "sast_triage" in result.unit["tools"]
 
 
-def test_agent_reply_citing_code_absent_from_the_excerpt_is_dropped():
-    cited = [{"type": "code", "file": "app.py", "lines": [4, 4], "content": "    os.system(cmd)"}]
-    judge = FakeJudge(judge_answer("no"))
-    assert sast_sqli.run_item(excerpt_item(), ctx(ReplyLLM(agent_reply(cited)), judge)) == {"kept": False}
+def test_agent_reply_citing_code_absent_from_the_clone_still_reaches_the_judge(bench_env):
+    cited = [{"type": "code", "file": "app.py", "lines": [2, 2], "content": "    os.system(cmd)"}]
+    result, judge = two_stage(bench_env, agent_reply(cited), "no")
+    assert result.unit["stages"]["judge"]["decision"] == "drop"
     assert "cur.execute" in json.dumps(judge.requests)
-
-
-def test_agent_reply_without_evidence_is_dropped_without_asking_the_judge():
-    reply = json.loads(agent_reply([]))
-    reply["verdict"] = "vulnerable"
-    judge = FakeJudge(judge_answer("yes"))
-    assert sast_sqli.run_item(excerpt_item(), ctx(ReplyLLM(json.dumps(reply)), judge)) == {"kept": False}
-    assert judge.requests == []
 
 
 @pytest.mark.parametrize(
@@ -227,35 +234,28 @@ def test_agent_reply_without_evidence_is_dropped_without_asking_the_judge():
     ],
     ids=["raises", "bad-confidence", "missing-keys"],
 )
-def test_judge_that_cannot_answer_is_an_infra_error_not_a_score(judge):
-    with pytest.raises(InfraError):
-        sast_sqli.run_item(excerpt_item(), ctx(ReplyLLM(agent_reply(CITED_HIT)), judge))
+def test_judge_that_cannot_answer_is_an_infra_error_not_a_score(bench_env, judge):
+    result = bench_env.run("sast-sqli", llm=PromptLLM(KEEP_REPLY), judge=judge)
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
 
 
-@pytest.mark.parametrize("helper", ["_commit_excerpt", "resolve_refs"])
-def test_git_failure_in_temp_repo_setup_is_an_infra_error(monkeypatch, helper):
-    def fail(*args, **kwargs):
-        raise subprocess.CalledProcessError(128, ["git"])
-
-    monkeypatch.setattr(sast_sqli, helper, fail)
-    with pytest.raises(InfraError):
-        sast_sqli.run_item(excerpt_item(), ctx(ReplyLLM(agent_reply(CITED_HIT))))
+# AC-S1-4
+def test_unparsable_agent_reply_is_not_scored(bench_env):
+    result = bench_env.run("sast-sqli", llm=ReplyLLM("I cannot answer in JSON."), judge=FakeJudge(judge_answer()))
+    assert result.unit["status"] == "not_scored"
 
 
-# AC-S5-5
-def test_unparsable_agent_reply_is_not_scored():
-    out = sast_sqli.run_item(excerpt_item(), ctx(ReplyLLM("I cannot answer in JSON.")))
-    assert isinstance(out, NotScored)
-
-
-# AC-S5-5
-def test_unreachable_model_endpoint_is_an_infra_error_not_a_score():
-    with pytest.raises(InfraError):
-        sast_sqli.run_item(item(False), ctx(UnreachableLLM()))
-
+# AC-S1-5
+def test_unreachable_model_endpoint_is_an_infra_error_not_a_score(bench_env):
+    result = bench_env.run("sast-sqli", llm=UnreachableLLM(), judge=FakeJudge(judge_answer()))
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
 
 # AC-S5-6
-def test_only_sqli_cases_run_and_each_unit_names_case_and_label(tmp_path):
+def test_only_sqli_cases_run_and_each_unit_names_case_and_label(tmp_path, monkeypatch):
+    for mod in (run, sast_sqli):
+        monkeypatch.setattr(mod, "CLONE_CACHE", tmp_path / "no-clones")
     entry = registry.REGISTRY["sast-sqli"]
     run.run_benchmark(
         tmp_path / "results", registry={"sast-sqli": entry}, llm=UnreachableLLM(), config=LGTMConfig()
@@ -271,18 +271,18 @@ def test_only_sqli_cases_run_and_each_unit_names_case_and_label(tmp_path):
 # AC-3-3, AC-3-4: unparsable is read from the error kind, never from the message wording
 
 
-def run_with_error(monkeypatch, kind, message):
+def run_with_error(bench_env, monkeypatch, kind, message):
     class FakeAgent:
         def __init__(self, toolbox, config=None, llm=None):
-            self.toolbox = SimpleNamespace(build_tools=lambda graph=False: [])
+            self.toolbox = toolbox
             self.run_records = []
             self.errors = [{"source": "f", "kind": kind, "message": message}]
 
-        def triage(self, finding, semgrep_notes):
+        def triage(self, finding, file_diff, facts=""):
             return None
 
     monkeypatch.setattr(sast_sqli, "SASTTriageAgent", FakeAgent)
-    return sast_sqli.run_item(item(False), ctx(object()))
+    return bench_env.run("sast-sqli", llm=object(), judge=FakeJudge(judge_answer())).unit
 
 
 @pytest.mark.parametrize(
@@ -290,8 +290,8 @@ def run_with_error(monkeypatch, kind, message):
     ["Triage answer could not be parsed.", "", prompts.entry("shared.unparsable_explanation")],
     ids=["reworded", "empty", "current-prompt-text"],
 )
-def test_unparsable_kind_is_not_scored_whatever_the_message(monkeypatch, message):
-    assert isinstance(run_with_error(monkeypatch, "unparsable", message), NotScored)
+def test_unparsable_kind_is_not_scored_whatever_the_message(bench_env, monkeypatch, message):
+    assert run_with_error(bench_env, monkeypatch, "unparsable", message)["status"] == "not_scored"
 
 
 @pytest.mark.parametrize(
@@ -299,6 +299,87 @@ def test_unparsable_kind_is_not_scored_whatever_the_message(monkeypatch, message
     ["model endpoint unreachable", prompts.entry("shared.unparsable_explanation")],
     ids=["unreachable", "unparsable-wording"],
 )
-def test_failed_kind_is_an_infra_error_even_when_the_message_reads_as_unparsable(monkeypatch, message):
-    with pytest.raises(InfraError):
-        run_with_error(monkeypatch, "failed", message)
+def test_failed_kind_is_an_infra_error_even_when_the_message_reads_as_unparsable(bench_env, monkeypatch, message):
+    assert run_with_error(bench_env, monkeypatch, "failed", message)["status"] == "error"
+
+
+# AC-S1-1 (decision): triage is offered the production triage toolbox, without CodeGraph tools
+def test_sast_sqli_offers_the_production_triage_tools_and_no_codegraph_tools(bench_env):
+    from lgtm.graph.session import GraphSession
+    from lgtm.rag.retriever import PolicyRetriever
+
+    result = bench_env.run("sast-sqli")
+    toolbox = result.agents.toolboxes[0]
+    assert isinstance(toolbox.session, GraphSession)
+    assert type(toolbox.retriever) is PolicyRetriever
+    (stats,) = result.unit["tools"].values()
+    assert set(stats) == {"read_file", "grep_repo", "search_policy"}
+
+
+
+# ---------------------------------------------------------------------------
+# Real clone, PR diff, two stages: AC-S3-1..4, AC-S4-1
+# ---------------------------------------------------------------------------
+
+
+class PromptLLM(ReplyLLM):
+    def __init__(self, content):
+        super().__init__(content)
+        self.prompts = []
+
+    def invoke(self, *args, **kwargs):
+        self.prompts.append(str(args))
+        return super().invoke(*args, **kwargs)
+
+
+KEEP_REPLY = agent_reply([{"type": "code", "file": "app.py", "lines": [2, 2], "content": HIT_LINE}])
+DROP_REPLY = agent_reply([])
+
+
+def two_stage(bench_env, triage_reply, judge_supported, gold_keep=False, llm=None):
+    judge = FakeJudge(judge_answer(judge_supported))
+    result = bench_env.run("sast-sqli", llm=llm or PromptLLM(triage_reply), judge=judge, gold_keep=gold_keep)
+    return result, judge
+
+
+def test_triage_receives_the_sanitized_pr_diff_of_the_finding_file(bench_env):
+    llm = PromptLLM(KEEP_REPLY)
+    two_stage(bench_env, None, "yes", llm=llm)
+    prompt = "\n".join(llm.prompts)
+    assert "PR_ONLY = 1" in prompt
+    assert "NOTE-STRIPPED" not in prompt
+    assert "tainted query" in prompt
+
+
+def test_unit_records_triage_and_judge_stages_each_with_decision_and_explanation(bench_env):
+    result, _ = two_stage(bench_env, KEEP_REPLY, "no")
+    stages = result.unit["stages"]
+    assert stages["triage"]["decision"] == "keep"
+    assert "tainted" in stages["triage"]["explanation"]
+    assert stages["judge"]["decision"] == "drop"
+    assert "explanation" in stages["judge"]
+    assert result.unit["verdict"] and "tainted" in result.unit["explanation"]
+
+
+@pytest.mark.parametrize(
+    "gold_keep, judge_supported, triage_correct, judge_correct",
+    [(False, "no", 0.0, 1.0), (True, "no", 1.0, 0.0), (True, "yes", 1.0, 1.0), (False, "yes", 0.0, 0.0)],
+)
+def test_each_stage_is_scored_against_the_label_independently(
+    bench_env, gold_keep, judge_supported, triage_correct, judge_correct
+):
+    result, _ = two_stage(bench_env, KEEP_REPLY, judge_supported, gold_keep=gold_keep)
+    scores = result.unit["scores"]
+    assert (scores["triage_correct"], scores["judge_correct"]) == (triage_correct, judge_correct)
+
+
+@pytest.mark.parametrize("gold_keep", [True, False])
+def test_triage_drop_records_judge_as_not_run_and_scores_triage_alone(bench_env, gold_keep):
+    result, judge = two_stage(bench_env, DROP_REPLY, "yes", gold_keep=gold_keep)
+    unit = result.unit
+    assert unit["status"] == "scored"
+    assert unit["stages"]["triage"]["decision"] == "drop"
+    assert unit["stages"]["judge"]["decision"] == "not_run"
+    assert judge.requests == []
+    assert unit["scores"]["triage_correct"] == float(not gold_keep)
+    assert unit["scores"].get("judge_correct") is None

@@ -31,7 +31,7 @@ def diff_text(case_id: str) -> str:
     )
 
 
-def fake_loader(case, config):
+def fake_loader(case, config, results_dir):
     return parse_unified_diff(diff_text(case["id"])), SimpleNamespace(calls_used=0)
 
 
@@ -277,3 +277,13 @@ def test_registry_declares_investigator_on_case_source_with_aggregate():
     entry = bench("registry").REGISTRY["investigator"]
     assert entry.source == "cases"
     assert entry.aggregate is not None
+
+
+# AC-S1-2, AC-S4-1: production toolbox and per-unit verdict
+def test_scored_unit_carries_verdict_and_explanation_and_keeps_the_per_case_plan_file(bench_env):
+    result = bench_env.run("investigator")
+    unit = result.unit
+    assert unit["status"] == "scored"
+    assert unit["verdict"] == "plan"
+    assert "plan rationale" in unit["explanation"]
+    assert (result.results / "investigator" / f"{unit['case_id']}.json").is_file()

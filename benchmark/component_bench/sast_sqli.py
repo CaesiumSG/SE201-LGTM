@@ -1,74 +1,110 @@
-"""SAST SQLi triage benchmark: keep/drop on gold Semgrep hits and distractor hits."""
+"""SAST SQLi triage benchmark: triage-agent and Kev-judge keep/drop on gold Semgrep hits, scored separately."""
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
 from pathlib import Path
 
-from benchmark.component_bench.outcomes import InfraError, NotScored
+from benchmark.component_bench.outcomes import InfraError, NotScored, production_toolbox, track
+from benchmark.component_bench.schema import load_cases
+from benchmark.real_world.fetch import project_of
 from lgtm.agents.sast_triage import SASTTriageAgent
-from lgtm.agents.tools import AgentToolbox
-from lgtm.graph.snapshot import resolve_refs
-from lgtm.pipeline import PRODUCTION_REQUEST_FORMAT
+from lgtm.diff.git_diff import GitError, get_pr_diff
+from lgtm.diff.sanitizer import sanitize_diffs
+from lgtm.pipeline import PRODUCTION_REQUEST_FORMAT, ReviewPipeline
 from lgtm.sast.semgrep_runner import SemgrepFinding
 from lgtm.validation.evidence import EvidenceValidator
 from lgtm.validation.judge import judge_candidates
 
+CLONE_CACHE = Path(__file__).resolve().parents[1] / "real_world" / ".cache"
 
-def _commit_excerpt(repo, path, excerpt):
-    """Write the excerpt at its real line numbers (blank padding above) and commit it locally."""
-    target = Path(repo) / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    text = "\n" * (excerpt["start_line"] - 1) + "\n".join(excerpt["lines"]) + "\n"
-    target.write_bytes(text.encode("utf-8"))
-    git = ["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost", "-c", "commit.gpgsign=false"]
-    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "excerpt"]):
-        subprocess.run([*git, *args], cwd=repo, check=True, capture_output=True)
+
+def _judge_explanation(result) -> str:
+    if result.unsupported_reason:
+        return result.unsupported_reason
+    return (
+        f"supported={result.supported}; verdict={result.kev_verdict}; severity={result.kev_severity}; "
+        f"provenance_confidence={result.provenance_confidence}"
+    )
 
 
 def run_item(item, ctx):
-    fields = dict(item["gold_input"])
-    excerpt = fields.pop("excerpt", None)
+    fields = {k: v for k, v in item["gold_input"].items() if k != "excerpt"}
     finding = SemgrepFinding(**fields)
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as empty_repo:
-        shas = None
-        if excerpt is not None:
-            try:
-                _commit_excerpt(empty_repo, finding.path, excerpt)
-                shas = resolve_refs(empty_repo, "HEAD", "HEAD")
-            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-                raise InfraError(f"temp repo setup failed: {exc}") from exc
-        agent = SASTTriageAgent(AgentToolbox(empty_repo, "HEAD", config=ctx.config, shas=shas), ctx.config, llm=ctx.llm)
-        try:
-            result = agent.triage(finding, None)
-        finally:
-            ctx.metrics.add_agent("sast_triage", agent.run_records, agent.toolbox.build_tools(graph=False))
-        if result is not None:
-            validator = EvidenceValidator(empty_repo, "HEAD", None, ctx.config, shas=shas)
-            validator.validate_all([result])
-            judge_candidates(
-                [result], validator.read_cited_code, ctx.config, ctx.judge, request_format=PRODUCTION_REQUEST_FORMAT
-            )
-            if not result.judged:
-                raise InfraError(f"judge did not answer: {result.not_judged_reason}")
-            return {"kept": result.supported is True}
-    error = agent.errors[-1]
-    if error["kind"] == "unparsable":
-        return NotScored(error["message"])
-    raise InfraError(error["message"])
+    case = next(c for c in load_cases() if c["id"] == item["case_id"])
+    toolbox = production_toolbox(CLONE_CACHE / project_of(case), case, ctx.config, ctx.results_dir)
+    track(ctx, toolbox)
+    try:
+        diffs = [d for d in get_pr_diff(toolbox.repo, case["base_ref"], case["pr_ref"]) if d.status != "deleted"]
+    except GitError as exc:
+        raise InfraError(str(exc)) from exc
+    file_diff = ReviewPipeline._match_diff(finding.path, sanitize_diffs(diffs))
+    agent = SASTTriageAgent(toolbox, ctx.config, llm=ctx.llm)
+    try:
+        result = agent.triage(finding, file_diff)
+    finally:
+        ctx.metrics.add_agent("sast_triage", agent.run_records, toolbox.build_tools(graph=False))
+    if result is None:
+        error = agent.errors[-1]
+        if error["kind"] == "unparsable":
+            return NotScored(error["message"])
+        raise InfraError(error["message"])
+    triage_keep = bool(result.evidence)
+    stages = {"triage": {"decision": "keep" if triage_keep else "drop", "explanation": result.explanation}}
+    if triage_keep:
+        validator = EvidenceValidator(
+            toolbox.repo, case["base_ref"], diffs, ctx.config, shas=toolbox.shas
+        )
+        validator.validate_all([result])
+        judge_candidates(
+            [result], validator.read_cited_code, ctx.config, ctx.judge, request_format=PRODUCTION_REQUEST_FORMAT
+        )
+        if not result.judged:
+            raise InfraError(f"judge did not answer: {result.not_judged_reason}")
+        stages["judge"] = {
+            "decision": "keep" if result.supported is True else "drop",
+            "explanation": _judge_explanation(result),
+        }
+    else:
+        stages["judge"] = {"decision": "not_run", "explanation": "triage dropped the finding"}
+    final = stages["judge"]["decision"] == "keep"
+    ctx.record = {
+        "verdict": "keep" if final else "drop",
+        "explanation": result.explanation,
+        "stages": stages,
+    }
+    return {
+        "stages": stages,
+        "detail": {"gold_keep": item["gold"]["keep"]},
+    }
 
 
 def score(item, output):
     gold = item["gold"]["keep"]
-    kept = output["kept"]
-    tp, fp, fn, tn = (float(gold and kept), float(kept and not gold), float(gold and not kept), float(not gold and not kept))
-    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn, "correct": tp + tn}
+    stages = output["stages"]
+    judge = stages["judge"]["decision"]
+    return {
+        "triage_correct": float((stages["triage"]["decision"] == "keep") == gold),
+        "judge_correct": None if judge == "not_run" else float((judge == "keep") == gold),
+    }
+
+
+def _precision_recall_f1(pairs) -> dict:
+    tp = sum(gold and kept for gold, kept in pairs)
+    fp = sum(kept and not gold for gold, kept in pairs)
+    fn = sum(gold and not kept for gold, kept in pairs)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {"precision": precision, "recall": recall, "f1": f1}
 
 
 def aggregate(units, results_dir):
-    total = {k: sum(u["scores"][k] for u in units if u["status"] == "scored") for k in ("tp", "fp", "fn")}
-    precision = total["tp"] / (total["tp"] + total["fp"]) if total["tp"] + total["fp"] else 0.0
-    recall = total["tp"] / (total["tp"] + total["fn"]) if total["tp"] + total["fn"] else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {"precision": precision, "recall": recall, "f1": f1}
+    scored = [u for u in units if u["status"] == "scored"]
+    def pairs(stage):
+        return [
+            (u["detail"]["gold_keep"], u["stages"][stage]["decision"] == "keep")
+            for u in scored
+            if u["stages"][stage]["decision"] != "not_run"
+        ]
+
+    return {stage: _precision_recall_f1(pairs(stage)) for stage in ("triage", "judge")}

@@ -6,10 +6,9 @@ import json
 import shutil
 from pathlib import Path
 
-from benchmark.component_bench.outcomes import InfraError, NotScored
+from benchmark.component_bench.outcomes import InfraError, NotScored, production_toolbox, remove_index, track
 from benchmark.real_world.fetch import project_of
 from lgtm.agents.investigator import run_investigator
-from lgtm.agents.tools import AgentToolbox
 from lgtm.diff.git_diff import GitError, get_pr_diff
 from lgtm.review.sections import _LINE_PREFIX, _SHAPE_ERROR, _hunk_ref
 
@@ -18,14 +17,13 @@ RUBRIC = HERE / "investigator_rubric.md"
 CLONE_CACHE = HERE.parent / "real_world" / ".cache"
 
 
-def load_case_diffs(case: dict, config):
-    repo = CLONE_CACHE / project_of(case)
+def load_case_diffs(case: dict, config, results_dir):
+    toolbox = production_toolbox(CLONE_CACHE / project_of(case), case, config, results_dir)
     try:
-        diffs = get_pr_diff(repo, case["base_ref"], case["pr_ref"])
-        toolbox = AgentToolbox(
-            repo, case["base_ref"], config=config, shas={"base": case["base_ref"], "pr": case["pr_ref"]}
-        )
-    except (GitError, ValueError) as exc:
+        diffs = get_pr_diff(toolbox.repo, case["base_ref"], case["pr_ref"])
+    except GitError as exc:
+        toolbox.session.close()
+        remove_index(toolbox.index_dir, toolbox.retriever)
         raise InfraError(str(exc)) from exc
     return diffs, toolbox
 
@@ -42,7 +40,8 @@ def _render_hunks(diffs, hunk_ids: list[str]) -> list[dict]:
 
 def run_item(item: dict, ctx) -> dict | NotScored:
     case = item["case"]
-    diffs, toolbox = load_case_diffs(case, ctx.config)
+    diffs, toolbox = load_case_diffs(case, ctx.config, ctx.results_dir)
+    track(ctx, toolbox)
     result = run_investigator(diffs, ctx.config, toolbox, ctx.llm)
     if result.run_record is not None:
         ctx.metrics.add_agent("investigator", [result.run_record], toolbox.build_tools())
@@ -70,6 +69,10 @@ def run_item(item: dict, ctx) -> dict | NotScored:
     (out / f"{case['id']}.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
     (out / "ratings" / f"{case['id']}.json").unlink(missing_ok=True)
     shutil.copyfile(RUBRIC, out / RUBRIC.name)
+    ctx.record = {
+        "verdict": "plan",
+        "explanation": "\n".join(f"{s['title']}: {s['rationale']}" for s in doc["sections"]),
+    }
     return doc
 
 

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from functools import cache
 from pathlib import Path
 
 from benchmark.component_bench.authz import CLONE_CACHE, _inside, build_section, case_reader  # noqa: F401 - run.py wires read_source via mod.case_reader
-from benchmark.component_bench.outcomes import InfraError, NotScored
+from benchmark.component_bench.outcomes import InfraError, NotScored, finding_record, production_toolbox, track
 from benchmark.component_bench.schema import load_cases
+from benchmark.real_world.fetch import project_of
 from lgtm.agents.sqli_reviewer import SQLiReviewerAgent, needs_sql_review
 from lgtm.agents.tools import AgentToolbox
 from lgtm.pipeline import ReviewPipeline
@@ -21,17 +21,9 @@ SAST_LABELS = Path(__file__).resolve().parent / "labels" / "sast-sqli.json"
 
 def build_toolbox(item: dict, ctx) -> AgentToolbox:
     case = next(c for c in load_cases() if c["id"] == item["case_id"])
-    project = case["repo_url"].rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
-    clone = CLONE_CACHE / project
-    for sha in (case["base_ref"], case["pr_ref"]):
-        found = clone.is_dir() and subprocess.run(
-            ["git", "-C", str(clone), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True
-        ).returncode == 0
-        if not found:
-            raise InfraError(f"case clone or commit missing: {clone} {sha}")
-    return AgentToolbox(
-        clone, case["base_ref"], config=ctx.config, shas={"base": case["base_ref"], "pr": case["pr_ref"]}
-    )
+    toolbox = production_toolbox(CLONE_CACHE / project_of(case), case, ctx.config, ctx.results_dir)
+    track(ctx, toolbox)
+    return toolbox
 
 
 @cache
@@ -63,11 +55,11 @@ def run_item(item: dict, ctx) -> list[dict] | NotScored:
     triaged = [ReviewPipeline._sast_finding_to_agent_finding(h) for h in hits]
     sast_evidence = [e for t in triaged for e in t.evidence]
     # Reviewer findings first: a merged group keeps the first finding's location.
-    merged = dedup_findings([*reviewed, *triaged])
+    merged = [f for f in dedup_findings([*reviewed, *triaged]) if f.agent != "semgrep"]
+    ctx.record = finding_record(merged)
     return [
         {"file": f.file, "line": f.line, "sast_also": any(e in sast_evidence for e in f.evidence)}
         for f in merged
-        if f.agent != "semgrep"
     ]
 
 

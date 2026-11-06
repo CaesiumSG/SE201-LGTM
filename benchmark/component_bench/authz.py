@@ -5,24 +5,15 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from benchmark.component_bench.outcomes import InfraError, NotScored
+from benchmark.component_bench.outcomes import InfraError, NotScored, finding_record, production_toolbox, track
 from benchmark.component_bench.schema import load_cases
+from benchmark.real_world.fetch import project_of
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent, _enclosing_functions
 from lgtm.agents.tools import AgentToolbox
 from lgtm.diff.git_diff import LineChange
 from lgtm.review.sections import HunkRef, Section
 
 CLONE_CACHE = Path(__file__).resolve().parents[1] / "real_world" / ".cache"
-
-
-class GoldPolicy:
-    """Retriever stand-in that returns the labelled passages for every query."""
-
-    def __init__(self, passages: list[str]):
-        self.text = "\n\n".join(passages)
-
-    def format_results(self, query: str) -> str:
-        return self.text
 
 
 _KIND = {"+": "add", "-": "del", " ": "context"}
@@ -62,21 +53,9 @@ def build_section(gold_input: dict) -> Section:
 
 def build_toolbox(item: dict, ctx) -> AgentToolbox:
     case = next(c for c in load_cases() if c["id"] == item["case_id"])
-    project = case["repo_url"].rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
-    clone = CLONE_CACHE / project
-    for sha in (case["base_ref"], case["pr_ref"]):
-        found = clone.is_dir() and subprocess.run(
-            ["git", "-C", str(clone), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True
-        ).returncode == 0
-        if not found:
-            raise InfraError(f"case clone or commit missing: {clone} {sha}")
-    return AgentToolbox(
-        clone,
-        case["base_ref"],
-        retriever=GoldPolicy(item["gold_input"]["policy_passages"]),
-        config=ctx.config,
-        shas={"base": case["base_ref"], "pr": case["pr_ref"]},
-    )
+    toolbox = production_toolbox(CLONE_CACHE / project_of(case), case, ctx.config, ctx.results_dir)
+    track(ctx, toolbox)
+    return toolbox
 
 
 def run_item(item: dict, ctx) -> list[dict]:
@@ -90,6 +69,7 @@ def run_item(item: dict, ctx) -> list[dict]:
         if all(e["kind"] == "unparsable" for e in agent.errors):
             return NotScored(messages)
         raise InfraError(messages)
+    ctx.record = finding_record(findings)
     return [{"file": f.file, "line": f.line} for f in findings]
 
 

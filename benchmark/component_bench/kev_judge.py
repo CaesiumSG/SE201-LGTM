@@ -77,6 +77,7 @@ def run_item(item, ctx):
         raise InfraError(f"judge failed: {exc!r}") from exc
     if not isinstance(reply, Mapping) or reply.get("verdict") not in VERDICTS:
         raise InfraError(f"unusable judge reply: {reply!r}")
+    ctx.record = {"verdict": reply["verdict"]}
     return {**reply, "detail": {"kev": {key: reply.get(key) for key in ANSWERS}}}
 
 
