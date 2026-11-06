@@ -350,6 +350,7 @@ def test_a_request_between_eighty_and_a_hundred_percent_of_the_window_degrades_w
     assert findings == []
     assert [e["source"] for e in errors] == [source]
     assert "context" in errors[0]["message"].lower()
+    assert errors[0]["kind"] == "failed"
     assert len(llm.requests) == 1
     assert all(chars(request) <= DEFAULT_HEADROOM * window for request in llm.requests)
     assert len(records) == 1
@@ -424,6 +425,7 @@ def test_a_tool_round_request_over_the_window_does_not_trim_the_previous_assista
     assert findings == []
     assert [e["source"] for e in errors] == [source]
     assert "context" in errors[0]["message"].lower()
+    assert errors[0]["kind"] == "failed"
     assert len(llm.requests) == 1
     assert [t["assistant"] for t in records[0].turns] == [fat]
 

@@ -330,6 +330,7 @@ class AuthzReviewerAgent:
                 "%s section review failed for %s: %s", self.CATEGORY, section.section_id, exc
             )
             message = registry.render(f"{self.PROMPTS}.failed_explanation", where=where, error=exc)
+            kind = "failed"
         else:
             if findings is not None:
                 return findings
@@ -337,7 +338,8 @@ class AuthzReviewerAgent:
                 "%s section review for %s had no parsable findings", self.CATEGORY, section.section_id
             )
             message = registry.render(f"{self.PROMPTS}.unparsable_explanation", where=where)
-        self.errors.append({"source": self._record_name(section), "message": message})
+            kind = "unparsable"
+        self.errors.append({"source": self._record_name(section), "kind": kind, "message": message})
         return []
 
     def _record_name(self, section: Section) -> str:
