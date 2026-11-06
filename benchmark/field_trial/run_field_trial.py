@@ -42,7 +42,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
-from lgtm.pipeline import ReviewPipeline  # noqa: E402
+from lgtm.pipeline import LGTM_MODES, ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", BENCH / "evaluate.py")
@@ -83,7 +83,12 @@ def has_commit(repo: Path, sha: str) -> bool:
 
 
 def ensure_case(case: dict, cache: Path) -> tuple[str, str]:
-    """Shallow-fetch the merge commit and its parent; return (base, pr) SHAs."""
+    """Shallow-fetch the merge commit and its parent; return (base, pr) SHAs.
+
+    A case may name its base explicitly (``base_commit``), for a PR that was
+    rebase-merged or is one commit inside a larger PR; then the diff is
+    ``base_commit..merge_commit`` and both commits are fetched at depth 1.
+    """
     clone = cache / project_of(case)
     if not (clone / ".git").is_dir():
         clone.mkdir(parents=True, exist_ok=True)
@@ -91,10 +96,16 @@ def ensure_case(case: dict, cache: Path) -> tuple[str, str]:
         git(clone, "remote", "add", "origin", f"https://github.com/{case['repo']}.git")
         git(clone, "config", "core.autocrlf", "false")
     merge = case["merge_commit"]
-    if not has_commit(clone, merge) or not has_commit(clone, f"{merge}^"):
+    explicit = case.get("base_commit")
+    if explicit:
+        for sha in (explicit, merge):
+            if not has_commit(clone, sha):
+                print(f"  fetching {case['repo']}@{sha[:10]} (depth 1) ...", flush=True)
+                git(clone, "fetch", "--quiet", "--depth", "1", "origin", sha)
+    elif not has_commit(clone, merge) or not has_commit(clone, f"{merge}^"):
         print(f"  fetching {case['repo']}@{merge[:10]} (depth 2) ...", flush=True)
         git(clone, "fetch", "--quiet", "--depth", "2", "origin", merge)
-    base = git(clone, "rev-parse", f"{merge}^1").strip()
+    base = git(clone, "rev-parse", explicit or f"{merge}^1").strip()
     pr = git(clone, "rev-parse", merge).strip()
     # Named refs, so a result JSON reads like the other benchmarks
     git(clone, "update-ref", f"refs/heads/ft/{case['id']}/base", base)
@@ -174,7 +185,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "diff_chars": sum(len(d.hunk_text()) for d in py),
     }
     index_info: dict = {}
-    if mode == "lgtm":
+    if mode in ("lgtm", "lgtm-no-sast"):
         idx_dir = cache / ".index" / project_of(case)
         index_info = ensure_index(clone, base, idx_dir, cfg)
         cfg.chroma_persist_dir = str(idx_dir)
@@ -189,7 +200,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         })
         return record
     findings = [f.model_dump(exclude={"raw_response"}) for f in result.findings]
-    judged = mode in evaluate.JUDGED_MODES
+    judged = mode in LGTM_MODES  # every mode the Kev judge ran in, benchmarked or not
     verdicts = [evaluate.finding_verdict(f, judged) for f in findings]
     infra = evaluate.infra_failure_ids(findings)
     record.update({
@@ -226,6 +237,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
             1 for r in result.run_records
             if r.section != "investigator" and not _is_triage(r)),
         "findings": findings,
+        **evaluate.trace_fields(mode, result),
     })
     return record
 
