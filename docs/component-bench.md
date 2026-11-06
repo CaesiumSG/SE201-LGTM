@@ -18,8 +18,8 @@ python benchmark/component_bench/run.py [--components NAME ...] [--resume] [--re
 
 ## Output
 
-- `<results-dir>/<component>.json`: label counts and one record per unit (`case_id`, `label_id`, `status`, `scores`, `wall_time_s`, `input_tokens`, `output_tokens`, `tools`; scored units may also carry `label_ids` and `detail`, which for `evidence` holds `validator_reasons` and `stated_reason`).
-- `<results-dir>/summary.json`: per component, mean scores, units scored, errored and not scored, draft and approved label counts (`n/a` for the investigator), wall time total, token totals and tool calls.
+- `<results-dir>/<component>.json`: label counts and one record per unit (`case_id`, `label_id`, `status`, `scores`, `wall_time_s`, `input_tokens`, `output_tokens`, `tools` (calls and invalid calls per tool, per agent); units that ran a production toolbox also carry `graph_state`; scored units may also carry `label_ids` and `detail`, which for `evidence` holds `validator_reasons` and `stated_reason`, and `stages` for `sast-sqli`). A unit whose `graph_state` is not `ok` is recorded as `error`.
+- `<results-dir>/summary.json`: per component, mean scores, units scored, errored and not scored, draft and approved label counts (`n/a` for the investigator), wall time total, token totals, tool calls per agent and tool, `codegraph_calls` and `search_policy_calls`; top-level `commit` and `dirty` (HEAD commit of the executing checkout and whether it has uncommitted changes to tracked files; null when git is unavailable).
 
 Unit status is `scored`, `error` (model, judge or dependency failure; excluded from scores, rerun on resume) or `not_scored` (counted separately). A metric scored `None` is left out of that metric's mean. Tokens the model did not return are stored as null and shown as `not recorded`.
 
@@ -47,9 +47,9 @@ Add `benchmark/component_bench/<name>.py` exposing `run_item(item, ctx)` and `sc
 
 ## Policy retrieval
 
-`--components retrieval` runs one unit per case over the 6 authz cases (aegra, langflow, litellm; vulnerable and safe). The 6 sqli cases and the 13 development cases are recorded as `not_scored` (not applicable, or no policy file). Each authz case indexes its project policy from `benchmark/real_world/policies/` into a temporary Chroma directory and queries it with the case description at `rag_top_k`. No model is called.
+`--components retrieval` runs one unit per case over the 6 authz cases (aegra, langflow, litellm; vulnerable and safe). The 6 sqli cases and the 13 development cases are recorded as `not_scored` (not applicable, or no policy file). Each authz case exports the case clone at `pr_ref`, indexes its docs into a temporary Chroma directory and queries it with the case description at `rag_top_k`. No model is called.
 
-Gold labels in `labels/retrieval.json` are policy passages (`gold`: `source`, `start_line`, `end_line`; source `security-policy.md` is the indexed policy name). A retrieved chunk is a hit when it is in the same source and its line range overlaps a gold passage.
+Gold labels in `labels/retrieval.json` are policy passages (`gold`: `source`, `start_line`, `end_line`; `source` is a file path in the case-repo export, such as `security-policy.md`). A label whose `source` file is absent from the export is dropped for that case. A retrieved chunk is a hit when it is in the same source and its line range overlaps a gold passage.
 
 | Score | Meaning |
 | --- | --- |
@@ -61,7 +61,7 @@ The summary section `aggregate` lists the draft and approved label counts and th
 
 ## Investigator
 
-Runs the investigator on each of the 25 cases and has no label file. The split is rated offline, not by the benchmark.
+Runs the investigator, with the production toolbox over the case clone, on each of the 25 cases and has no label file. The split is rated offline, not by the benchmark.
 
 - Written results: `<results-dir>/investigator/<case_id>.json` with `case_id`, `diff` (the PR diff) and `sections` (`id`, `title`, `rationale`, `hunks` with each hunk's id and lines). Only the investigator's own proposed sections are written, with no fallback sections. A case whose output fails plan validation, or has no section with a valid hunk, is `not_scored`, writes no result and is listed as `plan_invalid`; a model or dependency failure is `error`.
 - Rubric: `benchmark/component_bench/investigator_rubric.md`, copied to `<results-dir>/investigator/` on each run. It states the criteria and the 0.00, 0.50 and 1.00 anchors.
@@ -70,7 +70,7 @@ Runs the investigator on each of the 25 cases and has no label file. The split i
 
 ## authz
 
-Runs the authz reviewer on the gold section of each of the 15 authz cases (the 6 real-world cases aegra, langflow, litellm, vulnerable and safe, and the 9 development authz cases), with the gold policy passages as its policy input. Labels: `benchmark/component_bench/labels/authz.json`; `gold_input` holds `section` and `policy_passages`; `gold` holds `vulnerable`, `locations` (`file`, `start`, `end`, inclusive; new-side lines), optional `old_locations` (same shape; base-side lines of removed checks; a finding inside either range is a hit) and `known_issues` (`id`, `file`, `start`, `end`).
+Runs the authz reviewer on the gold section of each of the 15 authz cases (the 6 real-world cases aegra, langflow, litellm, vulnerable and safe, and the 9 development authz cases), with the production toolbox over the case clone (graph tools and `search_policy` over the case-repo policy index). Labels: `benchmark/component_bench/labels/authz.json`; `gold_input` holds `section` and `policy_passages`; `gold` holds `vulnerable`, `locations` (`file`, `start`, `end`, inclusive; new-side lines), optional `old_locations` (same shape; base-side lines of removed checks; a finding inside either range is a hit) and `known_issues` (`id`, `file`, `start`, `end`).
 
 Scores per unit: `tp`, `fn`, `fp`, `tn`.
 
@@ -83,13 +83,13 @@ Scores per unit: `tp`, `fn`, `fp`, `tn`.
 | Safe | inside a known issue | not counted |
 | Safe | elsewhere | `fp` 1 each |
 
-The reviewer's tools read the case repository from the clone under `benchmark/real_world/.cache/<project>`.
+The reviewer's tools read the case repository from the clone under `benchmark/real_world/.cache/<project>`. `policy_passages` in `gold_input` are not passed to the reviewer.
 
 ## SAST SQLi
 
-`sast-sqli` runs `SASTTriageAgent.triage` on one Semgrep hit per label and scores keep or drop. Semgrep is not run. Labels cover the 10 sqli cases: `gold_input` holds the `SemgrepFinding` fields (`rule_id`, `path`, `start_line`, `end_line`, `message`, `severity`, `matched_code`) plus `excerpt` (`start_line` and the exact source `lines` around the hit, from the upstream file). The run writes the excerpt into a temporary local git repo at `path`, blank-padded so the lines keep their real numbers, and triages against it. The triage result then goes through the production judge step (`judge_candidates` with `ctx.judge`, request format `current`); a hit is kept when the judge marks it supported, so a candidate with no evidence is dropped without a judge call. `gold` is `{"keep": true}` for a gold hit at the gold sink. A distractor hit on parameterised code carries `"distractor": true` and `{"keep": false}`.
+`sast-sqli` runs `SASTTriageAgent.triage` on one Semgrep hit per label and scores keep or drop. Semgrep is not run. Labels cover the 10 sqli cases: `gold_input` holds the `SemgrepFinding` fields (`rule_id`, `path`, `start_line`, `end_line`, `message`, `severity`, `matched_code`) plus `excerpt` (`start_line` and the exact source `lines` around the hit, from the upstream file). The run triages against the case clone with the production toolbox (`read_file`, `grep_repo`, `search_policy`; no graph tools). The triage result then goes through the production judge step (`judge_candidates` with `ctx.judge`, request format `current`); a hit is kept when the judge marks it supported, so a candidate with no evidence is dropped without a judge call. Each unit records `stages` with `triage` and `judge` entries (`decision` `keep`, `drop` or `not_run`, and `explanation`). `gold` is `{"keep": true}` for a gold hit at the gold sink. A distractor hit on parameterised code carries `"distractor": true` and `{"keep": false}`.
 
-Per unit scores: `tp`, `fp`, `fn`, `tn` and `correct`. The aggregate reports `precision`, `recall` and `f1` over the scored units. An unreachable model endpoint, a judge that does not answer, or a failed temporary repo setup records the unit as `error`; an unparsable answer records it as `not_scored`.
+Per unit scores: `triage_correct` and `judge_correct` (null when the judge did not run). The aggregate reports `precision`, `recall` and `f1` for `triage` and for `judge` over the scored units. An unreachable model endpoint, a judge that does not answer, or a missing case clone or commit records the unit as `error`; an unparsable answer records it as `not_scored`.
 
 ## Evidence validator
 
