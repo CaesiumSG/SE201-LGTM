@@ -358,7 +358,11 @@ def answer_until_resolved(
 
 
 def build_llm(config: LGTMConfig):
-    """Construct the ChatOllama LLM from config."""
+    """Construct the reviewer LLM from config: ChatOllama, or Claude on Bedrock."""
+    if config.llm_backend == "bedrock":
+        from lgtm.agents.bedrock_llm import BedrockClaude
+
+        return BedrockClaude(config)
     from langchain_ollama import ChatOllama
 
     kwargs = {} if config.reasoning is None else {"reasoning": config.reasoning}
@@ -442,6 +446,10 @@ def is_json_object(text: str) -> bool:
     return isinstance(extract_json_object(text), dict)
 
 
+class FatalLLMError(RuntimeError):
+    """A model failure that retrying cannot fix and that must end the review."""
+
+
 def invoke_with_retry(llm, messages, config: LGTMConfig, output_tokens: int | None = None) -> Any:
     """``output_tokens`` is the output limit ``llm`` was built with, for the context allowance."""
     if output_tokens is None:
@@ -454,6 +462,8 @@ def invoke_with_retry(llm, messages, config: LGTMConfig, output_tokens: int | No
     for attempt in range(1, attempts + 1):
         try:
             return llm.invoke(messages)
+        except FatalLLMError:
+            raise
         except Exception as exc:
             if attempt == attempts:
                 raise

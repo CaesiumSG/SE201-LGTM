@@ -9,6 +9,7 @@ from typing import Literal
 
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
+    FatalLLMError,
     FinalAnswerSpec,
     RunRecord,
     cut_to_fit,
@@ -129,6 +130,8 @@ def run_investigator(
                 record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
             )
         proposed = parse_investigator_output(raw)
+    except FatalLLMError:
+        raise
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)
         return InvestigatorResult(
