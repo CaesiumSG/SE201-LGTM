@@ -1,6 +1,6 @@
 # Component benchmark
 
-Scores each pipeline component separately over the 12 real-world cases in `benchmark/real_world/cases.json`, against gold labels. Results: [`component-bench-results.md`](component-bench-results.md).
+Scores each pipeline component separately over the 12 real-world cases in `benchmark/real_world/cases.json` and the 13 development cases in `benchmark/real_prs/cases.json` (see [Cases](#cases)), against gold labels. Results: [`component-bench-results.md`](component-bench-results.md).
 
 ## Command
 
@@ -23,6 +23,20 @@ python benchmark/component_bench/run.py [--components NAME ...] [--resume] [--re
 
 Unit status is `scored`, `error` (model, judge or dependency failure; excluded from scores, rerun on resume) or `not_scored` (counted separately). A metric scored `None` is left out of that metric's mean. Tokens the model did not return are stored as null and shown as `not recorded`.
 
+## Cases
+
+The benchmark loads 25 cases: the 12 real-world cases, then the 13 development cases of `benchmark/real_prs/cases.json` (4 SQLi, 9 authz). Each development case has `repo_url` (`https://github.com/<repo>`), `base_ref` (`introducing.base_commit`), `pr_ref` (`introducing.merge_commit`), `category`, `cwe`, `description` (the case `title`) and `split` `real_prs`.
+
+A development case runs against the code at its introducing PR: the clone `benchmark/real_world/.cache/<project>` with local branches `rw/<case id>/base` and `rw/<case id>/pr` at `base_ref` and `pr_ref`. Create them once:
+
+```
+python -m benchmark.component_bench.fetch_real_prs
+```
+
+The command clones each project into the shared cache (reusing an existing clone), fetches both revisions and sets the two branches. It can be re-run.
+
+Before a component runs on a development case, the runner checks the clone and both branches. A missing clone, a missing branch, or a branch not at the pinned revision records the unit as `error` with a reason naming the missing item and the fetch command; the component is not called.
+
 ## Labels
 
 `benchmark/component_bench/labels/<component>.json` holds `component` and `items`; each item has `label_id`, `case_id`, `source`, `review_state` (`draft` or `approved`), `gold_input`, `gold` and optionally `distractor`. Loading rejects an unknown `case_id`, a duplicate `label_id`, a missing field or a case outside the component's applicable set.
@@ -33,7 +47,7 @@ Add `benchmark/component_bench/<name>.py` exposing `run_item(item, ctx)` and `sc
 
 ## Policy retrieval
 
-`--components retrieval` runs one unit per case over the 6 authz cases (aegra, langflow, litellm; vulnerable and safe). The 6 sqli cases are recorded as `not_scored` (not applicable). Each authz case indexes its project policy from `benchmark/real_world/policies/` into a temporary Chroma directory and queries it with the case description at `rag_top_k`. No model is called.
+`--components retrieval` runs one unit per case over the 6 authz cases (aegra, langflow, litellm; vulnerable and safe). The 6 sqli cases and the 13 development cases are recorded as `not_scored` (not applicable, or no policy file). Each authz case indexes its project policy from `benchmark/real_world/policies/` into a temporary Chroma directory and queries it with the case description at `rag_top_k`. No model is called.
 
 Gold labels in `labels/retrieval.json` are policy passages (`gold`: `source`, `start_line`, `end_line`; source `security-policy.md` is the indexed policy name). A retrieved chunk is a hit when it is in the same source and its line range overlaps a gold passage.
 
@@ -47,7 +61,7 @@ The summary section `aggregate` lists the draft and approved label counts and th
 
 ## Investigator
 
-Runs the investigator on each of the 12 cases and has no label file. The split is rated offline, not by the benchmark.
+Runs the investigator on each of the 25 cases and has no label file. The split is rated offline, not by the benchmark.
 
 - Written results: `<results-dir>/investigator/<case_id>.json` with `case_id`, `diff` (the PR diff) and `sections` (`id`, `title`, `rationale`, `hunks` with each hunk's id and lines). Only the investigator's own proposed sections are written, with no fallback sections. A case whose output fails plan validation, or has no section with a valid hunk, is `not_scored`, writes no result and is listed as `plan_invalid`; a model or dependency failure is `error`.
 - Rubric: `benchmark/component_bench/investigator_rubric.md`, copied to `<results-dir>/investigator/` on each run. It states the criteria and the 0.00, 0.50 and 1.00 anchors.
@@ -56,7 +70,7 @@ Runs the investigator on each of the 12 cases and has no label file. The split i
 
 ## authz
 
-Runs the authz reviewer on the gold section of each of the 6 authz cases (aegra, langflow, litellm; vulnerable and safe), with the gold policy passages as its policy input. Labels: `benchmark/component_bench/labels/authz.json`; `gold_input` holds `section` and `policy_passages`; `gold` holds `vulnerable`, `locations` (`file`, `start`, `end`, inclusive; new-side lines), optional `old_locations` (same shape; base-side lines of removed checks; a finding inside either range is a hit) and `known_issues` (`id`, `file`, `start`, `end`).
+Runs the authz reviewer on the gold section of each of the 15 authz cases (the 6 real-world cases aegra, langflow, litellm, vulnerable and safe, and the 9 development authz cases), with the gold policy passages as its policy input. Labels: `benchmark/component_bench/labels/authz.json`; `gold_input` holds `section` and `policy_passages`; `gold` holds `vulnerable`, `locations` (`file`, `start`, `end`, inclusive; new-side lines), optional `old_locations` (same shape; base-side lines of removed checks; a finding inside either range is a hit) and `known_issues` (`id`, `file`, `start`, `end`).
 
 Scores per unit: `tp`, `fn`, `fp`, `tn`.
 
@@ -73,7 +87,7 @@ The reviewer's tools read the case repository from the clone under `benchmark/re
 
 ## SAST SQLi
 
-`sast-sqli` runs `SASTTriageAgent.triage` on one Semgrep hit per label and scores keep or drop. Semgrep is not run. Labels cover the 6 sqli cases: `gold_input` holds the `SemgrepFinding` fields (`rule_id`, `path`, `start_line`, `end_line`, `message`, `severity`, `matched_code`) plus `excerpt` (`start_line` and the exact source `lines` around the hit, from the upstream file). The run writes the excerpt into a temporary local git repo at `path`, blank-padded so the lines keep their real numbers, and triages against it. The triage result then goes through the production judge step (`judge_candidates` with `ctx.judge`, request format `current`); a hit is kept when the judge marks it supported, so a candidate with no evidence is dropped without a judge call. `gold` is `{"keep": true}` for a gold hit at the gold sink. A distractor hit on parameterised code carries `"distractor": true` and `{"keep": false}`.
+`sast-sqli` runs `SASTTriageAgent.triage` on one Semgrep hit per label and scores keep or drop. Semgrep is not run. Labels cover the 10 sqli cases: `gold_input` holds the `SemgrepFinding` fields (`rule_id`, `path`, `start_line`, `end_line`, `message`, `severity`, `matched_code`) plus `excerpt` (`start_line` and the exact source `lines` around the hit, from the upstream file). The run writes the excerpt into a temporary local git repo at `path`, blank-padded so the lines keep their real numbers, and triages against it. The triage result then goes through the production judge step (`judge_candidates` with `ctx.judge`, request format `current`); a hit is kept when the judge marks it supported, so a candidate with no evidence is dropped without a judge call. `gold` is `{"keep": true}` for a gold hit at the gold sink. A distractor hit on parameterised code carries `"distractor": true` and `{"keep": false}`.
 
 Per unit scores: `tp`, `fp`, `fn`, `tn` and `correct`. The aggregate reports `precision`, `recall` and `f1` over the scored units. An unreachable model endpoint, a judge that does not answer, or a failed temporary repo setup records the unit as `error`; an unparsable answer records it as `not_scored`.
 
@@ -87,7 +101,7 @@ The positive class is accept. Gold accepted is `tp`, gold rejected is `fn`, dist
 
 ## kev-judge
 
-Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings derived from all 12 cases. Labels: `benchmark/component_bench/labels/kev-judge.json`.
+Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings derived from all 25 cases. Labels: `benchmark/component_bench/labels/kev-judge.json`.
 
 - Each label is one candidate: `gold_input` holds the claim, CWE and cited code; `gold` holds `verdict` (`real`, `not_real` or `undetermined`) and, on `real`, `severity` (`low`, `medium`, `high` or `critical`). Where more than one answer is defensible, `gold.acceptable` lists every acceptable `verdict` and `severity`, and `gold.rationale` says why. Criteria: `docs/kev-labeling-criteria.md`.
 - Real candidates cite a vulnerable location, including known issues in the case tree. Not-real candidates cite the fixed code of a safe case as a flaw.

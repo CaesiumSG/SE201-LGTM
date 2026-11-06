@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 CASES_PATH = Path(__file__).resolve().parents[1] / "real_world" / "cases.json"
-REQUIRED = ("label_id", "case_id", "source", "review_state", "gold_input", "gold")
+DEVELOPMENT_CASES_PATH = Path(__file__).resolve().parents[1] / "real_prs" / "cases.json"
+REQUIRED =("label_id", "case_id", "source", "review_state", "gold_input", "gold")
 REVIEW_STATES = ("draft", "approved")
 
 
@@ -14,8 +15,23 @@ class LabelError(ValueError):
     pass
 
 
+def _development_case(c: dict) -> dict:
+    return {
+        "id": c["id"],
+        "repo_url": f"https://github.com/{c['repo']}",
+        "base_ref": c["introducing"]["base_commit"],
+        "pr_ref": c["introducing"]["merge_commit"],
+        "category": c["category"],
+        "cwe": c["cwe"],
+        "description": c["title"],
+        "split": "real_prs",
+    }
+
+
 def load_cases() -> list[dict]:
-    return json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"]
+    real_world = json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"]
+    development = json.loads(DEVELOPMENT_CASES_PATH.read_text(encoding="utf-8"))["cases"]
+    return real_world + [_development_case(c) for c in development]
 
 
 def validate_labels(doc: dict, applicable: set[str] | None = None) -> None:

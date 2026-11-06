@@ -88,18 +88,31 @@ def ctx(llm, judge=None):
 
 
 # AC-S1-8
+def test_four_development_sqli_cases_carry_draft_labels_and_are_registered():
+    dev = {c["id"] for c in schema.load_cases() if c["split"] == "real_prs" and c["category"] == "sqli"}
+    assert len(dev) == 4
+    items = shipped_labels()["items"]
+    assert dev <= {i["case_id"] for i in items}
+    assert {i["review_state"] for i in items if i["case_id"] in dev} == {"draft"}
+    assert dev <= set(registry.REGISTRY["sast-sqli"].applicable)
+
+
 def test_shipped_labels_cover_each_sqli_case_with_a_gold_hit_and_no_authz_case():
     doc = shipped_labels()
     sqli = sqli_case_ids()
     schema.validate_labels(doc, sqli)
     keep_cases = {i["case_id"] for i in doc["items"] if i["gold"]["keep"]}
-    assert len(sqli) == 6
+    assert len(sqli) == 10
     assert {i["case_id"] for i in doc["items"]} == sqli
     assert keep_cases == {
         "pyload_sqli_vulnerable",
         "postgraas_sqli_vulnerable",
         "alerta_sqli_vulnerable",
         "alerta_sqli_safe",
+        "superset-where-in-sqli",
+        "litellm-global-spend-logs-sqli",
+        "redash-query-results-param-sqli",
+        "django-explain-options-sqli",
     }
     authz = {c["id"] for c in schema.load_cases() if c["category"] == "authz"}
     assert not authz & {i["case_id"] for i in doc["items"]}

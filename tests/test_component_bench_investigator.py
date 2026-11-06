@@ -52,6 +52,7 @@ def failed_result(error):
 @pytest.fixture
 def inv(tmp_path, monkeypatch):
     mod = bench("investigator")
+    monkeypatch.setattr(bench("run"), "_preflight", lambda case: None)
     monkeypatch.setattr(mod, "load_case_diffs", fake_loader)
     monkeypatch.setattr(mod, "run_investigator", lambda diffs, config, toolbox, llm: ok_result(diffs))
     return mod
@@ -110,7 +111,7 @@ def test_rubric_copy_is_written_next_to_results(inv, tmp_path):
 def test_unparsable_plan_is_not_scored_and_writes_no_result(inv, monkeypatch, tmp_path):
     monkeypatch.setattr(inv, "run_investigator", lambda *a: failed_result(_SHAPE_ERROR))
     section, _ = run_all(inv, tmp_path)
-    assert section["units_not_scored"] == 12
+    assert section["units_not_scored"] == 25
     assert section["units_scored"] == 0
     assert section["units_errored"] == 0
     assert result_files(tmp_path / "results") == {}
@@ -126,9 +127,9 @@ def test_plan_without_a_section_holding_a_diff_hunk_is_not_scored(inv, monkeypat
 
     monkeypatch.setattr(inv, "run_investigator", plan)
     section, _ = run_all(inv, tmp_path)
-    assert section["units_not_scored"] == 12
+    assert section["units_not_scored"] == 25
     assert section["units_scored"] == 0
-    assert len(section["aggregate"]["plan_invalid"]) == 12
+    assert len(section["aggregate"]["plan_invalid"]) == 25
     assert result_files(tmp_path / "results") == {}
 
 
@@ -136,7 +137,7 @@ def test_plan_without_a_section_holding_a_diff_hunk_is_not_scored(inv, monkeypat
 def test_unreachable_model_is_an_error_not_a_result(inv, monkeypatch, tmp_path):
     monkeypatch.setattr(inv, "run_investigator", lambda *a: failed_result("Connection refused"))
     section, results = run_all(inv, tmp_path)
-    assert section["units_errored"] == 12
+    assert section["units_errored"] == 25
     assert section["units_not_scored"] == 0
     assert result_files(tmp_path / "results") == {}
     stored = json.loads((results / "investigator.json").read_text())["units"]
@@ -150,12 +151,12 @@ def test_outputs_and_ratings_resolve_under_a_non_default_results_dir(inv, tmp_pa
     run_all(inv, tmp_path, results=run_dir)
     write_rating(run_dir, "pyload_sqli_vulnerable", 0.7)
     section, _ = run_all(inv, tmp_path, results=run_dir, resume=True)
-    assert len(result_files(run_dir / "investigator")) == 12
+    assert len(result_files(run_dir / "investigator")) == 25
     assert (run_dir / "investigator" / "investigator_rubric.md").is_file()
     agg = section["aggregate"]
     assert agg["ratings"] == {"pyload_sqli_vulnerable": 0.7}
     assert "pyload_sqli_vulnerable" not in agg["unrated"]
-    assert (agg["rated"], agg["with_result"]) == (1, 12)
+    assert (agg["rated"], agg["with_result"]) == (1, 25)
     after = sorted(p.name for p in default.rglob("*")) if default.exists() else []
     assert after == before
 
@@ -171,11 +172,11 @@ def test_rerunning_a_case_discards_its_existing_rating(inv, tmp_path):
 
 
 # AC-S3-5
-def test_all_twelve_cases_run_and_each_result_names_its_case_id(inv, tmp_path):
+def test_all_twenty_five_cases_run_and_each_result_names_its_case_id(inv, tmp_path):
     section, _ = run_all(inv, tmp_path)
     cases = bench("schema").load_cases()
-    assert len(cases) == 12
-    assert section["units_scored"] == 12
+    assert len(cases) == 25
+    assert section["units_scored"] == 25
     docs = result_files(tmp_path / "results")
     assert set(docs) == {c["id"] for c in cases}
     for case_id, doc in docs.items():

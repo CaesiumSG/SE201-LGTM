@@ -200,3 +200,11 @@ def test_labels_are_read_from_the_given_labels_dir_not_the_default_file(bench, t
     aggregate = json.dumps(summary["components"]["retrieval"])
     assert "custom-label-1" in aggregate
     assert "retrieval-" + case_id not in aggregate
+
+
+def test_development_authz_cases_without_a_policy_file_are_not_scored_not_errors():
+    dev = json.loads((ROOT / "benchmark" / "real_prs" / "cases.json").read_text(encoding="utf-8"))["cases"]
+    authz_id = next(c["id"] for c in dev if c["category"] == "authz")
+    mod = retrieval()
+    out = mod.run_item({"case_id": authz_id, "label_id": None}, SimpleNamespace(labels_dir=None))
+    assert isinstance(out, mod.NotScored)

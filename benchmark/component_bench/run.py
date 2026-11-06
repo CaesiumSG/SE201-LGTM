@@ -6,6 +6,7 @@ import argparse
 import importlib
 import inspect
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,8 @@ from benchmark.component_bench.outcomes import InfraError, ModelSettingMismatch,
 from benchmark.component_bench.registry import REGISTRY  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+CLONE_CACHE = ROOT / "benchmark" / "real_world" / ".cache"
+FETCH_COMMAND = "python -m benchmark.component_bench.fetch_real_prs"
 
 
 def _module(entry):
@@ -41,7 +44,31 @@ def _items(name, entry, labels_dir):
     return doc["items"], counts
 
 
-def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None):
+def _preflight(case) -> str | None:
+    """Reason a development case cannot run at its pinned revisions, or None."""
+    if not case or case.get("split") != "real_prs":
+        return None
+    project = case["repo_url"].rstrip("/").rsplit("/", 1)[-1]
+    repo = CLONE_CACHE / project
+    if not (repo / ".git").is_dir():
+        return f"clone {repo} is missing; run `{FETCH_COMMAND}`"
+    problems = []
+    for role in ("base", "pr"):
+        name = f"rw/{case['id']}/{role}"
+        found = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"refs/heads/{name}"],
+            capture_output=True, text=True,
+        )
+        if found.returncode != 0:
+            problems.append(f"branch {name} is missing")
+        elif found.stdout.strip() != case[f"{role}_ref"]:
+            problems.append(f"branch {name} is not at {case[f'{role}_ref']}")
+    if problems:
+        return f"{'; '.join(problems)} in {repo}; run `{FETCH_COMMAND}`"
+    return None
+
+
+def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None, case=None):
     m = cost.Metrics()
     ctx = SimpleNamespace(
         config=config,
@@ -53,6 +80,11 @@ def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None
     )
     unit = {"case_id": item["case_id"], "label_id": item.get("label_id")}
     start = clock()
+    reason = _preflight(case)
+    if reason:
+        unit.update(status="error", reason=reason, scores=None, wall_time_s=clock() - start)
+        unit.update(input_tokens=0, output_tokens=0, tools={})
+        return unit
     try:
         output = mod.run_item(item, ctx)
         unit["wall_time_s"] = clock() - start
@@ -137,6 +169,7 @@ def run_benchmark(
     results_dir.mkdir(parents=True, exist_ok=True)
     _check_model_setting(results_dir, model_setting)
     summary = {"components": {}}
+    cases = {c["id"]: c for c in schema.load_cases()}
     for name in names:
         entry = registry[name]
         mod = _module(entry)
@@ -150,7 +183,9 @@ def run_benchmark(
         for i in items:
             key = (i["case_id"], i.get("label_id"))
             if key not in recorded:
-                recorded[key] = _run_unit(mod, i, config, llm, judge, clock, results_dir, labels_dir)
+                recorded[key] = _run_unit(
+                    mod, i, config, llm, judge, clock, results_dir, labels_dir, cases.get(i["case_id"])
+                )
             doc = {"model_setting": model_setting, "labels": labels, "units": list(recorded.values())}
             path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         units = [recorded[(i["case_id"], i.get("label_id"))] for i in items]

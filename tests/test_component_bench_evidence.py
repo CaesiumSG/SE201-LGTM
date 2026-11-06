@@ -202,7 +202,7 @@ def test_label_file_is_valid_and_every_case_has_a_gold_label():
     bench("schema").validate_labels(doc)
     assert doc["component"] == "evidence"
     cases = {c["id"] for c in bench("schema").load_cases()}
-    assert len(cases) == 12
+    assert len(cases) == 25
     assert {i["case_id"] for i in doc["items"] if not i.get("distractor")} == cases
 
 
@@ -219,6 +219,7 @@ def test_each_distractor_states_one_fault_and_reason():
 # AC-S6-4, AC-S6-5 through the runner
 def run_registered(tmp_path, monkeypatch, run_item=None):
     run, reg, ev = bench("run"), bench("registry"), bench("evidence")
+    monkeypatch.setattr(run, "_preflight", lambda case: None)
     monkeypatch.setattr(ev, "CLONE_CACHE", tmp_path / "no_clones")
     if run_item:
         monkeypatch.setattr(ev, "run_item", run_item)
@@ -227,7 +228,7 @@ def run_registered(tmp_path, monkeypatch, run_item=None):
     return json.loads((results / "evidence.json").read_text())["units"]
 
 
-def test_run_covers_all_12_cases_with_case_and_label_ids(tmp_path, monkeypatch):
+def test_run_covers_all_25_cases_with_case_and_label_ids(tmp_path, monkeypatch):
     def verdict(it, c):
         return {"accepted": it["gold"]["accept"], "validator_reasons": [], "stated_reason": None}
 
@@ -244,3 +245,4 @@ def test_unfetched_cases_are_errors_with_reason_and_no_scores(tmp_path, monkeypa
         assert r["status"] == "error"
         assert r["reason"]
         assert r["scores"] is None
+

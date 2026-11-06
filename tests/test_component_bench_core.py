@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -355,7 +357,7 @@ def test_every_unit_carries_case_id_and_label_id_investigator_case_id_only(tmp_p
     got = {(u["case_id"], u["label_id"]) for u in units(results, "alpha")}
     assert got == {(CASE_A, "L1"), (CASE_B, "L2")}
     inv = units(results, "investigator")
-    assert len(inv) == 12
+    assert len(inv) == 25
     assert all(u["case_id"] and u.get("label_id") is None for u in inv)
 
 
@@ -564,3 +566,189 @@ def test_main_model_setting_differs_when_only_judge_endpoint_differs(tmp_path, m
     endpoint["value"] = "http://kev-two:8008"
     assert run.main(["--results-dir", str(tmp_path / "r"), "--labels-dir", str(tmp_path / "l")]) == 0
     assert seen[0] != seen[1]
+
+
+# Story 2: real_prs development cases
+
+REAL_WORLD_IDS = [
+    "pyload_sqli_vulnerable", "pyload_sqli_safe", "postgraas_sqli_vulnerable", "postgraas_sqli_safe",
+    "alerta_sqli_vulnerable", "alerta_sqli_safe", "aegra_authz_vulnerable", "aegra_authz_safe",
+    "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe",
+]
+BASE_REVISION = "a1b8121"
+LABEL_FILES = ("authz", "sast-sqli", "evidence", "kev-judge", "retrieval")
+
+
+def development_cases() -> list[dict]:
+    path = ROOT / "benchmark" / "real_prs" / "cases.json"
+    return json.loads(path.read_text(encoding="utf-8"))["cases"]
+
+
+def loaded_development_cases() -> list[dict]:
+    return [c for c in bench("schema").load_cases() if c.get("split") == "real_prs"]
+
+
+def test_load_cases_returns_real_world_cases_then_the_13_development_cases():
+    cases = bench("schema").load_cases()
+    expected = [c["id"] for c in development_cases()]
+    assert len(expected) == 13
+    assert [c["id"] for c in cases] == REAL_WORLD_IDS + expected
+
+
+def test_each_development_case_has_the_fields_components_read():
+    by_id = {c["id"]: c for c in loaded_development_cases()}
+    for src in development_cases():
+        got = by_id[src["id"]]
+        assert got["repo_url"] == f"https://github.com/{src['repo']}"
+        assert got["base_ref"] == src["introducing"]["base_commit"]
+        assert got["pr_ref"] == src["introducing"]["merge_commit"]
+        assert got["category"] == src["category"]
+        assert got["cwe"] == src["cwe"]
+        assert got["description"] == src["title"]
+        assert got["split"] == "real_prs"
+
+
+def test_development_cases_are_four_sqli_and_nine_authz():
+    categories = [c["category"] for c in loaded_development_cases()]
+    assert (categories.count("sqli"), categories.count("authz")) == (4, 9)
+
+
+def test_real_world_cases_keep_their_split_and_ids():
+    cases = bench("schema").load_cases()[:12]
+    assert [c["id"] for c in cases] == REAL_WORLD_IDS
+    assert {c["split"] for c in cases} == {"real_world"}
+
+
+def test_loading_cases_and_validating_shipped_labels_never_opens_heldout(monkeypatch):
+    schema = bench("schema")
+    real_open, real_read = builtins.open, Path.read_text
+
+    def guard_open(file, *a, **kw):
+        assert "heldout" not in str(file).lower(), file
+        return real_open(file, *a, **kw)
+
+    def guard_read(self, *a, **kw):
+        assert "heldout" not in str(self).lower(), self
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", guard_open)
+    monkeypatch.setattr(Path, "read_text", guard_read)
+    schema.load_cases()
+    for name in LABEL_FILES:
+        schema.validate_labels(json.loads(real_read(PKG / "labels" / f"{name}.json", encoding="utf-8")))
+
+
+def test_loaded_cases_and_label_cases_are_only_real_world_and_development_ids():
+    allowed = set(REAL_WORLD_IDS) | {c["id"] for c in development_cases()}
+    assert {c["id"] for c in bench("schema").load_cases()} == allowed
+    for name in LABEL_FILES:
+        items = json.loads((PKG / "labels" / f"{name}.json").read_text(encoding="utf-8"))["items"]
+        assert {i["case_id"] for i in items} <= allowed, name
+
+
+def test_component_bench_sources_and_labels_do_not_reference_the_held_out_file():
+    files = [p for p in PKG.rglob("*") if p.is_file() and p.suffix in {".py", ".json", ".md"}]
+    assert files
+    offenders = [p.name for p in files if "heldout" in p.read_text(encoding="utf-8").lower()]
+    assert offenders == []
+
+
+def test_label_for_a_development_case_is_accepted_and_still_policed():
+    schema = bench("schema")
+    dev = loaded_development_cases()
+    dev_id, other = dev[0]["id"], dev[1]["id"]
+    schema.validate_labels(doc(label("L1", dev_id)))
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", dev_id), label("L1", other)))
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", dev_id)), applicable={other})
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", "no_such_development_case")))
+
+
+@pytest.mark.parametrize("name", LABEL_FILES)
+def test_real_world_labels_are_unchanged_from_the_base_revision(name):
+    rel = f"benchmark/component_bench/labels/{name}.json"
+    shown = subprocess.run(
+        ["git", "show", f"{BASE_REVISION}:{rel}"], cwd=ROOT, capture_output=True, encoding="utf-8"
+    )
+    if shown.returncode != 0:
+        pytest.skip(f"base revision {BASE_REVISION} not available")
+    before = json.loads(shown.stdout)["items"]
+    now = {i["label_id"]: i for i in json.loads((ROOT / rel).read_text(encoding="utf-8"))["items"]}
+    assert [now.get(i["label_id"]) for i in before] == before
+
+
+def test_fetch_command_is_a_module_with_a_main():
+    fetch = bench("fetch_real_prs")
+    assert callable(fetch.main)
+
+
+# AC-2-3, AC-2-7: the runner verifies a development case's clone and revisions before any component runs
+
+DEV_CASE = "superset-where-in-sqli"
+FETCH = "python -m benchmark.component_bench.fetch_real_prs"
+
+
+def _git(repo: Path, *args: str) -> str:
+    cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false"]
+    return subprocess.run([*cmd, *args], cwd=repo, check=True, capture_output=True, encoding="utf-8").stdout.strip()
+
+
+def _clone_with_branches(cache: Path, roles: tuple[str, ...]) -> None:
+    repo = cache / "superset"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.py").write_text("x = 1")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "c")
+    for role in roles:
+        _git(repo, "branch", f"rw/{DEV_CASE}/{role}")
+
+
+def _run_guarded(tmp_path, monkeypatch, cache: Path):
+    run, reg = bench("run"), bench("registry")
+    monkeypatch.setattr(run, "CLONE_CACHE", cache, raising=False)
+    called: list[str] = []
+
+    def run_item(item, ctx):
+        called.append(item["case_id"])
+        return "out"
+
+    entry = reg.Entry(module=component(run_item), source="cases")
+    run.run_benchmark(results_dir=tmp_path / "r", registry={"fake": entry})
+    rows = {u["case_id"]: u for u in units(tmp_path / "r", "fake")}
+    return rows, called
+
+
+def test_runner_errors_a_development_case_without_a_clone_and_does_not_call_the_component(
+    tmp_path, monkeypatch
+):
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "empty")
+    assert set(called) == set(REAL_WORLD_IDS)
+    row = rows[DEV_CASE]
+    assert row["status"] == "error" and row["scores"] is None
+    assert "superset" in row["reason"] and FETCH in row["reason"]
+
+
+@pytest.mark.parametrize("roles", [("base",), ("pr",), ()], ids=["no-pr", "no-base", "neither"])
+def test_runner_errors_a_development_case_with_a_missing_branch(tmp_path, monkeypatch, roles):
+    _clone_with_branches(tmp_path / "cache", roles)
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "cache")
+    assert DEV_CASE not in called
+    row = rows[DEV_CASE]
+    assert row["status"] == "error"
+    missing = {"base", "pr"} - set(roles)
+    assert all(f"rw/{DEV_CASE}/{role}" in row["reason"] for role in missing)
+    assert FETCH in row["reason"]
+
+
+def test_runner_errors_a_development_case_whose_branches_are_not_at_the_pinned_revisions(
+    tmp_path, monkeypatch
+):
+    _clone_with_branches(tmp_path / "cache", ("base", "pr"))
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "cache")
+    assert DEV_CASE not in called
+    row = rows[DEV_CASE]
+    assert row["status"] == "error" and row["scores"] is None
+    assert FETCH in row["reason"]

@@ -66,6 +66,15 @@ def score(item: dict, findings: list[dict]) -> dict:
 # AC-S1-7: labels
 
 
+def test_nine_development_authz_cases_carry_draft_labels_and_are_registered():
+    dev = {c["id"] for c in cases() if c["split"] == "real_prs" and c["category"] == "authz"}
+    assert len(dev) == 9
+    items = label_doc()["items"]
+    assert dev <= {i["case_id"] for i in items}
+    assert {i["review_state"] for i in items if i["case_id"] in dev} == {"draft"}
+    assert dev <= set(bench("registry").REGISTRY["authz"].applicable)
+
+
 def test_authz_label_file_is_valid_and_scoped_to_authz_cases():
     doc = label_doc()
     assert doc["component"] == "authz"
@@ -75,7 +84,7 @@ def test_authz_label_file_is_valid_and_scoped_to_authz_cases():
 def test_every_authz_case_has_a_label_and_no_sqli_case_has_one():
     labelled = {i["case_id"] for i in label_doc()["items"]}
     assert labelled == authz_ids()
-    assert len(authz_ids()) == 6
+    assert len(authz_ids()) == 15
     assert not labelled & {c["id"] for c in cases() if c["category"] == "sqli"}
 
 
@@ -90,7 +99,7 @@ def test_vulnerable_labels_cover_every_vulnerable_line_of_the_case():
     by_id = {c["id"]: c for c in cases()}
     for item in label_doc()["items"]:
         case, gold = by_id[item["case_id"]], item["gold"]
-        if case["expected_verdict"] != "vulnerable":
+        if case.get("expected_verdict") != "vulnerable":
             continue
         assert gold["vulnerable"] is True
         for line in case["vulnerable_lines"]:
@@ -104,7 +113,7 @@ def test_safe_labels_have_no_locations_and_list_the_case_known_issues():
     by_id = {c["id"]: c for c in cases()}
     for item in label_doc()["items"]:
         case, gold = by_id[item["case_id"]], item["gold"]
-        if case["expected_verdict"] != "safe":
+        if case.get("expected_verdict") != "safe":
             continue
         assert gold["vulnerable"] is False
         assert gold["locations"] == []
@@ -287,7 +296,7 @@ def test_authz_is_registered_for_exactly_the_authz_cases():
     assert set(entry.applicable) == authz_ids()
 
 
-def test_run_covers_only_the_six_authz_cases_with_case_and_label_ids(patched, monkeypatch, tmp_path):
+def test_run_covers_only_the_fifteen_authz_cases_with_case_and_label_ids(patched, monkeypatch, tmp_path):
     monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([]))
     summary = bench("run").run_benchmark(results_dir=tmp_path, components=["authz"], llm=object())
     rows = json.loads((tmp_path / "authz.json").read_text())["units"]
@@ -387,3 +396,23 @@ def test_unreachable_sha_in_existing_clone_is_an_infra_error(monkeypatch, tmp_pa
     with pytest.raises(bench("outcomes").InfraError):
         authz.run_item(item, ctx)
     assert ctx.metrics.calls == []
+
+
+def test_gold_lines_of_every_label_sit_on_added_or_context_lines_of_a_shown_hunk():
+    authz = bench("authz")
+    problems = []
+    for item in label_doc()["items"]:
+        section = authz.build_section(item["gold_input"])
+        shown = {}
+        for h in section.hunks:
+            assert h.new_count == sum(c.kind != "del" for c in h.changes), item["label_id"]
+            assert h.old_count == sum(c.kind != "add" for c in h.changes), item["label_id"]
+            shown.setdefault(h.file, set()).update(
+                c.new_lineno for c in h.changes if c.kind != "del"
+            )
+        gold = item["gold"]
+        for r in gold.get("locations", []) + gold.get("known_issues", []):
+            missing = [n for n in (r["start"], r["end"]) if n not in shown.get(r["file"], ())]
+            if missing:
+                problems.append(f"{item['label_id']} {r['file']} {r['start']}-{r['end']}: {missing}")
+    assert not problems, "\n".join(problems)

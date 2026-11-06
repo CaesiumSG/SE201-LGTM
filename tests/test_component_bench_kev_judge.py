@@ -312,7 +312,7 @@ def test_shipped_labels_pass_core_validation(shipped):
 
 def test_every_case_has_at_least_one_candidate_label(shipped):
     all_cases = {c["id"] for c in schema.load_cases()}
-    assert len(all_cases) == 12
+    assert len(all_cases) == 25
     assert {i["case_id"] for i in shipped["items"]} == all_cases
 
 
