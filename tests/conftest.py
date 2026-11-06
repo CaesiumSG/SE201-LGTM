@@ -75,10 +75,6 @@ def _isolate_graph_env(monkeypatch):
         monkeypatch.delenv(key)
 
 
-# ---------------------------------------------------------------------------
-# Component benchmark: real component modules over a tiny case clone, fake agents.
-# ---------------------------------------------------------------------------
-
 BENCH_CASE_IDS = {
     "authz": "aegra_authz_vulnerable",
     "sqli-review": "pyload_sqli_vulnerable",
