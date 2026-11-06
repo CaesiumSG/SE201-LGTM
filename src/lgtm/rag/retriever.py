@@ -38,6 +38,7 @@ class PolicyRetriever:
         self.config = config or LGTMConfig()
         self.repo = Path(repo).resolve()
         self._collections: dict[str, object] = {}
+        self._clients: list[object] = []
 
     def _get_collection(self, name: str | None = None):
         name = name or self.config.chroma_collection
@@ -50,8 +51,19 @@ class PolicyRetriever:
                     registry.render("retriever.index_missing", persist_dir=persist_dir)
                 )
             client = chromadb.PersistentClient(path=str(persist_dir))
+            self._clients.append(client)
             self._collections[name] = client.get_collection(name)
         return self._collections[name]
+
+    def close(self) -> None:
+        """Release the Chroma clients so the persist dir can be deleted on Windows."""
+        clients, self._clients = self._clients, []
+        self._collections.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("could not close chroma client for %s", self.repo, exc_info=True)
 
     def is_available(self) -> bool:
         try:
