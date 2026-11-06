@@ -34,7 +34,8 @@ HELDOUT_VARIANTS = {
     "qwen27b-t0-r3": ("Qwen3.8 27B, T=0, run 3", "heldout-qwen27b-t0-r3"),
     "qwen27b-t0.5": ("Qwen3.8 27B, T=0.5", "heldout-qwen27b-t0.5"),
     "qwen27b-t1.0": ("Qwen3.8 27B, T=1.0", "heldout-qwen27b-t1.0"),
-    "gptoss20b-t0": ("gpt-oss 20B (local), T=0", "heldout-gptoss20b-t0"),
+    "gptoss20b-bedrock": ("gpt-oss 20B (Bedrock), T=0", "heldout-gptoss20b-bedrock"),
+    "gptoss120b-bedrock": ("gpt-oss 120B (Bedrock), T=0", "heldout-gptoss120b-bedrock"),
     "haiku45": ("Claude Haiku 4.5 (Bedrock)", "heldout-haiku45"),
     "sonnet46": ("Claude Sonnet 4.6 (Bedrock)", "heldout-sonnet46"),
 }
@@ -179,7 +180,7 @@ def main() -> int:
         md += ["## Held-out real PRs (17 published advisories)", ""]
         # Model comparison: lgtm and plain LLM per model
         model_rows = [(f"{HELDOUT_VARIANTS[f][0]} — {m}", held[f"{f}/{m}"])
-                      for f in ("qwen27b-t0-r1", "gptoss20b-t0", "haiku45", "sonnet46")
+                      for f in ("qwen27b-t0-r1", "gptoss20b-bedrock", "gptoss120b-bedrock", "haiku45", "sonnet46")
                       for m in ("lgtm", "llm-only") if f"{f}/{m}" in held]
         if "qwen27b-t0-r1/sast-only" in held:
             model_rows.append(("Semgrep only (no model)", held["qwen27b-t0-r1/sast-only"]))

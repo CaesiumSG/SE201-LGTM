@@ -126,7 +126,9 @@ def write_summary(out_dir: Path, mode: str, records: list[dict], model: str, con
         "mode": mode, "model": model if mode != "sast-only" else "none",
         "run_config": None if config is None or mode == "sast-only" else {
             "llm_backend": getattr(config, "llm_backend", "ollama"),
-            "llm_temperature": None if getattr(config, "llm_backend", "ollama") == "bedrock" else config.llm_temperature,
+            # Claude on Bedrock takes no temperature; gpt-oss on Bedrock and Ollama do.
+            "llm_temperature": None if (getattr(config, "llm_backend", "ollama") == "bedrock"
+                                        and not config.bedrock_model.startswith("openai.")) else config.llm_temperature,
             "sqli_review": getattr(config, "sqli_review", None),
             "judge_endpoint": getattr(config, "judge_endpoint", None),
             "ollama_base_url": config.ollama_base_url,

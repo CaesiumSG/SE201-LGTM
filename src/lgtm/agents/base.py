@@ -358,7 +358,11 @@ def answer_until_resolved(
 
 
 def build_llm(config: LGTMConfig):
-    """Construct the reviewer LLM from config: ChatOllama, or Claude on Bedrock."""
+    """Construct the reviewer LLM from config: ChatOllama, gpt-oss on Bedrock, or Claude on Bedrock."""
+    if config.llm_backend == "bedrock" and config.bedrock_model.startswith("openai."):
+        from lgtm.agents.bedrock_openai_llm import BedrockOpenAI
+
+        return BedrockOpenAI(config)
     if config.llm_backend == "bedrock":
         from lgtm.agents.bedrock_llm import BedrockClaude
 
