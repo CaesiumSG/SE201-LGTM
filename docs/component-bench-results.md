@@ -10,8 +10,75 @@ Models: reviewer `qwen3.8:27b` (Ollama), judge Kev-4B, both on the Origami clust
 | Kev rerun 1 | `0fccd5c` | kev-judge | 12 real-world | `benchmark/runs/component-bench-kev-2026-11-05/` |
 | Kev rerun 2 | `eeb6a82` | kev-judge | 12 real-world | `benchmark/runs/component-bench-kev-2026-11-05-r2/` |
 | 2026-11-06 full run | `521cb4b` | all seven | 12 real-world, 13 real-PR development | `benchmark/runs/component-bench-2026-11-06/` |
+| 2026-11-06 tools run | `968e9990` | all seven | 12 real-world, 13 real-PR development | `benchmark/runs/component-bench-2026-11-06-tools/` |
 
-## 2026-11-06 run
+## 2026-11-06 tools run
+
+All seven components over 25 cases: the 12 real-world cases and the 13 real-PR development cases. Held-out cases are excluded. Single run; no repeats, so no variance is reported.
+
+The first pass ran at `525a091f`. The `--resume` pass, which re-ran the errored units, ran at `968e9990`, the commit `summary.json` records (not dirty). The two commits differ only in test files; no production code differs.
+
+What the run used:
+
+- Production toolboxes for every model-backed component, with a live `GraphSession` per unit. Each unit records its `graph_state`.
+- Two-stage SAST SQLi triage: a triage stage followed by a judge stage.
+- Reviewer `qwen3.8:27b`, judge Kev-4B.
+
+### Tool use
+
+| Component | CodeGraph calls | `search_policy` calls | `read_file` | `grep_repo` |
+| --- | --- | --- | --- | --- |
+| Investigator | 48 | 8 | 276 | 94 |
+| Authz reviewer | 14 | 12 | 36 | 23 |
+| SAST SQLi triage | 0 | 8 | 54 | 42 |
+| SQLi reviewer | 2 | 0 | 22 | 21 |
+
+SAST SQLi triage is not offered the graph tools. The SQLi reviewer never called `search_policy`.
+
+### Side by side
+
+Scored / not scored / errored units, with headline scores. Scores are means over scored units.
+
+| Component | Units | Headline |
+| --- | --- | --- |
+| Policy retrieval | 0 / 25 / 0 | not scored |
+| Investigator | 24 / 0 / 1 | no scalar scores; none rated |
+| Authz reviewer | 13 / 0 / 2 | TP 0.62, FN 0.15, FP 0.08, TN 0.23, verdict correct 0.85 |
+| SAST SQLi triage | 20 / 0 / 0 | triage correct 0.40, judge correct 0.70 |
+| Evidence validator | 50 / 0 / 0 | TP 0.50, FN 0, FP 0.04, TN 0.46 |
+| Kev judge | 28 / 1 / 0 | verdict 0.89, real 0.91, not-real 0.80, severity 0.55 |
+| SQLi reviewer | 9 / 1 / 0 | TP 0.67, FN 0, FP 0, TN 0.33, SAST also 0.44, reviewer only 0.22 |
+
+### Aggregate counts
+
+| Component | TP | FP | FN | TN | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Authz reviewer | 8 | 1 | 2 | 3 | 0.89 | 0.80 | 0.84 |
+| Evidence validator | 25 | 2 | 0 | 23 | 0.93 | 1.00 | 0.96 |
+
+| SAST SQLi stage | Precision | Recall | F1 |
+| --- | --- | --- | --- |
+| Triage | 0.40 | 1.00 | 0.57 |
+| Judge | 0.58 | 0.88 | 0.70 |
+
+SQLi reviewer: runs on the gold section of each of the 10 sqli cases; 9 are scored. Hits 6, false positives 0, precision 1.00, recall 1.00, F1 1.00. SAST triage also found 4 of the 6 hits; the reviewer alone found 2.
+
+### Errored units
+
+Three units errored with a degraded `graph_state`, the CodeGraph index timing out. The guard stays a failure.
+
+- **Investigator, 1** (`airflow-partitioned-dagruns-authz`): `degraded:base:timeout`.
+- **Authz reviewer, 2** (`airflow-partitioned-dagruns-authz`, `airflow-hitl-execution-api-authz`): `degraded:pr:timeout`.
+
+### Not scored
+
+- **Policy retrieval, 25**: no real-index gold labels exist yet.
+- **Kev judge, 1**: `kj-litellm-authz-safe-1`, gold `undetermined`.
+- **SQLi reviewer, 1** (`alerta_sqli_vulnerable`): the gold section has no SQL signal, so the pipeline would not route it to the SQLi reviewer.
+
+Kev judge units carry a `verdict` and the Kev output under `detail.kev`, but no `explanation` field.
+
+## 2026-11-06 run without tools
 
 All seven components over 25 cases: the 12 real-world cases and the 13 real-PR development cases. Held-out cases are excluded. Every model-backed result file carries the setting `qwen3.8:27b@http://127.0.0.1:11435+jaredpalmer/kev-4b@http://127.0.0.1:8008`. No unit errored. Single run; no repeats, so no variance is reported.
 
@@ -62,7 +129,7 @@ Runs on the gold section of each of the 10 sqli cases; 9 are scored. Hits 6, fal
 
 - **Policy retrieval, 19**: policy retrieval does not apply to the non-policy cases.
 - **Investigator, 1** (`weblate-memory-api-authz`): the final answer was not a JSON object with a `sections` list.
-- **Kev judge, 1**: `kj-litellm-authz-safe`, gold `undetermined`.
+- **Kev judge, 1**: `kj-litellm-authz-safe-1`, gold `undetermined`.
 - **SQLi reviewer, 1** (`alerta_sqli_vulnerable`): the gold section has no SQL signal, so the pipeline would not route it to the SQLi reviewer.
 
 ## 2026-11-05 summary
@@ -163,6 +230,7 @@ Kev severity is shown only where Kev answered `real`; Kev also returns a severit
 
 ## Open items
 
-- Rerun the investigator on the 10 errored cases (`--resume`).
-- Review the draft labels.
-- The worked examples added in rerun 2 resemble benchmark cases (a lookup by id with no ownership check, SQL built from a sort field).
+- Rerun the 3 units of the 2026-11-06 tools run that errored on airflow cases with a degraded `graph_state` (investigator 1, authz reviewer 2; CodeGraph index timeouts).
+- Policy retrieval stays not scored until gold labels exist for the real index.
+- Review the draft labels (human reviewer).
+- The worked examples added in rerun 2 resemble benchmark cases (a lookup by id with no ownership check, SQL built from a sort field); human review.
