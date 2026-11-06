@@ -32,3 +32,5 @@ REGISTRY["sast-sqli"] = Entry("sast_sqli", aggregate=lambda units, results_dir: 
 REGISTRY["evidence"] = Entry("evidence", aggregate=__import__("benchmark.component_bench.evidence", fromlist=["aggregate"]).aggregate)
 
 REGISTRY["kev-judge"] = Entry("kev_judge")
+
+REGISTRY["sqli-review"] = Entry("sqli_review", aggregate=__import__("benchmark.component_bench.sqli_review", fromlist=["aggregate"]).aggregate, applicable=frozenset({"pyload_sqli_vulnerable", "pyload_sqli_safe", "postgraas_sqli_vulnerable", "postgraas_sqli_safe", "alerta_sqli_vulnerable", "alerta_sqli_safe", "superset-where-in-sqli", "litellm-global-spend-logs-sqli", "redash-query-results-param-sqli", "django-explain-options-sqli"}))

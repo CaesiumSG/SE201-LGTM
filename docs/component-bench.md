@@ -112,8 +112,30 @@ Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings d
 - An unreachable judge, or a reply without a `real` or `not_real` verdict, is an error.
 - Needs the Kev endpoint (`judge_endpoint`); input tokens are taken from the judge reply, output tokens show as not recorded.
 
+## sqli-review
+
+Runs `SQLiReviewerAgent.review_section` on the gold section of each of the 10 sqli cases (the 6 real-world cases and the 4 development cases). Labels: `benchmark/component_bench/labels/sqli-review.json`, all `draft`; `gold_input` holds `section` (as for authz, without policy passages); `gold` holds `vulnerable`, `locations` (the gold sink function: `file`, `start`, `end`, inclusive), optional `old_locations` and `known_issues` (`id`, `file`, `start`, `end`).
+
+A section that `needs_sql_review` rejects is `not_scored` with that reason and the agent does not run. The agent's `kind` on its error records decides the rest: all `unparsable` is `not_scored`; any other error is `error`.
+
+The Semgrep hits that `labels/sast-sqli.json` keeps for the case, passed to the reviewer as its related-SAST notes, stand in for SAST triage output. Reviewer findings and these hits go through `dedup_findings`; a reviewer finding merged with a hit is tagged `sast_also`, any other is `reviewer_only`, and hits that stay alone are not scored.
+
+A finding is a hit when it is in the same file and the same enclosing function as a gold location, as the base-side range of a removed check (`old_locations`), or as a known issue on a safe case, by the same rule as authz (see Tolerant scoring). There is no line tolerance. Repeated findings at the same file and line count once.
+
+| Case | Finding | Score |
+| --- | --- | --- |
+| Vulnerable | hit on a gold location | `tp` 1, tagged `sast_also` or `reviewer_only` |
+| Vulnerable | no hit on a gold location | `fn` 1 |
+| Vulnerable | not a hit | `fp` 1 each |
+| Safe | none | `tn` 1 |
+| Safe | hit on a known issue | not counted |
+| Safe | elsewhere | `fp` 1 each |
+
+The aggregate reports `hits`, `false_positives`, `precision`, `recall`, `f1` (null where undefined) and the `sast_also` and `reviewer_only` hit counts over the scored units. The reviewer's tools read the case repository from the clone under `benchmark/real_world/.cache/<project>`.
+
 ## Tolerant scoring
 
 - authz: a finding is a hit when it lies in a gold range or in the same file and the same enclosing function as the range. There is no line tolerance. The function is derived from the source (`lgtm.agents.authz_reviewer._enclosing_functions`: innermost function, decorators included), never from the label or a finding field. `locations` and `known_issues` resolve against the PR-side source, `old_locations` against the base-side source, read from the case clone by `read_source(file, side)` with side `pr` or `base`. A file that cannot be read or parsed is scored on the exact range. A finding in another file or another function is `fp`.
 - authz, base-side ranges (`old_locations`): a finding is a hit when the name of its line's PR-side enclosing function equals the name of the function enclosing the base range, or when the line falls inside that base function in base-source line numbers and is not inside a differently named function on the PR side. The function names are derived from the source, never from the label or a finding field. Finding lines carry no side, so a line that lands in the base function only by base numbering and sits in no PR-side function still counts; this over-counts.
+- sqli-review uses the same hit rule as authz for `locations`, `old_locations` and `known_issues`: same file and same enclosing function, no line tolerance. The base-side over-count note above applies to both components.
 - authz and sast-sqli: an unparsable answer is read from the `kind` of the agent's error record. `unparsable` is `not_scored`; `failed` is `error`, whatever the message text. authz records `not_scored` only when every error is `unparsable`.
