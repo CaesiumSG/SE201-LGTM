@@ -119,59 +119,43 @@ def test_shipped_labels_cover_each_sqli_case_with_a_gold_hit_and_no_authz_case()
     assert not authz & {i["case_id"] for i in doc["items"]}
 
 
-def stage_output(triage, judge="not_run"):
-    return {"stages": {"triage": {"decision": triage, "explanation": "e"}, "judge": {"decision": judge, "explanation": "e"}}}
-
-
-def stage_unit(distractor, triage, judge="not_run"):
-    return {
-        "status": "scored",
-        **stage_output(triage, judge),
-        "detail": {"gold_keep": not distractor},
-        "scores": sast_sqli.score(item(distractor), stage_output(triage, judge)),
-    }
+def unit(distractor, kept):
+    return {"status": "scored", "scores": sast_sqli.score(item(distractor), {"kept": kept})}
 
 
 # AC-S3-3
 @pytest.mark.parametrize(
-    "distractor, triage, judge, triage_correct, judge_correct",
+    "distractor, kept, expected",
     [
-        (False, "keep", "keep", 1.0, 1.0),
-        (True, "drop", "drop", 1.0, 1.0),
-        (True, "keep", "keep", 0.0, 0.0),
-        (False, "keep", "drop", 1.0, 0.0),
-        (True, "keep", "drop", 0.0, 1.0),
-        (False, "drop", "not_run", 0.0, None),
-        (True, "drop", "not_run", 1.0, None),
+        (False, True, {"tp": 1.0, "fp": 0.0, "fn": 0.0, "tn": 0.0, "correct": 1.0}),
+        (False, False, {"tp": 0.0, "fp": 0.0, "fn": 1.0, "tn": 0.0, "correct": 0.0}),
+        (True, True, {"tp": 0.0, "fp": 1.0, "fn": 0.0, "tn": 0.0, "correct": 0.0}),
+        (True, False, {"tp": 0.0, "fp": 0.0, "fn": 0.0, "tn": 1.0, "correct": 1.0}),
     ],
 )
-def test_keep_drop_outcome_per_hit(distractor, triage, judge, triage_correct, judge_correct):
-    scores = sast_sqli.score(item(distractor), stage_output(triage, judge))
-    assert scores == {"triage_correct": triage_correct, "judge_correct": judge_correct}
+def test_keep_drop_outcome_per_hit(distractor, kept, expected):
+    assert sast_sqli.score(item(distractor), {"kept": kept}) == expected
 
 
 def test_precision_recall_f1_from_unit_scores():
-    # judge stage: 1 tp, 0 fp, 2 fn -> precision 1, recall 1/3, F1 1/2 (the arithmetic mean would be 2/3)
+    # 1 tp, 0 fp, 2 fn -> precision 1, recall 1/3, F1 1/2 (the arithmetic mean would be 2/3)
     units = [
-        stage_unit(False, "keep", "keep"),
-        stage_unit(False, "keep", "drop"),
-        stage_unit(False, "keep", "drop"),
-        stage_unit(True, "keep", "drop"),
+        unit(False, True),
+        unit(False, False),
+        unit(False, False),
+        unit(True, False),
         {"status": "not_scored", "reason": "unparsable"},
     ]
     out = sast_sqli.aggregate(units, None)
-    assert out["judge"]["precision"] == pytest.approx(1.0)
-    assert out["judge"]["recall"] == pytest.approx(1 / 3)
-    assert out["judge"]["f1"] == pytest.approx(0.5)
-    # triage stage keeps every hit: 3 tp, 1 fp, 0 fn, unaffected by the judge decisions
-    assert out["triage"]["precision"] == pytest.approx(0.75)
-    assert out["triage"]["recall"] == pytest.approx(1.0)
+    assert out["precision"] == pytest.approx(1.0)
+    assert out["recall"] == pytest.approx(1 / 3)
+    assert out["f1"] == pytest.approx(0.5)
 
 
-@pytest.mark.parametrize("units", [[], [(True, "keep", "drop")], [(True, "keep", "keep")]])
+@pytest.mark.parametrize("units", [[], [(True, False)], [(True, True)]])
 def test_aggregate_without_true_positives_is_zero(units):
-    scored = [stage_unit(*u) for u in units]
-    assert sast_sqli.aggregate(scored, None)["judge"] == {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    scored = [unit(*u) for u in units]
+    assert sast_sqli.aggregate(scored, None) == {"precision": 0.0, "recall": 0.0, "f1": 0.0}
 
 
 class ReplyLLM:
@@ -351,35 +335,32 @@ def test_triage_receives_the_sanitized_pr_diff_of_the_finding_file(bench_env):
     assert "tainted query" in prompt
 
 
-def test_unit_records_triage_and_judge_stages_each_with_decision_and_explanation(bench_env):
+def test_unit_records_triage_explanation_and_judge_decision(bench_env):
     result, _ = two_stage(bench_env, KEEP_REPLY, "no")
     stages = result.unit["stages"]
-    assert stages["triage"]["decision"] == "keep"
+    assert stages["triage"]["evidence"] == 1
     assert "tainted" in stages["triage"]["explanation"]
+    assert "decision" not in stages["triage"]
     assert stages["judge"]["decision"] == "drop"
     assert "explanation" in stages["judge"]
-    assert result.unit["verdict"] and "tainted" in result.unit["explanation"]
+    assert result.unit["verdict"] == "drop" and "tainted" in result.unit["explanation"]
 
 
 @pytest.mark.parametrize(
-    "gold_keep, judge_supported, triage_correct, judge_correct",
-    [(False, "no", 0.0, 1.0), (True, "no", 1.0, 0.0), (True, "yes", 1.0, 1.0), (False, "yes", 0.0, 0.0)],
+    "gold_keep, judge_supported, correct",
+    [(False, "no", 1.0), (True, "no", 0.0), (True, "yes", 1.0), (False, "yes", 0.0)],
 )
-def test_each_stage_is_scored_against_the_label_independently(
-    bench_env, gold_keep, judge_supported, triage_correct, judge_correct
-):
+def test_the_judge_decision_is_scored_against_the_label(bench_env, gold_keep, judge_supported, correct):
     result, _ = two_stage(bench_env, KEEP_REPLY, judge_supported, gold_keep=gold_keep)
-    scores = result.unit["scores"]
-    assert (scores["triage_correct"], scores["judge_correct"]) == (triage_correct, judge_correct)
+    assert result.unit["scores"]["correct"] == correct
 
 
 @pytest.mark.parametrize("gold_keep", [True, False])
-def test_triage_drop_records_judge_as_not_run_and_scores_triage_alone(bench_env, gold_keep):
+def test_triage_without_evidence_skips_the_judge_and_scores_as_dropped(bench_env, gold_keep):
     result, judge = two_stage(bench_env, DROP_REPLY, "yes", gold_keep=gold_keep)
     unit = result.unit
     assert unit["status"] == "scored"
-    assert unit["stages"]["triage"]["decision"] == "drop"
+    assert unit["stages"]["triage"]["evidence"] == 0
     assert unit["stages"]["judge"]["decision"] == "not_run"
     assert judge.requests == []
-    assert unit["scores"]["triage_correct"] == float(not gold_keep)
-    assert unit["scores"].get("judge_correct") is None
+    assert unit["scores"]["correct"] == float(not gold_keep)

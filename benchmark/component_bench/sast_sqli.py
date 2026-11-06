@@ -1,4 +1,4 @@
-"""SAST SQLi triage benchmark: triage-agent and Kev-judge keep/drop on gold Semgrep hits, scored separately."""
+"""SAST SQLi triage benchmark: keep/drop after the triage agent and Kev judge on gold Semgrep hits."""
 
 from __future__ import annotations
 
@@ -48,9 +48,8 @@ def run_item(item, ctx):
         if error["kind"] == "unparsable":
             return NotScored(error["message"])
         raise InfraError(error["message"])
-    triage_keep = bool(result.evidence)
-    stages = {"triage": {"decision": "keep" if triage_keep else "drop", "explanation": result.explanation}}
-    if triage_keep:
+    stages = {"triage": {"evidence": len(result.evidence), "explanation": result.explanation}}
+    if result.evidence:
         validator = EvidenceValidator(
             toolbox.repo, case["base_ref"], diffs, ctx.config, shas=toolbox.shas
         )
@@ -65,14 +64,15 @@ def run_item(item, ctx):
             "explanation": _judge_explanation(result),
         }
     else:
-        stages["judge"] = {"decision": "not_run", "explanation": "triage dropped the finding"}
-    final = stages["judge"]["decision"] == "keep"
+        stages["judge"] = {"decision": "not_run", "explanation": "triage cited no evidence"}
+    kept = stages["judge"]["decision"] == "keep"
     ctx.record = {
-        "verdict": "keep" if final else "drop",
+        "verdict": "keep" if kept else "drop",
         "explanation": result.explanation,
         "stages": stages,
     }
     return {
+        "kept": kept,
         "stages": stages,
         "detail": {"gold_keep": item["gold"]["keep"]},
     }
@@ -80,31 +80,15 @@ def run_item(item, ctx):
 
 def score(item, output):
     gold = item["gold"]["keep"]
-    stages = output["stages"]
-    judge = stages["judge"]["decision"]
-    return {
-        "triage_correct": float((stages["triage"]["decision"] == "keep") == gold),
-        "judge_correct": None if judge == "not_run" else float((judge == "keep") == gold),
-    }
+    kept = output["kept"]
+    tp, fp, fn, tn = (float(gold and kept), float(kept and not gold), float(gold and not kept), float(not gold and not kept))
+    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn, "correct": tp + tn}
 
 
-def _precision_recall_f1(pairs) -> dict:
-    tp = sum(gold and kept for gold, kept in pairs)
-    fp = sum(kept and not gold for gold, kept in pairs)
-    fn = sum(gold and not kept for gold, kept in pairs)
+def aggregate(units, results_dir):
+    total = {k: sum(u["scores"][k] for u in units if u["status"] == "scored") for k in ("tp", "fp", "fn")}
+    tp, fp, fn = total["tp"], total["fp"], total["fn"]
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {"precision": precision, "recall": recall, "f1": f1}
-
-
-def aggregate(units, results_dir):
-    scored = [u for u in units if u["status"] == "scored"]
-    def pairs(stage):
-        return [
-            (u["detail"]["gold_keep"], u["stages"][stage]["decision"] == "keep")
-            for u in scored
-            if u["stages"][stage]["decision"] != "not_run"
-        ]
-
-    return {stage: _precision_recall_f1(pairs(stage)) for stage in ("triage", "judge")}
