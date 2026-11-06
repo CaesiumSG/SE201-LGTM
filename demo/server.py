@@ -25,7 +25,9 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from collections import Counter, defaultdict
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -281,10 +283,57 @@ def accuracy() -> dict:
     return {"sets": sets}
 
 
+GPU_MODEL = "qwen3.8:27b"
+_GPU_CACHE: dict = {"at": 0.0, "value": None}
+_GPU_LOCK = threading.Lock()
+
+
+def _probe(addr, path: str, connect_cmd: str, check) -> dict:
+    """Ask the server behind a tunnel for real: an open local port alone only means ssh is listening."""
+    if not results_port(addr):
+        return {"ok": False, "state": "no_tunnel", "detail": f"Tunnel not open. Start the GPU job and run {connect_cmd}."}
+    try:
+        with urllib.request.urlopen(f"http://{addr[0]}:{addr[1]}{path}", timeout=2.5) as resp:
+            data = json.loads(resp.read() or b"{}")
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "code", None)
+        why = f"answered HTTP {reason}" if reason else "is not answering"
+        return {"ok": False, "state": "no_server",
+                "detail": f"Tunnel is open but the GPU job {why}: the job may have ended or still be loading."}
+    return check(data)
+
+
+def _check_qwen(data: dict) -> dict:
+    names = [m.get("name") or m.get("model") for m in data.get("models", [])]
+    if GPU_MODEL not in names:
+        return {"ok": False, "state": "no_model", "detail": f"GPU server is up but {GPU_MODEL} is not loaded."}
+    return {"ok": True, "state": "ok", "detail": f"Qwen 3.8 27B answering on the GPU job ({GPU_MODEL})."}
+
+
+def _check_kev(data: dict) -> dict:
+    if not data.get("data"):
+        return {"ok": False, "state": "no_model", "detail": "Kev server is up but lists no model."}
+    return {"ok": True, "state": "ok", "detail": "Kev-4B judge answering on the GPU job."}
+
+
+def gpu_status() -> dict:
+    with _GPU_LOCK:
+        if _GPU_CACHE["value"] is None or time.time() - _GPU_CACHE["at"] > 4:
+            _GPU_CACHE["value"] = {
+                "reviewer": _probe(OLLAMA, "/api/tags", "model/deploy/connect.sh <job>", _check_qwen),
+                "judge": _probe(KEV, "/v1/models", "model/deploy/kev-connect.sh <job>", _check_kev),
+                "checked_at": now(),
+            }
+            _GPU_CACHE["at"] = time.time()
+        return _GPU_CACHE["value"]
+
+
 def health() -> dict:
     app = gh.public_app_info()
+    gpu = gpu_status()
     return {
-        "reviewer": results_port(OLLAMA), "judge": results_port(KEV), "bedrock": bool(ENGINE.bedrock_key),
+        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "bedrock": bool(ENGINE.bedrock_key),
+        "gpu": gpu, "backend": STORE.settings().get("backend", "gpu"),
         "app": app, "relay": {**ENGINE.relay_state, "configured": bool(gh.load_relay())},
         "poll": ENGINE.poll_state, "queue": ENGINE.queue.qsize(), "current": ENGINE.current,
         "installations": STORE.q("SELECT * FROM installations WHERE removed=0"),
@@ -473,6 +522,8 @@ class Handler(SimpleHTTPRequestHandler):
                 STORE.update("repos", repo["id"], enabled=1 if body.get("enabled") else 0)
                 return self.send_json({"ok": True})
             if path == "/api/settings":
+                if "backend" in body and body["backend"] not in ("gpu", "bedrock"):
+                    return self.send_json({"error": "backend must be gpu or bedrock"}, HTTPStatus.BAD_REQUEST)
                 for k, v in body.items():
                     STORE.set_setting(k, v)
                 return self.send_json(STORE.settings())

@@ -119,6 +119,10 @@
         <main id="view" tabindex="-1"></main>
       </div>`;
     $$("[data-skin-pick]").forEach((b) => b.addEventListener("click", () => setSkin(b.dataset.skinPick)));
+    ["#status-top", "#status-side"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.addEventListener("click", (e) => { const b = e.target.closest("[data-backend]"); if (b && !b.disabled) setBackend(b.dataset.backend); });
+    });
     const so = $("#signout");
     if (so) so.addEventListener("click", async () => { await fetch("/auth/logout", { method: "POST" }); location.hash = "#/signin"; boot(); });
     setSkin(document.documentElement.dataset.skin);
@@ -135,15 +139,33 @@
     if (!h) return;
     const dot = (ok, label, title) => `<span class="dot ${ok ? "ok" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
     const relay = h.relay || {};
+    const gpu = h.gpu || { reviewer: { ok: h.reviewer, detail: "" }, judge: { ok: h.judge, detail: "" } };
+    const backend = h.backend === "bedrock" && h.bedrock ? "bedrock" : "gpu";
+    const usable = backend === "gpu" ? gpu.reviewer.ok : h.bedrock;
+    const seg = (key, label, ok, title, disabled) => `<button type="button" data-backend="${key}" aria-pressed="${backend === key}" ${disabled ? "disabled" : ""}
+      title="${esc(title)}"><span class="dot ${ok ? "ok" : "off"}" aria-hidden="true"></span>${label}</button>`;
+    const engine = `<div class="engine${usable ? "" : " engine-bad"}" role="group" aria-label="Reviewer model">
+      ${seg("gpu", "GPU", gpu.reviewer.ok, `Qwen 3.8 27B on our GPU job. ${gpu.reviewer.detail}`, false)}
+      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The Kev judge still runs on the GPU job." : "No Bedrock key found in .env", !h.bedrock)}
+    </div>${usable ? "" : `<span class="engine-warn" title="${esc(gpu.reviewer.detail)}">GPU offline: reviews will fail</span>`}`;
     const html = [
-      dot(h.reviewer || h.bedrock, "Reviewer", h.reviewer ? "Qwen on the GPU job is reachable" : h.bedrock ? "Claude on Bedrock available" : "No reviewer model reachable"),
-      dot(h.judge, "Judge", h.judge ? "Kev judge reachable" : "Kev judge not reachable: start the GPU job"),
+      engine,
+      dot(gpu.judge.ok, "Judge", gpu.judge.ok ? gpu.judge.detail : `${gpu.judge.detail} Findings will be posted as not judged.`),
       dot(relay.connected, "Webhooks", relay.connected ? "Relay connected" : "Relay offline: polling every 30 s"),
     ].join("");
     const busy = h.current ? `<a class="busy" href="#/runs/${enc(h.current)}">Reviewing now</a>` : "";
     const side = $("#status-side"), top = $("#status-top");
-    if (side) side.innerHTML = `<div class="dots">${html}</div>${busy}`;
-    if (top) top.innerHTML = busy + html;
+    const put = (el, markup) => { if (el && el.dataset.markup !== markup) { el.innerHTML = markup; el.dataset.markup = markup; } };
+    put(side, `<div class="dots">${html}</div>${busy}`);
+    put(top, busy + html);
+  }
+
+  async function setBackend(backend) {
+    if (S.health) { S.health.backend = backend; renderStatus(); }
+    await post("/api/settings", { backend });
+    const sel = $('select[data-set="backend"]');
+    if (sel) sel.value = backend;
+    await pollHealth();
   }
 
   async function pollHealth() {
@@ -643,10 +665,11 @@
           <label class="switch"><input type="checkbox" data-set="auto_review" ${st.auto_review ? "checked" : ""}> Review every new and updated pull request</label>
         </section>
         <section class="panel"><h2>Models</h2>
-          <dl class="kv"><dt>Reviewer</dt><dd><span class="dot ${h.reviewer ? "ok" : "off"}">${h.reviewer ? "Qwen 3.8 27B on the GPU job, reachable" : "GPU job not reachable"}</span></dd>
-            <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${h.judge ? "Kev-4B, reachable" : "Kev-4B not reachable"}</span></dd></dl>
-          <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>Our GPU job (Qwen)</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>Claude on Amazon Bedrock (capped spend)</option></select></label>
-          <p class="note">The Kev judge always runs on the GPU job.</p>
+          <dl class="kv"><dt>GPU reviewer</dt><dd><span class="dot ${h.reviewer ? "ok" : "off"}">${esc(h.gpu ? h.gpu.reviewer.detail : h.reviewer ? "Reachable" : "Not reachable")}</span></dd>
+            <dt>API reviewer</dt><dd><span class="dot ${h.bedrock ? "ok" : "off"}">${h.bedrock ? "Bedrock key found (capped spend)" : "No Bedrock key in .env"}</span></dd>
+            <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${esc(h.gpu ? h.gpu.judge.detail : h.judge ? "Reachable" : "Not reachable")}</span></dd></dl>
+          <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>GPU: Qwen 3.8 27B on our GPU job</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>API: Claude on Amazon Bedrock (capped spend)</option></select></label>
+          <p class="note">Also switchable from the GPU / API toggle in the header. The Kev judge always runs on the GPU job.</p>
         </section>
         <section class="panel"><h2>GitHub App</h2>
           ${app ? `<dl class="kv"><dt>App</dt><dd><a href="${esc(app.html_url)}" target="_blank" rel="noopener">${esc(app.name)}</a></dd><dt>Owner</dt><dd>${esc(app.owner)}</dd>
@@ -666,6 +689,7 @@
     $$("[data-set]").forEach((el) => el.addEventListener("change", async () => {
       const v = el.type === "checkbox" ? el.checked : el.value;
       await post("/api/settings", { [el.dataset.set]: v });
+      if (el.dataset.set === "backend") pollHealth();
     }));
     $$(".skin-card").forEach((b) => b.addEventListener("click", () => { setSkin(b.dataset.skinPick); $$(".skin-card").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
     $("#sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Checking…"; await post("/api/sync").catch(() => {}); route(); });
