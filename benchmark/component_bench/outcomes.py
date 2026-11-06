@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
+import tarfile
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +29,15 @@ def remove_index(index_dir: Path, retriever=None) -> None:
     remove_tree(index_dir)
 
 
+def _export(clone: Path, ref: str, dest: Path) -> None:
+    """Regular files of `ref` extracted into `dest`; symlinks are skipped."""
+    tar = subprocess.run(
+        ["git", "-C", str(clone), "archive", "--format=tar", ref], capture_output=True, check=True
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
+        archive.extractall(dest, members=[m for m in archive if m.isfile()], filter="data")
+
+
 def production_toolbox(clone: Path, case: dict, config, results_dir) -> AgentToolbox:
     """Production toolbox over the case clone: live GraphSession and PolicyRetriever, or InfraError.
 
@@ -40,8 +51,6 @@ def production_toolbox(clone: Path, case: dict, config, results_dir) -> AgentToo
             raise InfraError(f"case clone or commit missing: {clone} {sha}; run `{FETCH_COMMAND}`")
     if not config.graph_enabled:
         raise InfraError("CodeGraph is turned off; model-backed components need it")
-    from benchmark.component_bench.retrieval import _export
-
     index_root = Path(results_dir) / ".policy-index"
     index_root.mkdir(parents=True, exist_ok=True)
     index_dir = Path(tempfile.mkdtemp(prefix=f"{case['id']}-", dir=index_root))

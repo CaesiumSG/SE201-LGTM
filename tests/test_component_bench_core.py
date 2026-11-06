@@ -189,12 +189,12 @@ def test_infra_error_is_recorded_excluded_from_scores_and_counted(tmp_path):
     assert s["scores"]["hit"] == 1.0
 
 
-def test_summary_reports_label_review_counts_and_investigator_na(tmp_path):
+def test_summary_reports_label_review_counts_and_na_for_a_per_case_component(tmp_path):
     items = [label("L1"), label("L2", CASE_B, review_state="approved"), label("L3")]
-    comps = {"alpha": (component(), items), "investigator": (component(), None)}
+    comps = {"alpha": (component(), items), "per-case": (component(), None)}
     summary, results = execute(tmp_path, comps)
     assert summary["components"]["alpha"]["labels"] == {"draft": 2, "approved": 1}
-    assert summary["components"]["investigator"]["labels"] == "n/a"
+    assert summary["components"]["per-case"]["labels"] == "n/a"
     assert json.loads((results / "alpha.json").read_text())["labels"] == {
         "draft": 2, "approved": 1,
     }
@@ -368,15 +368,15 @@ def test_partial_rerun_under_new_model_setting_refuses_instead_of_mixing_results
 # AC-S8-7: traceability
 
 
-def test_every_unit_carries_case_id_and_label_id_investigator_case_id_only(tmp_path):
+def test_every_unit_carries_case_id_and_label_id_per_case_component_case_id_only(tmp_path):
     comps = {
         "alpha": (component(), [label("L1"), label("L2", CASE_B)]),
-        "investigator": (component(), None),
+        "per-case": (component(), None),
     }
     _, results = execute(tmp_path, comps)
     got = {(u["case_id"], u["label_id"]) for u in units(results, "alpha")}
     assert got == {(CASE_A, "L1"), (CASE_B, "L2")}
-    inv = units(results, "investigator")
+    inv = units(results, "per-case")
     assert len(inv) == 25
     assert all(u["case_id"] and u.get("label_id") is None for u in inv)
 
@@ -596,7 +596,7 @@ REAL_WORLD_IDS = [
     "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe",
 ]
 BASE_REVISION = "a1b8121"
-LABEL_FILES = ("authz", "sast-sqli", "evidence", "kev-judge", "retrieval")
+LABEL_FILES = ("authz", "sast-sqli", "kev-judge")
 
 
 def development_cases() -> list[dict]:

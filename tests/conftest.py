@@ -79,7 +79,6 @@ BENCH_CASE_IDS = {
     "authz": "aegra_authz_vulnerable",
     "sqli-review": "pyload_sqli_vulnerable",
     "sast-sqli": "pyload_sqli_vulnerable",
-    "investigator": "pyload_sqli_vulnerable",
 }
 BENCH_TOOLBOX_COMPONENTS = tuple(BENCH_CASE_IDS)
 SINK_LINE = '    cur.execute(f"select * from t where id={x}")'
@@ -252,7 +251,7 @@ class BenchEnv:
         case = self.case_for(BENCH_CASE_IDS[component])
         mp.setattr(schema, "load_cases", lambda: [case])
         mods = {n: importlib.import_module(f"benchmark.component_bench.{n}")
-                for n in ("authz", "sqli_review", "kev_judge", "investigator", "sast_sqli")}
+                for n in ("authz", "sqli_review", "kev_judge", "sast_sqli")}
         for mod in mods.values():
             mp.setattr(mod, "load_cases", lambda: [case], raising=False)
             mp.setattr(mod, "CLONE_CACHE", self.cache, raising=False)
@@ -269,19 +268,8 @@ class BenchEnv:
                     lambda gold_input: SimpleNamespace(section_id="s", files=["app.py"]),
                 )
                 mp.setattr(mods["sqli_review"], "needs_sql_review", lambda section, toolbox: True)
-            elif component == "sast-sqli":
-                mp.setattr(mods["sast_sqli"], "SASTTriageAgent", agents.triage_class())
             else:
-                def fake_investigator(diffs, config, toolbox, llm):
-                    agents._enter(toolbox)
-                    section = SimpleNamespace(
-                        section_id="s1", title="t", rationale="plan rationale", hunk_refs=[self.hunk_id]
-                    )
-                    return SimpleNamespace(
-                        status="ok", error=None, run_record=agents.record(), proposed=[section]
-                    )
-
-                mp.setattr(mods["investigator"], "run_investigator", fake_investigator)
+                mp.setattr(mods["sast_sqli"], "SASTTriageAgent", agents.triage_class())
         config = LGTMConfig(graph_binary=binary or self.graph_binary, graph_enabled=graph_enabled)
         labels_dir = self.tmp / "labels"
         labels_dir.mkdir(exist_ok=True)
