@@ -91,7 +91,9 @@ def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None
         if isinstance(output, NotScored):
             unit.update(status="not_scored", reason=output.reason, scores=None)
         else:
-            unit.update(status="scored", scores=mod.score(item, output))
+            unit.update(status="scored", scores=mod.score(item, output, **(
+                {"read_source": mod.case_reader(item)} if hasattr(mod, "case_reader") else {}
+            )))
             if isinstance(output, dict) and "label_ids" in output:
                 unit["label_ids"] = output["label_ids"]
             if isinstance(output, dict) and "detail" in output:

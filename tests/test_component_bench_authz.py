@@ -273,7 +273,7 @@ def test_run_item_hands_run_records_and_offered_tools_to_metrics(patched, monkey
 
 
 def test_agent_error_is_an_infra_error_not_an_empty_result(patched, monkeypatch):
-    errors = [{"source": "s", "message": "model unreachable"}]
+    errors = [{"source": "s", "kind": "failed", "message": "model unreachable"}]
     monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([], errors))
     ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy())
     with pytest.raises(bench("outcomes").InfraError):
@@ -282,7 +282,7 @@ def test_agent_error_is_an_infra_error_not_an_empty_result(patched, monkeypatch)
 
 def test_unparsable_reviewer_answer_is_not_scored(patched, monkeypatch):
     message = render("authz_reviewer.unparsable_explanation", where="section s")
-    monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([], [{"source": "s", "message": message}]))
+    monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([], [{"source": "s", "kind": "unparsable", "message": message}]))
     ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy())
     assert isinstance(patched.run_item(RUN_ITEM, ctx), bench("outcomes").NotScored)
 
@@ -298,6 +298,7 @@ def test_authz_is_registered_for_exactly_the_authz_cases():
 
 def test_run_covers_only_the_fifteen_authz_cases_with_case_and_label_ids(patched, monkeypatch, tmp_path):
     monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([]))
+    monkeypatch.setattr(bench("run"), "_preflight", lambda case: None)
     summary = bench("run").run_benchmark(results_dir=tmp_path, components=["authz"], llm=object())
     rows = json.loads((tmp_path / "authz.json").read_text())["units"]
     items = label_doc()["items"]
@@ -416,3 +417,196 @@ def test_gold_lines_of_every_label_sit_on_added_or_context_lines_of_a_shown_hunk
             if missing:
                 problems.append(f"{item['label_id']} {r['file']} {r['start']}-{r['end']}: {missing}")
     assert not problems, "\n".join(problems)
+
+
+# AC-3-1, AC-3-2, AC-3-6: same-function tolerance. The enclosing function is derived from the source text
+# returned by read_source(file, side), side "pr" for gold and known-issue ranges, "base" for old_locations.
+
+
+def source_with(functions: dict[str, tuple[int, int]]) -> str:
+    """Python source whose named functions occupy the given inclusive line ranges."""
+    lines = ["# filler"] * max(end for _, end in functions.values())
+    for name, (start, end) in functions.items():
+        lines[start - 1] = f"def {name}():"
+        lines[start:end] = ["    pass"] * (end - start)
+    return "\n".join(lines) + "\n"
+
+
+PR_FUNCTIONS = {"create_run": (40, 70), "cancel_run": (80, 130)}
+BASE_FUNCTIONS = {"create_run": (190, 230), "cancel_run": (240, 300)}
+
+
+def read_source(file: str, side: str) -> str:
+    if file != FILE:
+        raise FileNotFoundError(file)
+    return source_with(PR_FUNCTIONS if side == "pr" else BASE_FUNCTIONS)
+
+
+def tscore(item: dict, findings: list[dict]) -> dict:
+    return bench("authz").score(item, findings, read_source=read_source)
+
+
+@pytest.mark.parametrize("line", [40, 49, 61, 70], ids=["fn-start", "below-range", "above-range", "fn-end"])
+def test_finding_in_the_gold_function_outside_the_exact_range_is_a_true_positive(line):
+    s = tscore(vulnerable_item(), [finding(line)])
+    assert (s["tp"], s["fn"], s["fp"]) == (1, 0, 0)
+    assert s["verdict_correct"] == 1.0
+
+
+@pytest.mark.parametrize("line", [55, 50, 60], ids=["inside", "start", "end"])
+def test_exact_range_hit_stays_a_hit_with_source_available(line):
+    s = tscore(vulnerable_item(), [finding(line)])
+    assert (s["tp"], s["fn"], s["fp"]) == (1, 0, 0)
+
+
+@pytest.mark.parametrize("line", [71, 85, 39], ids=["after-function", "other-function", "before-function"])
+def test_finding_in_another_function_or_outside_any_is_a_miss_and_a_false_positive(line):
+    s = tscore(vulnerable_item(), [finding(line)])
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+    assert s["verdict_correct"] == 0.0
+
+
+def test_finding_in_the_same_function_span_of_another_file_is_a_miss_and_a_false_positive():
+    s = tscore(vulnerable_item(), [finding(65, OTHER_FILE)])
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+
+
+def test_base_side_finding_in_the_function_of_the_removed_check_outside_its_range_is_a_true_positive():
+    s = tscore(two_sided_item(), [finding(215)])
+    assert (s["tp"], s["fn"], s["fp"]) == (1, 0, 0)
+
+
+def test_base_side_line_in_another_base_function_is_a_miss_and_a_false_positive():
+    s = tscore(two_sided_item(), [finding(250)])
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+
+
+def test_hit_and_stray_findings_together_score_one_true_positive_and_one_false_positive_per_stray():
+    s = tscore(vulnerable_item(), [finding(65), finding(85), finding(95, OTHER_FILE)])
+    assert (s["tp"], s["fn"], s["fp"]) == (1, 0, 2)
+
+
+def test_safe_case_finding_in_the_function_of_a_known_issue_is_not_counted():
+    s = tscore(safe_item(), [finding(85)])
+    assert (s["fp"], s["tn"], s["tp"], s["fn"]) == (0, 1, 0, 0)
+    assert s["verdict_correct"] == 1.0
+
+
+def test_safe_case_finding_in_another_function_is_a_false_positive():
+    s = tscore(safe_item(), [finding(55)])
+    assert (s["fp"], s["tn"]) == (1, 0)
+    assert s["verdict_correct"] == 0.0
+
+
+def test_safe_case_finding_in_another_file_is_a_false_positive():
+    s = tscore(safe_item(), [finding(104, OTHER_FILE)])
+    assert s["fp"] == 1
+
+
+# AC-3-3, AC-3-4: unparsable is read from the error kind, never from the message wording
+
+
+def run_with_errors(patched, monkeypatch, errors):
+    monkeypatch.setattr(patched, "AuthzReviewerAgent", make_agent([], errors))
+    ctx = SimpleNamespace(llm=object(), config=None, metrics=Spy())
+    return patched.run_item(RUN_ITEM, ctx)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Reviewer answer could not be parsed.", "", render("authz_reviewer.unparsable_explanation", where="section s")],
+    ids=["reworded", "empty", "current-prompt-text"],
+)
+def test_unparsable_kind_is_not_scored_whatever_the_message(patched, monkeypatch, message):
+    out = run_with_errors(patched, monkeypatch, [{"source": "s", "kind": "unparsable", "message": message}])
+    assert isinstance(out, bench("outcomes").NotScored)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["model unreachable", render("authz_reviewer.unparsable_explanation", where="section s")],
+    ids=["unreachable", "unparsable-wording"],
+)
+def test_failed_kind_is_an_infra_error_even_when_the_message_reads_as_unparsable(patched, monkeypatch, message):
+    with pytest.raises(bench("outcomes").InfraError):
+        run_with_errors(patched, monkeypatch, [{"source": "s", "kind": "failed", "message": message}])
+
+
+def test_a_failed_error_alongside_an_unparsable_one_is_an_infra_error(patched, monkeypatch):
+    errors = [
+        {"source": "s", "kind": "unparsable", "message": "x"},
+        {"source": "s", "kind": "failed", "message": "model unreachable"},
+    ]
+    with pytest.raises(bench("outcomes").InfraError):
+        run_with_errors(patched, monkeypatch, errors)
+
+
+# run path hands score the case reader
+
+
+def run_unit_with(module, item):
+    run = bench("run")
+    return run._run_unit(module, item, None, None, None, lambda: 0.0, Path("."))
+
+
+def test_run_path_passes_the_case_reader_to_score():
+    reader, seen = object(), {}
+
+    def fake_score(item, output, read_source=None):
+        seen["read_source"] = read_source
+        return {"tp": 1}
+
+    module = SimpleNamespace(
+        run_item=lambda item, ctx: [],
+        score=fake_score,
+        case_reader=lambda item: reader if item["case_id"] == "c" else None,
+    )
+    unit = run_unit_with(module, {"case_id": "c", "label_id": "L"})
+    assert unit["status"] == "scored"
+    assert seen["read_source"] is reader
+
+
+def base_only_item() -> dict:
+    item = vulnerable_item()
+    item["gold"]["locations"] = []
+    item["gold"]["old_locations"] = [{"file": FILE, "start": 200, "end": 210}]
+    return item
+
+
+def test_pr_side_finding_in_the_function_named_like_the_base_range_function_is_a_true_positive():
+    s = tscore(base_only_item(), [finding(65)])
+    assert (s["tp"], s["fn"], s["fp"]) == (1, 0, 0)
+
+
+def test_pr_side_finding_in_a_differently_named_function_is_a_miss_and_a_false_positive():
+    s = tscore(base_only_item(), [finding(85)])
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+
+
+def test_line_in_the_base_function_by_number_but_in_a_differently_named_pr_function_is_a_miss_and_a_false_positive():
+    pr_functions = {"create_run": (40, 70), "cancel_run": (190, 230)}
+
+    def reader(file: str, side: str) -> str:
+        return source_with(pr_functions if side == "pr" else BASE_FUNCTIONS)
+
+    s = bench("authz").score(base_only_item(), [finding(215)], read_source=reader)
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("line, expect", [(205, (1, 0, 0)), (215, (0, 1, 1))], ids=["in-range", "off-range"])
+def test_unreadable_source_keeps_the_exact_range_check_on_a_base_side_range(line, expect):
+    def failing_reader(file: str, side: str) -> str:
+        raise OSError(file)
+
+    s = bench("authz").score(base_only_item(), [finding(line)], read_source=failing_reader)
+    assert (s["tp"], s["fn"], s["fp"]) == expect
+
+
+def test_line_inside_the_exact_base_side_range_but_in_a_differently_named_pr_function_is_a_miss_and_a_false_positive():
+    pr_functions = {"create_run": (40, 70), "cancel_run": (190, 230)}
+
+    def reader(file: str, side: str) -> str:
+        return source_with(pr_functions if side == "pr" else BASE_FUNCTIONS)
+
+    s = bench("authz").score(base_only_item(), [finding(205)], read_source=reader)
+    assert (s["tp"], s["fn"], s["fp"]) == (0, 1, 1)

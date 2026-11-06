@@ -111,3 +111,9 @@ Scores the Kev-4B judge (`src/lgtm/validation/judge.py`) on candidate findings d
 - An `undetermined` candidate is not judged and is counted as not scored.
 - An unreachable judge, or a reply without a `real` or `not_real` verdict, is an error.
 - Needs the Kev endpoint (`judge_endpoint`); input tokens are taken from the judge reply, output tokens show as not recorded.
+
+## Tolerant scoring
+
+- authz: a finding is a hit when it lies in a gold range or in the same file and the same enclosing function as the range. There is no line tolerance. The function is derived from the source (`lgtm.agents.authz_reviewer._enclosing_functions`: innermost function, decorators included), never from the label or a finding field. `locations` and `known_issues` resolve against the PR-side source, `old_locations` against the base-side source, read from the case clone by `read_source(file, side)` with side `pr` or `base`. A file that cannot be read or parsed is scored on the exact range. A finding in another file or another function is `fp`.
+- authz, base-side ranges (`old_locations`): a finding is a hit when the name of its line's PR-side enclosing function equals the name of the function enclosing the base range, or when the line falls inside that base function in base-source line numbers and is not inside a differently named function on the PR side. The function names are derived from the source, never from the label or a finding field. Finding lines carry no side, so a line that lands in the base function only by base numbering and sits in no PR-side function still counts; this over-counts.
+- authz and sast-sqli: an unparsable answer is read from the `kind` of the agent's error record. `unparsable` is `not_scored`; `failed` is `error`, whatever the message text. authz records `not_scored` only when every error is `unparsable`.

@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from benchmark.component_bench import metrics, registry, run, schema  # noqa: E402
 from benchmark.component_bench import sast_sqli  # noqa: E402
 from benchmark.component_bench.outcomes import InfraError, NotScored  # noqa: E402
+from lgtm.agents import registry as prompts  # noqa: E402
 from lgtm.config import LGTMConfig  # noqa: E402
 from lgtm.validation import judge as judge_mod  # noqa: E402
 
@@ -265,3 +266,39 @@ def test_only_sqli_cases_run_and_each_unit_names_case_and_label(tmp_path):
         (i["case_id"], i["label_id"]) for i in labels
     ]
     assert {u["case_id"] for u in units} <= sqli_case_ids()
+
+
+# AC-3-3, AC-3-4: unparsable is read from the error kind, never from the message wording
+
+
+def run_with_error(monkeypatch, kind, message):
+    class FakeAgent:
+        def __init__(self, toolbox, config=None, llm=None):
+            self.toolbox = SimpleNamespace(build_tools=lambda graph=False: [])
+            self.run_records = []
+            self.errors = [{"source": "f", "kind": kind, "message": message}]
+
+        def triage(self, finding, semgrep_notes):
+            return None
+
+    monkeypatch.setattr(sast_sqli, "SASTTriageAgent", FakeAgent)
+    return sast_sqli.run_item(item(False), ctx(object()))
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Triage answer could not be parsed.", "", prompts.entry("shared.unparsable_explanation")],
+    ids=["reworded", "empty", "current-prompt-text"],
+)
+def test_unparsable_kind_is_not_scored_whatever_the_message(monkeypatch, message):
+    assert isinstance(run_with_error(monkeypatch, "unparsable", message), NotScored)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["model endpoint unreachable", prompts.entry("shared.unparsable_explanation")],
+    ids=["unreachable", "unparsable-wording"],
+)
+def test_failed_kind_is_an_infra_error_even_when_the_message_reads_as_unparsable(monkeypatch, message):
+    with pytest.raises(InfraError):
+        run_with_error(monkeypatch, "failed", message)

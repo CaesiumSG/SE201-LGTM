@@ -7,8 +7,7 @@ from pathlib import Path
 
 from benchmark.component_bench.outcomes import InfraError, NotScored
 from benchmark.component_bench.schema import load_cases
-from lgtm.agents import registry as prompts
-from lgtm.agents.authz_reviewer import AuthzReviewerAgent
+from lgtm.agents.authz_reviewer import AuthzReviewerAgent, _enclosing_functions
 from lgtm.agents.tools import AgentToolbox
 from lgtm.diff.git_diff import LineChange
 from lgtm.review.sections import HunkRef, Section
@@ -87,26 +86,66 @@ def run_item(item: dict, ctx) -> list[dict]:
     findings = agent.review_section(section)
     ctx.metrics.add_agent("reviewer", agent.run_records, toolbox.build_tools())
     if agent.errors:
-        messages = [e["message"] for e in agent.errors]
-        unparsable = prompts.entry("authz_reviewer.unparsable_explanation").split("{where}")[0]
-        if all(m.startswith(unparsable) for m in messages):
-            return NotScored("; ".join(messages))
-        raise InfraError("; ".join(messages))
+        messages = "; ".join(e["message"] for e in agent.errors)
+        if all(e["kind"] == "unparsable" for e in agent.errors):
+            return NotScored(messages)
+        raise InfraError(messages)
     return [{"file": f.file, "line": f.line} for f in findings]
 
 
-def _inside(finding: dict, ranges: list[dict]) -> bool:
-    return any(r["file"] == finding["file"] and r["start"] <= finding["line"] <= r["end"] for r in ranges)
+def case_reader(item: dict):
+    """`read_source(file, side)` over the case clone at the pr or base ref."""
+    case = next(c for c in load_cases() if c["id"] == item["case_id"])
+    clone = CLONE_CACHE / case["repo_url"].rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
+    refs = {"pr": case["pr_ref"], "base": case["base_ref"]}
+
+    def read_source(file: str, side: str) -> str:
+        shown = subprocess.run(
+            ["git", "-C", str(clone), "show", f"{refs[side]}:{file}"], capture_output=True, check=True
+        )
+        return shown.stdout.decode("utf-8", errors="replace")
+
+    return read_source
 
 
-def score(item: dict, output: list[dict]) -> dict:
+def _inside(finding: dict, ranges: list[tuple[dict, str]], read_source) -> bool:
+    """PR-side range: exact range or same enclosing function. Base-side range: the finding's PR-side function name equals the range's function name, or the line is in base coordinates inside the range or its function and in no PR-side function."""
+    line = finding["line"]
+    for r, side in ranges:
+        if r["file"] != finding["file"]:
+            continue
+        exact = r["start"] <= line <= r["end"]
+        if exact and side == "pr":
+            return True
+        if read_source is None:
+            if exact:
+                return True
+            continue
+        try:
+            pr_source = read_source(r["file"], "pr")
+            range_source = pr_source if side == "pr" else read_source(r["file"], side)
+        except Exception:  # noqa: BLE001 - unreadable file keeps exact-range scoring
+            if exact:
+                return True
+            continue
+        mine = _enclosing_functions(pr_source, [line])
+        theirs = _enclosing_functions(range_source, [r["start"], r["end"]])
+        if mine and mine[0][2] in {t[2] for t in theirs}:
+            return True
+        if side == "base" and not mine and (exact or any(t[0] <= line <= t[1] for t in theirs)):
+            return True
+    return False
+
+
+def score(item: dict, output: list[dict], read_source=None) -> dict:
     gold = item["gold"]
     if gold["vulnerable"]:
-        ranges = gold["locations"] + gold.get("old_locations", [])
-        hit = any(_inside(f, ranges) for f in output)
-        fp = sum(not _inside(f, ranges) for f in output)
+        ranges = [(r, "pr") for r in gold["locations"]] + [(r, "base") for r in gold.get("old_locations", [])]
+        hit = any(_inside(f, ranges, read_source) for f in output)
+        fp = sum(not _inside(f, ranges, read_source) for f in output)
         return {"tp": int(hit), "fn": int(not hit), "fp": fp, "tn": 0, "verdict_correct": float(hit)}
-    fp = sum(not _inside(f, gold["known_issues"]) for f in output)
+    known = [(r, "pr") for r in gold["known_issues"]]
+    fp = sum(not _inside(f, known, read_source) for f in output)
     return {"tp": 0, "fn": 0, "fp": fp, "tn": int(fp == 0), "verdict_correct": float(fp == 0)}
 
 

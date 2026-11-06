@@ -7,7 +7,6 @@ import tempfile
 from pathlib import Path
 
 from benchmark.component_bench.outcomes import InfraError, NotScored
-from lgtm.agents import registry as prompts
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.tools import AgentToolbox
 from lgtm.graph.snapshot import resolve_refs
@@ -54,10 +53,10 @@ def run_item(item, ctx):
             if not result.judged:
                 raise InfraError(f"judge did not answer: {result.not_judged_reason}")
             return {"kept": result.supported is True}
-    message = agent.errors[-1]["message"]
-    if message == prompts.entry("shared.unparsable_explanation"):
-        return NotScored(message)
-    raise InfraError(message)
+    error = agent.errors[-1]
+    if error["kind"] == "unparsable":
+        return NotScored(error["message"])
+    raise InfraError(error["message"])
 
 
 def score(item, output):
