@@ -2,29 +2,32 @@
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
 from benchmark.component_bench import schema
 from benchmark.component_bench.outcomes import InfraError, NotScored
-from lgtm.config import LGTMConfig
+from benchmark.real_world.fetch import project_of
 from lgtm.rag.indexer import index_repo_docs
-from lgtm.rag.retriever import PolicyRetriever as _PolicyRetriever
+from lgtm.rag.retriever import PolicyRetriever
 
 HERE = Path(__file__).resolve().parent
 POLICY_DIR = HERE.parent / "real_world" / "policies"
 LABELS = HERE / "labels" / "retrieval.json"
-POLICY_NAME = "security-policy.md"
+CLONE_CACHE = HERE.parent / "real_world" / ".cache"
 
 
-class PolicyRetriever(_PolicyRetriever):
-    """Indexes the policy directory under its own `.lgtm/chroma` before serving queries."""
-
-    def __init__(self, repo, config=None):
-        config = config or LGTMConfig()
-        index_repo_docs(repo, config)
-        super().__init__(repo, config)
+def _export(clone: Path, ref: str, dest: Path) -> None:
+    """Regular files of `ref` extracted into `dest`; symlinks are skipped."""
+    tar = subprocess.run(
+        ["git", "-C", str(clone), "archive", "--format=tar", ref], capture_output=True, check=True
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
+        archive.extractall(dest, members=[m for m in archive if m.isfile()], filter="data")
 
 
 def _items(labels_dir) -> list[dict]:
@@ -43,18 +46,22 @@ def _overlaps(chunk: tuple, gold: dict) -> bool:
 
 def run_item(item, ctx):
     case = next(c for c in schema.load_cases() if c["id"] == item["case_id"])
-    policy = POLICY_DIR / f"{case['repo_url'].rstrip('/').rsplit('/', 1)[-1]}.md"
-    if case["category"] != "authz" or not policy.is_file():
+    if case["category"] != "authz":
         return NotScored(f"{case['id']}: policy retrieval not applicable")
     labels = item.get("labels") or _labels(case["id"], getattr(ctx, "labels_dir", None))
     if not labels:
         return NotScored(f"{case['id']}: no gold policy-passage labels")
+    clone = CLONE_CACHE / project_of(case)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        (Path(tmp) / POLICY_NAME).write_text(policy.read_text(encoding="utf-8"), encoding="utf-8")
         try:
+            _export(clone, case["pr_ref"], Path(tmp))
+            index_repo_docs(tmp, ctx.config)
             chunks = PolicyRetriever(tmp, ctx.config).retrieve(case["description"], top_k=ctx.config.rag_top_k)
-        except Exception as exc:  # noqa: BLE001 - missing index or embedder is an infra failure
+        except Exception as exc:  # noqa: BLE001 - missing clone, index or embedder is an infra failure
             raise InfraError(f"policy retrieval failed: {exc}") from exc
+        labels = [lb for lb in labels if (Path(tmp) / lb["gold"]["source"]).is_file()]
+    if not labels:
+        return NotScored(f"{case['id']}: no gold labels for the case-repo index")
     return {
         "case_id": case["id"],
         "label_ids": [lb["label_id"] for lb in labels],

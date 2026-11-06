@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,25 +37,93 @@ def case_item(*labels, case_id="aegra_authz_vulnerable"):
     return {"case_id": case_id, "label_id": None, "labels": list(labels)}
 
 
+def snapshot(repo) -> dict[str, str]:
+    root = Path(repo)
+    if not root.is_dir():
+        return {}
+    return {
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8", errors="replace")
+        for p in root.rglob("*")
+        if p.is_file() and not {".git", ".lgtm"} & set(p.relative_to(root).parts)
+    }
+
+
 class FakeRetriever:
-    """Stands in for PolicyRetriever: no Chroma index, no embeddings."""
+    """Stands in for PolicyRetriever: no Chroma index, no embeddings. Records what it was built over."""
 
     ranked: list = []
     calls: list = []
+    built_over: list = []
 
     def __init__(self, repo, config=None):
-        pass
+        FakeRetriever.built_over.append(snapshot(repo))
 
     def retrieve(self, query, top_k=None, collection_name=None):
         FakeRetriever.calls.append(top_k)
         return FakeRetriever.ranked[:top_k]
 
 
+BASE_TEXT = "BASE-REVISION-POLICY"
+PR_TEXT = "PR-REVISION-POLICY"
+
+
+def git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def template_repo(tmp_path_factory):
+    """Repo whose checked-out head is the base revision; the PR revision is a later commit."""
+    repo = tmp_path_factory.mktemp("template")
+    git(repo, "init", "-q")
+    (repo / "SECURITY.md").write_text(f"# Policy\n{BASE_TEXT}\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "SECURITY.md").write_text(f"# Policy\n{PR_TEXT}\n", encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "pr-only.md").write_text("added by the PR\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "pr")
+    pr = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", base)
+    return repo, base, pr
+
+
 @pytest.fixture
-def run(monkeypatch):
+def clones(monkeypatch, tmp_path, template_repo):
+    """A local clone of the template repo for every case project, and every case pinned to its revisions."""
+    template, base, pr = template_repo
+    cache = tmp_path / "clone-cache"
+    cache.mkdir()
+    schema = importlib.import_module("benchmark.component_bench.schema")
+    real_cases = list(schema.load_cases())
+
+    def load_cases():
+        out = []
+        for c in real_cases:
+            project = c["repo_url"].rstrip("/").rsplit("/", 1)[-1]
+            if not (cache / project).exists():
+                subprocess.run(["git", "clone", "-q", str(template), str(cache / project)], check=True, capture_output=True)
+            out.append({**c, "base_ref": base, "pr_ref": pr})
+        return out
+
+    for mod in (retrieval(), importlib.import_module("benchmark.component_bench.run"), schema):
+        monkeypatch.setattr(mod, "CLONE_CACHE", cache, raising=False)
+    monkeypatch.setattr(schema, "load_cases", load_cases)
+    return SimpleNamespace(cache=cache, base=base, pr=pr)
+
+
+@pytest.fixture
+def run(monkeypatch, clones):
     mod = retrieval()
     monkeypatch.setattr(mod, "PolicyRetriever", FakeRetriever)
+    monkeypatch.setattr(mod, "index_repo_docs", lambda repo, config=None: FakeRetriever.built_over.append(snapshot(repo)))
     FakeRetriever.calls = []
+    FakeRetriever.built_over = []
 
     def go(item, ranked, k=3):
         FakeRetriever.ranked = ranked
@@ -144,8 +213,9 @@ def test_scored_output_names_case_id_and_gold_label_ids(run):
 
 
 @pytest.fixture
-def bench(monkeypatch, tmp_path):
+def bench(monkeypatch, tmp_path, clones):
     monkeypatch.setattr(retrieval(), "PolicyRetriever", FakeRetriever)
+    monkeypatch.setattr(retrieval(), "index_repo_docs", lambda repo, config=None: 0)
     FakeRetriever.calls = []
     from benchmark.component_bench.run import run_benchmark
 
@@ -162,15 +232,34 @@ def bench(monkeypatch, tmp_path):
     return go
 
 
-def test_every_scored_row_names_its_case_id_and_gold_label_ids(bench):
-    default = json.loads(LABELS.read_text(encoding="utf-8"))["items"]
-    rows, _ = bench()
-    scored = [r for r in rows if r["status"] == "scored"]
-    assert {r["case_id"] for r in scored} == set(AUTHZ)
-    for row in scored:
-        expected = [i["label_id"] for i in default if i["case_id"] == row["case_id"]]
-        text = json.dumps(row)
-        assert expected and all(label_id in text for label_id in expected), row
+NO_LABELS_REASON = "no gold labels for the case-repo index"
+
+
+def test_real_labels_naming_the_removed_side_index_are_not_scored_instead_of_scoring_zero(bench):
+    rows, summary = bench(ranked=[chunk(1, 100000), chunk(1, 100000, source="README.md")])
+    authz_rows = [r for r in rows if r["case_id"] in AUTHZ]
+    assert authz_rows
+    for row in authz_rows:
+        assert row["status"] == "not_scored", row
+        assert NO_LABELS_REASON in row["reason"]
+        assert row["scores"] is None
+    assert summary["components"]["retrieval"]["units_scored"] == 0
+
+
+def test_labels_whose_source_is_absent_from_the_case_repo_at_pr_ref_are_not_scored(run):
+    mod = retrieval()
+    item = case_item({"label_id": "G1", "gold": {"source": "security-policy.md", "start_line": 1, "end_line": 5}})
+    FakeRetriever.ranked = [chunk(1, 5, source="SECURITY.md")]
+    ctx = SimpleNamespace(config=SimpleNamespace(rag_top_k=3), metrics=None, llm=None, judge=None)
+    result = mod.run_item(item, ctx)
+    assert isinstance(result, mod.NotScored)
+    assert NO_LABELS_REASON in result.reason
+
+
+def test_labels_naming_a_case_repo_document_at_pr_ref_are_still_scored(run):
+    output, scores = run(case_item(gold("G1", 10, 20)), [chunk(12, 18)])
+    assert not isinstance(output, retrieval().NotScored)
+    assert scores["hit_at_k"] == 1
 
 
 def test_labels_are_read_from_the_given_labels_dir_not_the_default_file(bench, tmp_path):
@@ -202,9 +291,91 @@ def test_labels_are_read_from_the_given_labels_dir_not_the_default_file(bench, t
     assert "retrieval-" + case_id not in aggregate
 
 
-def test_development_authz_cases_without_a_policy_file_are_not_scored_not_errors():
+
+def authz_item():
+    return case_item(gold("G1", 10, 20))
+
+
+def test_retrieval_indexes_the_case_repo_at_the_pr_revision(run):
+    run(authz_item(), [chunk(10, 15)])
+    assert FakeRetriever.built_over
+    for files in FakeRetriever.built_over:
+        assert PR_TEXT in files["SECURITY.md"]
+        assert BASE_TEXT not in files["SECURITY.md"]
+        assert "docs/pr-only.md" in files
+
+
+def test_retrieval_does_not_index_the_policies_side_directory(run):
+    side = {p.name: p.read_text(encoding="utf-8") for p in retrieval().POLICY_DIR.glob("*.md")}
+    assert side
+    run(authz_item(), [chunk(10, 15)])
+    assert FakeRetriever.built_over
+    for files in FakeRetriever.built_over:
+        assert not any(files.get(name) == text for name, text in side.items())
+
+
+def test_development_authz_case_without_a_policy_side_file_is_retrieved_from_its_repo(run):
     dev = json.loads((ROOT / "benchmark" / "real_prs" / "cases.json").read_text(encoding="utf-8"))["cases"]
     authz_id = next(c["id"] for c in dev if c["category"] == "authz")
+    output, scores = run(case_item(gold("G1", 10, 20), case_id=authz_id), [chunk(10, 15)])
+    assert output["case_id"] == authz_id
+    assert scores["hit_at_k"] == 1
+
+
+def failing_retriever(reason, in_index):
+    class Failing(FakeRetriever):
+        def __init__(self, repo, config=None):
+            if not in_index:
+                raise RuntimeError(reason)
+            super().__init__(repo, config)
+
+    return Failing
+
+
+@pytest.mark.parametrize("in_index", [True, False], ids=["index-step", "retriever-build"])
+def test_index_build_failure_is_recorded_as_error_with_its_reason_not_a_zero_score(monkeypatch, bench, in_index):
     mod = retrieval()
-    out = mod.run_item({"case_id": authz_id, "label_id": None}, SimpleNamespace(labels_dir=None))
-    assert isinstance(out, mod.NotScored)
+    reason = "embedder-offline-xyz"
+
+    def boom(repo, config=None):
+        raise RuntimeError(reason)
+
+    monkeypatch.setattr(mod, "PolicyRetriever", failing_retriever(reason, in_index))
+    monkeypatch.setattr(mod, "index_repo_docs", boom if in_index else (lambda repo, config=None: 0))
+    rows, summary = bench(ranked=[chunk(10, 15)])
+    authz_rows = [r for r in rows if r["case_id"] in AUTHZ]
+    assert authz_rows
+    for row in authz_rows:
+        assert row["status"] == "error", row
+        assert reason in row["reason"]
+        assert row["scores"] is None
+    section = summary["components"]["retrieval"]
+    assert section["units_errored"] >= len(AUTHZ)
+    assert section["units_scored"] == 0
+
+
+def test_index_build_failure_for_one_case_leaves_other_cases_scored(monkeypatch, bench, tmp_path):
+    mod = retrieval()
+    labels_dir = tmp_path / "fixture-labels"
+    labels_dir.mkdir()
+    items = [
+        {"label_id": f"fx-{cid}", "case_id": cid, "review_state": "approved",
+         "gold": {"source": POLICY, "start_line": 1, "end_line": 2}}
+        for cid in AUTHZ
+    ]
+    (labels_dir / "retrieval.json").write_text(json.dumps({"component": "retrieval", "items": items}), encoding="utf-8")
+    state = {"n": 0}
+
+    class FailsOnce(FakeRetriever):
+        def __init__(self, repo, config=None):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise RuntimeError("first-case-index-broke")
+            super().__init__(repo, config)
+
+    monkeypatch.setattr(mod, "PolicyRetriever", FailsOnce)
+    rows, _ = bench(labels_dir, ranked=[chunk(1, 2)])
+    errors = [r for r in rows if r["case_id"] in AUTHZ and r["status"] == "error"]
+    assert len(errors) == 1 and "first-case-index-broke" in errors[0]["reason"]
+    assert errors[0]["scores"] is None
+    assert any(r["status"] == "scored" for r in rows if r["case_id"] in AUTHZ)
