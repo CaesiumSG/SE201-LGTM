@@ -103,6 +103,20 @@ class TestSafeMarkdownMarkdownLinks:
         expected = f"Reported by @{WJ}maintainer (link removed)."
         assert safe_markdown(text, "cyberjj999") == expected
 
+    def test_markdown_link_with_title(self):
+        text = 'See [advisory](https://github.com/other/repo "Security Advisory") and [blog](https://github.com/other/repo/blog \'Details\').'
+        expected = "See advisory (link removed) and blog (link removed)."
+        assert safe_markdown(text, "cyberjj999") == expected
+
+    def test_markdown_link_with_title_to_own_owner_preserved(self):
+        text = 'Review [our PR](https://github.com/cyberjj999/shoply-demo/pull/12 "Internal PR").'
+        assert safe_markdown(text, "cyberjj999") == text
+
+    def test_markdown_link_with_title_same_label_and_url(self):
+        text = 'Check [https://github.com/other/repo](https://github.com/other/repo "Title").'
+        expected = "Check (link removed)."
+        assert safe_markdown(text, "cyberjj999") == expected
+
 
 class TestSafeMarkdownCodeSpansAndBlocks:
     def test_links_inside_inline_code_preserved(self):
@@ -135,6 +149,49 @@ class TestSafeMarkdownCodeSpansAndBlocks:
             "~~~\n"
         )
         assert safe_markdown(code_block, "cyberjj999") == code_block
+
+    def test_escaped_backticks_not_treated_as_code_span(self):
+        # In CommonMark, backslash-escaped backticks are literal text, not code spans.
+        # Mentions inside them render as text on GitHub and must be defanged.
+        text1 = r"x \`@alice\` y"
+        expected1 = f"x \\`@{WJ}alice\\` y"
+        assert safe_markdown(text1, "cyberjj999") == expected1
+
+        text2 = r"x \`@alice` y"
+        expected2 = f"x \\`@{WJ}alice` y"
+        assert safe_markdown(text2, "cyberjj999") == expected2
+
+    def test_midline_tildes_not_treated_as_code_block(self):
+        # Tildes only open a fence at the start of a line (up to 3 spaces).
+        # Mid-line ~~~ is text/strikethrough on GitHub, so @mentions and cross-repo refs must be defanged.
+        text = "strike ~~~ @alice ~~~ end and other/repo#123"
+        expected = f"strike ~~~ @{WJ}alice ~~~ end and other/repo#{WJ}123"
+        assert safe_markdown(text, "cyberjj999") == expected
+
+    def test_code_span_split_by_blank_line_not_treated_as_code(self):
+        # In CommonMark, code spans cannot contain blank lines.
+        # Backtick fences must start a line; mid-line ``` does not open a fence.
+        text_fence = "Type ``` to open a fence.\n\n@alice\n\nclose with ```"
+        expected_fence = f"Type ``` to open a fence.\n\n@{WJ}alice\n\nclose with ```"
+        assert safe_markdown(text_fence, "cyberjj999") == expected_fence
+
+        text_span = "Type ` to open\n\n@alice\n\nclose `"
+        expected_span = f"Type ` to open\n\n@{WJ}alice\n\nclose `"
+        assert safe_markdown(text_span, "cyberjj999") == expected_span
+
+        text_inline = "`before\n\n@alice\n\nafter`"
+        expected_inline = f"`before\n\n@{WJ}alice\n\nafter`"
+        assert safe_markdown(text_inline, "cyberjj999") == expected_inline
+
+    def test_escaped_backslash_before_backtick_allows_code_span(self):
+        # Two backslashes mean an escaped backslash, so the backtick is unescaped and forms a valid code span.
+        text = r"x \\`@alice` y"
+        assert safe_markdown(text, "cyberjj999") == text
+
+    def test_code_span_across_single_newline_preserved(self):
+        # A single newline without a blank line is valid within a CommonMark code span.
+        text = "Code: `@login_required\n@permission_required`."
+        assert safe_markdown(text, "cyberjj999") == text
 
 
 class TestSafeMarkdownEdgeCases:
