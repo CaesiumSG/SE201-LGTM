@@ -135,13 +135,22 @@ def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--modes", nargs="+", choices=MODES, default=["lgtm", "llm-only"])
-    parser.add_argument("--cases", nargs="+", default=None, help="advisory ids from cases.json")
+    parser.add_argument("--cases-file", type=Path, default=CASES_FILE,
+                        help="advisory list (default cases.json; heldout.json is the held-out set)")
+    parser.add_argument("--cases", nargs="+", default=None, help="advisory ids from the cases file")
     parser.add_argument("--cache", type=Path, default=HERE / ".cache")
     parser.add_argument("--output", type=Path, default=BENCH / "results" / "real_prs")
     parser.add_argument("--model", default=None)
     parser.add_argument("--ollama-url", default=None)
     parser.add_argument("--gpu-model", choices=sorted(ft.GPU_MODELS), default=None,
                         help="use the GPU cluster tunnel with a registered model")
+    parser.add_argument("--bedrock-model", default=None,
+                        help="review with Claude on Amazon Bedrock (e.g. global.anthropic.claude-sonnet-4-6); "
+                        "needs AWS_BEARER_TOKEN_BEDROCK; the Kev judge still uses its own endpoint")
+    parser.add_argument("--bedrock-budget", type=float, default=None, help="USD cap over the whole spend ledger")
+    parser.add_argument("--sqli-review", action=argparse.BooleanOptionalAction, default=None,
+                        help="section SQLi review (default: on; --no-sqli-review reproduces v2.0-eval)")
+    parser.add_argument("--judge-endpoint", default=None, help="Kev judge URL (default: config, 127.0.0.1:8008)")
     parser.add_argument("--fetch", action="store_true", help="only fetch the clones")
     parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON that did not crash")
     parser.add_argument("--summarize-only", action="store_true")
@@ -149,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     ft.setup_logging(args.verbose)
 
-    cases = load_cases()
+    cases = load_cases(args.cases_file)
     if args.cases:
         missing = set(args.cases) - {c["id"] for c in cases}
         if missing:
@@ -158,13 +167,27 @@ def main(argv: list[str] | None = None) -> int:
     rows = [row for c in cases for row in expand(c)]
     if args.gpu_model and args.model:
         parser.error("--gpu-model cannot be combined with --model")
+    if args.bedrock_model and args.model:
+        parser.error("--bedrock-model cannot be combined with --model")
     config = ft.LGTMConfig()
     if args.gpu_model:
         ft.apply_gpu_model(config, args.gpu_model, args.ollama_url)
     if args.model:
         config.ollama_model = args.model
     if args.ollama_url:
-        config.ollama_url = args.ollama_url
+        config.ollama_base_url = args.ollama_url
+    if args.sqli_review is not None:
+        config.sqli_review = args.sqli_review
+    if args.judge_endpoint:
+        config.judge_endpoint = args.judge_endpoint
+    if args.bedrock_model:
+        # --gpu-model may still be given: Kev is served from the same GPU job.
+        config.llm_backend = "bedrock"
+        config.bedrock_model = args.bedrock_model
+        config.ollama_model = f"bedrock:{args.bedrock_model}"
+        config.bedrock_run_label = f"real_prs:{args.output.name}"
+        if args.bedrock_budget is not None:
+            config.bedrock_budget_usd = args.bedrock_budget
     cache = args.cache.resolve()
 
     if args.fetch:

@@ -32,6 +32,7 @@ from lgtm.agents.investigator import run_investigator
 from lgtm.analysis.facts import sql_sink_facts
 from lgtm.agents.plain_reviewer import PlainLLMReviewer
 from lgtm.agents.sast_triage import SASTTriageAgent
+from lgtm.agents.sqli_reviewer import SQLiReviewerAgent, needs_sql_review
 from lgtm.agents.tools import AgentToolbox, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, get_pr_diff
@@ -255,7 +256,11 @@ class ReviewPipeline:
             section_stage = self._review_sections(
                 llm_scan_diffs, semgrep_in_diff, toolbox, llm
             )
-            findings.extend(section_stage.findings)
+            if self.config.sqli_review:
+                # Triage and the section SQLi review can report the same sink.
+                findings = dedup_findings(findings + section_stage.findings)
+            else:
+                findings.extend(section_stage.findings)
             meta.agent_errors.extend(section_stage.errors)
             meta.changed_endpoints = len(extract_changed_endpoints(diffs))
             meta.graph_state = toolbox.graph_state() if session is not None else "disabled"
@@ -352,6 +357,7 @@ class ReviewPipeline:
             plan = plan_sections(scan_diffs, proposed, self.config)
 
         authz_agent = AuthzReviewerAgent(toolbox, self.config, llm)
+        sqli_agent = SQLiReviewerAgent(toolbox, self.config, llm) if self.config.sqli_review else None
         results: dict[str, SectionResult] = {}
         section_findings: list[AgentFinding] = []
         for section in plan.sections:
@@ -369,21 +375,29 @@ class ReviewPipeline:
             error = authz_agent.errors[seen_errors:]
             for finding in reviewed:
                 finding.pr_graph_ok = toolbox.graph_stamp("pr")
+            section_findings.extend(reviewed)
+            if sqli_agent is not None and needs_sql_review(scoped, toolbox):
+                seen_sqli_errors = len(sqli_agent.errors)
+                for finding in sqli_agent.review_section(scoped, notes):
+                    finding.pr_graph_ok = toolbox.graph_stamp("pr")
+                    section_findings.append(finding)
+                error = error + sqli_agent.errors[seen_sqli_errors:]
             results[section.section_id] = self._section_result(
                 reviewed, error[0]["message"] if error else None
             )
-            section_findings.extend(reviewed)
 
         return _SectionStage(
             findings=dedup_findings(section_findings),
-            errors=authz_agent.errors,
+            errors=authz_agent.errors + (sqli_agent.errors if sqli_agent else []),
             plan=plan,
             results=results,
             investigator_status=investigator_status,
             investigator_error=investigator_error,
             investigator_input=investigator_input,
             investigator_tool_calls=investigator_tool_calls,
-            run_records=run_records + authz_agent.run_records,
+            run_records=run_records
+            + authz_agent.run_records
+            + (sqli_agent.run_records if sqli_agent else []),
         )
 
     @staticmethod

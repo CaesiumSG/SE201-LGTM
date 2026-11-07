@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lgtm.agents import authz_reviewer, investigator, sast_triage
+from lgtm.agents import authz_reviewer, investigator, sast_triage, sqli_reviewer
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.review.sections import HunkRef, LineChange, Section
@@ -18,7 +18,7 @@ from lgtm.sast.semgrep_runner import SemgrepFinding
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "docs" / "agents.md"
 REGISTRY = ROOT / "src" / "lgtm" / "agents" / "prompts.toml"
-AGENTS = ("sast_triage", "authz_reviewer", "plain_reviewer", "investigator")
+AGENTS = ("sast_triage", "authz_reviewer", "sqli_reviewer", "plain_reviewer", "investigator")
 GRAPH_TOOLS = {"investigate_base_code", "investigate_pr_code"}
 KNOWN_TOOLS = GRAPH_TOOLS | {"read_file", "grep_repo", "search_policy"}
 SHAS = {"base": "a" * 40, "pr": "b" * 40}
@@ -40,15 +40,22 @@ def _run_sast_triage(toolbox):
     sast_triage.SASTTriageAgent(toolbox, LGTMConfig(), llm=object()).triage(finding, None)
 
 
-def _run_authz_reviewer(toolbox):
+def _section():
     hunk = HunkRef(
         hunk_id="app.py#1", file="app.py", old_start=1, old_count=0, new_start=1,
         new_count=1, change="add", changes=[LineChange("add", "x = 1", None, 1)],
     )
-    section = Section(
+    return Section(
         section_id="s1", origin="investigator", title="t", files=["app.py"], hunks=[hunk], rationale="r"
     )
-    authz_reviewer.AuthzReviewerAgent(toolbox, LGTMConfig(), llm=object()).review_section(section)
+
+
+def _run_authz_reviewer(toolbox):
+    authz_reviewer.AuthzReviewerAgent(toolbox, LGTMConfig(), llm=object()).review_section(_section())
+
+
+def _run_sqli_reviewer(toolbox):
+    sqli_reviewer.SQLiReviewerAgent(toolbox, LGTMConfig(), llm=object()).review_section(_section())
 
 
 def _run_investigator(toolbox):
@@ -59,6 +66,8 @@ def _run_investigator(toolbox):
 ENTRY_POINTS = {
     "sast_triage": (sast_triage, _run_sast_triage),
     "authz_reviewer": (authz_reviewer, _run_authz_reviewer),
+    # The SQLi reviewer runs authz_reviewer's loop with its own prompts.
+    "sqli_reviewer": (authz_reviewer, _run_sqli_reviewer),
     "investigator": (investigator, _run_investigator),
 }
 
@@ -72,7 +81,7 @@ def code_tools(agent: str, cond: dict) -> set[str]:
 
     def record(llm, tools, system, user, config):
         handed.append(tools)
-        return '{"findings": []}' if agent == "authz_reviewer" else "{}"
+        return '{"findings": []}' if agent in ("authz_reviewer", "sqli_reviewer") else "{}"
 
     box = AgentToolbox(".", "HEAD", shas=cond["shas"], session=cond["session"])
     original = module.run_tool_loop
@@ -141,7 +150,7 @@ def test_plain_reviewer_is_documented_as_given_no_tools(page):
 
 
 def test_graph_offering_condition_is_stated_for_each_conditional_tool(page):
-    for agent in ("authz_reviewer", "investigator"):
+    for agent in ("authz_reviewer", "sqli_reviewer", "investigator"):
         blocks = [
             p for p in re.split(r"\n\s*\n", sections(page)[agent]) if tool_names(p) & GRAPH_TOOLS
         ]

@@ -187,6 +187,9 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "semgrep_findings_in_diff": result.meta.semgrep_findings_in_diff,
         "changed_endpoints": result.meta.changed_endpoints,
         "n_findings": len(findings),
+        # Agents that failed or gave no parsable answer; their sections count as silence.
+        "agent_errors": [{"source": e.get("source"), "stage": e.get("stage"), "message": str(e.get("message"))[:300]}
+                         for e in result.meta.agent_errors],
         "verdicts": dict(Counter(verdicts)),
         "vulnerable_findings": [
             {"finding_id": f["finding_id"], "agent": f["agent"],
