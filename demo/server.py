@@ -40,6 +40,7 @@ sys.path.insert(0, str(HERE))
 
 import github_app as gh  # noqa: E402
 import results  # noqa: E402
+import report  # noqa: E402
 import reviews  # noqa: E402
 import liveapp  # noqa: E402
 import workspace  # noqa: E402
@@ -382,6 +383,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_bytes(self, body: bytes, ctype: str, download: str | None = None):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_text(self, text: str, status=HTTPStatus.OK):
         body = text.encode("utf-8")
         self.send_response(status)
@@ -466,7 +476,17 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(repo_rows(sess, q.get("source", "all")))
         if path == "/api/runs":
             return self.send_json(list_runs(sess, q))
-        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log)?", path)
+        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log|/report\.pdf|/report\.html)?", path)
+        if m and m.group(2) in ("/report.pdf", "/report.html"):
+            detail = run_detail(sess, m.group(1))
+            page = report.report_html(detail)
+            if m.group(2) == "/report.html":
+                return self.send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
+            try:
+                pdf = report.report_pdf(page)
+            except Exception as exc:  # noqa: BLE001 - fall back to the printable page
+                return self.send_json({"error": str(exc)[:300]}, HTTPStatus.BAD_GATEWAY)
+            return self.send_bytes(pdf, "application/pdf", report.filename(detail["run"]))
         if m:
             if m.group(2) == "/events":
                 run_detail(sess, m.group(1))  # access check

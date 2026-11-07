@@ -425,6 +425,7 @@
           ${r.error && r.verdict === "error" || r.status === "failed" ? `<p class="notice warn">${esc(r.error || "The review failed.")}</p>` : ""}
         </div>
         <div class="run-actions">${ghLinks}
+          ${res ? `<button class="btn" type="button" id="pdf">Download report (PDF)</button>` : ""}
           ${r.source === "github" && active ? `<button class="btn" type="button" id="cancel">Cancel</button>` : ""}
           ${r.source === "github" && !active ? `<button class="btn" type="button" id="rerun">Run again</button>` : ""}</div>
       </header>
@@ -436,6 +437,25 @@
       </div>` : ""}
       <div class="tabbar" role="tablist">${tabs.map(([k, l]) => `<a role="tab" href="#/runs/${enc(id)}/${k}" aria-selected="${k === current}">${l}</a>`).join("")}</div>
       <div id="tab"></div>`, "run");
+    const pdf = $("#pdf");
+    if (pdf) pdf.addEventListener("click", async () => {
+      pdf.disabled = true; pdf.textContent = "Preparing the PDF…";
+      try {
+        const resp = await fetch(`/api/runs/${enc(id)}/report.pdf`, { credentials: "same-origin" });
+        if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || resp.statusText);
+        const name = (resp.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await resp.blob());
+        a.download = name ? name[1] : "LGTM-review.pdf";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        pdf.textContent = "Download report (PDF)";
+      } catch (e) {
+        window.open(`/api/runs/${enc(id)}/report.html`, "_blank");
+        pdf.textContent = "Opened the printable report instead";
+      }
+      pdf.disabled = false;
+    });
     const cancel = $("#cancel"), rerun = $("#rerun");
     if (cancel) cancel.addEventListener("click", async () => { cancel.disabled = true; await post(`/api/runs/${enc(id)}/cancel`); route(); });
     if (rerun) rerun.addEventListener("click", async () => { rerun.disabled = true; rerun.textContent = "Queuing…"; const x = await post(`/api/runs/${enc(id)}/rerun`).catch((e) => ({ error: e.message })); if (x.run) location.hash = `#/runs/${enc(x.run)}`; else { rerun.textContent = x.error || "Could not queue"; } });
