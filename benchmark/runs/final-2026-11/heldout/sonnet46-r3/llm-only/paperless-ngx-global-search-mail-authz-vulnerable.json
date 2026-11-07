@@ -1,0 +1,145 @@
+{
+  "id": "paperless-ngx-global-search-mail-authz-vulnerable",
+  "repo": "paperless-ngx/paperless-ngx",
+  "pr": 6449,
+  "title": "The global search PR queried MailAccount and MailRule with plain .objects.filter() behind only a model-level has_perm check, unlike the owner-aware get_objects_for_user_owner_aware() it used for tags and correspondents, so users see other users' mail accounts and rules.",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-sonnet-4-6",
+  "base": "40289cd714988d41287f1bd8bd4fd82084621be4",
+  "pr_sha": "c6e7d06bb7049367f015dc3b124bb0a3bcabcc22",
+  "files_changed": 51,
+  "python_files_changed": 4,
+  "added_lines": 337,
+  "diff_chars": 17430,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 11.2,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 2
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 1,
+    "possible": 1
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "All database queries use Django ORM with parameterized lookups (filter, get, icontains). No raw SQL or string interpolation into queries is present. The `query` parameter is passed to ORM filter methods which use bound parameters internally.",
+      "evidence": [],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "src/documents/views.py",
+      "line": 0,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The GlobalSearchView returns results for multiple object types (users, groups, mail accounts, mail rules, workflows, custom fields, etc. \u2014 visible in the test file assertions). For document-type objects it correctly uses `get_objects_for_user_owner_aware`, but the view also appears to return Users, Groups, MailAccounts, MailRules, Workflows, and CustomFields. The diff only shows the beginning of `get()`, but the test asserts `results['users']`, `results['groups']`, `results['mail_accounts']`, `results['mail_rules']`, `results['workflows']`, `results['custom_fields']` are returned. These are sensitive objects (user list, group memberships, mail credentials) that should only be accessible to admins. If the view returns these to any authenticated user without a superuser/admin check, it is a missing authorization flaw. Additionally, the `SearchResultSerializer` was moved from `views.py` to `serialisers.py` but the `PassUserMixin` was dropped, which could affect user-context-aware filtering in document serialization.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/documents/tests/test_api_search.py",
+          "lines": [
+            1245,
+            1268
+          ],
+          "source": null,
+          "content": "self.assertEqual(results['users'][0]['id'], user1.id)\n        self.assertEqual(results['groups'][0]['id'], group1.id)\n        self.assertEqual(results['mail_accounts'][0]['id'], mail_account1.id)\n        self.assertEqual(results['mail_rules'][0]['id'], mail_rule1.id)\n        self.assertEqual(results['custom_fields'][0]['id'], custom_field1.id)\n        self.assertEqual(results['workflows'][0]['id'], workflow1.id)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            1138,
+            1145
+          ],
+          "source": null,
+          "content": "class GlobalSearchView(PassUserMixin):\n    permission_classes = (IsAuthenticated,)\n    serializer_class = SearchResultSerializer\n\n    def get(self, request, *args, **kwargs):\n        query = request.query_params.get(\"query\", None)\n        if query is None:\n            return HttpResponseBadRequest(\"Query required\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/documents/serialisers.py",
+          "lines": [
+            799,
+            830
+          ],
+          "source": null,
+          "content": "class SearchResultSerializer(DocumentSerializer):\n    def to_representation(self, instance):\n        doc = (\n            Document.objects.select_related(...)\n            .get(id=instance[\"id\"])\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "1. Ensure that returning users/groups/mail accounts in global search is gated behind superuser or explicit admin permission checks (not just IsAuthenticated). 2. Restore the PassUserMixin on SearchResultSerializer or ensure the user context is passed through for proper object-level permission filtering. 3. For each object type returned, verify that ownership/permission checks equivalent to the per-resource endpoints are applied.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "possible",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "src/documents/views.py",
+      "line": 1138,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "paperless-ngx-global-search-mail-authz",
+  "url": "https://github.com/paperless-ngx/paperless-ngx/pull/6449",
+  "category": "authz",
+  "cwe": "CWE-863",
+  "ghsa": "GHSA-96jx-fj7m-qh6x",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/documents/views.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

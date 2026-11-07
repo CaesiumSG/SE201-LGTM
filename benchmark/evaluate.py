@@ -978,6 +978,11 @@ def main() -> None:
         help="Experiment: role-scope guidance in the authz prompt.",
     )
     parser.add_argument(
+        "--sqli-review", action=argparse.BooleanOptionalAction, default=None,
+        help="Review each section for SQL injection, not only Semgrep hits (default: on; "
+        "--no-sqli-review reproduces v2.0-eval).",
+    )
+    parser.add_argument(
         "--strip-comments", action=argparse.BooleanOptionalAction, default=None,
         help="Mitigation (on by default in the LGTM modes): strip comments "
         "and docstrings from PR code in prompts. --no-strip-comments turns it off.",
@@ -1031,6 +1036,8 @@ def main() -> None:
     config.require_tool_use = args.require_tool_use
     config.static_facts = args.static_facts
     config.authz_role_guidance = args.authz_role_guidance
+    if args.sqli_review is not None:
+        config.sqli_review = args.sqli_review
     if args.strip_comments is not None:
         config.strip_comments = args.strip_comments
     if args.detect_prompt_injection is not None:
@@ -1107,6 +1114,7 @@ def main() -> None:
             "require_tool_use": config.require_tool_use,
             "static_facts": config.static_facts,
             "authz_role_guidance": config.authz_role_guidance,
+            "sqli_review": config.sqli_review,
         }, "mitigations": {
             "strip_comments": config.strip_comments,
             "detect_prompt_injection": config.detect_prompt_injection,

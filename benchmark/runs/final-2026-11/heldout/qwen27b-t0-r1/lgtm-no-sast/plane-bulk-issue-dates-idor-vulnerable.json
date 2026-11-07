@@ -1,0 +1,335 @@
+{
+  "id": "plane-bulk-issue-dates-idor-vulnerable",
+  "repo": "makeplane/plane",
+  "pr": 5915,
+  "title": "The Timeline revamp PR added IssueBulkUpdateDateEndpoint, which fetches issues by caller-supplied ids without filtering by the URL's workspace and project, so a member of any project can change start/target dates of any issue on the instance.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "f986bd83fd0832290b2be29b9e31ac308f581d95",
+  "pr_sha": "a88a39fb1e6b99d57ade4baf6763293c17a2b2b7",
+  "files_changed": 112,
+  "python_files_changed": 8,
+  "added_lines": 350,
+  "diff_chars": 21674,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 197.9,
+  "index_seconds": 0.5,
+  "index_reused": false,
+  "index_chunks": 57,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 18,
+    "hunks_reviewed": 18,
+    "sections_scheduled": 8,
+    "sections_completed": 8,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 3,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 3,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 3
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:bulk-date-idor:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1103,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new IssueBulkUpdateDateEndpoint.post (added by this PR) authorizes the request only via @allow_permission([ROLE.ADMIN, ROLE.MEMBER]), which (per permissions/base.py:43-50) merely verifies the requester is an active ProjectMember of the URL's slug/project_id. It then fetches issues with `Issue.objects.filter(id__in=issue_ids)` (line 1103) using only the user-supplied issue IDs, with no filter t"
+    },
+    {
+      "finding_id": "sqli:bulk-date-idor:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1050,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "IssueDetailEndpoint.get (new in this PR) reads order_by from the request query string (request.GET.get(\"order_by\", \"-created_at\")) and passes it to order_issue_queryset. In order_issue_queryset, any value not matching the hardcoded priority/state/label/assignee branches falls into the else branch which executes issue_queryset.order_by(order_by_param) with the raw attacker-controlled string. Django"
+    },
+    {
+      "finding_id": "authz:relation-create-list:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "apiserver/plane/app/views/issue/relation.py",
+      "line": 283,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The create() action builds IssueRelation rows for every `issue` id supplied in the request body (`issues = request.data.get(\"issues\", [])`). ProjectEntityPermission (project.py:100-107) only verifies that the requester is an active Admin/Member of the project identified by `view.project_id`; it does not verify that each `issue` in the `issues` list actually belongs to that project/workspace. The c"
+    }
+  ],
+  "tool_calls_total": 15,
+  "investigator_tool_calls": 6,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 50,
+  "reviewer_units": 10,
+  "findings": [
+    {
+      "finding_id": "authz:bulk-date-idor:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new IssueBulkUpdateDateEndpoint.post (added by this PR) authorizes the request only via @allow_permission([ROLE.ADMIN, ROLE.MEMBER]), which (per permissions/base.py:43-50) merely verifies the requester is an active ProjectMember of the URL's slug/project_id. It then fetches issues with `Issue.objects.filter(id__in=issue_ids)` (line 1103) using only the user-supplied issue IDs, with no filter tying the issues to the authenticated project_id or workspace slug. A member of one project can therefore read and modify the start_date/target_date of issues belonging to any other project/workspace by supplying their IDs, and the activity log records the wrong project_id. This is a newly introduced endpoint, so the unscoped id__in lookup is newly exposed.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1094,
+            1104
+          ],
+          "source": null,
+          "content": "    @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n    def post(self, request, slug, project_id):\n\n        updates = request.data.get(\"updates\", [])\n\n        issue_ids = [update[\"id\"] for update in updates]\n        epoch = int(timezone.now().timestamp())\n\n        # Fetch all relevant issues in a single query\n        issues = list(Issue.objects.filter(id__in=issue_ids))\n        issues_dict = {str(issue.id): issue for issue in issues}",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/permissions/base.py",
+          "lines": [
+            42,
+            50
+          ],
+          "source": null,
+          "content": "            else:\n                if ProjectMember.objects.filter(\n                    member=request.user,\n                    workspace__slug=kwargs[\"slug\"],\n                    project_id=kwargs[\"project_id\"],\n                    role__in=allowed_role_values,\n                    is_active=True,\n                ).exists():\n                    return view_func(instance, request, *args, **kwargs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1161,
+            1164
+          ],
+          "source": null,
+          "content": "        # Bulk update issues\n        Issue.objects.bulk_update(\n            issues_to_update, [\"start_date\", \"target_date\"]\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/urls/issue.py",
+          "lines": [
+            318,
+            322
+          ],
+          "source": null,
+          "content": "path(\n    \"workspaces/<str:slug>/projects/<uuid:project_id>/issue-dates/\",\n    IssueBulkUpdateDateEndpoint.as_view(),\n    name=\"project-issue-dates\",\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1094,
+            1104
+          ],
+          "source": null,
+          "content": "@allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n    def post(self, request, slug, project_id):\n\n        updates = request.data.get(\"updates\", [])\n\n        issue_ids = [update[\"id\"] for update in updates]\n        epoch = int(timezone.now().timestamp())\n\n        # Fetch all relevant issues in a single query\n        issues = list(Issue.objects.filter(id__in=issue_ids))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1161,
+            1164
+          ],
+          "source": null,
+          "content": "# Bulk update issues\n        Issue.objects.bulk_update(\n            issues_to_update, [\"start_date\", \"target_date\"]\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/permissions/base.py",
+          "lines": [
+            42,
+            50
+          ],
+          "source": null,
+          "content": "else:\n                if ProjectMember.objects.filter(\n                    member=request.user,\n                    workspace__slug=kwargs[\"slug\"],\n                    project_id=kwargs[\"project_id\"],\n                    role__in=allowed_role_values,\n                    is_active=True,\n                ).exists():",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            985,
+            988
+          ],
+          "source": null,
+          "content": "issue = (\n            Issue.issue_objects.filter(\n                workspace__slug=slug, project_id=project_id\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Scope the issue lookup to the authenticated project, e.g. `Issue.objects.filter(id__in=issue_ids, project_id=project_id)` (and/or workspace__slug=slug), so only issues belonging to the requester's project can be read and updated.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8132,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1103,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:bulk-date-idor:1",
+      "cwe_id": "CWE-89",
+      "explanation": "IssueDetailEndpoint.get (new in this PR) reads order_by from the request query string (request.GET.get(\"order_by\", \"-created_at\")) and passes it to order_issue_queryset. In order_issue_queryset, any value not matching the hardcoded priority/state/label/assignee branches falls into the else branch which executes issue_queryset.order_by(order_by_param) with the raw attacker-controlled string. Django's order_by() interpolates the field name directly into the SQL ORDER BY clause (it is not a bound parameter), so an attacker can inject arbitrary SQL via the order_by query parameter. The new endpoint exposes this unvalidated path.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1050,
+            1053
+          ],
+          "source": null,
+          "content": "order_by_param = request.GET.get(\"order_by\", \"-created_at\")\n        issue, order_by_param = order_issue_queryset(\n            issue_queryset=issue,\n            order_by_param=order_by_param,\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/utils/order_queryset.py",
+          "lines": [
+            81,
+            84
+          ],
+          "source": null,
+          "content": "    else:\n        issue_queryset = issue_queryset.order_by(order_by_param)\n        order_by_param = order_by_param\n    return issue_queryset, order_by_param",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Validate order_by_param against a strict allowlist of permitted Issue model fields (and their negations) before passing it to order_by(), or reject/ignore any value not in the allowlist, so the raw user string is never interpolated into the ORDER BY clause.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7457,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1050,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:relation-create-list:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The create() action builds IssueRelation rows for every `issue` id supplied in the request body (`issues = request.data.get(\"issues\", [])`). ProjectEntityPermission (project.py:100-107) only verifies that the requester is an active Admin/Member of the project identified by `view.project_id`; it does not verify that each `issue` in the `issues` list actually belongs to that project/workspace. The code sets `project_id=project_id` and `workspace_id=project.workspace_id` on the new IssueRelation rows without checking that the referenced `issue` (used as issue_id or related_issue_id) is in the same project. An authenticated member of one project can therefore create relation rows pointing at issue ids from another project/workspace (cross-project IDOR), because the per-object ownership check is absent. This is a changed line (the issue_id/related_issue_id assignment now also covers start_after/finish_after) and the missing per-issue ownership check is the authorization gap.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/relation.py",
+          "lines": [
+            283,
+            305
+          ],
+          "source": null,
+          "content": "issue_id=(\n    issue\n    if relation_type\n    in [\"blocking\", \"start_after\", \"finish_after\"]\n    else issue_id\n),\nrelated_issue_id=(\n    issue_id\n    if relation_type\n    in [\"blocking\", \"start_after\", \"finish_after\"]\n    else issue\n),\nrelation_type=(get_actual_relation(relation_type)),\nproject_id=project_id,\nworkspace_id=project.workspace_id,",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/permissions/project.py",
+          "lines": [
+            100,
+            107
+          ],
+          "source": null,
+          "content": "## Only project members or admins can create and edit the project attributes\nreturn ProjectMember.objects.filter(\n    workspace__slug=view.workspace_slug,\n    member=request.user,\n    role__in=[Admin, Member],\n    project_id=view.project_id,\n    is_active=True,\n).exists()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Validate that each `issue` id in the request belongs to the same project/workspace before creating the relation, e.g. filter `Issue.objects.filter(id__in=issues, project_id=project_id, workspace__slug=slug)` and reject or drop any ids not found, so cross-project issue ids cannot be linked.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7693,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "apiserver/plane/app/views/issue/relation.py",
+      "line": 283,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "plane-bulk-issue-dates-idor",
+  "url": "https://github.com/makeplane/plane/pull/5915",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-4q54-h4x9-m329",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "apiserver/plane/app/views/issue/base.py",
+    "apps/api/plane/app/views/issue/base.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

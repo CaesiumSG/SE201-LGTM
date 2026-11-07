@@ -1,0 +1,477 @@
+{
+  "id": "django-raster-band-index-sqli-fixed",
+  "repo": "django/django",
+  "pr": null,
+  "title": "Adding spatial lookups to RasterField interpolated the user-supplied band index from the lookup tuple straight into the PostGIS SQL template, so a non-integer band index injects SQL.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "eb22e1d6d643360e952609ef562c139a100ea4eb",
+  "pr_sha": "81aa5292967cd09319c45fe2c1a525ce7b6684d8",
+  "files_changed": 5,
+  "python_files_changed": 2,
+  "added_lines": 52,
+  "diff_chars": 3900,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 79.2,
+  "index_seconds": 30.3,
+  "index_reused": false,
+  "index_chunks": 4000,
+  "semgrep_findings_total": 1,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 4,
+    "hunks_reviewed": 4,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 6,
+  "reviewer_units": 2,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/backends/postgis/operations.py",
+                  "start_line": 30,
+                  "end_line": 100,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 path=django/contrib/gis/db/backends/postgis/operations.py lines=30-100]\n30:         # geography type. Lookups that don't support geography will be cast to\n31:         # geometry.\n32:         self.geography = geography\n33:         # Only a subset of the operators and functions are available for the\n34:         # raster type. Lookups that don't support raster will be converted to\n35:         # polygons. If the raster argument is set to BILATERAL, then the\n36:         # operator cannot handle mixed geom-raster lookups.\n37:         self.raster = raster\n38:         super().__init__(**kwargs)\n39: \n40:     def as_sql(self, connection, lookup, template_params, *args):\n41:         template_params = self.check_raster(lookup, template_params)\n42:         template_params = self.check_geography(lookup, template_params)\n43:         return super().as_sql(connection, lookup, template_params, *args)\n44: \n45:     def check_raster(self, lookup, template_params):\n46:         spheroid = lookup.rhs_params and lookup.rhs_params[-1] == \"spheroid\"\n47: \n48:         # Check which input is a raster.\n49:         lhs_is_raster = lookup.lhs.field.geom_type == \"RASTER\"\n50:         rhs_is_raster = isinstance(lookup.rhs, GDALRaster)\n51: \n52:         # Look for band indices and inject them if provided.\n53:         if lookup.band_lhs is not None and lhs_is_raster:\n54:             if not isinstance(lookup.band_lhs, int):\n55:                 name = lookup.band_lhs.__class__.__name__\n56:                 raise TypeError(f\"Band index must be an integer, but got {name!r}.\")\n57:             if not self.func:\n58:                 raise ValueError(\n59:                     \"Band indices are not allowed for this operator, it works on bbox \"\n60:                     \"only.\"\n61:                 )\n62:             template_params[\"lhs\"] = \"%s, %s\" % (\n63:                 template_params[\"lhs\"],\n64:                 lookup.band_lhs,\n65:             )\n66: \n67:         if lookup.band_rhs is not None and rhs_is_raster:\n68:             if not isinstance(lookup.band_rhs, int):\n69:                 name = lookup.band_rhs.__class__.__name__\n70:                 raise TypeError(f\"Band index must be an integer, but got {name!r}.\")\n71:             if not self.func:\n72:                 raise ValueError(\n73:                     \"Band indices are not allowed for this operator, it works on bbox \"\n74:                     \"only.\"\n75:                 )\n76:             template_params[\"rhs\"] = \"%s, %s\" % (\n77:                 template_params[\"rhs\"],\n78:                 lookup.band_rhs,\n79:             )\n80: \n81:         # Convert rasters to polygons if necessary.\n82:         if not self.raster or spheroid:\n83:             # Operators without raster support.\n84:             if lhs_is_raster:\n85:                 template_params[\"lhs\"] = \"ST_Polygon(%s)\" % template_params[\"lhs\"]\n86:             if rhs_is_raster:\n87:                 template_params[\"rhs\"] = \"ST_Polygon(%s)\" % template_params[\"rhs\"]\n88:         elif self.raster == BILATERAL:\n89:             # Operators with raster support but don't support mixed (rast-geom)\n90:             # lookups.\n91:             if lhs_is_raster and not rhs_is_raster:\n92:                 template_params[\"lhs\"] = \"ST_Polygon(%s)\" % template_params[\"lhs\"]\n93:             elif rhs_is_raster and not lhs_is_raster:\n94:                 template_params[\"rhs\"] = \"ST_Polygon(%s)\" % template_params[\"rhs\"]\n95: \n96:         return template_params\n97: \n98:     def check_geography(self, lookup, template_params):\n99:         \"\"\"Convert geography fields to geometry types, if necessary.\"\"\"\n100:         if lookup.lhs.output_field.geography and not self.geography:\n[END READ]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "RasterBandTransform band_lhs band_rhs process_band_indices lookup"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb status=ok truncated=true incomplete=true query=\"RasterBandTransform band_lhs band_rhs process_band_indices lookup\"]\n**Exploration: RasterBandTransform band_lhs band_rhs process_band_indices lookup**\n\nFound 89 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `RasterBandTransform` (django/contrib/gis/db/models/lookups.py:9) \u2014 2 callers in `django/contrib/gis/db/models/lookups.py`; no tests found within 3 caller hops\n- `process_band_indices` (django/contrib/gis/db/models/lookups.py:37) \u2014 2 callers in `django/contrib/gis/db/models/lookups.py`; no tests found within 3 caller hops\n- `transform` (django/contrib/gis/gdal/geometries.py:461) \u2014 11 callers in `django/contrib/gis/forms/widgets.py`, `django/contrib/gis/utils/layermapping.py`; tests: `tests/gis_tests/gdal_tests/test_geom.py`, `tests/gis_tests/test_geoforms.py`, `tests/gis_tests/geoapp/test_functions.py`, `tests/gis_tests/geoapp/test_expressions.py` +1\n- `transform` (django/contrib/gis/gdal/raster/source.py:484) \u2014 3 callers; tests: `tests/gis_tests/gdal_tests/test_raster.py`\n\n**Relationships**\n\n**extends:**\n- RasterBandTransform \u2192 Transform\n- Transform \u2192 Func\n- Func \u2192 SQLiteNumericMixin\n- Func \u2192 Expression\n- Expression \u2192 Combinable\n- Expression \u2192 BaseExpression\n- Transform \u2192 RegisterLookupMixin\n- IsValid \u2192 Transform\n- SHA384 \u2192 Transform\n- GeometryType \u2192 Transform\n- ... and 35 more\n\n**references:**\n- process_band_indices \u2192 RasterBandTransform\n- process_rhs_params \u2192 RasterBandTransform\n- transform \u2192 SpatialReference\n- transform \u2192 CoordTransform\n- transform \u2192 SpatialReference\n- test_raster_transform_clone \u2192 GDALRaster\n- transform \u2192 Field\n- setup_joins \u2192 transform\n- setup_joins \u2192 JoinInfo\n- process_rhs \u2192 Query\n- ... and 5 more\n\n**calls:**\n- as_sql \u2192 compile\n- process_rhs_params \u2192 process_band_indices\n- process_rhs_params \u2192 process_band_indices\n- lhs \u2192 get_source_expressions\n- transform \u2192 clone\n- transform \u2192 geom_transform_to\n- transform \u2192 geom_transform\n- test_transform_dim \u2192 transform\n- assertTextarea \u2192 transform\n- test_union_mixed_srid \u2192 transform\n- ... and 68 more\n\n**instantiates:**\n- transform \u2192 SpatialReference\n- get_linear_geometry \u2192 OGRGeometry\n- test_transform_dim \u2192 OGRGeometry\n- clone \u2192 OGRGeometry\n- verify_geom \u2192 OGRGeometry\n- test_ogrgeometry_transform_workaround \u2192 OGRGeometry\n- transform \u2192 GDALRaster\n- transform \u2192 SpatialReference\n- test_raster_transform_clone \u2192 GDALRaster\n- test_raster_transform_clone_name \u2192 GDALRaster\n- ... and 8 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/contrib/gis/db/models/lookups.py`** \u2014 RightLookup(class), StrictlyAboveLookup(class), SameAsLookup(class), BBContainsLookup(class), GISLookup(extends), process_band_indices(calls), as_sql(method), process_rhs_params(method), RasterBandTransform(references), __init__(method), +25 more\n\n```python\n6\tfrom django.utils.regex_helper import _lazy_re_compile\n7\t\n8\t\n9\tclass RasterBandTransform(Transform):\n10\t    def as_sql(self, compiler, connection):\n11\t        return compiler.compile(self.lhs)\n12\t\n13\t\n14\tclass GISLookup(Lookup):\n15\t    sql_template = None\n16\t    transform_func = None\n17\t    distance = False\n18\t    band_rhs = None\n19\t    band_lhs = None\n20\t\n21\t    def __init__(self, lhs, rhs):\n22\t        rhs, *self.rhs_params = rhs if isinstance(rhs, (list, tuple)) else (rhs,)\n23\t        super().__init__(lhs, rhs)\n24\t        self.template_params = {}\n25\t        self.process_rhs_params()\n26\t\n27\t    def process_rhs_params(self):\n28\t        if self.rhs_params:\n29\t            # Check if a band index was passed in the query argument.\n30\t            if len(self.rhs_params) == (2 if self.lookup_name == \"relate\" else 1):\n31\t                self.process_band_indices()\n32\t            elif len(self.rhs_params) > 1:\n33\t                raise ValueError(\"Tuple too long for lookup %s.\" % self.lookup_name)\n34\t        elif isinstance(self.lhs, RasterBandTransform):\n35\t            self.process_band_indices(only_lhs=True)\n36\t\n37\t    def process_band_indices(self, only_lhs=False):\n38\t        \"\"\"\n39\t        Extract the lhs band index from the band transform class and the rhs\n40\t        band index from the input tuple.\n41\t        \"\"\"\n42\t        # PostGIS band indices are 1-based, so the band index needs to be\n43\t        # increased to be consistent with the GDALRaster band indices.\n44\t        if only_lhs:\n45\t            self.band_rhs = 1\n46\t            self.band_lhs = self.lhs.band_index + 1\n47\t            return\n48\t\n49\t        if isinstance(self.lhs, RasterBandTransform):\n50\t            self.band_lhs = self.lhs.band_index + 1\n51\t        else:\n52\t            self.band_lhs = 1\n53\t\n54\t        self.band_rhs, *self.rhs_params = self.rhs_params\n55\t\n56\t    def get_db_prep_lookup(self, value, connection):\n57\t        # get_db_prep_lookup is called by process_rhs from super class\n58\t        return (\"%s\", (connection.ops.Adapter(value),))\n59\t\n60\t    def process_rhs(self, compiler, connection):\n61\t        if isinstance(self.rhs, Query):\n62\t            # If rhs is some Query, don't touch it.\n63\t            return super().process_rhs(compiler, connection)\n64\t        if isinstance(self.rhs, Expression):\n65\t            self.rhs = self.rhs.resolve_expression(compiler.query)\n66\t        rhs, rhs_params = super().process_rhs(compiler, connection)\n67\t        placeholder = connection.ops.get_geom_placeholder(\n68\t            self.lhs.output_field, self.rhs, compiler\n69\t        )\n70\t        return placeholder % rhs, rhs_par\n[TRUNCATED omitted_chars=19344]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/gis_tests/rasterapp/test_rasterfield.py",
+                  "start_line": 330,
+                  "end_line": 420,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 path=tests/gis_tests/rasterapp/test_rasterfield.py lines=330-420]\n330: \n331:         # Filter through related model.\n332:         qs = RasterRelatedModel.objects.filter(rastermodel__rast__dwithin=(rast, 40))\n333:         self.assertEqual(qs.count(), 1)\n334: \n335:         # Filter through related model with band index transform\n336:         qs = RasterRelatedModel.objects.filter(rastermodel__rast__1__dwithin=(rast, 40))\n337:         self.assertEqual(qs.count(), 1)\n338: \n339:         # Filter through conditional statements.\n340:         qs = RasterModel.objects.filter(\n341:             Q(rast__dwithin=(rast, 40))\n342:             & Q(rastprojected__dwithin=(stx_pnt, D(km=10000)))\n343:         )\n344:         self.assertEqual(qs.count(), 1)\n345: \n346:         # Filter through different lookup.\n347:         qs = RasterModel.objects.filter(rastprojected__bbcontains=rast)\n348:         self.assertEqual(qs.count(), 1)\n349: \n350:     def test_lookup_input_tuple_too_long(self):\n351:         rast = GDALRaster(json.loads(JSON_RASTER))\n352:         msg = \"Tuple too long for lookup bbcontains.\"\n353:         with self.assertRaisesMessage(ValueError, msg):\n354:             RasterModel.objects.filter(rast__bbcontains=(rast, 1, 2))\n355: \n356:     def test_lookup_input_band_not_allowed(self):\n357:         rast = GDALRaster(json.loads(JSON_RASTER))\n358:         qs = RasterModel.objects.filter(rast__bbcontains=(rast, 1))\n359:         msg = \"Band indices are not allowed for this operator, it works on bbox only.\"\n360:         with self.assertRaisesMessage(ValueError, msg):\n361:             qs.count()\n362: \n363:     def test_lookup_invalid_band_rhs(self):\n364:         rast = GDALRaster(json.loads(JSON_RASTER))\n365:         qs = RasterModel.objects.filter(rast__contains=(rast, \"evil\"))\n366:         msg = \"Band index must be an integer, but got 'str'.\"\n367:         with self.assertRaisesMessage(TypeError, msg):\n368:             qs.count()\n369: \n370:     def test_lookup_invalid_band_lhs(self):\n371:         \"\"\"\n372:         Typical left-hand side usage is protected against non-integers, but for\n373:         defense-in-depth purposes, construct custom lookups that evade the\n374:         `int()` and `+ 1` checks in the lookups shipped by django.contrib.gis.\n375:         \"\"\"\n376: \n377:         # Evade the int() call in RasterField.get_transform().\n378:         class MyRasterBandTransform(RasterBandTransform):\n379:             band_index = \"evil\"\n380: \n381:             def process_band_indices(self, *args, **kwargs):\n382:                 self.band_lhs = self.lhs.band_index\n383:                 self.band_rhs, *self.rhs_params = self.rhs_params\n384: \n385:         # Evade the `+ 1` call in BaseSpatialField.process_band_indices().\n386:         ContainsLookup = RasterModel._meta.get_field(\"rast\").get_lookup(\"contains\")\n387: \n388:         class MyContainsLookup(ContainsLookup):\n389:             def process_band_indices(self, *args, **kwargs):\n390:                 self.band_lhs = self.lhs.band_index\n391:                 self.band_rhs, *self.rhs_params = self.rhs_params\n392: \n393:         RasterField = RasterModel._meta.get_field(\"rast\")\n394:         RasterField.register_lookup(MyContainsLookup, \"contains\")\n395:         self.addCleanup(RasterField.register_lookup, ContainsLookup, \"contains\")\n396: \n397:         qs = RasterModel.objects.annotate(\n398:             transformed=MyRasterBandTransform(\"rast\")\n399:         ).filter(transformed__contains=(F(\"transformed\"), 1))\n400:         msg = \"Band index must be an integer, but got 'str'.\"\n401:         with self.assertRaisesMessage(TypeError, msg):\n402:             list(qs)\n403: \n404:     def test_isvalid_lookup_with_raster_error(self):\n405:         qs = RasterModel.objects.filter(rast__isvalid=True)\n406:         msg = (\n407:             \"IsValid function requires a GeometryField in position 1, got RasterField.\"\n408:         )\n409:         with self.assertRaisesMessage(TypeError, msg):\n410:             qs.count()\n411: \n412:     def test_result_of_gis_lookup_with_rasters(self):\n413:         # Point is in the interior\n414:         qs = RasterModel.objects.filter(\n415:             rast__contains=GEOSGeometry(\"POINT (-0.5 0.5)\", 4326)\n416:         )\n417:         self.assertEqual(qs.count(), 1)\n418:         # Point is in the exterior\n419:         qs = RasterModel.objects.filter(\n420:             rast__contains=GEOSGeometry(\"POINT (0.5 0.5)\", 4326)\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "band_index",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"band_index\"]\ndjango/contrib/gis/db/models/fields.py:428:            band_index = int(name)\ndjango/contrib/gis/db/models/fields.py:432:                {\"band_index\": band_index},\ndjango/contrib/gis/db/models/lookups.py:46:            self.band_lhs = self.lhs.band_index + 1\ndjango/contrib/gis/db/models/lookups.py:50:            self.band_lhs = self.lhs.band_index + 1\ndjango/contrib/gis/gdal/prototypes/raster.py:96:get_band_index = int_output(std_call(\"GDALGetBandNumber\"), [c_void_p])\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/models/fields.py",
+                  "start_line": 415,
+                  "end_line": 445,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/models/fields.py lines=415-436]\n415: \n416:     def contribute_to_class(self, cls, name, **kwargs):\n417:         super().contribute_to_class(cls, name, **kwargs)\n418:         # Setup for lazy-instantiated Raster object. For large querysets, the\n419:         # instantiation of all GDALRasters can potentially be expensive. This\n420:         # delays the instantiation of the objects to the moment of evaluation\n421:         # of the raster attribute.\n422:         setattr(cls, self.attname, SpatialProxy(gdal.GDALRaster, self))\n423: \n424:     def get_transform(self, name):\n425:         from django.contrib.gis.db.models.lookups import RasterBandTransform\n426: \n427:         try:\n428:             band_index = int(name)\n429:             return type(\n430:                 \"SpecificRasterBandTransform\",\n431:                 (RasterBandTransform,),\n432:                 {\"band_index\": band_index},\n433:             )\n434:         except ValueError:\n435:             pass\n436:         return super().get_transform(name)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/models/lookups.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/models/lookups.py lines=1-60]\n1: from django.contrib.gis.db.models.fields import BaseSpatialField\n2: from django.contrib.gis.measure import Distance\n3: from django.db import NotSupportedError\n4: from django.db.models import Expression, Lookup, Transform\n5: from django.db.models.sql.query import Query\n6: from django.utils.regex_helper import _lazy_re_compile\n7: \n8: \n9: class RasterBandTransform(Transform):\n10:     def as_sql(self, compiler, connection):\n11:         return compiler.compile(self.lhs)\n12: \n13: \n14: class GISLookup(Lookup):\n15:     sql_template = None\n16:     transform_func = None\n17:     distance = False\n18:     band_rhs = None\n19:     band_lhs = None\n20: \n21:     def __init__(self, lhs, rhs):\n22:         rhs, *self.rhs_params = rhs if isinstance(rhs, (list, tuple)) else (rhs,)\n23:         super().__init__(lhs, rhs)\n24:         self.template_params = {}\n25:         self.process_rhs_params()\n26: \n27:     def process_rhs_params(self):\n28:         if self.rhs_params:\n29:             # Check if a band index was passed in the query argument.\n30:             if len(self.rhs_params) == (2 if self.lookup_name == \"relate\" else 1):\n31:                 self.process_band_indices()\n32:             elif len(self.rhs_params) > 1:\n33:                 raise ValueError(\"Tuple too long for lookup %s.\" % self.lookup_name)\n34:         elif isinstance(self.lhs, RasterBandTransform):\n35:             self.process_band_indices(only_lhs=True)\n36: \n37:     def process_band_indices(self, only_lhs=False):\n38:         \"\"\"\n39:         Extract the lhs band index from the band transform class and the rhs\n40:         band index from the input tuple.\n41:         \"\"\"\n42:         # PostGIS band indices are 1-based, so the band index needs to be\n43:         # increased to be consistent with the GDALRaster band indices.\n44:         if only_lhs:\n45:             self.band_rhs = 1\n46:             self.band_lhs = self.lhs.band_index + 1\n47:             return\n48: \n49:         if isinstance(self.lhs, RasterBandTransform):\n50:             self.band_lhs = self.lhs.band_index + 1\n51:         else:\n52:             self.band_lhs = 1\n53: \n54:         self.band_rhs, *self.rhs_params = self.rhs_params\n55: \n56:     def get_db_prep_lookup(self, value, connection):\n57:         # get_db_prep_lookup is called by process_rhs from super class\n58:         return (\"%s\", (connection.ops.Adapter(value),))\n59: \n60:     def process_rhs(self, compiler, connection):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class PostGISOperator",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"class PostGISOperator\"]\ndjango/contrib/gis/db/backends/postgis/operations.py:27:class PostGISOperator(SpatialOperator):\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/backends/postgis/operations.py",
+                  "start_line": 1,
+                  "end_line": 30,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/backends/postgis/operations.py lines=1-30]\n1: import re\n2: \n3: from django.conf import settings\n4: from django.contrib.gis.db.backends.base.operations import BaseSpatialOperations\n5: from django.contrib.gis.db.backends.utils import SpatialOperator\n6: from django.contrib.gis.db.models import GeometryField, RasterField\n7: from django.contrib.gis.gdal import GDALRaster\n8: from django.contrib.gis.geos.geometry import GEOSGeometryBase\n9: from django.contrib.gis.geos.prototypes.io import wkb_r\n10: from django.contrib.gis.measure import Distance\n11: from django.core.exceptions import ImproperlyConfigured\n12: from django.db import NotSupportedError, ProgrammingError\n13: from django.db.backends.postgresql.operations import DatabaseOperations\n14: from django.db.backends.postgresql.psycopg_any import is_psycopg3\n15: from django.db.models import Func, Value\n16: from django.utils.functional import cached_property\n17: from django.utils.version import get_version_tuple\n18: \n19: from .adapter import PostGISAdapter\n20: from .models import PostGISGeometryColumns, PostGISSpatialRefSys\n21: from .pgraster import from_pgraster\n22: \n23: # Identifier to mark raster lookups as bilateral.\n24: BILATERAL = \"bilateral\"\n25: \n26: \n27: class PostGISOperator(SpatialOperator):\n28:     def __init__(self, geography=False, raster=False, **kwargs):\n29:         # Only a subset of the operators and functions are available for the\n30:         # geography type. Lookups that don't support geography will be cast to\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "check_raster",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"check_raster\"]\ndjango/contrib/gis/db/backends/postgis/operations.py:41:        template_params = self.check_raster(lookup, template_params)\ndjango/contrib/gis/db/backends/postgis/operations.py:45:    def check_raster(self, lookup, template_params):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "raster band index lookup validation integer type"
+                },
+                "result": "[docs/ref/contrib/gis/gdal.txt:1940-1987] (relevance 0.55)\n5     GDT_Int32       32 bit signed integer\n    6     GDT_Float32     32 bit floating point\n    7     GDT_Float64     64 bit floating point\n    12    GDT_UInt64      64 bit unsigned integer (GDAL 3.5+)\n    13    GDT_Int64       64 bit signed integer (GDAL 3.5+)\n    14    GDT_Int8        8 bit signed integer (GDAL 3.7+)\n    ===== =============== ===================================\n\n.. object:: nr_of_bands\n\n    Integer representing the number of bands of the raster. A raster can be\n    created without passing band data upon creation. If the number of bands\n    isn't specified, it's automatically calculated from the length of the\n    ``bands`` input. The number of bands can't be changed after creation.\n\n.. object:: bands\n\n    A list of ``band_input`` dictionaries with band input data. The resulting\n    band indices are the same as in the list provided. The definition of the\n    band input dictionary is given below. If band data isn't provided, the\n    raster bands values are instantiated as an array of zeros and the \"no\n    data\" value is set to ``None``.\n\n.. object:: papsz_options\n\n    A dictionary with raster creation options. The key-value pairs of the\n    input dictionary are passed to the driver on creation of the raster.\n\n    The available options are driver-specific and are described in the\n    documentation of each driver.\n\n    The values in the dictionary are not case-sensitive and are automatically\n    converted to the correct string format upon creation.\n\n    The following example uses some of the options available for the\n    `GTiff driver`__. The result is a compressed raster with an internal tiling\n    scheme. The internal tiles have a block size of 23 by 23:\n\n    .. code-block:: pycon\n\n        >>> GDALRaster(\n        ...     {\n        ...         \"driver\": \"GTiff\",\n        ...         \"name\": \"/path/to/new/file.tif\",\n        ...         \"srid\": 4326,\n        ...         \"width\": 255,\n        ...         \"height\": 255,\n        ...         \"nr_of_bands\": 1,\n\n---\n\n[docs/ref/contrib/gis/gdal.txt:1781-1816] (relevance 0.45)\nIf ``as_string`` is ``True``, the data type is returned as a string\n        with the following possible values: ``GCI_Undefined``,\n        ``GCI_GrayIndex``, ``GCI_PaletteIndex``, ``GCI_RedBand``,\n        ``GCI_GreenBand``, ``GCI_BlueBand``, ``GCI_AlphaBand``,\n        ``GCI_HueBand``, ``GCI_SaturationBand``, ``GCI_LightnessBand``,\n        ``GCI_CyanBand``, ``GCI_MagentaBand``, ``GCI_YellowBand``,\n        ``GCI_BlackBand``, ``GCI_YCbCr_YBand``, ``GCI_YCbCr_CbBand``, and\n        ``GCI_YCbCr_CrBand``. ``GCI_YCbCr_CrBand`` also represents ``GCI_Max``\n        because both correspond to the integer 16, but only\n        ``GCI_YCbCr_CrBand`` is returned as a string.\n\n    .. method:: data(data=None, offset=None, size=None, shape=None)\n\n        The accessor to the pixel values of the ``GDALBand``. Returns the\n        complete data array if no parameters are provided. A subset of the\n        pixel array can be requested by specifying an offset and block size as\n        tuples.\n\n        If NumPy is available, the data is returned as NumPy array. For\n        performance reasons, it is highly recommended to use NumPy.\n\n        Data is written to the ``GDALBand`` if the ``data`` parameter is\n        provided. The input can be of one of the following types - packed\n        string, buffer, list, array, and NumPy array. The number of items in\n        the input should normally correspond to the total number of pixels in\n        the band, or to the number of pixels for a specific block of pixel\n        values if the ``offset`` and ``size`` parameters are provided.\n\n        If the number of items in the input is different from the target pixel\n        block, the ``shape`` parameter must be specified. The shape is a tuple\n        that specifies the width and height of the input data in pixels. The\n        data is then replicated to update the pixel values of the selected\n        block. This is useful to fill an entire band with a single value, for\n        instance.\n\n        For example:\n\n---\n\n[docs/ref/contrib/gis/geoquerysets.txt:783-835] (relevance 0.43)\nexpression </ref/models/expressions>`). To pass a band index to the lookup, use\na 3-tuple where the second entry is the band index.\n\nOn every distance lookup except :lookup:`dwithin`, an optional element,\n``'spheroid'``, may be included to use the more accurate spheroid distance\ncalculation functions on fields with a geodetic coordinate system.\n\nOn PostgreSQL, the ``'spheroid'`` option uses `ST_DistanceSpheroid\n<https://postgis.net/docs/ST_Distance_Spheroid.html>`__ instead of\n`ST_DistanceSphere <https://postgis.net/docs/ST_DistanceSphere.html>`__. The\nsimpler `ST_Distance <https://postgis.net/docs/ST_Distance.html>`__ function is\nused with projected coordinate systems. Rasters are converted to geometries for\nspheroid based lookups.\n\n.. fieldlookup:: distance_gt\n\n``distance_gt``\n---------------\n\nReturns models where the distance to the geometry field from the lookup\ngeometry is greater than the given distance value.\n\nExample::\n\n    Zipcode.objects.filter(poly__distance_gt=(geom, D(m=5)))\n\n==========  ==================================================\nBackend     SQL Equivalent\n==========  ==================================================\nPostGIS     ``ST_Distance/ST_Distance_Sphere(poly, geom) > 5``\nMariaDB     ``ST_Distance(poly, geom) > 5``\nMySQL       ``ST_Distance(poly, geom) > 5``\nOracle      ``SDO_GEOM.SDO_DISTANCE(poly, geom, 0.05) > 5``\nSpatiaLite  ``Distance(poly, geom) > 5``\n==========  ==================================================\n\n.. fieldlookup:: distance_gte\n\n``distance_gte``\n----------------\n\nReturns models where the distance to the geometry field from the lookup\ngeometry is greater than or equal to the given distance value.\n\nExample::\n\n    Zipcode.objects.filter(poly__distance_gte=(geom, D(m=5)))\n\n==========  ===================================================\nBackend     SQL Equivalent\n==========  ===================================================\nPostGIS     ``ST_Distance/ST_Distance_Sphere(poly, geom) >= 5``\nMariaDB     ``ST_Distance(poly, geom) >= 5``\n\n---\n\n[docs/ref/contrib/gis/gdal.txt:1982-2019] (relevance 0.42)\n...         \"driver\": \"GTiff\",\n        ...         \"name\": \"/path/to/new/file.tif\",\n        ...         \"srid\": 4326,\n        ...         \"width\": 255,\n        ...         \"height\": 255,\n        ...         \"nr_of_bands\": 1,\n        ...         \"papsz_options\": {\n        ...             \"compress\": \"packbits\",\n        ...             \"tiled\": \"yes\",\n        ...             \"blockxsize\": 23,\n        ...             \"blockysize\": 23,\n        ...         },\n        ...     }\n        ... )\n\n__ https://gdal.org/drivers/raster/gtiff.html\n\nThe ``band_input`` dictionary\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``bands`` key in the ``ds_input`` dictionary is a list of ``band_input``\ndictionaries. Each ``band_input`` dictionary can contain pixel values and the\n\"no data\" value to be set on the bands of the new raster. The data array can\nhave the full size of the new raster or be smaller. For arrays that are smaller\nthan the full raster, the ``size``, ``shape``, and ``offset`` keys  control the\npixel values. The corresponding keys are passed to the :meth:`~GDALBand.data`\nmethod. Their functionality is the same as setting the band data with that\nmethod. The following table describes the keys that can be used.\n\n================ ================================= ======================================================\nKey              Default                           Usage\n================ ================================= ======================================================\n``nodata_value`` ``None``                          Mapped to the :attr:`~GDALBand.nodata_value` attribute\n``data``         Same as ``nodata_value`` or ``0`` Passed to the :meth:`~GDALBand.data` method\n``size``         ``(with, height)`` of raste"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/contrib/gis/db/models/fields.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"def get_transform\"]\ndjango/contrib/gis/db/models/fields.py:424:    def get_transform(self, name):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class RasterField",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"class RasterField\"]\ndjango/contrib/gis/db/models/fields.py:389:class RasterField(BaseSpatialField):\ntests/gis_tests/rasterapp/test_rasterfield.py:20:class RasterFieldTest(TransactionTestCase):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/gis_tests/rasterapp/test_rasterfield.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 path=tests/gis_tests/rasterapp/test_rasterfield.py lines=1-40]\n1: import json\n2: \n3: from django.contrib.gis.db.models.fields import BaseSpatialField\n4: from django.contrib.gis.db.models.functions import Distance\n5: from django.contrib.gis.db.models.lookups import (\n6:     DistanceLookupBase,\n7:     GISLookup,\n8:     RasterBandTransform,\n9: )\n10: from django.contrib.gis.gdal import GDALRaster\n11: from django.contrib.gis.geos import GEOSGeometry\n12: from django.contrib.gis.measure import D\n13: from django.contrib.gis.shortcuts import numpy\n14: from django.db import connection\n15: from django.db.models import F, Func, Q\n16: from django.test import TransactionTestCase, skipUnlessDBFeature\n17: from django.test.utils import CaptureQueriesContext\n18: \n19: from ..data.rasters.textrasters import JSON_RASTER\n20: from .models import RasterModel, RasterRelatedModel\n21: \n22: \n23: @skipUnlessDBFeature(\"supports_raster\")\n24: class RasterFieldTest(TransactionTestCase):\n25:     available_apps = [\"gis_tests.rasterapp\"]\n26: \n27:     def setUp(self):\n28:         rast = GDALRaster(\n29:             {\n30:                 \"srid\": 4326,\n31:                 \"origin\": [0, 0],\n32:                 \"scale\": [-1, 1],\n33:                 \"skew\": [0, 0],\n34:                 \"width\": 5,\n35:                 \"height\": 5,\n36:                 \"nr_of_bands\": 2,\n37:                 \"bands\": [{\"data\": range(25)}, {\"data\": range(25, 50)}],\n38:             }\n39:         )\n40:         model_instance = RasterModel.objects.create(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/fields/__init__.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"def get_transform\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class SpatialOperator",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"class SpatialOperator\"]\ndjango/contrib/gis/db/backends/utils.py:7:class SpatialOperator:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/backends/utils.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/backends/utils.py lines=1-29]\n1: \"\"\"\n2: A collection of utility routines and classes used by the spatial\n3: backends.\n4: \"\"\"\n5: \n6: \n7: class SpatialOperator:\n8:     \"\"\"\n9:     Class encapsulating the behavior specific to a GIS operation (used by\n10:     lookups).\n11:     \"\"\"\n12: \n13:     sql_template = None\n14: \n15:     def __init__(self, op=None, func=None):\n16:         self.op = op\n17:         self.func = func\n18: \n19:     @property\n20:     def default_template(self):\n21:         if self.func:\n22:             return \"%(func)s(%(lhs)s, %(rhs)s)\"\n23:         else:\n24:             return \"%(lhs)s %(op)s %(rhs)s\"\n25: \n26:     def as_sql(self, connection, lookup, template_params, sql_params):\n27:         sql_template = self.sql_template or lookup.sql_template or self.default_template\n28:         template_params.update({\"op\": self.op, \"func\": self.func})\n29:         return sql_template % template_params, sql_params\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"def get_transform\"]\ndjango/db/models/expressions.py:406:    def get_transform(self, name):\ndjango/db/models/fields/json.py:123:    def get_transform(self, name):\ndjango/db/models/fields/reverse_related.py:121:    def get_transform(self, name):\ndjango/db/models/query_utils.py:350:    def get_transform(self, lookup_name):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/expressions.py",
+                  "start_line": 395,
+                  "end_line": 430,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/db/models/expressions.py lines=395-430]\n395:                 None if value is None else int(value)\n396:             )\n397:         elif internal_type == \"DecimalField\":\n398:             return lambda value, expression, connection: (\n399:                 None if value is None else Decimal(value)\n400:             )\n401:         return self._convert_value_noop\n402: \n403:     def get_lookup(self, lookup):\n404:         return self.output_field.get_lookup(lookup)\n405: \n406:     def get_transform(self, name):\n407:         return self.output_field.get_transform(name)\n408: \n409:     def relabeled_clone(self, change_map):\n410:         clone = self.copy()\n411:         clone.set_source_expressions(\n412:             [\n413:                 e.relabeled_clone(change_map) if e is not None else None\n414:                 for e in self.get_source_expressions()\n415:             ]\n416:         )\n417:         return clone\n418: \n419:     def replace_expressions(self, replacements):\n420:         if not replacements:\n421:             return self\n422:         if replacement := replacements.get(self):\n423:             return replacement\n424:         if not (source_expressions := self.get_source_expressions()):\n425:             return self\n426:         clone = self.copy()\n427:         clone.set_source_expressions(\n428:             [\n429:                 None if expr is None else expr.replace_expressions(replacements)\n430:                 for expr in source_expressions\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/fields/__init__.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 pattern=\"def get_transform\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "Field get_transform method definition"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb status=ok truncated=true incomplete=true query=\"Field get_transform method definition\"]\n**Exploration: Field get_transform method definition**\n\nFound 139 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_transform` (django/contrib/gis/db/models/fields.py:424) \u2014 3 callers in `django/db/models/constraints.py`, `django/db/models/query_utils.py`; tests: `tests/model_fields/test_jsonfield.py`\n\n**Relationships**\n\n**extends:**\n- Transform \u2192 Func\n- Func \u2192 SQLiteNumericMixin\n- Func \u2192 Expression\n- Expression \u2192 Combinable\n- Expression \u2192 BaseExpression\n- Transform \u2192 RegisterLookupMixin\n- RasterField \u2192 BaseSpatialField\n- HStoreField \u2192 CheckPostgresInstalledMixin\n- HStoreField \u2192 CheckFieldDefaultMixin\n- HStoreField \u2192 Field\n- ... and 31 more\n\n**calls:**\n- _check_references \u2192 get_transform\n- replace_expressions \u2192 get_transform\n- test_get_transforms \u2192 get_transform\n- RasterField \u2192 gettext_lazy\n- _check_references \u2192 _check_local_fields\n- check \u2192 _check_references\n- check \u2192 _check_references\n- check \u2192 _check_references\n- replace_expressions \u2192 create\n- HStoreField \u2192 gettext_lazy\n- ... and 35 more\n\n**instantiates:**\n- Migration \u2192 RasterField\n- RasterModel \u2192 RasterField\n- set_up_test_model \u2192 RasterField\n- __init__ \u2192 RasterField\n- _check_references \u2192 Error\n- replace_expressions \u2192 F\n- get_transform \u2192 IndexTransformFactory\n- get_transform \u2192 SliceTransformFactory\n- get_transform \u2192 KeyTransformFactory\n- MyModel \u2192 HStoreField\n- ... and 12 more\n\n**references:**\n- test_get_transforms \u2192 MyTransform\n- validate \u2192 ArrayField\n- get_db_prep_save \u2192 JSONField\n- check \u2192 Q\n- _check_local_fields \u2192 ForeignObjectRel\n- __init__ \u2192 _from_db_value\n- prefix_references \u2192 F\n- convert_value \u2192 _convert_value_noop\n- check \u2192 Q\n- test_get_transforms \u2192 KeyTransformFactory\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/contrib/postgres/fields/array.py`** \u2014 instantiates(instantiates), model(method), Error(instantiates), calls(calls), __init__(method), _from_db_value(method), _from_db_value(references), _choices_is_value(method), check(method), set_attributes_from_name(method), +42 more\n\n```python\n1\timport json\n2\t\n3\tfrom django.contrib.postgres import lookups\n4\tfrom django.contrib.postgres.forms import SimpleArrayField\n5\tfrom django.contrib.postgres.utils import (\n6\t    CheckPostgresInstalledMixin,\n7\t    prefix_validation_error,\n8\t)\n9\tfrom django.contrib.postgres.validators import ArrayMaxLengthValidator\n10\tfrom django.core import checks, exceptions\n11\tfrom django.db.models import Field, Func, IntegerField, Transform, Value\n12\tfrom django.db.models.fields.mixins import CheckFieldDefaultMixin\n13\tfrom django.db.models.lookups import Exact, In\n14\tfrom django.utils.translation import gettext_lazy as _\n15\t\n16\tfrom .utils import AttributeSetter\n17\t\n18\t__all__ = [\"ArrayField\"]\n19\t\n\n... (gap: ArrayField (django/contrib/postgres/fields/array.py:21), __init__ (django/contrib/postgres/fields/array.py:29), model (django/contrib/postgres/fields/array.py:45), _choices_is_value (django/contrib/postgres/fields/array.py:59), check (django/contrib/postgres/fields/array.py:62), set_attributes_from_name (django/contrib/postgres/fields/array.py:106), +11 more) ...\n\n177\t                values.append(base_field.value_to_string(obj))\n178\t        return json.dumps(values, ensure_ascii=False)\n179\t\n180\t    def get_transform(self, name):\n181\t        transform = super().get_transform(name)\n182\t        if transform:\n183\t            return transform\n184\t        if \"_\" not in name:\n185\t            try:\n186\t                index = int(name)\n187\t            except ValueError:\n188\t                pass\n189\t            else:\n190\t                index += 1  # postgres uses 1-indexing\n191\t                return IndexTransformFactory(index, self.base_field)\n192\t        try:\n193\t            start, end = name.split(\"_\")\n194\t            start = int(start) + 1\n195\t            end = int(end)  # don't add one here because postgres slices are weird\n196\t        except ValueError:\n197\t            pass\n198\t        else:\n199\t            return SliceTransformFactory(start, end)\n200\t\n201\t    def validate(self, value, model_instance):\n202\t        super().validate(value, model_instance)\n\n... (gap: run_validators (django/contrib/postgres/fields/array.py:220), formfield (django/contrib/postgres/fields/array.py:233), slice_expression (django/contrib/postgres/fields/array.py:243), ArrayRHSMixin (django/contrib/postgres/fields/array.py:250), __init__ (django/contrib/postgres/fields/array.py:251), process_rhs (django/contrib/postgres/fields/array.py:268), +5 more) ...\n\n299\t\n300\t\n301\t@ArrayField.register_lookup\n302\tclass ArrayLenTransform(Transform):\n303\t    lookup_name = \"len\"\n304\t    output_field = IntegerField()\n305\t\n306\t    def as_sql(self, compiler, connection):\n307\t        lhs, params = compiler.compile(self.lhs)\n308\t        # Distinguish NULL and empty arrays\n309\t        return (\n310\t            \"CASE WHEN %(lhs)s IS NULL THEN NULL ELSE \"\n311\t            \"coalesce(array_length(%(lhs)s, 1), 0) END\"\n312\t        ) % {\"lhs\": lhs}, params * 2\n313\t\n314\t\n315\t@ArrayField.register_lookup\n\n... (gap) ...\n\n346\t        return self.base_field\n347\t\n348\t\n349\tclass IndexTransformFactory:\n350\t    def __init__(self, index, base_field):\n351\t        self.index = index\n352\t        self.base_field = base_field\n353\t\n354\t    def __call__(self, *args, **kwargs):\n355\t        return IndexTransform(self.index, self.base_field, *args, **kwargs)\n\n[TRUNCATED omitted_chars=19281]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/fields/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"def get_transform\"]\ndjango/db/models/fields/json.py:123:    def get_transform(self, name):\ndjango/db/models/fields/reverse_related.py:121:    def get_transform(self, name):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/fields.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"def get_transform\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_transform",
+                  "file_glob": "django/db/models/*.py",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"def get_transform\", \"file_glob\": \"django/db/models/*.py\", \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "get_transform",
+                  "file_glob": "django/db/models/fields/__init__.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb pattern=\"get_transform\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"band-index-type-validation\",\n      \"title\": \"Add integer type validation for raster band indices in PostGIS operator\",\n      \"rationale\": \"Both hunks add identical isinstance(int) guards to the band_lhs and band_rhs branches of check_raster, preventing non-integer band indices from being interpolated into SQL.\",\n      \"hunks\": [\n        \"django/contrib/gis/db/backends/postgis/operations.py#0\",\n        \"django/contrib/gis/db/backends/postgis/operations.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"django/contrib/gis/db/backends/postgis/operations.py\", \"symbol\": \"PostGISOperator.check_raster\", \"start_line\": 45, \"end_line\": 96, \"snapshot\": \"pr\", \"why\": \"The modified method that interpolates band_lhs/band_rhs into template_params and is called from as_sql.\"},\n        {\"path\": \"django/contrib/gis/db/models/lookups.py\", \"symbol\": \"GISLookup.process_band_indices\", \"start_line\": 37, \"end_line\": 54, \"snapshot\": \"base\", \"why\": \"Sets lookup.band_lhs/band_rhs from user input; the new validation guards values that bypass the int() coercion in RasterField.get_transform.\"},\n        {\"path\": \"django/contrib/gis/db/models/lookups.py\", \"symbol\": \"RasterBandTransform\", \"start_line\": 9, \"end_line\": 11, \"snapshot\": \"base\", \"why\": \"Transform class whose band_index attribute feeds band_lhs; a non-int band_index evades the int() check in RasterField.get_transform.\"},\n        {\"path\": \"django/contrib/gis/db/models/fields.py\", \"symbol\": \"RasterField.get_transform\", \"start_line\": 424, \"end_line\": 436, \"snapshot\": \"base\", \"why\": \"Only enforces int(name) for the standard transform path; custom transforms/lookups can set a non-int band_index, which the new guard now rejects.\"},\n        {\"path\": \"django/contrib/gis/db/backends/utils.py\", \"symbol\": \"SpatialOperator.as_sql\", \"start_line\": 26, \"end_line\": 29, \"snapshot\": \"base\", \"why\": \"Base as_sql that formats template_params (containing the band index) into the final SQL string.\"}\n      ]\n    },\n    {\n      \"id\": \"band-index-validation-tests\",\n      \"title\": \"Add tests for invalid band index type on lhs and rhs\",\n      \"rationale\": \"These hunks add the import of RasterBandTransform and two test methods that exercise the new TypeError for non-integer band_rhs and band_lhs, directly covering the operations.py guards.\",\n      \"hunks\": [\n        \"tests/gis_tests/rasterapp/test_rasterfield.py#0\",\n        \"tests/gis_tests/rasterapp/test_rasterfield.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"tests/gis_tests/rasterapp/test_rasterfield.py\", \"symbol\": \"test_lookup_invalid_band_rhs\", \"start_line\": 363, \"end_line\": 368, \"snapshot\": \"pr\", \"why\": \"New test asserting TypeError when a string is passed as the rhs band index.\"},\n        {\"path\": \"tests/gis_tests/rasterapp/test_rasterfield.py\", \"symbol\": \"test_lookup_invalid_band_lhs\", \"start_line\": 370, \"end_line\": 402, \"snapshot\": \"pr\", \"why\": \"New test that constructs a custom RasterBandTransform and lookup with a string band_index to verify the lhs TypeError.\"},\n        {\"path\": \"django/contrib/gis/db/models/lookups.py\", \"symbol\": \"RasterBandTransform\", \"start_line\": 9, \"end_line\": 11, \"snapshot\": \"base\", \"why\": \"Imported by the test and subclassed to evade the int() coercion and reach the new guard.\"},\n        {\"path\": \"django/contrib/gis/db/models/lookups.py\", \"symbol\": \"GISLookup.process_band_indices\", \"start_line\": 37, \"end_line\": 54, \"snapshot\": \"base\", \"why\": \"The method the test's custom lookups override to inject a non-int band_lhs/band_rhs.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "band-index-type-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/backends/postgis/operations.py",
+                  "start_line": 40,
+                  "end_line": 100,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 path=django/contrib/gis/db/backends/postgis/operations.py lines=40-100]\n40:     def as_sql(self, connection, lookup, template_params, *args):\n41:         template_params = self.check_raster(lookup, template_params)\n42:         template_params = self.check_geography(lookup, template_params)\n43:         return super().as_sql(connection, lookup, template_params, *args)\n44: \n45:     def check_raster(self, lookup, template_params):\n46:         spheroid = lookup.rhs_params and lookup.rhs_params[-1] == \"spheroid\"\n47: \n48:         # Check which input is a raster.\n49:         lhs_is_raster = lookup.lhs.field.geom_type == \"RASTER\"\n50:         rhs_is_raster = isinstance(lookup.rhs, GDALRaster)\n51: \n52:         # Look for band indices and inject them if provided.\n53:         if lookup.band_lhs is not None and lhs_is_raster:\n54:             if not isinstance(lookup.band_lhs, int):\n55:                 name = lookup.band_lhs.__class__.__name__\n56:                 raise TypeError(f\"Band index must be an integer, but got {name!r}.\")\n57:             if not self.func:\n58:                 raise ValueError(\n59:                     \"Band indices are not allowed for this operator, it works on bbox \"\n60:                     \"only.\"\n61:                 )\n62:             template_params[\"lhs\"] = \"%s, %s\" % (\n63:                 template_params[\"lhs\"],\n64:                 lookup.band_lhs,\n65:             )\n66: \n67:         if lookup.band_rhs is not None and rhs_is_raster:\n68:             if not isinstance(lookup.band_rhs, int):\n69:                 name = lookup.band_rhs.__class__.__name__\n70:                 raise TypeError(f\"Band index must be an integer, but got {name!r}.\")\n71:             if not self.func:\n72:                 raise ValueError(\n73:                     \"Band indices are not allowed for this operator, it works on bbox \"\n74:                     \"only.\"\n75:                 )\n76:             template_params[\"rhs\"] = \"%s, %s\" % (\n77:                 template_params[\"rhs\"],\n78:                 lookup.band_rhs,\n79:             )\n80: \n81:         # Convert rasters to polygons if necessary.\n82:         if not self.raster or spheroid:\n83:             # Operators without raster support.\n84:             if lhs_is_raster:\n85:                 template_params[\"lhs\"] = \"ST_Polygon(%s)\" % template_params[\"lhs\"]\n86:             if rhs_is_raster:\n87:                 template_params[\"rhs\"] = \"ST_Polygon(%s)\" % template_params[\"rhs\"]\n88:         elif self.raster == BILATERAL:\n89:             # Operators with raster support but don't support mixed (rast-geom)\n90:             # lookups.\n91:             if lhs_is_raster and not rhs_is_raster:\n92:                 template_params[\"lhs\"] = \"ST_Polygon(%s)\" % template_params[\"lhs\"]\n93:             elif rhs_is_raster and not lhs_is_raster:\n94:                 template_params[\"rhs\"] = \"ST_Polygon(%s)\" % template_params[\"rhs\"]\n95: \n96:         return template_params\n97: \n98:     def check_geography(self, lookup, template_params):\n99:         \"\"\"Convert geography fields to geometry types, if necessary.\"\"\"\n100:         if lookup.lhs.output_field.geography and not self.geography:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/models/lookups.py",
+                  "start_line": 1,
+                  "end_line": 70,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/models/lookups.py lines=1-70]\n1: from django.contrib.gis.db.models.fields import BaseSpatialField\n2: from django.contrib.gis.measure import Distance\n3: from django.db import NotSupportedError\n4: from django.db.models import Expression, Lookup, Transform\n5: from django.db.models.sql.query import Query\n6: from django.utils.regex_helper import _lazy_re_compile\n7: \n8: \n9: class RasterBandTransform(Transform):\n10:     def as_sql(self, compiler, connection):\n11:         return compiler.compile(self.lhs)\n12: \n13: \n14: class GISLookup(Lookup):\n15:     sql_template = None\n16:     transform_func = None\n17:     distance = False\n18:     band_rhs = None\n19:     band_lhs = None\n20: \n21:     def __init__(self, lhs, rhs):\n22:         rhs, *self.rhs_params = rhs if isinstance(rhs, (list, tuple)) else (rhs,)\n23:         super().__init__(lhs, rhs)\n24:         self.template_params = {}\n25:         self.process_rhs_params()\n26: \n27:     def process_rhs_params(self):\n28:         if self.rhs_params:\n29:             # Check if a band index was passed in the query argument.\n30:             if len(self.rhs_params) == (2 if self.lookup_name == \"relate\" else 1):\n31:                 self.process_band_indices()\n32:             elif len(self.rhs_params) > 1:\n33:                 raise ValueError(\"Tuple too long for lookup %s.\" % self.lookup_name)\n34:         elif isinstance(self.lhs, RasterBandTransform):\n35:             self.process_band_indices(only_lhs=True)\n36: \n37:     def process_band_indices(self, only_lhs=False):\n38:         \"\"\"\n39:         Extract the lhs band index from the band transform class and the rhs\n40:         band index from the input tuple.\n41:         \"\"\"\n42:         # PostGIS band indices are 1-based, so the band index needs to be\n43:         # increased to be consistent with the GDALRaster band indices.\n44:         if only_lhs:\n45:             self.band_rhs = 1\n46:             self.band_lhs = self.lhs.band_index + 1\n47:             return\n48: \n49:         if isinstance(self.lhs, RasterBandTransform):\n50:             self.band_lhs = self.lhs.band_index + 1\n51:         else:\n52:             self.band_lhs = 1\n53: \n54:         self.band_rhs, *self.rhs_params = self.rhs_params\n55: \n56:     def get_db_prep_lookup(self, value, connection):\n57:         # get_db_prep_lookup is called by process_rhs from super class\n58:         return (\"%s\", (connection.ops.Adapter(value),))\n59: \n60:     def process_rhs(self, compiler, connection):\n61:         if isinstance(self.rhs, Query):\n62:             # If rhs is some Query, don't touch it.\n63:             return super().process_rhs(compiler, connection)\n64:         if isinstance(self.rhs, Expression):\n65:             self.rhs = self.rhs.resolve_expression(compiler.query)\n66:         rhs, rhs_params = super().process_rhs(compiler, connection)\n67:         placeholder = connection.ops.get_geom_placeholder(\n68:             self.lhs.output_field, self.rhs, compiler\n69:         )\n70:         return placeholder % rhs, rhs_params\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/models/fields.py",
+                  "start_line": 415,
+                  "end_line": 445,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/models/fields.py lines=415-436]\n415: \n416:     def contribute_to_class(self, cls, name, **kwargs):\n417:         super().contribute_to_class(cls, name, **kwargs)\n418:         # Setup for lazy-instantiated Raster object. For large querysets, the\n419:         # instantiation of all GDALRasters can potentially be expensive. This\n420:         # delays the instantiation of the objects to the moment of evaluation\n421:         # of the raster attribute.\n422:         setattr(cls, self.attname, SpatialProxy(gdal.GDALRaster, self))\n423: \n424:     def get_transform(self, name):\n425:         from django.contrib.gis.db.models.lookups import RasterBandTransform\n426: \n427:         try:\n428:             band_index = int(name)\n429:             return type(\n430:                 \"SpecificRasterBandTransform\",\n431:                 (RasterBandTransform,),\n432:                 {\"band_index\": band_index},\n433:             )\n434:         except ValueError:\n435:             pass\n436:         return super().get_transform(name)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis:\n\n1. **The change**: Adds `isinstance(lookup.band_lhs, int)` and `isinstance(lookup.band_rhs, int)` checks in `check_raster` (postgis/operations.py:54-56, 68-70), raising `TypeError` if band indices are not integers.\n\n2. **Policy relevance**: The provided policy excerpts are about Django's authentication backends and PostgreSQL range fields \u2014 neither is relevant to GIS raster band index validation. There is no documented access-control or authorization policy governing this code path.\n\n3. **Authorization analysis**: This is a database backend method that validates a band index parameter for SQL template construction. It does not:\n   - Fetch objects by user-controlled identifiers (no CWE-639)\n   - Implement a protected operation without auth (no CWE-862)\n   - Perform a wrong/insufficient role check (no CWE-863)\n\nThe change is a type-validation hardening (rejecting non-int band indices that could otherwise be interpolated into SQL templates). It is unrelated to authorization.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "band-index-validation-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/gis_tests/rasterapp/test_rasterfield.py",
+                  "start_line": 355,
+                  "end_line": 410,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=81aa5292967cd09319c45fe2c1a525ce7b6684d8 path=tests/gis_tests/rasterapp/test_rasterfield.py lines=355-410]\n355: \n356:     def test_lookup_input_band_not_allowed(self):\n357:         rast = GDALRaster(json.loads(JSON_RASTER))\n358:         qs = RasterModel.objects.filter(rast__bbcontains=(rast, 1))\n359:         msg = \"Band indices are not allowed for this operator, it works on bbox only.\"\n360:         with self.assertRaisesMessage(ValueError, msg):\n361:             qs.count()\n362: \n363:     def test_lookup_invalid_band_rhs(self):\n364:         rast = GDALRaster(json.loads(JSON_RASTER))\n365:         qs = RasterModel.objects.filter(rast__contains=(rast, \"evil\"))\n366:         msg = \"Band index must be an integer, but got 'str'.\"\n367:         with self.assertRaisesMessage(TypeError, msg):\n368:             qs.count()\n369: \n370:     def test_lookup_invalid_band_lhs(self):\n371:         \"\"\"\n372:         Typical left-hand side usage is protected against non-integers, but for\n373:         defense-in-depth purposes, construct custom lookups that evade the\n374:         `int()` and `+ 1` checks in the lookups shipped by django.contrib.gis.\n375:         \"\"\"\n376: \n377:         # Evade the int() call in RasterField.get_transform().\n378:         class MyRasterBandTransform(RasterBandTransform):\n379:             band_index = \"evil\"\n380: \n381:             def process_band_indices(self, *args, **kwargs):\n382:                 self.band_lhs = self.lhs.band_index\n383:                 self.band_rhs, *self.rhs_params = self.rhs_params\n384: \n385:         # Evade the `+ 1` call in BaseSpatialField.process_band_indices().\n386:         ContainsLookup = RasterModel._meta.get_field(\"rast\").get_lookup(\"contains\")\n387: \n388:         class MyContainsLookup(ContainsLookup):\n389:             def process_band_indices(self, *args, **kwargs):\n390:                 self.band_lhs = self.lhs.band_index\n391:                 self.band_rhs, *self.rhs_params = self.rhs_params\n392: \n393:         RasterField = RasterModel._meta.get_field(\"rast\")\n394:         RasterField.register_lookup(MyContainsLookup, \"contains\")\n395:         self.addCleanup(RasterField.register_lookup, ContainsLookup, \"contains\")\n396: \n397:         qs = RasterModel.objects.annotate(\n398:             transformed=MyRasterBandTransform(\"rast\")\n399:         ).filter(transformed__contains=(F(\"transformed\"), 1))\n400:         msg = \"Band index must be an integer, but got 'str'.\"\n401:         with self.assertRaisesMessage(TypeError, msg):\n402:             list(qs)\n403: \n404:     def test_isvalid_lookup_with_raster_error(self):\n405:         qs = RasterModel.objects.filter(rast__isvalid=True)\n406:         msg = (\n407:             \"IsValid function requires a GeometryField in position 1, got RasterField.\"\n408:         )\n409:         with self.assertRaisesMessage(TypeError, msg):\n410:             qs.count()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/gis/db/models/lookups.py",
+                  "start_line": 1,
+                  "end_line": 80,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=eb22e1d6d643360e952609ef562c139a100ea4eb path=django/contrib/gis/db/models/lookups.py lines=1-80]\n1: from django.contrib.gis.db.models.fields import BaseSpatialField\n2: from django.contrib.gis.measure import Distance\n3: from django.db import NotSupportedError\n4: from django.db.models import Expression, Lookup, Transform\n5: from django.db.models.sql.query import Query\n6: from django.utils.regex_helper import _lazy_re_compile\n7: \n8: \n9: class RasterBandTransform(Transform):\n10:     def as_sql(self, compiler, connection):\n11:         return compiler.compile(self.lhs)\n12: \n13: \n14: class GISLookup(Lookup):\n15:     sql_template = None\n16:     transform_func = None\n17:     distance = False\n18:     band_rhs = None\n19:     band_lhs = None\n20: \n21:     def __init__(self, lhs, rhs):\n22:         rhs, *self.rhs_params = rhs if isinstance(rhs, (list, tuple)) else (rhs,)\n23:         super().__init__(lhs, rhs)\n24:         self.template_params = {}\n25:         self.process_rhs_params()\n26: \n27:     def process_rhs_params(self):\n28:         if self.rhs_params:\n29:             # Check if a band index was passed in the query argument.\n30:             if len(self.rhs_params) == (2 if self.lookup_name == \"relate\" else 1):\n31:                 self.process_band_indices()\n32:             elif len(self.rhs_params) > 1:\n33:                 raise ValueError(\"Tuple too long for lookup %s.\" % self.lookup_name)\n34:         elif isinstance(self.lhs, RasterBandTransform):\n35:             self.process_band_indices(only_lhs=True)\n36: \n37:     def process_band_indices(self, only_lhs=False):\n38:         \"\"\"\n39:         Extract the lhs band index from the band transform class and the rhs\n40:         band index from the input tuple.\n41:         \"\"\"\n42:         # PostGIS band indices are 1-based, so the band index needs to be\n43:         # increased to be consistent with the GDALRaster band indices.\n44:         if only_lhs:\n45:             self.band_rhs = 1\n46:             self.band_lhs = self.lhs.band_index + 1\n47:             return\n48: \n49:         if isinstance(self.lhs, RasterBandTransform):\n50:             self.band_lhs = self.lhs.band_index + 1\n51:         else:\n52:             self.band_lhs = 1\n53: \n54:         self.band_rhs, *self.rhs_params = self.rhs_params\n55: \n56:     def get_db_prep_lookup(self, value, connection):\n57:         # get_db_prep_lookup is called by process_rhs from super class\n58:         return (\"%s\", (connection.ops.Adapter(value),))\n59: \n60:     def process_rhs(self, compiler, connection):\n61:         if isinstance(self.rhs, Query):\n62:             # If rhs is some Query, don't touch it.\n63:             return super().process_rhs(compiler, connection)\n64:         if isinstance(self.rhs, Expression):\n65:             self.rhs = self.rhs.resolve_expression(compiler.query)\n66:         rhs, rhs_params = super().process_rhs(compiler, connection)\n67:         placeholder = connection.ops.get_geom_placeholder(\n68:             self.lhs.output_field, self.rhs, compiler\n69:         )\n70:         return placeholder % rhs, rhs_params\n71: \n72:     def get_rhs_op(self, connection, rhs):\n73:         # Unlike BuiltinLookup, the GIS get_rhs_op() implementation should\n74:         # return an object (SpatialOperator) with an as_sql() method to allow\n75:         # for more complex computations (where the lhs part can be mixed in).\n76:         return connection.ops.gis_operators[self.lookup_name]\n77: \n78:     def as_sql(self, compiler, connection):\n79:         lhs_sql, lhs_params = self.process_lhs(compiler, connection)\n80:         rhs_sql, rhs_params = self.process_rhs(compiler, connection)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "This section adds only test code that asserts a `TypeError` guard against non-integer band indices. It contains no user-supplied identifiers, no view/endpoint, and no access-control logic, so there is no authorization surface to evaluate here.",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization access control band index raster lookup validation"
+                },
+                "result": "[docs/ref/contrib/gis/gdal.txt:1940-1987] (relevance 0.37)\n5     GDT_Int32       32 bit signed integer\n    6     GDT_Float32     32 bit floating point\n    7     GDT_Float64     64 bit floating point\n    12    GDT_UInt64      64 bit unsigned integer (GDAL 3.5+)\n    13    GDT_Int64       64 bit signed integer (GDAL 3.5+)\n    14    GDT_Int8        8 bit signed integer (GDAL 3.7+)\n    ===== =============== ===================================\n\n.. object:: nr_of_bands\n\n    Integer representing the number of bands of the raster. A raster can be\n    created without passing band data upon creation. If the number of bands\n    isn't specified, it's automatically calculated from the length of the\n    ``bands`` input. The number of bands can't be changed after creation.\n\n.. object:: bands\n\n    A list of ``band_input`` dictionaries with band input data. The resulting\n    band indices are the same as in the list provided. The definition of the\n    band input dictionary is given below. If band data isn't provided, the\n    raster bands values are instantiated as an array of zeros and the \"no\n    data\" value is set to ``None``.\n\n.. object:: papsz_options\n\n    A dictionary with raster creation options. The key-value pairs of the\n    input dictionary are passed to the driver on creation of the raster.\n\n    The available options are driver-specific and are described in the\n    documentation of each driver.\n\n    The values in the dictionary are not case-sensitive and are automatically\n    converted to the correct string format upon creation.\n\n    The following example uses some of the options available for the\n    `GTiff driver`__. The result is a compressed raster with an internal tiling\n    scheme. The internal tiles have a block size of 23 by 23:\n\n    .. code-block:: pycon\n\n        >>> GDALRaster(\n        ...     {\n        ...         \"driver\": \"GTiff\",\n        ...         \"name\": \"/path/to/new/file.tif\",\n        ...         \"srid\": 4326,\n        ...         \"width\": 255,\n        ...         \"height\": 255,\n        ...         \"nr_of_bands\": 1,\n\n---\n\n[docs/releases/1.1.3.txt:42-50] (relevance 0.35)\nDjango database API -- expose sensitive information such as users'\npassword hashes.\n\nTo remedy this, ``django.contrib.admin`` will now validate that\nquerystring lookup arguments either specify only fields on the model\nbeing viewed, or cross relations which have been explicitly\nallowed by the application developer using the preexisting\nmechanism mentioned above. This is backwards-incompatible for any\nusers relying on the prior ability to insert arbitrary lookups.\n\n---\n\n[docs/topics/auth/default.txt:852-900] (relevance 0.33)\nthe ``permission_required`` attribute, converted to a tuple if\n        necessary.\n\n    .. method:: has_permission()\n\n        Returns a boolean denoting whether the current user has permission to\n        execute the decorated view. By default, this returns the result of\n        calling :meth:`~django.contrib.auth.models.User.has_perms` with the\n        list of permissions returned by :meth:`get_permission_required`.\n\nRedirecting unauthorized requests in class-based views\n------------------------------------------------------\n\nTo ease the handling of access restrictions in :doc:`class-based views\n</ref/class-based-views/index>`, the ``AccessMixin`` can be used to configure\nthe behavior of a view when access is denied. Authenticated users are denied\naccess with an HTTP 403 Forbidden response. Anonymous users are redirected to\nthe login page or shown an HTTP 403 Forbidden response, depending on the\n:attr:`~django.contrib.auth.mixins.AccessMixin.raise_exception` attribute.\n\n.. class:: AccessMixin\n\n    .. attribute:: login_url\n\n        Default return value for :meth:`get_login_url`. Defaults to ``None``\n        in which case :meth:`get_login_url` falls back to\n        :setting:`settings.LOGIN_URL <LOGIN_URL>`.\n\n    .. attribute:: permission_denied_message\n\n        Default return value for :meth:`get_permission_denied_message`.\n        Defaults to an empty string.\n\n    .. attribute:: redirect_field_name\n\n        Default return value for :meth:`get_redirect_field_name`. Defaults to\n        ``\"next\"``.\n\n    .. attribute:: raise_exception\n\n        If this attribute is set to ``True``, a\n        :class:`~django.core.exceptions.PermissionDenied` exception is raised\n        when the conditions are not met. When ``False`` (the default),\n        anonymous users are redirected to the login page.\n\n    .. method:: get_login_url()\n\n         Returns the URL that users who don't pass the test will be redirected\n         to. Returns :attr:`login_url` if set, or :setting:`settings.LOGIN_URL\n\n---\n\n[docs/ref/contrib/gis/geoquerysets.txt:783-835] (relevance 0.32)\nexpression </ref/models/expressions>`). To pass a band index to the lookup, use\na 3-tuple where the second entry is the band index.\n\nOn every distance lookup except :lookup:`dwithin`, an optional element,\n``'spheroid'``, may be included to use the more accurate spheroid distance\ncalculation functions on fields with a geodetic coordinate system.\n\nOn PostgreSQL, the ``'spheroid'`` option uses `ST_DistanceSpheroid\n<https://postgis.net/docs/ST_Distance_Spheroid.html>`__ instead of\n`ST_DistanceSphere <https://postgis.net/docs/ST_DistanceSphere.html>`__. The\nsimpler `ST_Distance <https://postgis.net/docs/ST_Distance.html>`__ function is\nused with projected coordinate systems. Rasters are converted to geometries for\nspheroid based lookups.\n\n.. fieldlookup:: distance_gt\n\n``distance_gt``\n---------------\n\nReturns models where the distance to the geometry field from the lookup\ngeometry is greater than the given distance value.\n\nExample::\n\n    Zipcode.objects.filter(poly__distance_gt=(geom, D(m=5)))\n\n==========  ==================================================\nBackend     SQL Equivalent\n==========  ==================================================\nPostGIS     ``ST_Distance/ST_Distance_Sphere(poly, geom) > 5``\nMariaDB     ``ST_Distance(poly, geom) > 5``\nMySQL       ``ST_Distance(poly, geom) > 5``\nOracle      ``SDO_GEOM.SDO_DISTANCE(poly, geom, 0.05) > 5``\nSpatiaLite  ``Distance(poly, geom) > 5``\n==========  ==================================================\n\n.. fieldlookup:: distance_gte\n\n``distance_gte``\n----------------\n\nReturns models where the distance to the geometry field from the lookup\ngeometry is greater than or equal to the given distance value.\n\nExample::\n\n    Zipcode.objects.filter(poly__distance_gte=(geom, D(m=5)))\n\n==========  ===================================================\nBackend     SQL Equivalent\n==========  ===================================================\nPostGIS     ``ST_Distance/ST_Distance_Sphere(poly, geom) >= 5``\nMariaDB     ``ST_Distance(poly, geom) >= 5``\n\n---\n\n[docs/ref/contrib/gis/db-api.txt:211-266] (relevance 0.31)\n>>> qs = Elevation.objects.filter(rast__contains=(rst, 1))\n    >>> qs = Elevation.objects.filter(rast__1__contains=(rst, 1))\n\nOn the left hand side of the example, ``rast`` is the geographic raster field\nand :lookup:`contains <gis-contains>` is the spatial lookup type. On the right\nhand side, ``geom`` is a geometry input and ``rst`` is a\n:class:`~django.contrib.gis.gdal.GDALRaster` object. The band index defaults to\n``0`` in the first two queries and is set to ``1`` on the others.\n\nWhile all spatial lookups can be used with raster objects on both sides, not\nall underlying operators natively accept raster input. For cases where the\noperator expects geometry input, the raster is automatically converted to a\ngeometry. It's important to keep this in mind when interpreting the lookup\nresults.\n\nThe type of raster support is listed for all lookups in the :ref:`compatibility\ntable <spatial-lookup-compatibility>`. Lookups involving rasters are currently\nonly available for the PostGIS backend.\n\n.. _distance-queries:\n\nDistance Queries\n================\n\nIntroduction\n------------\n\nDistance calculations with spatial data is tricky because, unfortunately, the\nEarth is not flat. Some distance queries"
+              }
+            ]
+          },
+          {
+            "assistant": "The section consists entirely of test code that verifies a `TypeError` guard against non-integer band indices. It contains no user-supplied identifiers, no views/endpoints, and no access-control logic \u2014 there is no authorization surface (CWE-639/862/863) to evaluate here.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "django-raster-band-index-sqli",
+  "url": "https://github.com/django/django/commit/81aa5292967cd09319c45fe2c1a525ce7b6684d8",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-mwm9-4648-f68q",
+  "expected": "safe",
+  "vulnerable_files": [
+    "django/contrib/gis/db/backends/postgis/operations.py",
+    "django/contrib/gis/db/models/lookups.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

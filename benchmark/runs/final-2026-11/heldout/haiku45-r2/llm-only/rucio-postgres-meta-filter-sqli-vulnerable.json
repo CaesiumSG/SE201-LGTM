@@ -1,0 +1,158 @@
+{
+  "id": "rucio-postgres-meta-filter-sqli-vulnerable",
+  "repo": "rucio/rucio",
+  "pr": 5649,
+  "title": "Adding the external Postgres metadata plugin introduced FilterEngine.create_postgres_query(), which str.format()s DID-search filter keys and values from the REST API straight into raw SQL.",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "base": "fdcaebc23d6d96cdfee617187b647381e5bd2a7c",
+  "pr_sha": "4313fdfa67b57600951716e79459e114d48ac515",
+  "files_changed": 7,
+  "python_files_changed": 5,
+  "added_lines": 510,
+  "diff_chars": 26708,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 9.1,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 2
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1,
+    "insufficient_evidence": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "agent": "plain_llm",
+      "category": "sqli",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 354,
+      "cwe_id": "CWE-89",
+      "supported": null,
+      "kev_verdict": null,
+      "explanation": "The create_postgres_query method constructs SQL queries by string interpolation without parameterized queries. User-controlled inputs (key, value) are directly embedded into SQL strings via .format(). The 'key' parameter is used directly in LIKE expressions and column names without any validation or escaping. While 'value' attempts some replacement of wildcards, this is insufficient protection aga"
+    }
+  ],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "The create_postgres_query method constructs SQL queries by string interpolation without parameterized queries. User-controlled inputs (key, value) are directly embedded into SQL strings via .format(). The 'key' parameter is used directly in LIKE expressions and column names without any validation or escaping. While 'value' attempts some replacement of wildcards, this is insufficient protection against SQL injection. For example, a key like \"scope'; DROP TABLE users; --\" would be directly interpolated into the query.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            327,
+            375
+          ],
+          "source": null,
+          "content": "def create_postgres_query(self, additional_filters={}, fixed_table_columns=('scope', 'name', 'vo'),\n                          jsonb_column='data'):\n    ...\n    for and_group in or_group:\n        key, oper, value = and_group\n        if key in fixed_table_columns:\n            is_in_json_column = False\n        else:\n            is_in_json_column = True\n        if isinstance(value, str) and any([char in value for char in ['*', '%']]):\n            if value in ('*', '%', u'*', u'%'):\n                continue\n            else:\n                if oper == operator.eq:\n                    if is_in_json_column:\n                        expression = \"{}->>'{}' LIKE '{}' \".format(jsonb_column, key, value.replace('*', '%').replace('_', '\\_'))\n                    else:\n                        expression = \"{} LIKE '{}' \".format(key, value.replace('*', '%').replace('_', '\\_'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            360,
+            375
+          ],
+          "source": null,
+          "content": "if is_in_json_column:\n    expression = \"({}->>'{}')::float {} {}\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)\nelse:\n    expression = \"{}::float {} {}\".format(key, POSTGRES_OP_MAP[oper], value)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use parameterized queries with psycopg2 parameter substitution (e.g., %s placeholders and passing values as a tuple to execute()). Do not construct SQL strings via string interpolation. Validate and allowlist the 'key' parameter to ensure it only contains expected column names.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "vulnerable",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 354,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The diff shows a new ExternalPostgresJSONDidMeta plugin class that queries external PostgreSQL metadata. The visible code initializes database connections and configuration but the actual query methods are truncated. Without seeing the complete implementation of methods that fetch or filter DIDs by user-controlled parameters, it's unclear whether proper ownership/scope checks are performed. The class accepts scope and name parameters but authorization checks cannot be verified from the incomplete diff.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+          "lines": [
+            32,
+            90
+          ],
+          "source": null,
+          "content": "class ExternalPostgresJSONDidMeta(DidMetaPlugin):\n    def __init__(self, host=None, port=None, db=None, user=None, password=None, db_schema=None, table=None,\n                 table_is_managed=None, table_column_vo=None, table_column_scope=None, table_column_name=None,\n                 table_column_data=None):\n        super(ExternalPostgresJSONDidMeta, self).__init__()\n        ...\n    def _try_create_metadata_table(self):\n        \"\"\"\n        Try to crea",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Ensure all methods that retrieve DID metadata validate that the requesting user has authorization to access the specified scope and DID. Implement scope-based access control checks before returning metadata.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "insufficient_evidence",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+      "line": 1,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "rucio-postgres-meta-filter-sqli",
+  "url": "https://github.com/rucio/rucio/pull/5649",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-6j7p-qjhg-9947",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "lib/rucio/core/did_meta_plugins/filter_engine.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

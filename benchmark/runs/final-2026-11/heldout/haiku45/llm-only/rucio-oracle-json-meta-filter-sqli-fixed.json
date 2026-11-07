@@ -1,0 +1,171 @@
+{
+  "id": "rucio-oracle-json-meta-filter-sqli-fixed",
+  "repo": "rucio/rucio",
+  "pr": null,
+  "title": "Porting the DID filter engine to JSON metadata added an Oracle branch that str.format()s user filter keys and values into a json_exists() expression wrapped in sqlalchemy text().",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "base": "b241247cb2398c8863c298f844acac9fedba7797",
+  "pr_sha": "f9974126991707c92928b0917071f75def397c03",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 11,
+  "diff_chars": 4763,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 8.8,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 3
+  },
+  "n_findings": 3,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 3
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "The change adds a regex validation check on the 'key' parameter before it is used in SQL text construction. The regex `^[A-Za-z0-9_]+$` ensures that 'key' can only contain alphanumeric characters and underscores, effectively allowlisting safe identifier characters. Additionally, the code was modified to use parameterized queries with `:val` binding for the 'value' parameter instead of string interpolation, which prevents SQL injection on the value side. The validated 'key' is used as a JSON path component, and the strict allowlisting eliminates injection vectors there as well.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            538,
+            544
+          ],
+          "source": null,
+          "content": "if not re.match(r'^[A-Za-z0-9_]+$', key):\n    raise exception.DIDFilterSyntaxError(\"Invalid metadata key: '{}'\".format(key))\nif isinstance(value, str) and any([char in value for char in ['*', '%']]):  # wildcards\n    if value in ('*', '%', '*', '%'):                                       # match wildcard exactly == no filtering on key\n        continue\n    else:                                                                   # partial match with wildcard == like || notlike\n        if oper == operator.eq:\n            expression = text(\"json_exists({},'$?(@.{} like $val)' PASSING :val AS \\\"val\\\")\".format(json_column.key, key)).bindparams(val=value.replace('*', '%'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 539,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:sqli:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The modification replaces string interpolation with parameterized query binding for the 'value' parameter using `:val` and `.bindparams(val=value)`. This prevents SQL injection by separating the query structure from user-supplied data. The 'key' parameter is already validated via the regex allowlist above.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            548,
+            555
+          ],
+          "source": null,
+          "content": "if isinstance(value, (bool)):                                       # bool must be checked first (as bool subclass of int)\n    expression = text(\"json_exists({},'$?(@.{}.boolean() {} $val)' PASSING :val AS \\\"val\\\")\".format(json_column.key, key, ORACLE_OP_MAP[oper])).bindparams(val=value)\n                                elif isinstance(value, (int, float)):\n                                    expression = text(\"json_exists({},'$?(@.{} {} $val)' PASSING :val AS \\\"val\\\")\".format(json_column.key, key, ORACLE_OP_MAP[oper])).bindparams(val=value)\n                                else:\n                                    expression = text(\"json_exists({},'$?(@.{} {} $val)' PASSING :val AS \\\"val\\\")\".format(json_column.key, key, ORACLE_OP_MAP[oper])).bindparams(val=value)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 549,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:2",
+      "cwe_id": "CWE-862",
+      "explanation": "The change adds exception handling for `DIDFilterSyntaxError` in the REST endpoint. This is a defensive measure that catches and properly handles malformed filter syntax, returning a 400 error. This does not introduce or fix authorization flaws\u2014it merely improves error handling. The authorization checks for DIDs searches would be performed at a higher level (e.g., in the Search.get() method or the underlying core functions). The diff does not show removal or weakening of any authorization checks.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/web/rest/flaskapi/v1/dids.py",
+          "lines": [
+            289,
+            291
+          ],
+          "source": null,
+          "content": "return try_stream(generate(vo=request.environ['vo']))\n        except DIDFilterSyntaxError as error:\n            return generate_http_error_flask(400, error)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "lib/rucio/web/rest/flaskapi/v1/dids.py",
+      "line": 290,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "rucio-oracle-json-meta-filter-sqli",
+  "url": "https://github.com/rucio/rucio/commit/f9974126991707c92928b0917071f75def397c03",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-vjr5-c9qv-hgm3",
+  "expected": "safe",
+  "vulnerable_files": [
+    "lib/rucio/core/did_meta_plugins/filter_engine.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

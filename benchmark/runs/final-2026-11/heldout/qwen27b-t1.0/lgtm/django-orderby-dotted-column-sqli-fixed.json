@@ -1,0 +1,660 @@
+{
+  "id": "django-orderby-dotted-column-sqli-fixed",
+  "repo": "django/django",
+  "pr": null,
+  "title": "Reworking QuerySet.order_by() validation dropped the ORDER_PATTERN regex check for strings containing a period, so a 'table.column'-style value from request input is passed through as raw SQL in ORDER BY.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "da2269dc6f7daca090a28508dbd92207b6f639d0",
+  "pr_sha": "a34a5f724c5d5adb2109374ba3989ebb7b11f81f",
+  "files_changed": 5,
+  "python_files_changed": 3,
+  "added_lines": 14,
+  "diff_chars": 2193,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 83.6,
+  "index_seconds": 24.9,
+  "index_reused": false,
+  "index_chunks": 3486,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 5,
+    "hunks_reviewed": 5,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:order-by-validation:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "django/db/models/sql/constants.py",
+      "line": 22,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR changes the `add_ordering` branch (django/db/models/sql/query.py line 1974) to treat a dot-containing `order_by()` string as a trusted raw SQL column alias only when `ORDER_PATTERN` (`[-+]?[.\\w]+$`, constants.py line 22) matches, then skips the `names_to_path()` validation and stores the string for the ORDER BY clause. Because `re.match`/`$` are not anchored at the start, the pattern matche"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 11,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "sqli:order-by-validation:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR changes the `add_ordering` branch (django/db/models/sql/query.py line 1974) to treat a dot-containing `order_by()` string as a trusted raw SQL column alias only when `ORDER_PATTERN` (`[-+]?[.\\w]+$`, constants.py line 22) matches, then skips the `names_to_path()` validation and stores the string for the ORDER BY clause. Because `re.match`/`$` are not anchored at the start, the pattern matches at any position in the string: a value like `a b c;DROP TABLE t--` (whitespace/`;`/`-` are not in `[.\\w]`, but the trailing `t--` satisfies `[-+]?[.\\w]+$`) matches, so `continue` runs and the attacker-controlled string bypasses validation and is emitted into the generated SQL. The changed gate therefore lets a new class of malformed ordering values reach the compiler as SQL text without binding or a full allowlist; the only new test the PR adds asserts a rejection, and does not cover a matching payload.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "django/db/models/sql/constants.py",
+          "lines": [
+            22,
+            22
+          ],
+          "source": null,
+          "content": "ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\w]+$')",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/db/models/sql/query.py",
+          "lines": [
+            1974,
+            1982
+          ],
+          "source": null,
+          "content": "if '.' in item and ORDER_PATTERN.match(item):\n                    warnings.warn(\n                        'Passing column raw column aliases to order_by() is '\n                        'deprecated. Wrap %r in a RawSQL expression before '\n                        'passing it to order_by().' % item,\n                        category=RemovedInDjango40Warning,\n                        stacklevel=3,\n                    )\n                    continue",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "django/db/models/query.py",
+          "lines": [
+            1143,
+            1150
+          ],
+          "source": null,
+          "content": "def order_by(self, *field_names):\n        \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n        assert not self.query.is_sliced, \\\n            \"Cannot reorder a query once a slice has been taken.\"\n        obj = self._chain()\n        obj.query.clear_ordering(force_empty=False)\n        obj.query.add_ordering(*field_names)\n        return obj",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/topics/security.txt",
+          "content": "Django's querysets are protected from SQL injection since their queries are constructed using query parameterization. A query's SQL code is defined separately from the query's parameters.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Anchor the pattern to validate the entire ordering string instead of allowing it to match a trailing substring. Use a fully-anchored regex such as `r'[-+]?[\\w.]+\\s*(ASC|DESC)?\\s*$'` combined with `re.fullmatch` (or prefix with `^`) so that only well-formed, identifier-like column aliases are accepted as raw SQL and any other value falls through to `names_to_path()` validation or a RawSQL expression. Also strip/validate direction prefixes consistently and reject whitespace or non-identifier characters anywhere in the value.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7604,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "django/db/models/sql/constants.py",
+      "line": 22,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/constants.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/constants.py lines=1-24]\n1: \"\"\"\n2: Constants specific to the SQL storage portion of the ORM.\n3: \"\"\"\n4: \n5: # Size of each \"chunk\" for get_iterator calls.\n6: # Larger values are slightly faster at the expense of more storage space.\n7: GET_ITERATOR_CHUNK_SIZE = 100\n8: \n9: # Namedtuples for sql.* internal use.\n10: \n11: # How many results to expect from a cursor.execute call\n12: MULTI = 'multi'\n13: SINGLE = 'single'\n14: CURSOR = 'cursor'\n15: NO_RESULTS = 'no results'\n16: \n17: ORDER_DIR = {\n18:     'ASC': ('ASC', 'DESC'),\n19:     'DESC': ('DESC', 'ASC'),\n20: }\n21: \n22: # SQL join types.\n23: INNER = 'INNER JOIN'\n24: LOUTER = 'LEFT OUTER JOIN'\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1955,
+                  "end_line": 2000,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=1955-2000]\n1955:                     *self.annotation_select, *self._filtered_relations\n1956:                 ])\n1957:                 raise FieldError(\"Cannot resolve keyword %r into field. \"\n1958:                                  \"Choices are: %s\" % (name, \", \".join(names)))\n1959: \n1960:     def add_ordering(self, *ordering):\n1961:         \"\"\"\n1962:         Add items from the 'ordering' sequence to the query's \"order by\"\n1963:         clause. These items are either field names (not column names) --\n1964:         possibly with a direction prefix ('-' or '?') -- or OrderBy\n1965:         expressions.\n1966: \n1967:         If 'ordering' is empty, clear all ordering from the query.\n1968:         \"\"\"\n1969:         errors = []\n1970:         for item in ordering:\n1971:             if isinstance(item, str):\n1972:                 if '.' in item:\n1973:                     warnings.warn(\n1974:                         'Passing column raw column aliases to order_by() is '\n1975:                         'deprecated. Wrap %r in a RawSQL expression before '\n1976:                         'passing it to order_by().' % item,\n1977:                         category=RemovedInDjango40Warning,\n1978:                         stacklevel=3,\n1979:                     )\n1980:                     continue\n1981:                 if item == '?':\n1982:                     continue\n1983:                 if item.startswith('-'):\n1984:                     item = item[1:]\n1985:                 if item in self.annotations:\n1986:                     continue\n1987:                 if self.extra and item in self.extra:\n1988:                     continue\n1989:                 # names_to_path() validates the lookup. A descriptive\n1990:                 # FieldError will be raise if it's not.\n1991:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1992:             elif not hasattr(item, 'resolve_expression'):\n1993:                 errors.append(item)\n1994:             if getattr(item, 'contains_aggregate', False):\n1995:                 raise FieldError(\n1996:                     'Using an aggregate in order_by() without also including '\n1997:                     'it in annotate() is not allowed: %s' % item\n1998:                 )\n1999:         if errors:\n2000:             raise FieldError('Invalid order_by arguments: %s' % errors)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "order_by raw column aliases SQL injection escape prevention"
+                },
+                "result": "[docs/topics/db/sql.txt:231-283] (relevance 0.54)\nYou might also think you should write your query like this (with quotes\n    around ``%s``)::\n\n        >>> query = \"SELECT * FROM myapp_person WHERE last_name = '%s'\"\n\n    **Don't make either of these mistakes.**\n\n    As discussed in :ref:`sql-injection-protection`, using the ``params``\n    argument and leaving the placeholders unquoted protects you from `SQL\n    injection attacks`__, a common exploit where attackers inject arbitrary\n    SQL into your database. If you use string interpolation or quote the\n    placeholder, you're at risk for SQL injection.\n\n__ https://en.wikipedia.org/wiki/SQL_injection\n\n.. _executing-custom-sql:\n\nExecuting custom SQL directly\n=============================\n\nSometimes even :meth:`Manager.raw` isn't quite enough: you might need to\nperform queries that don't map cleanly to models, or directly execute\n``UPDATE``, ``INSERT``, or ``DELETE`` queries.\n\nIn these cases, you can always access the database directly, routing around\nthe model layer entirely.\n\nThe object ``django.db.connection`` represents the default database\nconnection. To use the database connection, call ``connection.cursor()`` to\nget a cursor object. Then, call ``cursor.execute(sql, [params])`` to execute\nthe SQL and ``cursor.fetchone()`` or ``cursor.fetchall()`` to return the\nresulting rows.\n\nFor example::\n\n    from django.db import connection\n\n    def my_custom_sql(self):\n        with connection.cursor() as cursor:\n            cursor.execute(\"UPDATE bar SET foo = 1 WHERE baz = %s\", [self.baz])\n            cursor.execute(\"SELECT foo FROM bar WHERE baz = %s\", [self.baz])\n            row = cursor.fetchone()\n\n        return row\n\nTo protect against SQL injection, you must not include quotes around the ``%s``\nplaceholders in the SQL string.\n\nNote that if you want to include literal percent signs in the query, you have to\ndouble them in the case you are passing parameters::\n\n     cursor.execute(\"SELECT foo FROM bar WHERE baz = '30%'\")\n     cursor.execute(\"SELECT foo FROM bar WHERE baz = '30%%' AND id = %s\", [self.id])\n\n---\n\n[docs/ref/models/querysets.txt:459-497] (relevance 0.52)\n``seq[-5:]``, we would see the fifth-last item first. Django doesn't support\nthat mode of access (slicing from the end), because it's not possible to do it\nefficiently in SQL.\n\nAlso, note that ``reverse()`` should generally only be called on a ``QuerySet``\nwhich has a defined ordering (e.g., when querying against a model which defines\na default ordering, or when using :meth:`order_by()`). If no such ordering is\ndefined for a given ``QuerySet``, calling ``reverse()`` on it has no real\neffect (the ordering was undefined prior to calling ``reverse()``, and will\nremain undefined afterward).\n\n``distinct()``\n~~~~~~~~~~~~~~\n\n.. method:: distinct(*fields)\n\nReturns a new ``QuerySet`` that uses ``SELECT DISTINCT`` in its SQL query. This\neliminates duplicate rows from the query results.\n\nBy default, a ``QuerySet`` will not eliminate duplicate rows. In practice, this\nis rarely a problem, because simple queries such as ``Blog.objects.all()``\ndon't introduce the possibility of duplicate result rows. However, if your\nquery spans multiple tables, it's possible to get duplicate results when a\n``QuerySet`` is evaluated. That's when you'd use ``distinct()``.\n\n.. note::\n    Any fields used in an :meth:`order_by` call are included in the SQL\n    ``SELECT`` columns. This can sometimes lead to unexpected results when used\n    in conjunction with ``distinct()``. If you order by fields from a related\n    model, those fields will be added to the selected columns and they may make\n    otherwise duplicate rows appear to be distinct. Since the extra columns\n    don't appear in the returned results (they are only there to support\n    ordering), it sometimes looks like non-distinct results are being returned.\n\n    Similarly, if you use a :meth:`values()` query to restrict the columns\n    selected, the columns used in any :meth:`order_by()` (or default model\n    ordering) will still be involved and may affect uniqueness of the results.\n\n    The moral here is that if you are using ``distinct()`` be careful about\n\n---\n\n[docs/ref/models/querysets.txt:1519-1572] (relevance 0.50)\nalias will be the same each time you construct the queryset in the same\n  way, so you can rely upon the alias name to not change.\n\n* ``order_by``\n\n  If you need to order the resulting queryset using some of the new\n  fields or tables you have included via ``extra()`` use the ``order_by``\n  parameter to ``extra()`` and pass in a sequence of strings. These\n  strings should either be model fields (as in the normal\n  :meth:`order_by()` method on querysets), of the form\n  ``table_name.column_name`` or an alias for a column that you specified\n  in the ``select`` parameter to ``extra()``.\n\n  For example::\n\n      q = Entry.objects.extra(select={'is_recent': \"pub_date > '2006-01-01'\"})\n      q = q.extra(order_by = ['-is_recent'])\n\n  This would sort all the items for which ``is_recent`` is true to the\n  front of the result set (``True`` sorts before ``False`` in a\n  descending ordering).\n\n  This shows, by the way, that you can make multiple calls to ``extra()``\n  and it will behave as you expect (adding new constraints each time).\n\n* ``params``\n\n  The ``where`` parameter described above may use standard Python\n  database string placeholders \u2014 ``'%s'`` to indicate parameters the\n  database engine should automatically quote. The ``params`` argument is\n  a list of any extra parameters to be substituted.\n\n  Example::\n\n      Entry.objects.extra(where=['headline=%s'], params=['Lennon'])\n\n  Always use ``params`` instead of embedding values directly into\n  ``where`` because ``params`` will ensure values are quoted correctly\n  according to your particular backend. For example, quotes will be\n  escaped correctly.\n\n  Bad::\n\n      Entry.objects.extra(where=[\"headline='Lennon'\"])\n\n  Good::\n\n      Entry.objects.extra(where=['headline=%s'], params=['Lennon'])\n\n.. warning::\n\n    If you are performing queries on MySQL, note that MySQL's silent type coercion\n    may cause unexpected results when mixing types. If you query on a string\n    type column, but with an integer value, MySQL will coerce the types of all values\n\n---\n\n[docs/ref/models/querysets.txt:494-541] (relevance 0.50)\nselected, the columns used in any :meth:`order_by()` (or default model\n    ordering) will still be involved and may affect uniqueness of the results.\n\n    The moral here is that if you are using ``distinct()`` be careful about\n    ordering by related models. Similarly, when using ``distinct()`` and\n    :meth:`values()` together, be careful when ordering by fields not in the\n    :meth:`values()` call.\n\nOn PostgreSQL only, you can pass positional arguments (``*fields``) in order to\nspecify the names of fields to which the ``DISTINCT`` should apply. This\ntranslates to a ``SELECT DISTINCT ON`` SQL query. Here's the difference. For a\nnormal ``distinct()`` call, the database compares *each* field in each row when\ndetermining which rows are distinct. For a ``distinct()`` call with specified\nfield names, the database will only compare the specified field names.\n\n.. note::\n    When you specify field names, you *must* provide an ``order_by()`` in the\n    ``QuerySet``, and the fields in ``order_by()`` must start with the fields in\n    ``distinct()``, in the same order.\n\n    For example, ``SELECT DISTINCT ON (a)`` gives you the first row for each\n    value in column ``a``. If you don't specify an order, you'll get some\n    arbitrary row.\n\nExamples (those after the first will only work on PostgreSQL)::\n\n    >>> Author.objects.distinct()\n    [...]\n\n    >>> Entry.objects.order_by('pub_date').distinct('pub_date')\n    [...]\n\n    >>> Entry.objects.order_by('blog').distinct('blog')\n    [...]\n\n    >>> Entry.objects.order_by('author', 'pub_date').distinct('author', 'pub_date')\n    [...]\n\n    >>> Entry.objects.order_by('blog__name', 'mod_date').distinct('blog__name', 'mod_da"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def order_by",
+                  "file_glob": "django/db/models/query.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"def order_by\"]\ndjango/db/models/query.py:1143:    def order_by(self, *field_names):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1143,
+                  "end_line": 1200,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/query.py lines=1143-1200]\n1143:     def order_by(self, *field_names):\n1144:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1145:         assert not self.query.is_sliced, \\\n1146:             \"Cannot reorder a query once a slice has been taken.\"\n1147:         obj = self._chain()\n1148:         obj.query.clear_ordering(force_empty=False)\n1149:         obj.query.add_ordering(*field_names)\n1150:         return obj\n1151: \n1152:     def distinct(self, *field_names):\n1153:         \"\"\"\n1154:         Return a new QuerySet instance that will select only distinct results.\n1155:         \"\"\"\n1156:         self._not_support_combined_queries('distinct')\n1157:         assert not self.query.is_sliced, \\\n1158:             \"Cannot create distinct fields once a slice has been taken.\"\n1159:         obj = self._chain()\n1160:         obj.query.add_distinct_fields(*field_names)\n1161:         return obj\n1162: \n1163:     def extra(self, select=None, where=None, params=None, tables=None,\n1164:               order_by=None, select_params=None):\n1165:         \"\"\"Add extra SQL fragments to the query.\"\"\"\n1166:         self._not_support_combined_queries('extra')\n1167:         assert not self.query.is_sliced, \\\n1168:             \"Cannot change a query once a slice has been taken\"\n1169:         clone = self._chain()\n1170:         clone.query.add_extra(select, select_params, where, params, tables, order_by)\n1171:         return clone\n1172: \n1173:     def reverse(self):\n1174:         \"\"\"Reverse the ordering of the QuerySet.\"\"\"\n1175:         if self.query.is_sliced:\n1176:             raise TypeError('Cannot reverse a query once a slice has been taken.')\n1177:         clone = self._chain()\n1178:         clone.query.standard_ordering = not clone.query.standard_ordering\n1179:         return clone\n1180: \n1181:     def defer(self, *fields):\n1182:         \"\"\"\n1183:         Defer the loading of data for certain fields until they are accessed.\n1184:         Add the set of deferred fields to any existing set of deferred fields.\n1185:         The only exception to this is if None is passed in as the only\n1186:         parameter, in which case removal all deferrals.\n1187:         \"\"\"\n1188:         self._not_support_combined_queries('defer')\n1189:         if self._fields is not None:\n1190:             raise TypeError(\"Cannot call defer() after .values() or .values_list()\")\n1191:         clone = self._chain()\n1192:         if fields == (None,):\n1193:             clone.query.clear_deferred_loading()\n1194:         else:\n1195:             clone.query.add_deferred_loading(fields)\n1196:         return clone\n1197: \n1198:     def only(self, *fields):\n1199:         \"\"\"\n1200:         Essentially, the opposite of defer(). Only the fields passed into this\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1900,
+                  "end_line": 1960,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=1900-1960]\n1900:         self.values_select = ()\n1901: \n1902:     def add_select_col(self, col, name):\n1903:         self.select += col,\n1904:         self.values_select += name,\n1905: \n1906:     def set_select(self, cols):\n1907:         self.default_cols = False\n1908:         self.select = tuple(cols)\n1909: \n1910:     def add_distinct_fields(self, *field_names):\n1911:         \"\"\"\n1912:         Add and resolve the given fields to the query's \"distinct on\" clause.\n1913:         \"\"\"\n1914:         self.distinct_fields = field_names\n1915:         self.distinct = True\n1916: \n1917:     def add_fields(self, field_names, allow_m2m=True):\n1918:         \"\"\"\n1919:         Add the given (model) fields to the select set. Add the field names in\n1920:         the order specified.\n1921:         \"\"\"\n1922:         alias = self.get_initial_alias()\n1923:         opts = self.get_meta()\n1924: \n1925:         try:\n1926:             cols = []\n1927:             for name in field_names:\n1928:                 # Join promotion note - we must not remove any rows here, so\n1929:                 # if there is no existing joins, use outer join.\n1930:                 join_info = self.setup_joins(name.split(LOOKUP_SEP), opts, alias, allow_many=allow_m2m)\n1931:                 targets, final_alias, joins = self.trim_joins(\n1932:                     join_info.targets,\n1933:                     join_info.joins,\n1934:                     join_info.path,\n1935:                 )\n1936:                 for target in targets:\n1937:                     cols.append(join_info.transform_function(target, final_alias))\n1938:             if cols:\n1939:                 self.set_select(cols)\n1940:         except MultiJoin:\n1941:             raise FieldError(\"Invalid field name: '%s'\" % name)\n1942:         except FieldError:\n1943:             if LOOKUP_SEP in name:\n1944:                 # For lookups spanning over relationships, show the error\n1945:                 # from the model on which the lookup failed.\n1946:                 raise\n1947:             elif name in self.annotations:\n1948:                 raise FieldError(\n1949:                     \"Cannot select the '%s' alias. Use annotate() to promote \"\n1950:                     \"it.\" % name\n1951:                 )\n1952:             else:\n1953:                 names = sorted([\n1954:                     *get_field_names_from_opts(opts), *self.extra,\n1955:                     *self.annotation_select, *self._filtered_relations\n1956:                 ])\n1957:                 raise FieldError(\"Cannot resolve keyword %r into field. \"\n1958:                                  \"Choices are: %s\" % (name, \", \".join(names)))\n1959: \n1960:     def add_ordering(self, *ordering):\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 3095,
+                  "end_line": 3130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=tests/queries/tests.py lines=3095-3130]\n3095:         w.negate()\n3096:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3097:         w = WhereNode(children=[empty_w, NothingNode()], connector='OR')\n3098:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3099:         w = WhereNode(children=[empty_w, NothingNode()], connector='AND')\n3100:         with self.assertRaises(EmptyResultSet):\n3101:             w.as_sql(compiler, connection)\n3102: \n3103: \n3104: class QuerySetExceptionTests(SimpleTestCase):\n3105:     def test_iter_exceptions(self):\n3106:         qs = ExtraInfo.objects.only('author')\n3107:         msg = \"'ManyToOneRel' object has no attribute 'attname'\"\n3108:         with self.assertRaisesMessage(AttributeError, msg):\n3109:             list(qs)\n3110: \n3111:     def test_invalid_order_by(self):\n3112:         msg = (\n3113:             \"Cannot resolve keyword '*' into field. Choices are: created, id, \"\n3114:             \"name\"\n3115:         )\n3116:         with self.assertRaisesMessage(FieldError, msg):\n3117:             Article.objects.order_by('*')\n3118: \n3119:     def test_order_by_escape_prevention(self):\n3120:         msg = (\n3121:             \"Cannot resolve keyword 'queries.name);' into field. Choices are: \"\n3122:             \"created, id, name\"\n3123:         )\n3124:         with self.assertRaisesMessage(FieldError, msg):\n3125:             Article.objects.order_by('queries.name);')\n3126: \n3127:     def test_invalid_queryset_model(self):\n3128:         msg = 'Cannot use QuerySet for \"Article\": Use a QuerySet for \"ExtraInfo\".'\n3129:         with self.assertRaisesMessage(ValueError, msg):\n3130:             list(Author.objects.filter(extra=Article.objects.all()))\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1971,
+                  "end_line": 2000,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1971-2000]\n1971:         errors = []\n1972:         for item in ordering:\n1973:             if isinstance(item, str):\n1974:                 if '.' in item and ORDER_PATTERN.match(item):\n1975:                     warnings.warn(\n1976:                         'Passing column raw column aliases to order_by() is '\n1977:                         'deprecated. Wrap %r in a RawSQL expression before '\n1978:                         'passing it to order_by().' % item,\n1979:                         category=RemovedInDjango40Warning,\n1980:                         stacklevel=3,\n1981:                     )\n1982:                     continue\n1983:                 if item == '?':\n1984:                     continue\n1985:                 if item.startswith('-'):\n1986:                     item = item[1:]\n1987:                 if item in self.annotations:\n1988:                     continue\n1989:                 if self.extra and item in self.extra:\n1990:                     continue\n1991:                 # names_to_path() validates the lookup. A descriptive\n1992:                 # FieldError will be raise if it's not.\n1993:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1994:             elif not hasattr(item, 'resolve_expression'):\n1995:                 errors.append(item)\n1996:             if getattr(item, 'contains_aggregate', False):\n1997:                 raise FieldError(\n1998:                     'Using an aggregate in order_by() without also including '\n1999:                     'it in annotate() is not allowed: %s' % item\n2000:                 )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def _lazy_re_compile",
+                  "file_glob": "django/utils/regex_helper.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"def _lazy_re_compile\"]\ndjango/utils/regex_helper.py:340:def _lazy_re_compile(regex, flags=0):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1-60]\n1: \"\"\"\n2: Create SQL statements for QuerySets.\n3: \n4: The code in here encapsulates all of the SQL construction so that QuerySets\n5: themselves do not have to (and could be backed by things other than SQL\n6: databases). The abstraction barrier only works one way: this module has to know\n7: all about the internals of models in order to get the information it needs.\n8: \"\"\"\n9: import copy\n10: import difflib\n11: import functools\n12: import inspect\n13: import sys\n14: import warnings\n15: from collections import Counter, namedtuple\n16: from collections.abc import Iterator, Mapping\n17: from itertools import chain, count, product\n18: from string import ascii_uppercase\n19: \n20: from django.core.exceptions import FieldDoesNotExist, FieldError\n21: from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections\n22: from django.db.models.aggregates import Count\n23: from django.db.models.constants import LOOKUP_SEP\n24: from django.db.models.expressions import (\n25:     BaseExpression, Col, Exists, F, OuterRef, Ref, ResolvedOuterRef,\n26: )\n27: from django.db.models.fields import Field\n28: from django.db.models.fields.related_lookups import MultiColSource\n29: from django.db.models.lookups import Lookup\n30: from django.db.models.query_utils import (\n31:     Q, check_rel_lookup_compatibility, refs_expression,\n32: )\n33: from django.db.models.sql.constants import (\n34:     INNER, LOUTER, ORDER_DIR, ORDER_PATTERN, SINGLE,\n35: )\n36: from django.db.models.sql.datastructures import (\n37:     BaseTable, Empty, Join, MultiJoin,\n38: )\n39: from django.db.models.sql.where import (\n40:     AND, OR, ExtraWhere, NothingNode, WhereNode,\n41: )\n42: from django.utils.deprecation import RemovedInDjango40Warning\n43: from django.utils.functional import cached_property\n44: from django.utils.tree import Node\n45: \n46: __all__ = ['Query', 'RawQuery']\n47: \n48: \n49: def get_field_names_from_opts(opts):\n50:     return set(chain.from_iterable(\n51:         (f.name, f.attname) if f.concrete else (f.name,)\n52:         for f in opts.get_fields()\n53:     ))\n54: \n55: \n56: def get_children_from_q(q):\n57:     for child in q.children:\n58:         if isinstance(child, Node):\n59:             yield from get_children_from_q(child)\n60:         else:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1870,
+                  "end_line": 1910,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=1870-1910]\n1870:     @property\n1871:     def is_sliced(self):\n1872:         return self.low_mark != 0 or self.high_mark is not None\n1873: \n1874:     def has_limit_one(self):\n1875:         return self.high_mark is not None and (self.high_mark - self.low_mark) == 1\n1876: \n1877:     def can_filter(self):\n1878:         \"\"\"\n1879:         Return True if adding filters to this instance is still possible.\n1880: \n1881:         Typically, this means no limits or offsets have been put on the results.\n1882:         \"\"\"\n1883:         return not self.is_sliced\n1884: \n1885:     def clear_select_clause(self):\n1886:         \"\"\"Remove all fields from SELECT clause.\"\"\"\n1887:         self.select = ()\n1888:         self.default_cols = False\n1889:         self.select_related = False\n1890:         self.set_extra_mask(())\n1891:         self.set_annotation_mask(())\n1892: \n1893:     def clear_select_fields(self):\n1894:         \"\"\"\n1895:         Clear the list of fields to select (but not extra_select columns).\n1896:         Some queryset types completely replace any existing list of select\n1897:         columns.\n1898:         \"\"\"\n1899:         self.select = ()\n1900:         self.values_select = ()\n1901: \n1902:     def add_select_col(self, col, name):\n1903:         self.select += col,\n1904:         self.values_select += name,\n1905: \n1906:     def set_select(self, cols):\n1907:         self.default_cols = False\n1908:         self.select = tuple(cols)\n1909: \n1910:     def add_distinct_fields(self, *field_names):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "add_ordering",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"add_ordering\"]\ndjango/db/models/query.py:663:        obj.query.add_ordering(*order_by)\ndjango/db/models/query.py:1149:        obj.query.add_ordering(*field_names)\ndjango/db/models/sql/query.py:1960:    def add_ordering(self, *ordering):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 640,
+                  "end_line": 680,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/query.py lines=640-680]\n640: \n641:     def _earliest(self, *fields):\n642:         \"\"\"\n643:         Return the earliest object according to fields (if given) or by the\n644:         model's Meta.get_latest_by.\n645:         \"\"\"\n646:         if fields:\n647:             order_by = fields\n648:         else:\n649:             order_by = getattr(self.model._meta, 'get_latest_by')\n650:             if order_by and not isinstance(order_by, (tuple, list)):\n651:                 order_by = (order_by,)\n652:         if order_by is None:\n653:             raise ValueError(\n654:                 \"earliest() and latest() require either fields as positional \"\n655:                 \"arguments or 'get_latest_by' in the model's Meta.\"\n656:             )\n657: \n658:         assert not self.query.is_sliced, \\\n659:             \"Cannot change a query once a slice has been taken.\"\n660:         obj = self._chain()\n661:         obj.query.set_limits(high=1)\n662:         obj.query.clear_ordering(force_empty=True)\n663:         obj.query.add_ordering(*order_by)\n664:         return obj.get()\n665: \n666:     def earliest(self, *fields):\n667:         return self._earliest(*fields)\n668: \n669:     def latest(self, *fields):\n670:         return self.reverse()._earliest(*fields)\n671: \n672:     def first(self):\n673:         \"\"\"Return the first object of a query or None if no match is found.\"\"\"\n674:         for obj in (self if self.ordered else self.order_by('pk'))[:1]:\n675:             return obj\n676: \n677:     def last(self):\n678:         \"\"\"Return the last object of a query or None if no match is found.\"\"\"\n679:         for obj in (self.reverse() if self.ordered else self.order_by('-pk'))[:1]:\n680:             return obj\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "LazyRegex|lazy_re",
+                  "file_glob": "django/utils/regex_helper.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"LazyRegex|lazy_re\"]\ndjango/utils/regex_helper.py:340:def _lazy_re_compile(regex, flags=0):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/utils/regex_helper.py",
+                  "start_line": 340,
+                  "end_line": 355,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/utils/regex_helper.py lines=340-351]\n340: def _lazy_re_compile(regex, flags=0):\n341:     \"\"\"Lazily compile a regex with flags.\"\"\"\n342:     def _compile():\n343:         # Compile the regex if it was not passed pre-compiled.\n344:         if isinstance(regex, (str, bytes)):\n345:             return re.compile(regex, flags)\n346:         else:\n347:             assert not flags, (\n348:                 'flags must be empty if regex is passed pre-compiled'\n349:             )\n350:             return regex\n351:     return SimpleLazyObject(_compile)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class Article",
+                  "file_glob": "tests/queries/models.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"class Article\"]\ntests/queries/models.py:355:class Article(models.Model):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/models.py",
+                  "start_line": 355,
+                  "end_line": 385,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=tests/queries/models.py lines=355-385]\n355: class Article(models.Model):\n356:     name = models.CharField(max_length=20)\n357:     created = models.DateTimeField()\n358: \n359:     def __str__(self):\n360:         return self.name\n361: \n362: \n363: class Food(models.Model):\n364:     name = models.CharField(max_length=20, unique=True)\n365: \n366:     def __str__(self):\n367:         return self.name\n368: \n369: \n370: class Eaten(models.Model):\n371:     food = models.ForeignKey(Food, models.SET_NULL, to_field=\"name\", null=True)\n372:     meal = models.CharField(max_length=20)\n373: \n374:     def __str__(self):\n375:         return \"%s at %s\" % (self.food, self.meal)\n376: \n377: \n378: class Node(models.Model):\n379:     num = models.IntegerField(unique=True)\n380:     parent = models.ForeignKey(\"self\", models.SET_NULL, to_field=\"num\", null=True)\n381: \n382:     def __str__(self):\n383:         return str(self.num)\n384: \n385: # Bug #12252\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 210,
+                  "end_line": 280,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=210-280]\n210:         self.annotation_select_mask = None\n211:         self._annotation_select_cache = None\n212: \n213:         # Set combination attributes\n214:         self.combinator = None\n215:         self.combinator_all = False\n216:         self.combined_queries = ()\n217: \n218:         # These are for extensions. The contents are more or less appended\n219:         # verbatim to the appropriate clause.\n220:         self.extra = {}  # Maps col_alias -> (col_sql, params).\n221:         self.extra_select_mask = None\n222:         self._extra_select_cache = None\n223: \n224:         self.extra_tables = ()\n225:         self.extra_order_by = ()\n226: \n227:         # A tuple that is a set of model field names and either True, if these\n228:         # are the fields to defer, or False if these are the only fields to\n229:         # load.\n230:         self.deferred_loading = (frozenset(), True)\n231: \n232:         self._filtered_relations = {}\n233: \n234:         self.explain_query = False\n235:         self.explain_format = None\n236:         self.explain_options = {}\n237: \n238:     @property\n239:     def output_field(self):\n240:         if len(self.select) == 1:\n241:             select = self.select[0]\n242:             return getattr(select, 'target', None) or select.field\n243:         elif len(self.annotation_select) == 1:\n244:             return next(iter(self.annotation_select.values())).output_field\n245: \n246:     @property\n247:     def has_select_fields(self):\n248:         return bool(self.select or self.annotation_select_mask or self.extra_select_mask)\n249: \n250:     @cached_property\n251:     def base_table(self):\n252:         for alias in self.alias_map:\n253:             return alias\n254: \n255:     def __str__(self):\n256:         \"\"\"\n257:         Return the query as a string of SQL with the parameter values\n258:         substituted in (use sql_with_params() to see the unsubstituted string).\n259: \n260:         Parameter values won't necessarily be quoted correctly, since that is\n261:         done by the database interface at execution time.\n262:         \"\"\"\n263:         sql, params = self.sql_with_params()\n264:         return sql % params\n265: \n266:     def sql_with_params(self):\n267:         \"\"\"\n268:         Return the query as an SQL string and the parameters that will be\n269:         substituted into the query.\n270:         \"\"\"\n271:         return self.get_compiler(DEFAULT_DB_ALIAS).as_sql()\n272: \n273:     def __deepcopy__(self, memo):\n274:         \"\"\"Limit the amount of work when a Query is deepcopied.\"\"\"\n275:         result = self.clone()\n276:         memo[id(self)] = result\n277:         return result\n278: \n279:     def get_compiler(self, using=None, connection=None):\n280:         if using is None and connection is None:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def names_to_path",
+                  "file_glob": "django/db/models/sql/query.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 pattern=\"def names_to_path\"]\ndjango/db/models/sql/query.py:1472:    def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1472,
+                  "end_line": 1520,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=1472-1520]\n1472:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1473:         \"\"\"\n1474:         Walk the list of names and turns them into PathInfo tuples. A single\n1475:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1476: \n1477:         'names' is the path of names to travel, 'opts' is the model Options we\n1478:         start the name resolving from, 'allow_many' is as for setup_joins().\n1479:         If fail_on_missing is set to True, then a name that can't be resolved\n1480:         will generate a FieldError.\n1481: \n1482:         Return a list of PathInfo tuples. In addition return the final field\n1483:         (the last used join field) and target (which is a field guaranteed to\n1484:         contain the same value as the final field). Finally, return those names\n1485:         that weren't found (which are likely transforms and the final lookup).\n1486:         \"\"\"\n1487:         path, names_with_path = [], []\n1488:         for pos, name in enumerate(names):\n1489:             cur_names_with_path = (name, [])\n1490:             if name == 'pk':\n1491:                 name = opts.pk.name\n1492: \n1493:             field = None\n1494:             filtered_relation = None\n1495:             try:\n1496:                 field = opts.get_field(name)\n1497:             except FieldDoesNotExist:\n1498:                 if name in self.annotation_select:\n1499:                     field = self.annotation_select[name].output_field\n1500:                 elif name in self._filtered_relations and pos == 0:\n1501:                     filtered_relation = self._filtered_relations[name]\n1502:                     if LOOKUP_SEP in filtered_relation.relation_name:\n1503:                         parts = filtered_relation.relation_name.split(LOOKUP_SEP)\n1504:                         filtered_relation_path, field, _, _ = self.names_to_path(\n1505:                             parts, opts, allow_many, fail_on_missing,\n1506:                         )\n1507:                         path.extend(filtered_relation_path[:-1])\n1508:                     else:\n1509:                         field = opts.get_field(filtered_relation.relation_name)\n1510:             if field is not None:\n1511:                 # Fields that contain one-to-many relations with a generic\n1512:                 # model (like a GenericForeignKey) cannot generate reverse\n1513:                 # relations and therefore cannot be used for reverse querying.\n1514:                 if field.is_relation and not field.related_model:\n1515:                     raise FieldError(\n1516:                         \"Field %r does not generate an automatic reverse \"\n1517:                         \"relation and therefore cannot be used for reverse \"\n1518:                         \"querying. If it is a GenericForeignKey, consider \"\n1519:                         \"adding a GenericRelation.\" % name\n1520:                     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1520,
+                  "end_line": 1580,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=da2269dc6f7daca090a28508dbd92207b6f639d0 path=django/db/models/sql/query.py lines=1520-1580]\n1520:                     )\n1521:                 try:\n1522:                     model = field.model._meta.concrete_model\n1523:                 except AttributeError:\n1524:                     # QuerySet.annotate() may introduce fields that aren't\n1525:                     # attached to a model.\n1526:                     model = None\n1527:             else:\n1528:                 # We didn't find the current field, so move position back\n1529:                 # one step.\n1530:                 pos -= 1\n1531:                 if pos == -1 or fail_on_missing:\n1532:                     available = sorted([\n1533:                         *get_field_names_from_opts(opts),\n1534:                         *self.annotation_select,\n1535:                         *self._filtered_relations,\n1536:                     ])\n1537:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1538:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n1539:                 break\n1540:             # Check if we need any joins for concrete inheritance cases (the\n1541:             # field lives in parent, but we are currently in one of its\n1542:             # children)\n1543:             if model is not opts.model:\n1544:                 path_to_parent = opts.get_path_to_parent(model)\n1545:                 if path_to_parent:\n1546:                     path.extend(path_to_parent)\n1547:                     cur_names_with_path[1].extend(path_to_parent)\n1548:                     opts = path_to_parent[-1].to_opts\n1549:             if hasattr(field, 'get_path_info'):\n1550:                 pathinfos = field.get_path_info(filtered_relation)\n1551:                 if not allow_many:\n1552:                     for inner_pos, p in enumerate(pathinfos):\n1553:                         if p.m2m:\n1554:                             cur_names_with_path[1].extend(pathinfos[0:inner_pos + 1])\n1555:                             names_with_path.append(cur_names_with_path)\n1556:                             raise MultiJoin(pos + 1, names_with_path)\n1557:                 last = pathinfos[-1]\n1558:                 path.extend(pathinfos)\n1559:                 final_field = last.join_field\n1560:                 opts = last.to_opts\n1561:                 targets = last.target_fields\n1562:                 cur_names_with_path[1].extend(pathinfos)\n1563:                 names_with_path.append(cur_names_with_path)\n1564:             else:\n1565:                 # Local non-relational field.\n1566:                 final_field = field\n1567:                 targets = (field,)\n1568:                 if fail_on_missing and pos + 1 != len(names):\n1569:                     raise FieldError(\n1570:                         \"Cannot resolve keyword %r into field. Join on '%s'\"\n1571:                         \" not permitted.\" % (names[pos + 1], name))\n1572:                 break\n1573:         return path, final_field, targets, names[pos + 1:]\n1574: \n1575:     def setup_joins(self, names, opts, alias, can_reuse=None, allow_many=True,\n1576:                     reuse_with_filtered_relation=False):\n1577:         \"\"\"\n1578:         Compute the necessary table joins for the passage through the fields\n1579:         given in 'names'. 'opts' is the Options class for the current model\n1580:         (which gives the table we are starting from), 'alias' is the alias for\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "I have all the evidence needed.\n\n**Analysis:**\n\n- `django/db/models/sql/constants.py#0` and `#1` add an import of `_lazy_re_compile` and the constant `ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\w]+$')`.\n- `django/db/models/sql/query.py#0` widens the import list to include the new `ORDER_PATTERN` constant.\n- `django/db/models/sql/query.py#1` adds `ORDER_PATTERN.match(item)` to the deprecated raw-alias branch of `add_ordering`, so a string like `'queries.name);'` (which contains a `)` and so fails the pattern) is no longer short-circuited into the deprecation warning path; it now falls through to `self.names_to_path(...)` and raises a `FieldError`.\n- `tests/queries/tests.py#0` adds `test_order_by_escape_prevention`, which asserts that exact `FieldError` message.\n\nContext (not in diff, but the grouping relies on it):\n- `django/db/models/query.py:1143-1150` \u2014 `QuerySet.order_by()` is the public entry that calls `Query.add_ordering(...)`.\n- `django/db/models/query.py:641-664` \u2014 `_earliest()` (used by `earliest()`/`latest()`) also calls `Query.add_ordering(...)`, so the validation path applies to those as well.\n- `django/db/models/sql/query.py:1472-1573` \u2014 `names_to_path` is the validation path the changed code now lets malformed inputs reach; it is the source of the `Cannot resolve keyword ...` `FieldError` asserted by the new test (line 1537-1538).\n- `tests/queries/models.py:355-360` \u2014 the `Article` model used by the new test (fields `name`, `created`, implicit `id` \u2014 matches the \"Choices are: created, id, name\" message).",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1472,
+                  "end_line": 1540,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1472-1540]\n1472:         self._filtered_relations[filtered_relation.alias] = filtered_relation\n1473: \n1474:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1475:         \"\"\"\n1476:         Walk the list of names and turns them into PathInfo tuples. A single\n1477:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1478: \n1479:         'names' is the path of names to travel, 'opts' is the model Options we\n1480:         start the name resolving from, 'allow_many' is as for setup_joins().\n1481:         If fail_on_missing is set to True, then a name that can't be resolved\n1482:         will generate a FieldError.\n1483: \n1484:         Return a list of PathInfo tuples. In addition return the final field\n1485:         (the last used join field) and target (which is a field guaranteed to\n1486:         contain the same value as the final field). Finally, return those names\n1487:         that weren't found (which are likely transforms and the final lookup).\n1488:         \"\"\"\n1489:         path, names_with_path = [], []\n1490:         for pos, name in enumerate(names):\n1491:             cur_names_with_path = (name, [])\n1492:             if name == 'pk':\n1493:                 name = opts.pk.name\n1494: \n1495:             field = None\n1496:             filtered_relation = None\n1497:             try:\n1498:                 field = opts.get_field(name)\n1499:             except FieldDoesNotExist:\n1500:                 if name in self.annotation_select:\n1501:                     field = self.annotation_select[name].output_field\n1502:                 elif name in self._filtered_relations and pos == 0:\n1503:                     filtered_relation = self._filtered_relations[name]\n1504:                     if LOOKUP_SEP in filtered_relation.relation_name:\n1505:                         parts = filtered_relation.relation_name.split(LOOKUP_SEP)\n1506:                         filtered_relation_path, field, _, _ = self.names_to_path(\n1507:                             parts, opts, allow_many, fail_on_missing,\n1508:                         )\n1509:                         path.extend(filtered_relation_path[:-1])\n1510:                     else:\n1511:                         field = opts.get_field(filtered_relation.relation_name)\n1512:             if field is not None:\n1513:                 # Fields that contain one-to-many relations with a generic\n1514:                 # model (like a GenericForeignKey) cannot generate reverse\n1515:                 # relations and therefore cannot be used for reverse querying.\n1516:                 if field.is_relation and not field.related_model:\n1517:                     raise FieldError(\n1518:                         \"Field %r does not generate an automatic reverse \"\n1519:                         \"relation and therefore cannot be used for reverse \"\n1520:                         \"querying. If it is a GenericForeignKey, consider \"\n1521:                         \"adding a GenericRelation.\" % name\n1522:                     )\n1523:                 try:\n1524:                     model = field.model._meta.concrete_model\n1525:                 except AttributeError:\n1526:                     # QuerySet.annotate() may introduce fields that aren't\n1527:                     # attached to a model.\n1528:                     model = None\n1529:             else:\n1530:                 # We didn't find the current field, so move position back\n1531:                 # one step.\n1532:                 pos -= 1\n1533:                 if pos == -1 or fail_on_missing:\n1534:                     available = sorted([\n1535:                         *get_field_names_from_opts(opts),\n1536:                         *self.annotation_select,\n1537:                         *self._filtered_relations,\n1538:                     ])\n1539:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1540:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ORDER_PATTERN",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f pattern=\"ORDER_PATTERN\"]\ndjango/db/models/sql/constants.py:22:ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\w]+$')\ndjango/db/models/sql/query.py:34:    INNER, LOUTER, ORDER_DIR, ORDER_PATTERN, SINGLE,\ndjango/db/models/sql/query.py:1974:                if '.' in item and ORDER_PATTERN.match(item):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=tests/queries/tests.py lines=1-40]\n1: import datetime\n2: import pickle\n3: import sys\n4: import unittest\n5: from operator import attrgetter\n6: from threading import Lock\n7: \n8: from django.core.exceptions import EmptyResultSet, FieldError\n9: from django.db import DEFAULT_DB_ALIAS, connection\n10: from django.db.models import Count, Exists, F, OuterRef, Q\n11: from django.db.models.expressions import RawSQL\n12: from django.db.models.sql.constants import LOUTER\n13: from django.db.models.sql.where import NothingNode, WhereNode\n14: from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature\n15: from django.test.utils import CaptureQueriesContext, ignore_warnings\n16: from django.utils.deprecation import RemovedInDjango40Warning\n17: \n18: from .models import (\n19:     FK1, Annotation, Article, Author, BaseA, Book, CategoryItem,\n20:     CategoryRelationship, Celebrity, Channel, Chapter, Child, ChildObjectA,\n21:     Classroom, CommonMixedCaseForeignKeys, Company, Cover, CustomPk,\n22:     CustomPkTag, DateTimePK, Detail, DumbCategory, Eaten, Employment,\n23:     ExtraInfo, Fan, Food, Identifier, Individual, Item, Job,\n24:     JobResponsibilities, Join, LeafA, LeafB, LoopX, LoopZ, ManagedModel,\n25:     Member, MixedCaseDbColumnCategoryItem, MixedCaseFieldCategoryItem, ModelA,\n26:     ModelB, ModelC, ModelD, MyObject, NamedCategory, Node, Note, NullableName,\n27:     Number, ObjectA, ObjectB, ObjectC, OneToOneCategory, Order, OrderItem,\n28:     Page, Paragraph, Person, Plaything, PointerA, Program, ProxyCategory,\n29:     ProxyObjectA, ProxyObjectB, Ranking, Related, RelatedIndividual,\n30:     RelatedObject, Report, ReportComment, ReservedName, Responsibility, School,\n31:     SharedConnection, SimpleCategory, SingleObject, SpecialCategory, Staff,\n32:     StaffUser, Student, Tag, Task, Teacher, Ticket21203Child,\n33:     Ticket21203Parent, Ticket23605A, Ticket23605B, Ticket23605C, TvChef, Valid,\n34:     X,\n35: )\n36: \n37: \n38: class Queries1Tests(TestCase):\n39:     @classmethod\n40:     def setUpTestData(cls):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"order-by-validation\",\n      \"title\": \"Tighten add_ordering() to reject raw-alias-looking SQL fragments\",\n      \"rationale\": \"The new ORDER_PATTERN constant, its import, the modified guard in Query.add_ordering(), and the new regression test all form a single access-control fix: a string containing characters outside `[-+]?[.\\w]+$` (e.g. 'queries.name);') is no longer short-circuited into the deprecated raw-alias branch and instead falls through to names_to_path() which raises FieldError, preventing the value from reaching SQL generation.\",\n      \"hunks\": [\n        \"django/db/models/sql/constants.py#0\",\n        \"django/db/models/sql/constants.py#1\",\n        \"django/db/models/sql/query.py#0\",\n        \"django/db/models/sql/query.py#1\",\n        \"tests/queries/tests.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"Query.add_ordering\", \"start_line\": 1960, \"end_line\": 2000, \"snapshot\": \"pr\", \"why\": \"Method whose branch was modified (line 1974) to gate the deprecation short-circuit behind ORDER_PATTERN.match(item).\"},\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"Query.names_to_path\", \"start_line\": 1474, \"end_line\": 1540, \"snapshot\": \"pr\", \"why\": \"Validation path that malformed ordering strings now reach; it is the source of the FieldError 'Cannot resolve keyword ... Choices are: ...' asserted by the new test.\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"QuerySet.order_by\", \"start_line\": 1143, \"end_line\": 1150, \"snapshot\": \"base\", \"why\": \"Public caller of Query.add_ordering() \u2014 user-supplied ordering strings enter the modified branch through this method.\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"QuerySet._earliest\", \"start_line\": 641, \"end_line\": 664, \"snapshot\": \"base\", \"why\": \"Second caller of Query.add_ordering() (earliest()/latest()), confirming the validation gate applies beyond the direct order_by() API.\"},\n        {\"path\": \"django/utils/regex_helper.py\", \"symbol\": \"_lazy_re_compile\", \"start_line\": 340, \"end_line\": 351, \"snapshot\": \"base\", \"why\": \"Helper used by constants.py#0/#1 to define ORDER_PATTERN as a lazy regex object exposing .match().\"},\n        {\"path\": \"tests/queries/models.py\", \"symbol\": \"Article\", \"start_line\": 355, \"end_line\": 360, \"snapshot\": \"base\", \"why\": \"Model used by tests/queries/tests.py#0 (test_order_by_escape_prevention); its field set 'created, id, name' matches the asserted error message.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"order-by-validation\",\n      \"title\": \"Tighten add_ordering() to reject raw-alias-looking SQL fragments\",\n      \"rationale\": \"The new ORDER_PATTERN constant, its import, the modified guard in Query.add_ordering(), and the new regression test form a single fix: strings containing characters outside [-+]?[.\\\\w]+$ no longer hit the deprecated raw-alias short-circuit and instead fall through to names_to_path() which raises FieldError.\",\n      \"hunks\": [\n        \"django/db/models/sql/constants.py#0\",\n        \"django/db/models/sql/constants.py#1\",\n        \"django/db/models/sql/query.py#0\",\n        \"django/db/models/sql/query.py#1\",\n        \"tests/queries/tests.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"Query.add_ordering\", \"start_line\": 1960, \"end_line\": 2000, \"snapshot\": \"pr\", \"why\": \"Branch at line 1974 gated by ORDER_PATTERN.match(item)\"},\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"Query.names_to_path\", \"start_line\": 1474, \"end_line\": 1540, \"snapshot\": \"pr\", \"why\": \"Validation path raising the asserted FieldError\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"QuerySet.order_by\", \"start_line\": 1143, \"end_line\": 1150, \"snapshot\": \"base\", \"why\": \"Public caller of Query.add_ordering()\"},\n        {\"path\": \"django/utils/regex_helper.py\", \"symbol\": \"_lazy_re_compile\", \"start_line\": 340, \"end_line\": 351, \"snapshot\": \"base\", \"why\": \"Helper used to define ORDER_PATTERN\"},\n        {\"path\": \"tests/queries/models.py\", \"symbol\": \"Article\", \"start_line\": 355, \"end_line\": 360, \"snapshot\": \"base\", \"why\": \"Model used by the new test; fields match error message\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "order-by-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1960,
+                  "end_line": 2010,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1960-2010]\n1960:                                  \"Choices are: %s\" % (name, \", \".join(names)))\n1961: \n1962:     def add_ordering(self, *ordering):\n1963:         \"\"\"\n1964:         Add items from the 'ordering' sequence to the query's \"order by\"\n1965:         clause. These items are either field names (not column names) --\n1966:         possibly with a direction prefix ('-' or '?') -- or OrderBy\n1967:         expressions.\n1968: \n1969:         If 'ordering' is empty, clear all ordering from the query.\n1970:         \"\"\"\n1971:         errors = []\n1972:         for item in ordering:\n1973:             if isinstance(item, str):\n1974:                 if '.' in item and ORDER_PATTERN.match(item):\n1975:                     warnings.warn(\n1976:                         'Passing column raw column aliases to order_by() is '\n1977:                         'deprecated. Wrap %r in a RawSQL expression before '\n1978:                         'passing it to order_by().' % item,\n1979:                         category=RemovedInDjango40Warning,\n1980:                         stacklevel=3,\n1981:                     )\n1982:                     continue\n1983:                 if item == '?':\n1984:                     continue\n1985:                 if item.startswith('-'):\n1986:                     item = item[1:]\n1987:                 if item in self.annotations:\n1988:                     continue\n1989:                 if self.extra and item in self.extra:\n1990:                     continue\n1991:                 # names_to_path() validates the lookup. A descriptive\n1992:                 # FieldError will be raise if it's not.\n1993:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1994:             elif not hasattr(item, 'resolve_expression'):\n1995:                 errors.append(item)\n1996:             if getattr(item, 'contains_aggregate', False):\n1997:                 raise FieldError(\n1998:                     'Using an aggregate in order_by() without also including '\n1999:                     'it in annotate() is not allowed: %s' % item\n2000:                 )\n2001:         if errors:\n2002:             raise FieldError('Invalid order_by arguments: %s' % errors)\n2003:         if ordering:\n2004:             self.order_by += ordering\n2005:         else:\n2006:             self.default_ordering = False\n2007: \n2008:     def clear_ordering(self, force_empty):\n2009:         \"\"\"\n2010:         Remove any ordering settings. If 'force_empty' is True, there will be\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/constants.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/constants.py lines=1-26]\n1: \"\"\"\n2: Constants specific to the SQL storage portion of the ORM.\n3: \"\"\"\n4: from django.utils.regex_helper import _lazy_re_compile\n5: \n6: # Size of each \"chunk\" for get_iterator calls.\n7: # Larger values are slightly faster at the expense of more storage space.\n8: GET_ITERATOR_CHUNK_SIZE = 100\n9: \n10: # Namedtuples for sql.* internal use.\n11: \n12: # How many results to expect from a cursor.execute call\n13: MULTI = 'multi'\n14: SINGLE = 'single'\n15: CURSOR = 'cursor'\n16: NO_RESULTS = 'no results'\n17: \n18: ORDER_DIR = {\n19:     'ASC': ('ASC', 'DESC'),\n20:     'DESC': ('DESC', 'ASC'),\n21: }\n22: ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\w]+$')\n23: \n24: # SQL join types.\n25: INNER = 'INNER JOIN'\n26: LOUTER = 'LEFT OUTER JOIN'\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1120,
+                  "end_line": 1160,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/query.py lines=1120-1160]\n1120:                 for field in self.model._meta.get_fields()\n1121:             ))\n1122: \n1123:         for alias, annotation in annotations.items():\n1124:             if alias in names:\n1125:                 raise ValueError(\"The annotation '%s' conflicts with a field on \"\n1126:                                  \"the model.\" % alias)\n1127:             if isinstance(annotation, FilteredRelation):\n1128:                 clone.query.add_filtered_relation(annotation, alias)\n1129:             else:\n1130:                 clone.query.add_annotation(\n1131:                     annotation, alias, is_summary=False, select=select,\n1132:                 )\n1133:         for alias, annotation in clone.query.annotations.items():\n1134:             if alias in annotations and annotation.contains_aggregate:\n1135:                 if clone._fields is None:\n1136:                     clone.query.group_by = True\n1137:                 else:\n1138:                     clone.query.set_group_by()\n1139:                 break\n1140: \n1141:         return clone\n1142: \n1143:     def order_by(self, *field_names):\n1144:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1145:         assert not self.query.is_sliced, \\\n1146:             \"Cannot reorder a query once a slice has been taken.\"\n1147:         obj = self._chain()\n1148:         obj.query.clear_ordering(force_empty=False)\n1149:         obj.query.add_ordering(*field_names)\n1150:         return obj\n1151: \n1152:     def distinct(self, *field_names):\n1153:         \"\"\"\n1154:         Return a new QuerySet instance that will select only distinct results.\n1155:         \"\"\"\n1156:         self._not_support_combined_queries('distinct')\n1157:         assert not self.query.is_sliced, \\\n1158:             \"Cannot create distinct fields once a slice has been taken.\"\n1159:         obj = self._chain()\n1160:         obj.query.add_distinct_fields(*field_names)\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "order_by field name validation SQL injection authorization"
+                },
+                "result": "[docs/ref/models/options.txt:243-296] (relevance 0.47)\ncolumn named ``_order`` and sets the model's :attr:`~Options.ordering`\n    option to this field. Consequently, ``order_with_respect_to`` and\n    ``ordering`` cannot be used together, and the ordering added by\n    ``order_with_respect_to`` will apply whenever you obtain a list of objects\n    of this model.\n\n.. admonition:: Changing ``order_with_respect_to``\n\n    Because ``order_with_respect_to`` adds a new database column, be sure to\n    make and apply the appropriate migrations if you add or change\n    ``order_with_respect_to`` after your initial :djadmin:`migrate`.\n\n``ordering``\n------------\n\n.. attribute:: Options.ordering\n\n    The default ordering for the object, for use when obtaining lists of objects::\n\n        ordering = ['-order_date']\n\n    This is a tuple or list of strings and/or query expressions. Each string is\n    a field name with an optional \"-\" prefix, which indicates descending order.\n    Fields without a leading \"-\" will be ordered ascending. Use the string \"?\"\n    to order randomly.\n\n    For example, to order by a ``pub_date`` field ascending, use this::\n\n        ordering = ['pub_date']\n\n    To order by ``pub_date`` descending, use this::\n\n        ordering = ['-pub_date']\n\n    To order by ``pub_date`` descending, then by ``author`` ascending, use this::\n\n        ordering = ['-pub_date', 'author']\n\n    You can also use :doc:`query expressions </ref/models/expressions>`. To\n    order by ``author`` ascending and make null values sort last, use this::\n\n        from django.db.models import F\n\n        ordering = [F('author').asc(nulls_last=True)]\n\n.. warning::\n\n    Ordering is not a free operation. Each field you add to the ordering\n    incurs a cost to your database. Each foreign key you add will\n    implicitly include all of its default orderings as well.\n\n    If a query doesn't have an ordering specified, results are returned from\n    the database in an unspecified order. A particular ordering is guaranteed\n    only when ordering by a set of fields that uniquely identify each object in\n\n---\n\n[docs/ref/forms/api.txt:768-800] (relevance 0.44)\noverride the field order. If a :class:`~django.forms.Form` defines\n:attr:`~Form.field_order` *and* you include ``field_order`` when instantiating\nthe ``Form``, then the latter ``field_order`` will have precedence.\n\n.. method:: Form.order_fields(field_order)\n\nYou may rearrange the fields any time using ``order_fields()`` with a list of\nfield names as in :attr:`~django.forms.Form.field_order`.\n\nHow errors are displayed\n------------------------\n\nIf you render a bound ``Form`` object, the act of rendering will automatically\nrun the form's validation if it hasn't already happened, and the HTML output\nwill include the validation errors as a ``<ul class=\"errorlist\">`` near the\nfield. The particular positioning of the error messages depends on the output\nmethod you're using::\n\n    >>> data = {'subject': '',\n    ...         'message': 'Hi there',\n    ...         'sender': 'invalid email address',\n    ...         'cc_myself': True}\n    >>> f = ContactForm(data, auto_id=False)\n    >>> print(f.as_table())\n    <tr><th>Subject:</th><td><ul class=\"errorlist\"><li>This field is required.</li></ul><input type=\"text\" name=\"subject\" maxlength=\"100\" required></td></tr>\n    <tr><th>Message:</th><td><input type=\"text\" name=\"message\" value=\"Hi there\" required></td></tr>\n    <tr><th>Sender:</th><td><ul class=\"errorlist\"><li>Enter a valid email address.</li></ul><input type=\"email\" name=\"sender\" value=\"invalid email address\" required></td></tr>\n    <tr><th>Cc myself:</th><td><input checked type=\"checkbox\" name=\"cc_myself\"></td></tr>\n    >>> print(f.as_ul())\n    <li><ul class=\"errorlist\"><li>This field is required.</li></ul>Subject: <input type=\"text\" name=\"subject\" maxlength=\"100\" required></li>\n    <li>Message: <input type=\"text\" name=\"message\" value=\"Hi there\" required></li>\n    <li><ul class=\"errorlist\"><li>Enter a valid email address.</li></ul>Sender: <input type=\"email\" name=\"sender\" value=\"invalid email address\" required></li>\n    <li>Cc myself: <input checked type=\"checkbox\" name=\"cc_myself\"></li>\n\n---\n\n[docs/ref/models/options.txt:294-342] (relevance 0.44)\nIf a query doesn't have an ordering specified, results are returned from\n    the database in an unspecified order. A particular ordering is guaranteed\n    only when ordering by a set of fields that uniquely identify each object in\n    the results. For example, if a ``name`` field isn't unique, ordering by it\n    won't guarantee objects with the same name always appear in the same order.\n\n``permissions``\n---------------\n\n.. attribute:: Options.permissions\n\n    Extra permissions to enter into the permissions table when creating this object.\n    Add, change, delete, and view permissions are automatically created for each\n    model. This example specifies an extra permission, ``can_deliver_pizzas``::\n\n        permissions = [('can_deliver_pizzas', 'Can deliver pizzas')]\n\n    This is a list or tuple of 2-tuples in the format ``(permission_code,\n    human_readable_permission_name)``.\n\n``default_permissions``\n-----------------------\n\n.. attribute:: Options.default_permissions\n\n    Defaults to ``('add', 'change', 'delete', 'view')``. You may customize this\n    list, for example, by setting this to an empty list if your app doesn't\n    require any of the default permissions. It must be specified on the model\n    before the model is created by :djadmin:`migrate` in order to prevent any\n    omitted permissions from being created.\n\n``proxy``\n---------\n\n.. attribute:: Options.proxy\n\n    If ``proxy = True``, a model which subclasses another model will be treated as\n    a :ref:`proxy model <proxy-models>`.\n\n``required_db_features``\n------------------------\n\n.. attribute:: Options.required_db_features\n\n    List of database features that the current connection should have so that\n    the model is considered during the migration phase. For example, if you set\n    this list to ``['gis_enabled']``, the model will only be synchronized on\n    GIS-enabled databases. It's also useful to skip some models when testing\n    with several database backends. Avoid relations between models that may or\n\n---\n\n[docs/ref/models/querysets.txt:539-585] (relevance 0.42)\nKeep in mind that :meth:`order_by` uses any default related model ordering\n    that has been defined. You might have to explicitly order by the relation\n    ``_id`` or referenced field to make sure the ``DISTINCT ON`` expressions\n    match those at the beginning of the ``ORDER BY`` clause. For example, if\n    the ``Blog`` model defined an :attr:`~django.db.models.Options.ordering` by\n    ``name``::\n\n        Entry.objects.order_by('blog').distinct('blog')\n\n    ...wouldn't work because the query would be ordered by ``blog__name`` thus\n    mismatching the ``DISTINCT ON`` expression. You'd have to explicitly order\n    by the relation ``_id`` field (``blog_id`` in this case) or the referenced\n    one (``blog__pk``) to make sure both expressions match.\n\n``values()``\n~~~~~~~~~~~~\n\n.. method:: values(*fields, **expressions)\n\nReturns a ``QuerySet`` that returns dictionaries, rather than model instances,\nwhen used as an iterable.\n\nEach of those dictionaries represents an object, with the keys corresponding to\nthe attribute names of model objects.\n\nThis example compares the dictionaries of ``values()`` with the normal model\nobjects::\n\n    # This list contains a Blog object.\n    >>> Blog.objects.filter(name__startswith='Beatles')\n    <QuerySet [<Blog: Beatles Blog>]>\n\n    # This list contains a dictionary.\n    >>> Blog.objects.filter(name__startswith='Beatles').values()\n    <QuerySet [{'id': 1, 'name': 'Beatles Blog', 'tagline': 'All the latest Beatles news.'}]>\n\nThe ``values()`` method takes optional positional arguments, ``*fields``, which\nspecify field names to which the ``SELECT`` should be limited. If you specify\nthe fields, each dictionary will contain only the field keys/values for the\nf"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1474,
+                  "end_line": 1545,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1474-1545]\n1474:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1475:         \"\"\"\n1476:         Walk the list of names and turns them into PathInfo tuples. A single\n1477:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1478: \n1479:         'names' is the path of names to travel, 'opts' is the model Options we\n1480:         start the name resolving from, 'allow_many' is as for setup_joins().\n1481:         If fail_on_missing is set to True, then a name that can't be resolved\n1482:         will generate a FieldError.\n1483: \n1484:         Return a list of PathInfo tuples. In addition return the final field\n1485:         (the last used join field) and target (which is a field guaranteed to\n1486:         contain the same value as the final field). Finally, return those names\n1487:         that weren't found (which are likely transforms and the final lookup).\n1488:         \"\"\"\n1489:         path, names_with_path = [], []\n1490:         for pos, name in enumerate(names):\n1491:             cur_names_with_path = (name, [])\n1492:             if name == 'pk':\n1493:                 name = opts.pk.name\n1494: \n1495:             field = None\n1496:             filtered_relation = None\n1497:             try:\n1498:                 field = opts.get_field(name)\n1499:             except FieldDoesNotExist:\n1500:                 if name in self.annotation_select:\n1501:                     field = self.annotation_select[name].output_field\n1502:                 elif name in self._filtered_relations and pos == 0:\n1503:                     filtered_relation = self._filtered_relations[name]\n1504:                     if LOOKUP_SEP in filtered_relation.relation_name:\n1505:                         parts = filtered_relation.relation_name.split(LOOKUP_SEP)\n1506:                         filtered_relation_path, field, _, _ = self.names_to_path(\n1507:                             parts, opts, allow_many, fail_on_missing,\n1508:                         )\n1509:                         path.extend(filtered_relation_path[:-1])\n1510:                     else:\n1511:                         field = opts.get_field(filtered_relation.relation_name)\n1512:             if field is not None:\n1513:                 # Fields that contain one-to-many relations with a generic\n1514:                 # model (like a GenericForeignKey) cannot generate reverse\n1515:                 # relations and therefore cannot be used for reverse querying.\n1516:                 if field.is_relation and not field.related_model:\n1517:                     raise FieldError(\n1518:                         \"Field %r does not generate an automatic reverse \"\n1519:                         \"relation and therefore cannot be used for reverse \"\n1520:                         \"querying. If it is a GenericForeignKey, consider \"\n1521:                         \"adding a GenericRelation.\" % name\n1522:                     )\n1523:                 try:\n1524:                     model = field.model._meta.concrete_model\n1525:                 except AttributeError:\n1526:                     # QuerySet.annotate() may introduce fields that aren't\n1527:                     # attached to a model.\n1528:                     model = None\n1529:             else:\n1530:                 # We didn't find the current field, so move position back\n1531:                 # one step.\n1532:                 pos -= 1\n1533:                 if pos == -1 or fail_on_missing:\n1534:                     available = sorted([\n1535:                         *get_field_names_from_opts(opts),\n1536:                         *self.annotation_select,\n1537:                         *self._filtered_relations,\n1538:                     ])\n1539:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1540:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n1541:                 break\n1542:             # Check if we need any joins for concrete inheritance cases (the\n1543:             # field lives in parent, but we are currently in one of its\n1544:             # children)\n1545:             if model is not opts.model:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:order-by-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/constants.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/constants.py lines=1-26]\n1: \"\"\"\n2: Constants specific to the SQL storage portion of the ORM.\n3: \"\"\"\n4: from django.utils.regex_helper import _lazy_re_compile\n5: \n6: # Size of each \"chunk\" for get_iterator calls.\n7: # Larger values are slightly faster at the expense of more storage space.\n8: GET_ITERATOR_CHUNK_SIZE = 100\n9: \n10: # Namedtuples for sql.* internal use.\n11: \n12: # How many results to expect from a cursor.execute call\n13: MULTI = 'multi'\n14: SINGLE = 'single'\n15: CURSOR = 'cursor'\n16: NO_RESULTS = 'no results'\n17: \n18: ORDER_DIR = {\n19:     'ASC': ('ASC', 'DESC'),\n20:     'DESC': ('DESC', 'ASC'),\n21: }\n22: ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\w]+$')\n23: \n24: # SQL join types.\n25: INNER = 'INNER JOIN'\n26: LOUTER = 'LEFT OUTER JOIN'\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1962,
+                  "end_line": 2006,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/sql/query.py lines=1962-2006]\n1962:     def add_ordering(self, *ordering):\n1963:         \"\"\"\n1964:         Add items from the 'ordering' sequence to the query's \"order by\"\n1965:         clause. These items are either field names (not column names) --\n1966:         possibly with a direction prefix ('-' or '?') -- or OrderBy\n1967:         expressions.\n1968: \n1969:         If 'ordering' is empty, clear all ordering from the query.\n1970:         \"\"\"\n1971:         errors = []\n1972:         for item in ordering:\n1973:             if isinstance(item, str):\n1974:                 if '.' in item and ORDER_PATTERN.match(item):\n1975:                     warnings.warn(\n1976:                         'Passing column raw column aliases to order_by() is '\n1977:                         'deprecated. Wrap %r in a RawSQL expression before '\n1978:                         'passing it to order_by().' % item,\n1979:                         category=RemovedInDjango40Warning,\n1980:                         stacklevel=3,\n1981:                     )\n1982:                     continue\n1983:                 if item == '?':\n1984:                     continue\n1985:                 if item.startswith('-'):\n1986:                     item = item[1:]\n1987:                 if item in self.annotations:\n1988:                     continue\n1989:                 if self.extra and item in self.extra:\n1990:                     continue\n1991:                 # names_to_path() validates the lookup. A descriptive\n1992:                 # FieldError will be raise if it's not.\n1993:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1994:             elif not hasattr(item, 'resolve_expression'):\n1995:                 errors.append(item)\n1996:             if getattr(item, 'contains_aggregate', False):\n1997:                 raise FieldError(\n1998:                     'Using an aggregate in order_by() without also including '\n1999:                     'it in annotate() is not allowed: %s' % item\n2000:                 )\n2001:         if errors:\n2002:             raise FieldError('Invalid order_by arguments: %s' % errors)\n2003:         if ordering:\n2004:             self.order_by += ordering\n2005:         else:\n2006:             self.default_ordering = False\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def order_by",
+                  "file_glob": "django/db/models/query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f pattern=\"def order_by\"]\ndjango/db/models/query.py:1143:    def order_by(self, *field_names):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "order_by",
+                  "file_glob": "django/core/paginator.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f pattern=\"order_by\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 1165,
+                  "path": "django/db/models/query.py",
+                  "start_line": 1143,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a34a5f724c5d5adb2109374ba3989ebb7b11f81f path=django/db/models/query.py lines=1143-1165]\n1143:     def order_by(self, *field_names):\n1144:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1145:         assert not self.query.is_sliced, \\\n1146:             \"Cannot reorder a query once a slice has been taken.\"\n1147:         obj = self._chain()\n1148:         obj.query.clear_ordering(force_empty=False)\n1149:         obj.query.add_ordering(*field_names)\n1150:         return obj\n1151: \n1152:     def distinct(self, *field_names):\n1153:         \"\"\"\n1154:         Return a new QuerySet instance that will select only distinct results.\n1155:         \"\"\"\n1156:         self._not_support_combined_queries('distinct')\n1157:         assert not self.query.is_sliced, \\\n1158:             \"Cannot create distinct fields once a slice has been taken.\"\n1159:         obj = self._chain()\n1160:         obj.query.add_distinct_fields(*field_names)\n1161:         return obj\n1162: \n1163:     def extra(self, select=None, where=None, params=None, tables=None,\n1164:               order_by=None, select_params=None):\n1165:         \"\"\"Add extra SQL fragments to the query.\"\"\"\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "file_glob": "django/db/models/sql/compiler.py",
+                  "pattern": "order_by",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR changes the `add_ordering` branch (django/db/models/sql/query.py line 1974) to treat a dot-containing `order_by()` string as a trusted raw SQL column alias only when `ORDER_PATTERN` (`[-+]?[.\\\\w]+$`, constants.py line 22) matches, then skips the `names_to_path()` validation and stores the string for the ORDER BY clause. Because `re.match`/`$` are not anchored at the start, the pattern matches at any position in the string: a value like `a b c;DROP TABLE t--` (whitespace/`;`/`-` are not in `[.\\\\w]`, but the trailing `t--` satisfies `[-+]?[.\\\\w]+$`) matches, so `continue` runs and the attacker-controlled string bypasses validation and is emitted into the generated SQL. The changed gate therefore lets a new class of malformed ordering values reach the compiler as SQL text without binding or a full allowlist; the only new test the PR adds asserts a rejection, and does not cover a matching payload.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"django/db/models/sql/constants.py\", \"lines\": [22, 22], \"content\": \"ORDER_PATTERN = _lazy_re_compile(r'[-+]?[.\\\\w]+$')\"},\n        {\"type\": \"code\", \"file\": \"django/db/models/sql/query.py\", \"lines\": [1974, 1982], \"content\": \"if '.' in item and ORDER_PATTERN.match(item):\\n                    warnings.warn(\\n                        'Passing column raw column aliases to order_by() is '\\n                        'deprecated. Wrap %r in a RawSQL expression before '\\n                        'passing it to order_by().' % item,\\n                        category=RemovedInDjango40Warning,\\n                        stacklevel=3,\\n                    )\\n                    continue\"},\n        {\"type\": \"code\", \"file\": \"django/db/models/query.py\", \"lines\": [1143, 1150], \"content\": \"def order_by(self, *field_names):\\n        \\\"\\\"\\\"Return a new QuerySet instance with the ordering changed.\\\"\\\"\\\"\\n        assert not self.query.is_sliced, \\\\\\n            \\\"Cannot reorder a query once a slice has been taken.\\\"\\n        obj = self._chain()\\n        obj.query.clear_ordering(force_empty=False)\\n        obj.query.add_ordering(*field_names)\\n        return obj\"},\n        {\"type\": \"policy\", \"source\": \"docs/topics/security.txt\", \"content\": \"Django's querysets are protected from SQL injection since their queries are constructed using query parameterization. A query's SQL code is defined separately from the query's parameters.\"}\n      ],\n      \"suggested_fix\": \"Anchor the pattern to validate the entire ordering string instead of allowing it to match a trailing substring. Use a fully-anchored regex such as `r'[-+]?[\\\\w.]+\\\\s*(ASC|DESC)?\\\\s*$'` combined with `re.fullmatch` (or prefix with `^`) so that only well-formed, identifier-like column aliases are accepted as raw SQL and any other value falls through to `names_to_path()` validation or a RawSQL expression. Also strip/validate direction prefixes consistently and reject whitespace or non-identifier characters anywhere in the value.\",\n      \"file\": \"django/db/models/sql/constants.py\",\n      \"line\": 22\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "sqli:order-by-validation:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.7604,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "django-orderby-dotted-column-sqli",
+  "url": "https://github.com/django/django/commit/a34a5f724c5d5adb2109374ba3989ebb7b11f81f",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xpfp-f569-q3p2",
+  "expected": "safe",
+  "vulnerable_files": [
+    "django/db/models/sql/query.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": false
+}

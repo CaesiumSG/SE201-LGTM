@@ -1,0 +1,490 @@
+{
+  "id": "readthedocs-team-access-filter-authz-vulnerable",
+  "repo": "readthedocs/readthedocs.org",
+  "pr": 12669,
+  "title": "A performance refactor of AdminPermission.projects split one combined Q filter into chained .filter(teams__members=user).filter(teams__access=ADMIN_ACCESS) calls, so read-only team members get admin rights on any project that also belongs to some admin team.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "8ca8c5e829e789b18c6e37030312f72a86503aa1",
+  "pr_sha": "5149ab2742150eea703be46303b43a17ae6bcdf1",
+  "files_changed": 1,
+  "python_files_changed": 1,
+  "added_lines": 9,
+  "diff_chars": 1230,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 59.5,
+  "index_seconds": 9.5,
+  "index_reused": false,
+  "index_chunks": 1219,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "fallback",
+    "investigator_status": "failed",
+    "hunks_total": 1,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 5,
+  "reviewer_units": 1,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "start_line": 1,
+                  "end_line": 120,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 path=readthedocs/core/permissions.py lines=1-120]\n1: \"\"\"Objects for User permission checks.\"\"\"\n2: \n3: from django.conf import settings\n4: from django.contrib.auth.models import User\n5: from django.db.models import Q\n6: \n7: from readthedocs.core.utils.extend import SettingsOverrideObject\n8: from readthedocs.organizations.constants import ADMIN_ACCESS\n9: from readthedocs.organizations.constants import READ_ONLY_ACCESS\n10: \n11: \n12: class AdminPermissionBase:\n13:     @classmethod\n14:     def projects(cls, user, admin=False, member=False):\n15:         \"\"\"\n16:         Return all the projects the user has access to as ``admin`` or ``member``.\n17: \n18:         If `RTD_ALLOW_ORGANIZATIONS` is enabled\n19:         This function takes into consideration VCS SSO and Google SSO.\n20:         It includes:\n21: \n22:         - projects where the user has access to via VCS SSO.\n23:         - Projects where the user has access via Team,\n24:           if VCS SSO is not enabled for the organization of that team.\n25: \n26:         .. note::\n27: \n28:            SSO is taken into consideration,\n29:            but isn't implemented in .org yet.\n30: \n31:         :param user: user object to filter projects\n32:         :type user: django.contrib.admin.models.User\n33:         :param bool admin: include projects where the user has admin access to the project\n34:         :param bool member: include projects where the user has read access to the project\n35:         \"\"\"\n36:         from readthedocs.projects.models import Project\n37:         from readthedocs.sso.models import SSOIntegration\n38: \n39:         projects = Project.objects.none()\n40:         if not user or not user.is_authenticated:\n41:             return projects\n42: \n43:         if not settings.RTD_ALLOW_ORGANIZATIONS:\n44:             # All users are admin and member of a project\n45:             # when we aren't using organizations.\n46:             return user.projects.all()\n47: \n48:         projects_from_sso = Project.objects.none()\n49:         projects_from_teams = Project.objects.none()\n50:         projects_from_owners = Project.objects.none()\n51: \n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             projects_from_teams = Project.objects.filter(teams__members=user)\n58:             if admin and not member:\n59:                 projects_from_teams = projects_from_teams.filter(teams__access=ADMIN_ACCESS)\n60:             elif member and not admin:\n61:                 projects_from_teams = projects_from_teams.filter(teams__access=READ_ONLY_ACCESS)\n62:             else:\n63:                 # If both admin and member are True, we don't need to filter the queryset.\n64:                 pass\n65:             projects_from_teams = projects_from_teams.exclude(\n66:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n67:             )\n68: \n69:         # Projects from organizations that don't have VCS SSO enabled,\n70:         # where the user is an owner.\n71:         if admin:\n72:             projects_from_owners = Project.objects.filter(organizations__owners=user).exclude(\n73:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n74:             )\n75: \n76:         # NOTE: We use a filter with Q objects instead of several union operations\n77:         # (e.g projects_from_sso | projects_from_teams | projects_from_owners),\n78:         # as the latter can generate a very complex and slow query.\n79:         return Project.objects.filter(\n80:             Q(id__in=projects_from_sso)\n81:             | Q(id__in=projects_from_teams)\n82:             | Q(id__in=projects_from_owners)\n83:         )\n84: \n85:     @classmethod\n86:     def organizations(cls, user, owner=False, member=False):\n87:         from readthedocs.organizations.models import Organization\n88: \n89:         organizations = Organization.objects.none()\n90: \n91:         if owner:\n92:             organizations |= Organization.objects.filter(owners__in=[user]).distinct()\n93: \n94:         if member:\n95:             organizations |= Organization.objects.filter(\n96:                 projects__in=cls.projects(user, admin=True, member=True)\n97:             ).distinct()\n98: \n99:         return organizations\n100: \n101:     @classmethod\n102:     def has_sso_enabled(cls, obj, provider=None):\n103:         return False\n104: \n105:     @classmethod\n106:     def _get_projects_for_sso_user(cls, user, admin=False, member=False):\n107:         from readthedocs.projects.models import Project\n108: \n109:         return Project.objects.none()\n110: \n111:     @classmethod\n112:     def owners(cls, obj):\n113:         \"\"\"\n114:         Return the owners of `obj`.\n115: \n116:         If organizations are enabled,\n117:         we return the owners of the project organization instead.\n118:         \"\"\"\n119:         from readthedocs.organizations.models import Organization\n120:         from readthedocs.projects.models import Project\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "start_line": 1,
+                  "end_line": 120,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/core/permissions.py lines=1-120]\n1: \"\"\"Objects for User permission checks.\"\"\"\n2: \n3: from django.conf import settings\n4: from django.contrib.auth.models import User\n5: from django.db.models import Q\n6: \n7: from readthedocs.core.utils.extend import SettingsOverrideObject\n8: from readthedocs.organizations.constants import ADMIN_ACCESS\n9: from readthedocs.organizations.constants import READ_ONLY_ACCESS\n10: \n11: \n12: class AdminPermissionBase:\n13:     @classmethod\n14:     def projects(cls, user, admin=False, member=False):\n15:         \"\"\"\n16:         Return all the projects the user has access to as ``admin`` or ``member``.\n17: \n18:         If `RTD_ALLOW_ORGANIZATIONS` is enabled\n19:         This function takes into consideration VCS SSO and Google SSO.\n20:         It includes:\n21: \n22:         - projects where the user has access to via VCS SSO.\n23:         - Projects where the user has access via Team,\n24:           if VCS SSO is not enabled for the organization of that team.\n25: \n26:         .. note::\n27: \n28:            SSO is taken into consideration,\n29:            but isn't implemented in .org yet.\n30: \n31:         :param user: user object to filter projects\n32:         :type user: django.contrib.admin.models.User\n33:         :param bool admin: include projects where the user has admin access to the project\n34:         :param bool member: include projects where the user has read access to the project\n35:         \"\"\"\n36:         from readthedocs.projects.models import Project\n37:         from readthedocs.sso.models import SSOIntegration\n38: \n39:         projects = Project.objects.none()\n40:         if not user or not user.is_authenticated:\n41:             return projects\n42: \n43:         if not settings.RTD_ALLOW_ORGANIZATIONS:\n44:             # All users are admin and member of a project\n45:             # when we aren't using organizations.\n46:             return user.projects.all()\n47: \n48:         projects_from_sso = Project.objects.none()\n49:         projects_from_teams = Project.objects.none()\n50:         projects_from_owners = Project.objects.none()\n51: \n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             filter = Q()\n58:             if admin:\n59:                 filter |= Q(teams__access=ADMIN_ACCESS)\n60:             if member:\n61:                 filter |= Q(teams__access=READ_ONLY_ACCESS)\n62:             projects_from_teams = Project.objects.filter(filter, teams__members=user).exclude(\n63:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n64:             )\n65: \n66:         # Projects from organizations that don't have VCS SSO enabled,\n67:         # where the user is an owner.\n68:         if admin:\n69:             projects_from_owners = Project.objects.filter(organizations__owners=user).exclude(\n70:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n71:             )\n72: \n73:         # NOTE: We use a filter with Q objects instead of several union operations\n74:         # (e.g projects_from_sso | projects_from_teams | projects_from_owners),\n75:         # as the latter can generate a very complex and slow query.\n76:         return Project.objects.filter(\n77:             Q(id__in=projects_from_sso)\n78:             | Q(id__in=projects_from_teams)\n79:             | Q(id__in=projects_from_owners)\n80:         )\n81: \n82:     @classmethod\n83:     def organizations(cls, user, owner=False, member=False):\n84:         from readthedocs.organizations.models import Organization\n85: \n86:         organizations = Organization.objects.none()\n87: \n88:         if owner:\n89:             organizations |= Organization.objects.filter(owners__in=[user]).distinct()\n90: \n91:         if member:\n92:             organizations |= Organization.objects.filter(\n93:                 projects__in=cls.projects(user, admin=True, member=True)\n94:             ).distinct()\n95: \n96:         return organizations\n97: \n98:     @classmethod\n99:     def has_sso_enabled(cls, obj, provider=None):\n100:         return False\n101: \n102:     @classmethod\n103:     def _get_projects_for_sso_user(cls, user, admin=False, member=False):\n104:         from readthedocs.projects.models import Project\n105: \n106:         return Project.objects.none()\n107: \n108:     @classmethod\n109:     def owners(cls, obj):\n110:         \"\"\"\n111:         Return the owners of `obj`.\n112: \n113:         If organizations are enabled,\n114:         we return the owners of the project organization instead.\n115:         \"\"\"\n116:         from readthedocs.organizations.models import Organization\n117:         from readthedocs.projects.models import Project\n118: \n119:         if isinstance(obj, Project):\n120:             if settings.RTD_ALLOW_ORGANIZATIONS:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ADMIN_ACCESS|READ_ONLY_ACCESS",
+                  "file_glob": "readthedocs/organizations/constants.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"ADMIN_ACCESS|READ_ONLY_ACCESS\"]\nreadthedocs/organizations/constants.py:6:READ_ONLY_ACCESS = \"readonly\"\nreadthedocs/organizations/constants.py:7:ADMIN_ACCESS = \"admin\"\nreadthedocs/organizations/constants.py:10:    (READ_ONLY_ACCESS, _(\"Read-only\")),\nreadthedocs/organizations/constants.py:11:    (ADMIN_ACCESS, _(\"Admin\")),\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.projects\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"\\.projects\\(\"]\nreadthedocs/builds/querysets.py:54:            projects_pk = AdminPermission.projects(\nreadthedocs/builds/querysets.py:166:            projects_pk = AdminPermission.projects(\nreadthedocs/builds/querysets.py:296:            projects_pk = AdminPermission.projects(\nreadthedocs/core/permissions.py:93:                projects__in=cls.projects(user, admin=True, member=True)\nreadthedocs/notifications/querysets.py:107:                attached_to_id__in=AdminPermission.projects(\nreadthedocs/notifications/querysets.py:138:            if resource in AdminPermission.projects(user, admin=True, member=False):\nreadthedocs/oauth/migrate.py:232:        AdminPermission.projects(user, admin=True)\nreadthedocs/oauth/migrate.py:265:        AdminPermission.projects(user, admin=True)\nreadthedocs/profiles/views.py:420:            projects = AdminPermission.projects(request.user, admin=True).filter(slug=project_slug)\nreadthedocs/projects/querysets.py:25:        projects = AdminPermission.projects(\nreadthedocs/projects/querysets.py:239:            projects_pk = AdminPermission.projects(\nreadthedocs/projects/views/private.py:112:        projects = AdminPermission.projects(user=self.request.user, admin=True)\nreadthedocs/redirects/querysets.py:30:            projects_pk = AdminPermission.projects(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/projects/querysets.py",
+                  "start_line": 15,
+                  "end_line": 45,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/projects/querysets.py lines=15-45]\n15: from readthedocs.subscriptions.products import get_feature\n16: \n17: \n18: class ProjectQuerySetBase(NoReprQuerySet, models.QuerySet):\n19:     \"\"\"Projects take into account their own privacy_level setting.\"\"\"\n20: \n21:     use_for_related_fields = True\n22: \n23:     def _add_user_projects(self, queryset, user, admin=False, member=False):\n24:         \"\"\"Add projects from where `user` is an `admin` or a `member`.\"\"\"\n25:         projects = AdminPermission.projects(\n26:             user=user,\n27:             admin=admin,\n28:             member=member,\n29:         )\n30:         return queryset | projects\n31: \n32:     def for_user_and_viewer(self, user, viewer):\n33:         \"\"\"\n34:         Show projects that a user owns, that another user can see.\n35: \n36:         This includes:\n37: \n38:         - Projects where both are member\n39:         - Public projects from `user`\n40:         \"\"\"\n41:         viewer_projects = self._add_user_projects(self.none(), viewer, admin=True, member=True)\n42:         owner_projects = self._add_user_projects(self.none(), user, admin=True, member=True)\n43:         owner_public_projects = owner_projects.filter(privacy_level=constants.PUBLIC)\n44:         queryset = (viewer_projects & owner_projects) | owner_public_projects\n45:         return queryset.distinct()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/notifications/querysets.py",
+                  "start_line": 100,
+                  "end_line": 145,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/notifications/querysets.py lines=100-145]\n100:             user_notifications = self.filter(\n101:                 attached_to_content_type=ContentType.objects.get_for_model(User),\n102:                 attached_to_id=user.pk,\n103:             )\n104: \n105:             project_notifications = self.filter(\n106:                 attached_to_content_type=ContentType.objects.get_for_model(Project),\n107:                 attached_to_id__in=AdminPermission.projects(\n108:                     user,\n109:                     admin=True,\n110:                     member=False,\n111:                 ).values(\"id\"),\n112:             )\n113: \n114:             organization_notifications = self.filter(\n115:                 attached_to_content_type=ContentType.objects.get_for_model(Organization),\n116:                 attached_to_id__in=AdminPermission.organizations(\n117:                     user,\n118:                     owner=True,\n119:                     member=False,\n120:                 ).values(\"id\"),\n121:             )\n122: \n123:             # Return all the notifications related to this user attached to:\n124:             # User, Project and Organization models where the user is admin.\n125:             return (user_notifications | project_notifications | organization_notifications).filter(\n126:                 state__in=(UNREAD, READ)\n127:             )\n128: \n129:         if isinstance(resource, User):\n130:             if user == resource:\n131:                 return self.filter(\n132:                     attached_to_content_type=ContentType.objects.get_for_model(resource),\n133:                     attached_to_id=resource.pk,\n134:                     state__in=(UNREAD, READ),\n135:                 )\n136: \n137:         if isinstance(resource, Project):\n138:             if resource in AdminPermission.projects(user, admin=True, member=False):\n139:                 return self.filter(\n140:                     attached_to_content_type=ContentType.objects.get_for_model(resource),\n141:                     attached_to_id=resource.pk,\n142:                     state__in=(UNREAD, READ),\n143:                 )\n144: \n145:         if isinstance(resource, Organization):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class Team",
+                  "file_glob": "readthedocs/organizations/models.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"class Team\"]\nreadthedocs/organizations/models.py:307:class Team(models.Model):\nreadthedocs/organizations/models.py:380:class TeamInvite(models.Model):\nreadthedocs/organizations/models.py:448:class TeamMember(models.Model):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "access = models",
+                  "file_glob": "readthedocs/organizations/models.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"access = models\"]\nreadthedocs/organizations/models.py:341:    access = models.CharField(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/organizations/models.py",
+                  "start_line": 307,
+                  "end_line": 380,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/organizations/models.py lines=307-380]\n307: class Team(models.Model):\n308:     \"\"\"Team model.\"\"\"\n309: \n310:     # Auto fields\n311:     pub_date = models.DateTimeField(_(\"Publication date\"), auto_now_add=True)\n312:     modified_date = models.DateTimeField(_(\"Modified date\"), auto_now=True)\n313: \n314:     # Foreign\n315:     organization = models.ForeignKey(\n316:         Organization,\n317:         related_name=\"teams\",\n318:         on_delete=models.CASCADE,\n319:     )\n320:     projects = models.ManyToManyField(\n321:         \"projects.Project\",\n322:         verbose_name=_(\"Projects\"),\n323:         related_name=\"teams\",\n324:         blank=True,\n325:     )\n326:     members = models.ManyToManyField(\n327:         User,\n328:         verbose_name=_(\"Users\"),\n329:         related_name=\"teams\",\n330:         blank=True,\n331:         through=\"TeamMember\",\n332:     )\n333: \n334:     # Local\n335:     name = models.CharField(_(\"Name\"), max_length=100)\n336:     slug = AutoSlugField(\n337:         populate_from=\"name\",\n338:         always_update=True,\n339:         unique_with=[\"organization\"],\n340:     )\n341:     access = models.CharField(\n342:         _(\"Access\"),\n343:         max_length=100,\n344:         choices=constants.ACCESS_LEVELS,\n345:         default=\"readonly\",\n346:     )\n347: \n348:     auto_join_email_users = models.BooleanField(\n349:         default=False,\n350:         help_text=\"Auto join users with an organization's email address to this team.\",\n351:     )\n352: \n353:     # Managers\n354:     objects = TeamManager()\n355:     history = ExtraHistoricalRecords()\n356: \n357:     class Meta:\n358:         base_manager_name = \"objects\"\n359:         verbose_name = _(\"team\")\n360:         unique_together = (\n361:             (\"slug\", \"organization\"),\n362:             (\"name\", \"organization\"),\n363:         )\n364: \n365:     def get_absolute_url(self):\n366:         return reverse(\n367:             \"organization_team_detail\",\n368:             args=(self.organization.slug, self.slug),\n369:         )\n370: \n371:     def __str__(self):\n372:         return self.name\n373: \n374:     def save(self, *args, **kwargs):\n375:         if not self.slug:\n376:             self.slug = slugify(self.name)\n377:         super().save(*args, **kwargs)\n378: \n379: \n380: class TeamInvite(models.Model):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/builds/querysets.py",
+                  "start_line": 45,
+                  "end_line": 70,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/builds/querysets.py lines=45-70]\n45:         :param bool external_only: If this queryset is being used to query external versions only.\n46:         \"\"\"\n47:         self.internal_only = internal_only\n48:         self.external_only = external_only\n49:         super().__init__(*args, **kwargs)\n50: \n51:     def _add_from_user_projects(self, queryset, user, admin=False, member=False):\n52:         \"\"\"Add related objects from projects where `user` is an `admin` or a `member`.\"\"\"\n53:         if user and user.is_authenticated:\n54:             projects_pk = AdminPermission.projects(\n55:                 user=user,\n56:                 admin=admin,\n57:                 member=member,\n58:             ).values_list(\"pk\", flat=True)\n59:             user_queryset = self.filter(project__in=projects_pk)\n60:             queryset = user_queryset | queryset\n61:         return queryset\n62: \n63:     def _public_only(self):\n64:         if self.internal_only:\n65:             # Since internal versions are already filtered,\n66:             # don't do anything special.\n67:             queryset = self.filter(privacy_level=constants.PUBLIC)\n68:         elif self.external_only:\n69:             # Since external versions are already filtered,\n70:             # don't filter them again.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "member=True",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"member=True\"]\nreadthedocs/builds/querysets.py:108:                queryset = self._add_from_user_projects(queryset, user, admin=True, member=True)\nreadthedocs/builds/querysets.py:203:                    member=True,\nreadthedocs/builds/querysets.py:299:                member=True,\nreadthedocs/core/permissions.py:93:                projects__in=cls.projects(user, admin=True, member=True)\nreadthedocs/organizations/managers.py:46:            member=True,\nreadthedocs/projects/querysets.py:41:        viewer_projects = self._add_user_projects(self.none(), viewer, admin=True, member=True)\nreadthedocs/projects/querysets.py:42:        owner_projects = self._add_user_projects(self.none(), user, admin=True, member=True)\nreadthedocs/projects/querysets.py:61:                    member=True,\nreadthedocs/projects/querysets.py:67:        queryset = self._add_user_projects(self.none(), user, admin=True, member=True)\nreadthedocs/projects/querysets.py:242:                member=True,\nreadthedocs/redirects/querysets.py:33:                member=True,\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/projects/querysets.py",
+                  "start_line": 50,
+                  "end_line": 75,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/projects/querysets.py lines=50-75]\n50: \n51:     def public(self, user=None):\n52:         queryset = self.filter(privacy_level=constants.PUBLIC)\n53:         if user:\n54:             if user.is_superuser:\n55:                 queryset = self.all()\n56:             else:\n57:                 queryset = self._add_user_projects(\n58:                     queryset=queryset,\n59:                     user=user,\n60:                     admin=True,\n61:                     member=True,\n62:                 )\n63:         return queryset.distinct()\n64: \n65:     def for_user(self, user):\n66:         \"\"\"Return all projects that an user belongs to.\"\"\"\n67:         queryset = self._add_user_projects(self.none(), user, admin=True, member=True)\n68:         return queryset.distinct()\n69: \n70:     def is_active(self, project):\n71:         \"\"\"\n72:         Check if the project is active.\n73: \n74:         The check consists on:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/organizations/managers.py",
+                  "start_line": 30,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/organizations/managers.py lines=30-60]\n30: \n31:         return teams.distinct()\n32: \n33:     def admin(self, user, organization=None):\n34:         return self.teams_for_user(\n35:             user,\n36:             organization,\n37:             admin=True,\n38:             member=False,\n39:         )\n40: \n41:     def member(self, user, organization=None):\n42:         return self.teams_for_user(\n43:             user,\n44:             organization,\n45:             admin=True,\n46:             member=True,\n47:         )\n48: \n49: \n50: class TeamManager(SettingsOverrideObject):\n51:     _default_class = TeamManagerBase\n52: \n53: \n54: class TeamMemberManager(models.Manager):\n55:     \"\"\"Manager for queries on team members.\"\"\"\n56: \n57:     def sorted(self):\n58:         \"\"\"\n59:         Return sorted list of members and invites.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/organizations/managers.py",
+                  "start_line": 1,
+                  "end_line": 32,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/organizations/managers.py lines=1-32]\n1: \"\"\"Organizations managers.\"\"\"\n2: \n3: from django.db import models\n4: \n5: from readthedocs.core.utils.extend import SettingsOverrideObject\n6: \n7: from .constants import ADMIN_ACCESS\n8: from .constants import READ_ONLY_ACCESS\n9: \n10: \n11: class TeamManagerBase(models.Manager):\n12:     \"\"\"Manager to control team's access.\"\"\"\n13: \n14:     def teams_for_user(self, user, organization, admin, member):\n15:         teams = self.get_queryset().none()\n16:         if admin:\n17:             # Project Team Admin\n18:             teams |= user.teams.filter(access=ADMIN_ACCESS)\n19: \n20:             # Org Admin\n21:             for org in user.owner_organizations.all():\n22:                 teams |= org.teams.all()\n23: \n24:         if member:\n25:             # Project Team Member\n26:             teams |= user.teams.filter(access=READ_ONLY_ACCESS)\n27: \n28:         if organization:\n29:             teams = teams.filter(organization=organization)\n30: \n31:         return teams.distinct()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "member=False",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 pattern=\"member=False\"]\nreadthedocs/builds/querysets.py:51:    def _add_from_user_projects(self, queryset, user, admin=False, member=False):\nreadthedocs/builds/querysets.py:163:    def _add_from_user_projects(self, queryset, user, admin=False, member=False):\nreadthedocs/core/permissions.py:14:    def projects(cls, user, admin=False, member=False):\nreadthedocs/core/permissions.py:83:    def organizations(cls, user, owner=False, member=False):\nreadthedocs/core/permissions.py:103:    def _get_projects_for_sso_user(cls, user, admin=False, member=False):\nreadthedocs/notifications/querysets.py:110:                    member=False,\nreadthedocs/notifications/querysets.py:119:                    member=False,\nreadthedocs/notifications/querysets.py:138:            if resource in AdminPermission.projects(user, admin=True, member=False):\nreadthedocs/notifications/querysets.py:149:                member=False,\nreadthedocs/organizations/managers.py:38:            member=False,\nreadthedocs/projects/querysets.py:23:    def _add_user_projects(self, queryset, user, admin=False, member=False):\nreadthedocs/projects/querysets.py:48:        queryset = self._add_user_projects(self.none(), user, admin=True, member=False)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/projects/querysets.py",
+                  "start_line": 44,
+                  "end_line": 50,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/projects/querysets.py lines=44-50]\n44:         queryset = (viewer_projects & owner_projects) | owner_public_projects\n45:         return queryset.distinct()\n46: \n47:     def for_admin_user(self, user):\n48:         queryset = self._add_user_projects(self.none(), user, admin=True, member=False)\n49:         return queryset.distinct()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/builds/querysets.py",
+                  "start_line": 100,
+                  "end_line": 115,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/builds/querysets.py lines=100-115]\n100:            and instead use project.builds or similar, so the same object is shared\n101:            between the results.\n102:         \"\"\"\n103:         queryset = self._public_only()\n104:         if user:\n105:             if user.is_superuser:\n106:                 queryset = self.all()\n107:             else:\n108:                 queryset = self._add_from_user_projects(queryset, user, admin=True, member=True)\n109:         if only_active:\n110:             queryset = queryset.filter(active=True)\n111:         if only_built:\n112:             queryset = queryset.filter(built=True)\n113:         if not include_hidden:\n114:             queryset = queryset.filter(hidden=False)\n115:         return queryset.distinct()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/builds/querysets.py",
+                  "start_line": 195,
+                  "end_line": 210,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/builds/querysets.py lines=195-210]\n195:         if user:\n196:             if user.is_superuser:\n197:                 queryset = self.all()\n198:             else:\n199:                 queryset = self._add_from_user_projects(\n200:                     queryset,\n201:                     user,\n202:                     admin=True,\n203:                     member=True,\n204:                 )\n205:         if project:\n206:             queryset = queryset.filter(project=project)\n207:         return queryset.distinct()\n208: \n209:     def api(self, user=None):\n210:         return self.public(user)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/builds/querysets.py",
+                  "start_line": 290,
+                  "end_line": 305,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/builds/querysets.py lines=290-305]\n290:     \"\"\"\n291: \n292:     use_for_related_fields = True\n293: \n294:     def _add_from_user_projects(self, queryset, user):\n295:         if user and user.is_authenticated:\n296:             projects_pk = AdminPermission.projects(\n297:                 user=user,\n298:                 admin=True,\n299:                 member=True,\n300:             ).values_list(\"pk\", flat=True)\n301:             user_queryset = self.filter(build__project__in=projects_pk)\n302:             queryset = user_queryset | queryset\n303:         return queryset\n304: \n305:     def public(self, user=None):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/redirects/querysets.py",
+                  "start_line": 20,
+                  "end_line": 45,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/redirects/querysets.py lines=20-45]\n20: log = structlog.get_logger(__name__)\n21: \n22: \n23: class RedirectQuerySet(NoReprQuerySet, models.QuerySet):\n24:     \"\"\"Redirects take into account their own privacy_level setting.\"\"\"\n25: \n26:     use_for_related_fields = True\n27: \n28:     def _add_from_user_projects(self, queryset, user):\n29:         if user.is_authenticated:\n30:             projects_pk = AdminPermission.projects(\n31:                 user=user,\n32:                 admin=True,\n33:                 member=True,\n34:             ).values_list(\"pk\", flat=True)\n35:             user_queryset = self.filter(project__in=projects_pk)\n36:             queryset = user_queryset | queryset\n37:         return queryset.distinct()\n38: \n39:     def api(self, user=None):\n40:         queryset = self.none()\n41:         if user:\n42:             queryset = self._add_from_user_projects(queryset, user)\n43:         return queryset\n44: \n45:     def api_v2(self, *args, **kwargs):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/projects/querysets.py",
+                  "start_line": 230,
+                  "end_line": 250,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/projects/querysets.py lines=230-250]\n230: \n231:     ..note:: This shouldn't be used as a subclass.\n232:     \"\"\"\n233: \n234:     use_for_related_fields = True\n235:     project_field = \"project\"\n236: \n237:     def _add_from_user_projects(self, queryset, user):\n238:         if user and user.is_authenticated:\n239:             projects_pk = AdminPermission.projects(\n240:                 user=user,\n241:                 admin=True,\n242:                 member=True,\n243:             ).values_list(\"pk\", flat=True)\n244:             kwargs = {f\"{self.project_field}__in\": projects_pk}\n245:             user_queryset = self.filter(**kwargs)\n246:             queryset = user_queryset | queryset\n247:         return queryset\n248: \n249:     def public(self, user=None, project=None):\n250:         kwargs = {f\"{self.project_field}__privacy_level\": constants.PUBLIC}\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/profiles/views.py",
+                  "start_line": 410,
+                  "end_line": 430,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/profiles/views.py lines=410-430]\n410: \n411:     def _get_new_github_account(self):\n412:         return self.request.user.socialaccount_set.filter(provider=GitHubAppProvider.id).first()\n413: \n414:     def _get_old_github_accounts(self):\n415:         return self.request.user.socialaccount_set.filter(provider=GitHubProvider.id)\n416: \n417:     def post(self, request, *args, **kwargs):\n418:         project_slug = request.POST.get(\"project\")\n419:         if project_slug:\n420:             projects = AdminPermission.projects(request.user, admin=True).filter(slug=project_slug)\n421:         else:\n422:             projects = get_valid_projects_missing_migration(request.user)\n423: \n424:         migrated_projects_count = 0\n425:         for project in projects:\n426:             result = migrate_project_to_github_app(project=project, user=request.user)\n427:             if not result.webhook_removed:\n428:                 Notification.objects.add(\n429:                     message_id=MESSAGE_OAUTH_WEBHOOK_NOT_REMOVED,\n430:                     attached_to=request.user,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/projects/views/private.py",
+                  "start_line": 105,
+                  "end_line": 125,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/projects/views/private.py lines=105-125]\n105: \n106:         context[\"filter\"] = self.get_filterset()\n107:         context[\"project_list\"] = self.get_filtered_queryset()\n108:         # Alternatively, dynamically override super()-derived `project_list` context_data\n109:         # context[self.get_context_object_name(filter.qs)] = filter.qs\n110: \n111:         template_name = None\n112:         projects = AdminPermission.projects(user=self.request.user, admin=True)\n113:         n_projects = projects.count()\n114: \n115:         # We can't yet back down to another announcement as we don't have\n116:         # the ability to evaluate local storage. Until we add the ability to\n117:         # dynamically change the announcement, this is going to be the only\n118:         # announcement shown.\n119:         if n_projects == 0 or (\n120:             n_projects < 3 and (timezone.now() - projects.first().pub_date).days < 7\n121:         ):\n122:             template_name = \"example-projects.html\"\n123:         elif n_projects:\n124:             template_name = \"github-app.html\"\n125:         elif n_projects and not projects.filter(external_builds_enabled=True).exists():\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/oauth/migrate.py",
+                  "start_line": 225,
+                  "end_line": 270,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/oauth/migrate.py lines=225-270]\n225:     \"\"\"\n226:     Get all projects where the user has access that are still connected to the old GitHub OAuth App.\n227: \n228:     Returns an iterator with the project, a boolean indicating if the GitHub App is installed on the repository,\n229:     and a boolean indicating if the user has admin permissions on the repository.\n230:     \"\"\"\n231:     projects = (\n232:         AdminPermission.projects(user, admin=True)\n233:         .filter(remote_repository__vcs_provider=GITHUB)\n234:         .select_related(\n235:             \"remote_repository\",\n236:             \"remote_repository__organization\",\n237:         )\n238:     )\n239:     for project in projects:\n240:         remote_repository = project.remote_repository\n241:         has_installation = RemoteRepository.objects.filter(\n242:             remote_id=remote_repository.remote_id,\n243:             vcs_provider=GITHUB_APP,\n244:             github_app_installation__isnull=False,\n245:         ).exists()\n246:         is_admin = (\n247:             RemoteRepository.objects.for_project_linking(user)\n248:             .filter(\n249:                 remote_id=project.remote_repository.remote_id,\n250:                 vcs_provider=GITHUB_APP,\n251:                 github_app_installation__isnull=False,\n252:             )\n253:             .exists()\n254:         )\n255:         yield project, has_installation, is_admin\n256: \n257: \n258: def get_migrated_projects(user):\n259:     \"\"\"\n260:     Get all projects from the user that are already migrated to the GitHub App.\n261: \n262:     This is basically all projects that are connected to a remote repository from the GitHub App.\n263:     \"\"\"\n264:     return (\n265:         AdminPermission.projects(user, admin=True)\n266:         .filter(remote_repository__vcs_provider=GITHUB_APP)\n267:         .select_related(\n268:             \"remote_repository\",\n269:         )\n270:     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"team-access-filter\",\"title\":\"Restrict team-based project access to the requested access level\",\"rationale\":\"The single hunk rewrites the team-access filter in AdminPermission.projects so that admin-only and member-only callers no longer receive projects from the other access level, which is the core authorization change.\",\"hunks\":[\"readthedocs/core/permissions.py#0\"],\"context\":[{\"path\":\"readthedocs/core/permissions.py\",\"symbol\":\"AdminPermissionBase.projects\",\"start_line\":14,\"end_line\":83,\"snapshot\":\"pr\",\"why\":\"Changed method that computes the set of projects a user can access based on admin/member flags.\"},{\"path\":\"readthedocs/organizations/constants.py\",\"symbol\":\"ADMIN_ACCESS/READ_ONLY_ACCESS\",\"start_line\":6,\"end_line\":11,\"snapshot\":\"base\",\"why\":\"Defines the two team access levels the filter branches on.\"},{\"path\":\"readthedocs/organizations/models.py\",\"symbol\":\"Team.access\",\"start_line\":341,\"end_line\":346,\"snapshot\":\"base\",\"why\":\"The Team.access field whose value the filter compares against.\"},{\"path\":\"readthedocs/projects/querysets.py\",\"symbol\":\"ProjectQuerySetBase.for_admin_user\",\"start_line\":47,\"end_line\":49,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=False that must only see ADMIN_ACCESS team projects.\"},{\"path\":\"readthedocs/notifications/querysets.py\",\"symbol\":\"NotificationQuerySet\",\"start_line\":107,\"end_line\":138,\"snapshot\":\"base\",\"why\":\"Callers using admin=True, member=False that rely on admin-only project scoping.\"},{\"path\":\"readthedocs/builds/querysets.py\",\"symbol\":\"_add_from_user_projects\",\"start_line\":108,\"end_line\":108,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True that must see both access levels.\"},{\"path\":\"readthedocs/redirects/querysets.py\",\"symbol\":\"RedirectQuerySet._add_from_user_projects\",\"start_line\":28,\"end_line\":37,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True that must see both access levels.\"}]}]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"team-access-filter\",\"title\":\"Restrict team-based project access to the requested access level\",\"rationale\":\"The hunk rewrites the team-access filter in AdminPermission.projects so admin-only and member-only callers no longer receive projects from the other access level.\",\"hunks\":[\"readthedocs/core/permissions.py#0\"],\"context\":[{\"path\":\"readthedocs/core/permissions.py\",\"symbol\":\"AdminPermissionBase.projects\",\"start_line\":14,\"end_line\":83,\"snapshot\":\"pr\",\"why\":\"Changed method computing accessible projects from admin/member flags.\"},{\"path\":\"readthedocs/organizations/constants.py\",\"symbol\":\"ADMIN_ACCESS/READ_ONLY_ACCESS\",\"start_line\":6,\"end_line\":11,\"snapshot\":\"base\",\"why\":\"Defines the two team access levels the filter branches on.\"},{\"path\":\"readthedocs/organizations/models.py\",\"symbol\":\"Team.access\",\"start_line\":341,\"end_line\":346,\"snapshot\":\"base\",\"why\":\"Team.access field the filter compares against.\"},{\"path\":\"readthedocs/projects/querysets.py\",\"symbol\":\"ProjectQuerySetBase.for_admin_user\",\"start_line\":47,\"end_line\":49,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=False expecting only ADMIN_ACCESS projects.\"},{\"path\":\"readthedocs/notifications/querysets.py\",\"symbol\":\"NotificationQuerySet\",\"start_line\":107,\"end_line\":138,\"snapshot\":\"base\",\"why\":\"Callers using admin=True, member=False relying on admin-only scoping.\"},{\"path\":\"readthedocs/builds/querysets.py\",\"symbol\":\"_add_from_user_projects\",\"start_line\":108,\"end_line\":108,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True expecting both access levels.\"},{\"path\":\"readthedocs/redirects/querysets.py\",\"symbol\":\"RedirectQuerySet._add_from_user_projects\",\"start_line\":28,\"end_line\":37,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True expecting both access levels.\"}]}]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"team-access-filter\",\"title\":\"Restrict team-based project access to the requested access level\",\"rationale\":\"The hunk rewrites the team-access filter in AdminPermission.projects so admin-only and member-only callers no longer receive projects from the other access level.\",\"hunks\":[\"readthedocs/core/permissions.py#0\"],\"context\":[{\"path\":\"readthedocs/core/permissions.py\",\"symbol\":\"AdminPermissionBase.projects\",\"start_line\":14,\"end_line\":83,\"snapshot\":\"pr\",\"why\":\"Changed method computing accessible projects from admin/member flags.\"},{\"path\":\"readthedocs/organizations/constants.py\",\"symbol\":\"ADMIN_ACCESS\",\"start_line\":6,\"end_line\":11,\"snapshot\":\"base\",\"why\":\"Defines the two team access levels the filter branches on.\"},{\"path\":\"readthedocs/organizations/models.py\",\"symbol\":\"Team.access\",\"start_line\":341,\"end_line\":346,\"snapshot\":\"base\",\"why\":\"Team.access field the filter compares against.\"},{\"path\":\"readthedocs/projects/querysets.py\",\"symbol\":\"ProjectQuerySetBase.for_admin_user\",\"start_line\":47,\"end_line\":49,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=False expecting only ADMIN_ACCESS projects.\"},{\"path\":\"readthedocs/notifications/querysets.py\",\"symbol\":\"NotificationQuerySet\",\"start_line\":107,\"end_line\":138,\"snapshot\":\"base\",\"why\":\"Callers using admin=True, member=False relying on admin-only scoping.\"},{\"path\":\"readthedocs/builds/querysets.py\",\"symbol\":\"_add_from_user_projects\",\"start_line\":108,\"end_line\":108,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True expecting both access levels.\"},{\"path\":\"readthedocs/redirects/querysets.py\",\"symbol\":\"RedirectQuerySet._add_from_user_projects\",\"start_line\":28,\"end_line\":37,\"snapshot\":\"base\",\"why\":\"Caller using admin=True, member=True expecting both access levels.\"}]}]",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:readthedocs/core/permissions.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 path=readthedocs/core/permissions.py lines=1-185]\n1: \"\"\"Objects for User permission checks.\"\"\"\n2: \n3: from django.conf import settings\n4: from django.contrib.auth.models import User\n5: from django.db.models import Q\n6: \n7: from readthedocs.core.utils.extend import SettingsOverrideObject\n8: from readthedocs.organizations.constants import ADMIN_ACCESS\n9: from readthedocs.organizations.constants import READ_ONLY_ACCESS\n10: \n11: \n12: class AdminPermissionBase:\n13:     @classmethod\n14:     def projects(cls, user, admin=False, member=False):\n15:         \"\"\"\n16:         Return all the projects the user has access to as ``admin`` or ``member``.\n17: \n18:         If `RTD_ALLOW_ORGANIZATIONS` is enabled\n19:         This function takes into consideration VCS SSO and Google SSO.\n20:         It includes:\n21: \n22:         - projects where the user has access to via VCS SSO.\n23:         - Projects where the user has access via Team,\n24:           if VCS SSO is not enabled for the organization of that team.\n25: \n26:         .. note::\n27: \n28:            SSO is taken into consideration,\n29:            but isn't implemented in .org yet.\n30: \n31:         :param user: user object to filter projects\n32:         :type user: django.contrib.admin.models.User\n33:         :param bool admin: include projects where the user has admin access to the project\n34:         :param bool member: include projects where the user has read access to the project\n35:         \"\"\"\n36:         from readthedocs.projects.models import Project\n37:         from readthedocs.sso.models import SSOIntegration\n38: \n39:         projects = Project.objects.none()\n40:         if not user or not user.is_authenticated:\n41:             return projects\n42: \n43:         if not settings.RTD_ALLOW_ORGANIZATIONS:\n44:             # All users are admin and member of a project\n45:             # when we aren't using organizations.\n46:             return user.projects.all()\n47: \n48:         projects_from_sso = Project.objects.none()\n49:         projects_from_teams = Project.objects.none()\n50:         projects_from_owners = Project.objects.none()\n51: \n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             projects_from_teams = Project.objects.filter(teams__members=user)\n58:             if admin and not member:\n59:                 projects_from_teams = projects_from_teams.filter(teams__access=ADMIN_ACCESS)\n60:             elif member and not admin:\n61:                 projects_from_teams = projects_from_teams.filter(teams__access=READ_ONLY_ACCESS)\n62:             else:\n63:                 # If both admin and member are True, we don't need to filter the queryset.\n64:                 pass\n65:             projects_from_teams = projects_from_teams.exclude(\n66:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n67:             )\n68: \n69:         # Projects from organizations that don't have VCS SSO enabled,\n70:         # where the user is an owner.\n71:         if admin:\n72:             projects_from_owners = Project.objects.filter(organizations__owners=user).exclude(\n73:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n74:             )\n75: \n76:         # NOTE: We use a filter with Q objects instead of several union operations\n77:         # (e.g projects_from_sso | projects_from_teams | projects_from_owners),\n78:         # as the latter can generate a very complex and slow query.\n79:         return Project.objects.filter(\n80:             Q(id__in=projects_from_sso)\n81:             | Q(id__in=projects_from_teams)\n82:             | Q(id__in=projects_from_owners)\n83:         )\n84: \n85:     @classmethod\n86:     def organizations(cls, user, owner=False, member=False):\n87:         from readthedocs.organizations.models import Organization\n88: \n89:         organizations = Organization.objects.none()\n90: \n91:         if owner:\n92:             organizations |= Organization.objects.filter(owners__in=[user]).distinct()\n93: \n94:         if member:\n95:             organizations |= Organization.objects.filter(\n96:                 projects__in=cls.projects(user, admin=True, member=True)\n97:             ).distinct()\n98: \n99:         return organizations\n100: \n101:     @classmethod\n102:     def has_sso_enabled(cls, obj, provider=None):\n103:         return False\n104: \n105:     @classmethod\n106:     def _get_projects_for_sso_user(cls, user, admin=False, member=False):\n107:         from readthedocs.projects.models import Project\n108: \n109:         return Project.objects.none()\n110: \n111:     @classmethod\n112:     def owners(cls, obj):\n113:         \"\"\"\n114:         Return the owners of `obj`.\n115: \n116:         If organizations are enabled,\n117:         we return the owners of the project organization instead.\n118:         \"\"\"\n119:         from readthedocs.organizations.models import Organization\n120:         from readthedocs.projects.models import Project\n121: \n122:         if isinstance(obj, Project):\n123:             if settings.RTD_ALLOW_ORGANIZATIONS:\n124:                 obj = obj.organization\n125:             else:\n126:                 return obj.users.all()\n127: \n128:         if isinstance(obj, Organization):\n129:             return obj.owners.all()\n130: \n131:     @classmethod\n132:     def admins(cls, obj):\n133:         from readthedocs.organizations.models import Organization\n134:         from readthedocs.projects.models import Project\n135: \n136:         if isinstance(obj, Project):\n137:             return obj.users.all()\n138: \n139:         if isinstance(obj, Organization):\n140:             return obj.owners.all()\n141: \n142:     @classmethod\n143:     def members(cls, obj, user=None):\n144:         \"\"\"\n145:         Return the users that are members of `obj`.\n146: \n147:         If `user` is provided, we return the members of `obj` that are visible to `user`.\n148:         For a project this means the users that have access to the project,\n149:         and for an organization, this means the users that are on the same teams as `user`,\n150:         including the organization owners.\n151:         \"\"\"\n152:         from readthedocs.organizations.models import Organization\n153:         from readthedocs.organizations.models import Team\n154:         from readthedocs.projects.models import Project\n155: \n156:         if isinstance(obj, Project):\n157:             project_owners = obj.users.all()\n158:             if user and user not in project_owners:\n159:                 return User.objects.none()\n160:             return project_owners\n161: \n162:         if isinstance(obj, Organization):\n163:             if user:\n164:                 teams = Team.objects.member(user, organization=obj)\n165:                 return User.objects.filter(\n166:                     Q(teams__in=teams) | Q(owner_organizations=obj),\n167:                 ).distinct()\n168: \n169:             return User.objects.filter(\n170:                 Q(teams__organization=obj) | Q(owner_organizations=obj),\n171:             ).distinct()\n172: \n173:     @classmethod\n174:     def is_admin(cls, user, obj):\n175:         # This explicitly uses \"user in project.users.all\" so that\n176:         # users on projects can be cached using prefetch_related or prefetch_related_objects\n177:         return user in cls.admins(obj) or user.is_superuser\n178: \n179:     @classmethod\n180:     def is_member(cls, user, obj):\n181:         return user in cls.members(obj) or user.is_superuser\n182: \n183: \n184: class AdminPermission(SettingsOverrideObject):\n185:     _default_class = AdminPermissionBase\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "project access permissions admin member team access level"
+                },
+                "result": "[docs/user/commercial/organizations.rst:1-52] (relevance 0.60)\nOrganizations\n-------------\n\n.. include:: /shared/admonition-rtd-business.rst\n\nIn this article, we explain how the *organizations* feature allows you to manage access to your projects.\nOn |com_brand|, your account is linked to an *organization*.\nOrganizations allow you to define both individual and team permissions for your projects.\n\n.. seealso::\n\n   :doc:`/guides/manage-read-the-docs-teams`\n     A step-by-step guide to managing teams.\n\nImportant objects\n~~~~~~~~~~~~~~~~~\n\n* **Owners** -- Get full access to both view and edit the organization and all projects\n* **Members** -- Get access to a subset of the organization projects\n* **Teams** -- Where you give members access to a set of projects.\n\nThe best way to think about this relationship is:\n\n*Owners* will create *Teams* to assign permissions to all *Members*.\n\n.. warning::\n\n   Owners, Members, and Teams behave differently if you are using\n   :ref:`sso_git_provider`.\n\nTeam types\n~~~~~~~~~~\n\nYou can create two types of teams:\n\n* **Admin** -- Team members have full access to administer the projects assigned to the team. Members are allowed to change all of the settings, set notifications, and perform any action under the :guilabel:`Admin` tab for each project.\n* **Read Only** -- Team members are only able to read the documentation of each project, and not able to change anything about each project.\n\nExample\n~~~~~~~\n\nACME would set up *Owners* of their organization,\nfor example, Frank Roadrunner would be an owner.\nHe has full access to the organization and all projects.\n\nWile E. Coyote is a contractor,\nand will just have access to the new project Road Builder.\n\nRoadrunner would set up a *Team* called *Contractors*.\nThat team would have *Read Only* access to the *Road Builder* project.\nThen he would add *Wile E. Coyote* to the team.\nThis would give him access to just this one project inside the organization.\n\n---\n\n[docs/user/guides/manage-read-the-docs-teams.rst:1-51] (relevance 0.55)\nHow to manage Read the Docs teams\n=================================\n\n.. include:: /shared/admonition-rtd-business.rst\n\nRead the Docs uses teams within an organization to group users and provide permissions to projects.\nThis guide will cover how to do team management,\nincluding adding and removing people from teams.\nYou can read more about organizations and teams in our :doc:`/commercial/organizations` documentation.\n\nAdding a user to a team\n-----------------------\n\nAdding a user to a team gives them all the permissions available to that team,\nwhether it's *read-only* or *admin*.\n\nFollow these steps:\n\n1. Navigate to the `teams management page <https://app.readthedocs.com/organizations/choose/organization_team_list/>`__.\n2. Click on a :guilabel:`<team name>`.\n3. Click :guilabel:`Invite Member`.\n4. Input the user's Read the Docs username or email address.\n5. Click :guilabel:`Add member`.\n\nRemoving a user from a team\n----------------------------\n\nRemoving a user from a team removes all permissions that team gave them.\n\nFollow these steps:\n\n1. Navigate to the `teams management page <https://app.readthedocs.com/organizations/choose/organization_team_list/>`__.\n2. Click on :guilabel:`<team name>`.\n3. Click :guilabel:`Remove` next to the user.\n\n\nGrant access to users to import a project\n-----------------------------------------\n\nMake the user a member of any team with *admin* permissions,\nthey will be granted access to import a project on that team.\n\nAutomating this process\n-----------------------\n\nYou can manage teams more easily using our :doc:`single sign-on </commercial/single-sign-on>` features.\n\n.. seealso::\n\n   :doc:`/commercial/organizations`\n     General information about the *organizations* feature.\n\n---\n\n[docs/dev/design/organizations.rst:48-93] (relevance 0.54)\nOwners should be included to represent owners of the current organization.\n\nTeams, this is also handy to manage access to different projects under the same organization.\n\nPermissions,\ncurrently we have two type of permissions for teams: admin and read only.\nRead only permissions doesn't make sense in the community site since we only support public projects/versions\n(we do support private versions now, but we are planning to remove those).\nSo, we should only support admin permissions for teams.\n\nSubscriptions, this is only valid for the corporate site,\nsince we don't charge for use in the community site.\n\nHow to migrate current projects\n-------------------------------\n\nSince we are not replacing the current implementation,\nwe don't need to migrate current projects from the community site nor from the corporate site.\n\nHow to migrate the organizations app\n------------------------------------\n\nThe migration can be split in:\n\n#. Remove/simplify code from the organizations app on the corporate site.\n#. Isolate/separate models and code that isn't going to be moved.\n#. Start by moving the models, managers, and figure out how to handle migrations.\n#. Move the rest of the code as needed.\n#. Activate organizations app on the community site.\n#. Integrate the code from the community site to the new code.\n#. UI changes\n\nWe should start by removing unused features and dead code from the organizations in the corporate site,\nand simplify existing code if possible (some of this was already done).\n\nIsolate/separate the models to be moved from the ones that aren't going to be moved.\nWe should move the models that aren't going to me moved to another app.\n\n- Plan\n- PlanFeature\n- Subscription\n\nThis app can be named *subscriptions*.\nWe can get around the table names and migrations by setting the explicitly the table name to ``organizations_<model>``,\nand doing a fake migration.\nFollowing suggestions in https://stackoverflow.com/questions/48860227/moving-multiple-models-from-one-django-app-to-another,\n\n---\n\n[docs/user/guides/set-up-single-sign-on-saml.rst:123-153] (relevance 0.48)\n* Using :doc:`teams </guides/manage-read-the-docs-teams>` to provide access for ongoing contribution.\n* Using :doc:`sharing </commercial/sharing>` to provide short-term access requiring a login.\n\nRevoke user's access to all the projects\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nBy disabling access to the SAML integration to a user,\nyou revoke access to all the projects their linked Read the Docs user had access to,\nand disable login on Read the Docs completely for that user.\n\n.. warning::\n\n   If the user signed up to Read the Docs previously to enabling SAML on your organization,\n   they may still have access to their account and projects if they were manually added to a team.\n\n   To completely revoke access to a user, remove them from all the teams they are part of.\n\n.. warning::\n\n   If the user was already signed in to Read the Docs when their access was revoked,\n   they may still have access to documentation pages until their session expires.\n   This is three days for the dashboard and documentation pages.\n\n   To completely revoke access to a user, remove them from all the teams they are part of.\n\n.. seealso::\n\n   :doc:`/guides/manage-read-the-docs-teams`\n     Additional user management options\n   :doc:`/commercial/single-sign-on`\n     Information about choosing a single sign-on approach\n\n---\n\n[docs/user/commercial/single-sign-on.rst:41-73] (relevance 0.47)\nAs this identity provider does not provide information about which projects a user has access to,\npermissions are managed by the :ref:`internal Read the Docs's teams <commercial/organizations:Team Types>` authorization system.\n\nThis feature is only available on the **Pro plan** and above.\nLearn how to configure this SSO method with our :doc:`/guides/setup-single-sign-on-google-email`.\n\n.. _sso_saml:\n\nSSO with SAML\n-------------\n\n.. note::\n\n   This feature is in beta, and will be available for **Enterprise** plans only.\n   Contact :doc:`support </support>` to enable this feature for your organization.\n\n   **At the moment only Okta is supported as a SAML identity provider.**\n\nThis feature al"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "start_line": 52,
+                  "end_line": 68,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/core/permissions.py lines=52-68]\n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             filter = Q()\n58:             if admin:\n59:                 filter |= Q(teams__access=ADMIN_ACCESS)\n60:             if member:\n61:                 filter |= Q(teams__access=READ_ONLY_ACCESS)\n62:             projects_from_teams = Project.objects.filter(filter, teams__members=user).exclude(\n63:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n64:             )\n65: \n66:         # Projects from organizations that don't have VCS SSO enabled,\n67:         # where the user is an owner.\n68:         if admin:\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ADMIN_ACCESS|READ_ONLY_ACCESS",
+                  "file_glob": "readthedocs/organizations/constants.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 pattern=\"ADMIN_ACCESS|READ_ONLY_ACCESS\"]\nreadthedocs/organizations/constants.py:6:READ_ONLY_ACCESS = \"readonly\"\nreadthedocs/organizations/constants.py:7:ADMIN_ACCESS = \"admin\"\nreadthedocs/organizations/constants.py:10:    (READ_ONLY_ACCESS, _(\"Read-only\")),\nreadthedocs/organizations/constants.py:11:    (ADMIN_ACCESS, _(\"Admin\")),\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.projects\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 pattern=\"\\.projects\\(\"]\nreadthedocs/builds/querysets.py:54:            projects_pk = AdminPermission.projects(\nreadthedocs/builds/querysets.py:166:            projects_pk = AdminPermission.projects(\nreadthedocs/builds/querysets.py:296:            projects_pk = AdminPermission.projects(\nreadthedocs/core/permissions.py:96:                projects__in=cls.projects(user, admin=True, member=True)\nreadthedocs/notifications/querysets.py:107:                attached_to_id__in=AdminPermission.projects(\nreadthedocs/notifications/querysets.py:138:            if resource in AdminPermission.projects(user, admin=True, member=False):\nreadthedocs/oauth/migrate.py:232:        AdminPermission.projects(user, admin=True)\nreadthedocs/oauth/migrate.py:265:        AdminPermission.projects(user, admin=True)\nreadthedocs/profiles/views.py:420:            projects = AdminPermission.projects(request.user, admin=True).filter(slug=project_slug)\nreadthedocs/projects/querysets.py:25:        projects = AdminPermission.projects(\nreadthedocs/projects/querysets.py:239:            projects_pk = AdminPermission.projects(\nreadthedocs/projects/views/private.py:112:        projects = AdminPermission.projects(user=self.request.user, admin=True)\nreadthedocs/redirects/querysets.py:30:            projects_pk = AdminPermission.projects(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "readthedocs-team-access-filter-authz",
+  "url": "https://github.com/readthedocs/readthedocs.org/pull/12669",
+  "category": "authz",
+  "cwe": "CWE-285",
+  "ghsa": "GHSA-cw37-xcph-qr86",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "readthedocs/core/permissions.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

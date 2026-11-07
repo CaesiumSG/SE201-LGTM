@@ -1,0 +1,413 @@
+{
+  "id": "authentik-ssf-stream-authz-vulnerable",
+  "repo": "goauthentik/authentik",
+  "pr": 21383,
+  "title": "The SSF conformance PR added GET/PATCH/PUT stream handlers plus stream verify and status views without the add_stream provider permission check that the existing POST handler enforces, so any token holder for the app can read, modify, verify and disable its event streams.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "f38584b3436510d3d91d9bd72ff684ae44d96ee5",
+  "pr_sha": "ea2bdde5a3d66541854f8d8513c82f8d96124d45",
+  "files_changed": 47,
+  "python_files_changed": 15,
+  "added_lines": 644,
+  "diff_chars": 40659,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 316.5,
+  "index_seconds": 17.5,
+  "index_reused": false,
+  "index_chunks": 2360,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 35,
+    "hunks_reviewed": 33,
+    "sections_scheduled": 16,
+    "sections_completed": 15,
+    "sections_failed": 1,
+    "complete": false
+  },
+  "judged": {
+    "supported": 4,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 4,
+  "agent_errors": [
+    {
+      "source": "stream-view-perms",
+      "stage": null,
+      "message": "Section review returned no parsable findings for authentik/enterprise/providers/ssf/views/stream.py lines 112-192"
+    }
+  ],
+  "verdicts": {
+    "vulnerable": 4
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:stream-viewset-perms:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "authentik/enterprise/providers/ssf/api/streams.py",
+      "line": 34,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR changes SSFStreamViewSet from a ReadOnlyModelViewSet to a viewset that adds mixins.DestroyModelMixin, exposing a new DELETE endpoint. The viewset (streams.py:32-44) sets no permission_classes or authentication_classes, and the SSF provider API (providers.py) likewise defines none, so the endpoint relies on DRF defaults. The Stream model's default_permissions (models.py:138) only defines the"
+    },
+    {
+      "finding_id": "authz:stream-status-verify:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "authentik/enterprise/providers/ssf/views/stream.py",
+      "line": 169,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The newly added StreamVerifyView (authentik/enterprise/providers/ssf/views/stream.py:167-180) is a state-changing endpoint that triggers send_ssf_events (SET verification event delivery) but performs no permission check. It inherits only IsAuthenticated + SSFTokenAuth from SSFView (base.py:16,22-23), which binds the request to a provider but grants no role/permission verification. This contrasts w"
+    },
+    {
+      "finding_id": "authz:delivery-methods:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "authentik/enterprise/providers/ssf/views/base.py",
+      "line": 31,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR introduces per-stream operations (GET/PATCH/PUT/DELETE) that resolve a stream by a user-controlled identifier via SSFStreamView.get_object (base.py:27-38), which filters only by provider and status and then by the client-supplied 'stream_id' query param or body field. The only authorization is SSFView's IsAuthenticated permission (base.py:16) plus SSFTokenAuth; there is no check that the au"
+    },
+    {
+      "finding_id": "authz:leftover:authentik/enterprise/providers/ssf/views/base.py:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "authentik/enterprise/providers/ssf/views/base.py",
+      "line": 27,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new SSFStreamView.get_object (base.py:27-38) is used by StreamView.patch/put/delete (stream.py:140-164) and StreamVerifyView.post (stream.py:169-180) to fetch and mutate a Stream by a user-controlled stream_id. The only authorization applied is SSFView.permission_classes = [IsAuthenticated] (base.py:16), which merely requires any authenticated user. Unlike the POST handler (stream.py:122), whi"
+    }
+  ],
+  "tool_calls_total": 20,
+  "investigator_tool_calls": 10,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 87,
+  "reviewer_units": 17,
+  "findings": [
+    {
+      "finding_id": "authz:stream-viewset-perms:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The PR changes SSFStreamViewSet from a ReadOnlyModelViewSet to a viewset that adds mixins.DestroyModelMixin, exposing a new DELETE endpoint. The viewset (streams.py:32-44) sets no permission_classes or authentication_classes, and the SSF provider API (providers.py) likewise defines none, so the endpoint relies on DRF defaults. The Stream model's default_permissions (models.py:138) only defines the 'delete' permission; it does not enforce it. With no permission class applied, the newly added destroy action is reachable without any authentication or authorization check, allowing an unauthenticated/unauthorized requester to delete a Stream object by its user-controlled UUID (CWE-639/IDOR as well). This is a newly exposed protected operation introduced by the PR.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/api/streams.py",
+          "lines": [
+            32,
+            44
+          ],
+          "source": null,
+          "content": "class SSFStreamViewSet(\n    mixins.RetrieveModelMixin,\n    mixins.DestroyModelMixin,\n    mixins.ListModelMixin,\n    GenericViewSet,\n):\n    \"\"\"SSFStream Viewset\"\"\"\n\n    queryset = Stream.objects.all()\n    serializer_class = SSFStreamSerializer\n    filterset_fields = [\"provider\", \"endpoint_url\", \"delivery_method\"]\n    search_fields = [\"provider__name\", \"endpoint_url\"]\n    ordering = [\"provider\", \"uuid\"]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/models.py",
+          "lines": [
+            135,
+            138
+          ],
+          "source": null,
+          "content": "class Meta:\n        verbose_name = _(\"SSF Stream\")\n        verbose_name_plural = _(\"SSF Streams\")\n        default_permissions = [\"change\", \"delete\", \"view\"]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/api/streams.py",
+          "lines": [
+            1,
+            4
+          ],
+          "source": null,
+          "content": "from rest_framework import mixins\nfrom rest_framework.viewsets import GenericViewSet",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Add explicit authentication and authorization to the viewset, e.g. set authentication_classes to the project's standard classes and permission_classes to a role/permission check (e.g. IsAuthenticated plus a check for the 'delete_stream' permission on the related provider), so the new DELETE endpoint is only accessible to authorized users.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.6201,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "authentik/enterprise/providers/ssf/api/streams.py",
+      "line": 34,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:stream-status-verify:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The newly added StreamVerifyView (authentik/enterprise/providers/ssf/views/stream.py:167-180) is a state-changing endpoint that triggers send_ssf_events (SET verification event delivery) but performs no permission check. It inherits only IsAuthenticated + SSFTokenAuth from SSFView (base.py:16,22-23), which binds the request to a provider but grants no role/permission verification. This contrasts with the analogous StreamView.post (stream.py:121-125) which explicitly checks request.user.has_perm('authentik_providers_ssf.add_stream', self.provider). The policy documents that SSF stream operations require specific permissions (e.g. 'Add stream to SSF provider' permission toggle). The PR newly exposes this endpoint via urls.py, so any authenticated token holder bound to the provider can trigger event delivery without the documented permission.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            167,
+            180
+          ],
+          "source": null,
+          "content": "class StreamVerifyView(SSFStreamView):\n\n    def post(self, request: Request, *args, **kwargs):\n        stream = self.get_object()\n        state = request.data.get(\"state\", None)\n        send_ssf_events(\n            EventTypes.SET_VERIFICATION,\n            {\n                \"state\": state,\n            },\n            stream_filter={\"pk\": stream.uuid},\n            sub_id={\"format\": \"opaque\", \"id\": str(stream.uuid)},\n        )\n        return Response(status=204)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            121,
+            125
+          ],
+          "source": null,
+          "content": "    def post(self, request: Request, *args, body: StreamSerializer, **kwargs) -> Response:\n        if not request.user.has_perm(\"authentik_providers_ssf.add_stream\", self.provider):\n            raise PermissionDenied(\n                \"User does not have permission to create stream for this provider.\"\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/base.py",
+          "lines": [
+            11,
+            23
+          ],
+          "source": null,
+          "content": "class SSFView(APIView):\n    ...\n    permission_classes = [IsAuthenticated]\n\n    def setup(self, request: HttpRequest, *args, **kwargs) -> None:\n        self.logger = get_logger().bind()\n        super().setup(request, *args, **kwargs)\n\n    def get_authenticators(self):\n        return [SSFTokenAuth(self)]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "website/integrations/device-management/apple/index.md",
+          "content": "The authentik user you will use to test the stream connection to Apple Business Manager must either have the role of superuser or have permission to add streams to the SSF provider. ... Set the **Add stream to SSF provider** permission toggle to **On**",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Add an explicit permission check in StreamVerifyView.post (e.g. request.user.has_perm('authentik_providers_ssf.add_stream', self.provider) or a dedicated 'verify stream' permission) before calling send_ssf_events, consistent with StreamView.post.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8683,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "authentik/enterprise/providers/ssf/views/stream.py",
+      "line": 169,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:delivery-methods:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR introduces per-stream operations (GET/PATCH/PUT/DELETE) that resolve a stream by a user-controlled identifier via SSFStreamView.get_object (base.py:27-38), which filters only by provider and status and then by the client-supplied 'stream_id' query param or body field. The only authorization is SSFView's IsAuthenticated permission (base.py:16) plus SSFTokenAuth; there is no check that the authenticated requester owns or is permitted to access the specific stream. In the base snapshot, StreamView.delete (stream.py:123-129) already allowed deleting any stream in the provider by stream_id, but the PR newly exposes this same unowned-by-requester lookup to read (GET), modify (PATCH/PUT) and disable (DELETE) individual streams, and to StreamVerifyView/StreamStatusView. This is an IDOR: an authenticated user with a valid SSF token for the provider can access/modify/delete streams belonging to other consumers by guessing or enumerating stream_id.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/base.py",
+          "lines": [
+            26,
+            38
+          ],
+          "source": null,
+          "content": "class SSFStreamView(SSFView):\n    def get_object(self, any_status=False) -> Stream:\n        streams = Stream.objects.filter(provider=self.provider)\n        if not any_status:\n            streams = streams.filter(status__in=[StreamStatus.ENABLED, StreamStatus.PAUSED])\n        if \"stream_id\" in self.request.query_params:\n            streams = streams.filter(pk=self.request.query_params[\"stream_id\"])\n        if \"stream_id\" in self.request.data:\n            streams = streams.filter(pk=self.request.data[\"stream_id\"])\n        stream = streams.first()\n        if not stream:\n            raise Http404()\n        return stream",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/base.py",
+          "lines": [
+            11,
+            23
+          ],
+          "source": null,
+          "content": "class SSFView(APIView):\n    ...\n    permission_classes = [IsAuthenticated]\n    ...\n    def get_authenticators(self):\n        return [SSFTokenAuth(self)]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            112,
+            164
+          ],
+          "source": null,
+          "content": "class StreamView(SSFStreamView):\n    def get(self, request, *args, **kwargs):\n        stream = self.get_object()\n        ...\n    def patch(self, request, *args, **kwargs):\n        stream = self.get_object()\n        ...\n    def put(self, request, *args, **kwargs):\n        stream = self.get_object()\n        ...\n    def delete(self, request, *args, **kwargs):\n        stream = self.get_object()\n        stream.status = StreamStatus.DISABLED\n        stream.save()\n        return Response(status=204)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            120,
+            125
+          ],
+          "source": null,
+          "content": "    @validate(StreamSerializer)\n    def post(self, request, *args, body: StreamSerializer, **kwargs) -> Response:\n        if not request.user.has_perm(\"authentik_providers_ssf.add_stream\", self.provider):\n            raise PermissionDenied(\n                \"User does not have permission to create stream for this provider.\"\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Tie each Stream to the requesting principal (e.g., the authenticated user or the SSF token's subject) and, in get_object, filter by that owner in addition to provider/status/stream_id, or enforce a per-stream permission check (request.user.has_perm on the specific stream object) before returning it. Do not rely solely on IsAuthenticated plus provider scoping.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8791,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "authentik/enterprise/providers/ssf/views/base.py",
+      "line": 31,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:leftover:authentik/enterprise/providers/ssf/views/base.py:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new SSFStreamView.get_object (base.py:27-38) is used by StreamView.patch/put/delete (stream.py:140-164) and StreamVerifyView.post (stream.py:169-180) to fetch and mutate a Stream by a user-controlled stream_id. The only authorization applied is SSFView.permission_classes = [IsAuthenticated] (base.py:16), which merely requires any authenticated user. Unlike the POST handler (stream.py:122), which explicitly checks request.user.has_perm('authentik_providers_ssf.add_stream', self.provider), the patch/put/delete/verify handlers perform no object-level permission check. get_object only scopes the query to self.provider and status, so any authenticated user can read, modify, disable, or trigger verification events on a stream belonging to a provider they are not authorized to manage. This is a missing authorization check on a protected operation.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/base.py",
+          "lines": [
+            26,
+            38
+          ],
+          "source": null,
+          "content": "class SSFStreamView(SSFView):\n    def get_object(self, any_status=False) -> Stream:\n        streams = Stream.objects.filter(provider=self.provider)\n        if not any_status:\n            streams = streams.filter(status__in=[StreamStatus.ENABLED, StreamStatus.PAUSED])\n        if \"stream_id\" in self.request.query_params:\n            streams = streams.filter(pk=self.request.query_params[\"stream_id\"])\n        if \"stream_id\" in self.request.data:\n            streams = streams.filter(pk=self.request.data[\"stream_id\"])\n        stream = streams.first()\n        if not stream:\n            raise Http404()\n        return stream",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/base.py",
+          "lines": [
+            16,
+            16
+          ],
+          "source": null,
+          "content": "    permission_classes = [IsAuthenticated]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            140,
+            164
+          ],
+          "source": null,
+          "content": "    def patch(self, request: Request, *args, **kwargs) -> Response:\n        stream = self.get_object()\n        serializer = StreamSerializer(stream, data=request.data, partial=True)\n        serializer.is_valid(raise_exception=True)\n        serializer.save()\n        ...\n    def delete(self, request: Request, *args, **kwargs) -> Response:\n        stream = self.get_object()\n        stream.status = StreamStatus.DISABLED\n        stream.save()\n        return Response(status=204)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "authentik/enterprise/providers/ssf/views/stream.py",
+          "lines": [
+            120,
+            126
+          ],
+          "source": null,
+          "content": "    @validate(StreamSerializer)\n    def post(self, request: Request, *args, body: StreamSerializer, **kwargs) -> Response:\n        if not request.user.has_perm(\"authentik_providers_ssf.add_stream\", self.provider):\n            raise PermissionDenied(\n                \"User does not have permission to create stream for this provider.\"\n            )\n        instance: Stream = body.save(provider=self.provider)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Add an object-level permission check in the mutating handlers (patch/put/delete) and in StreamVerifyView.post, e.g. request.user.has_perm('authentik_providers_ssf.change_stream', stream) / 'authentik_providers_ssf.delete_stream', or enforce it centrally in SSFStreamView.get_object, mirroring the has_perm check already present in the POST handler.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8543,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "authentik/enterprise/providers/ssf/views/base.py",
+      "line": 27,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "authentik-ssf-stream-authz",
+  "url": "https://github.com/goauthentik/authentik/pull/21383",
+  "category": "authz",
+  "cwe": "CWE-862",
+  "ghsa": "GHSA-hmrg-vpp4-gj88",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "authentik/enterprise/providers/ssf/views/stream.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

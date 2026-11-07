@@ -1,0 +1,1010 @@
+{
+  "id": "authz_09_vulnerable",
+  "category": "authz",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 52.36,
+  "est_tokens": 922,
+  "findings": [
+    {
+      "finding_id": "authz:orders-mine-ownership:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removed the per-user ownership filter from GET /orders/mine. The base code scoped the query with `.filter(Order.user_id == g.current_user.id)`; the PR replaces it with `.filter(Order.status != \"cancelled\")`, so the query no longer restricts results to the requester. `@require_auth` (app/auth.py:55-66) only authenticates and sets g.current_user \u2014 it performs no per-object ownership check. As a result, any authenticated user can enumerate every other user's non-cancelled orders, and Order.to_dict() (app/models.py:55-62) exposes user_id, total, and shipping_address. This directly violates security-policy.md \u00a73 ('A user may view ONLY their own orders') and api-spec.md ('/orders/mine | GET | any authenticated user (own orders only)').",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/orders.py",
+          "lines": [
+            36,
+            47
+          ],
+          "source": null,
+          "content": "@orders_bp.route(\"/mine\", methods=[\"GET\"])\n@require_auth\ndef my_orders():\n    session = get_session()\n    orders = (\n        session.query(Order)\n        .filter(Order.status != \"cancelled\")\n        .order_by(Order.created_at.desc())\n        .all()\n    )\n    return jsonify([o.to_dict() for o in orders])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            55,
+            66
+          ],
+          "source": null,
+          "content": "def require_auth(fn):\n    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        user = get_current_user()\n        if user is None:\n            return jsonify({\"error\": \"authentication required\"}), 401\n        g.current_user = user\n        return fn(*args, **kwargs)\n    return wrapper",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/models.py",
+          "lines": [
+            55,
+            62
+          ],
+          "source": null,
+          "content": "def to_dict(self) -> dict:\n    return {\n        \"id\": self.id,\n        \"user_id\": self.user_id,\n        \"status\": self.status,\n        \"total\": self.total,\n        \"shipping_address\": self.shipping_address,\n    }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 3. Order data access rules\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and administrators.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/mine` | GET | any authenticated user (own orders only) |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the ownership scoping on the query, e.g. `.filter(Order.user_id == g.current_user.id, Order.status != \"cancelled\")`, or enforce it via `is_owner_or_admin(g.current_user, order.user_id)` per order. Do not rely on `@require_auth` alone for per-user data isolation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9202,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/orders.py",
+      "line": 43,
+      "tool_calls_used": 4,
+      "pr_graph_ok": true,
+      "input_tokens": 1151
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 36,
+            "end_line": 48,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "users may view only their own orders authorization"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def require_auth|def is_owner_or_admin|def require_role",
+            "file_glob": "app/auth.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 55,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "class Order",
+            "file_glob": "app/models.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 43,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "my_orders|/mine",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "orders_bp",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 10,
+            "end_line": 30,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 107,
+            "end_line": 120,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/admin.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/users.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/report*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/reports.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "status",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.md",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "cancelled",
+            "file_glob": "*.md",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-mine-ownership\",\n      \"title\": \"my_orders endpoint drops the per-user ownership filter\",\n      \"rationale\": \"The single hunk replaces the `Order.user_id == g.current_user.id` ownership predicate with a status-only filter, so the endpoint now returns every non-cancelled order to any authenticated user, violating the 'view ONLY their own orders' rule.\",\n      \"hunks\": [\"app/routes/orders.py#0\"],\n      \"context\": [\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"base\", \"why\": \"Shows the original ownership filter and the @require_auth decorator that only authenticates, not authorizes per-user scoping.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"pr\", \"why\": \"Shows the changed filter `Order.status != \\\"cancelled\\\"` with no user_id scoping.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Confirms the decorator only sets g.current_user and does not enforce per-object ownership.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The policy-mandated ownership helper that is absent from the changed query.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Confirms Order has a user_id column and to_dict() exposes user_id, status, total, shipping_address, so cross-user data is leaked.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"base\", \"why\": \"Confirms the blueprint is mounted at /orders, making /orders/mine the public endpoint affected.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "orders-mine-ownership",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "orders mine own orders only listing another user's orders"
+          }
+        }
+      ],
+      "raw_answer": "The evidence is conclusive. The PR removed the `Order.user_id == g.current_user.id` ownership filter from `/orders/mine`, replacing it with a status-only filter, so any authenticated user can now list all non-cancelled orders (including other users' `user_id`, `total`, `shipping_address`), violating policy \u00a73 and the API spec.\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removed the per-user ownership filter from GET /orders/mine. The base code scoped the query with `.filter(Order.user_id == g.current_user.id)`; the PR replaces it with `.filter(Order.status != \\\"cancelled\\\")`, so the query no longer restricts results to the requester. `@require_auth` (app/auth.py:55-66) only authenticates and sets g.current_user \u2014 it performs no per-object ownership check. As a result, any authenticated user can enumerate every other user's non-cancelled orders, and Order.to_dict() (app/models.py:55-62) exposes user_id, total, and shipping_address. This directly violates security-policy.md \u00a73 ('A user may view ONLY their own orders') and api-spec.md ('/orders/mine | GET | any authenticated user (own orders only)').\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [36, 47], \"content\": \"@orders_bp.route(\\\"/mine\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef my_orders():\\n    session = get_session()\\n    orders = (\\n        session.query(Order)\\n        .filter(Order.status != \\\"cancelled\\\")\\n        .order_by(Order.created_at.desc())\\n        .all()\\n    )\\n    return jsonify([o.to_dict() for o in orders])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n    return wrapper\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [55, 62], \"content\": \"def to_dict(self) -> dict:\\n    return {\\n        \\\"id\\\": self.id,\\n        \\\"user_id\\\": self.user_id,\\n        \\\"status\\\": self.status,\\n        \\\"total\\\": self.total,\\n        \\\"shipping_address\\\": self.shipping_address,\\n    }\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 3. Order data access rules\\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\\n- Listing another user's orders is restricted to that user themselves and administrators.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/mine` | GET | any authenticated user (own orders only) |\"}\n      ],\n      \"suggested_fix\": \"Restore the ownership scoping on the query, e.g. `.filter(Order.user_id == g.current_user.id, Order.status != \\\"cancelled\\\")`, or enforce it via `is_owner_or_admin(g.current_user, order.user_id)` per order. Do not rely on `@require_auth` alone for per-user data isolation.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 43\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    },
+    {
+      "section": "sqli:orders-mine-ownership",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 30,
+            "end_line": 55,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 50,
+            "end_line": 115,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 36,
+            "end_line": 47,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "f\"|f'|\\.format\\(|% \\(|execute\\(|text\\(",
+            "file_glob": "app/routes/orders.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/routes/orders.py lines=1-56]\n1: \"\"\"Order endpoints.\n2: \n3: Access rules (see security-policy.md \u00a73 and api-spec.md):\n4: - A user may create orders for themselves and view ONLY their own orders.\n5: - Managers and admins may list all orders; only admins may delete orders.\n6: - All database queries MUST use bound parameters (security-policy.md \u00a75).\n7: \"\"\"\n8: \n9: from __future__ import annotations\n10: \n11: from flask import Blueprint, g, jsonify, request\n12: \n13: from app.auth import is_owner_or_admin, require_auth, require_role\n14: from app.models import Order, get_session\n15: \n16: orders_bp = Blueprint(\"orders\", __name__)\n17: \n18: \n19: @orders_bp.route(\"\", methods=[\"POST\"])\n20: @require_auth\n21: def create_order():\n22:     \"\"\"Create an order for the authenticated user.\"\"\"\n23:     payload = request.get_json(silent=True) or {}\n24:     session = get_session()\n25:     order = Order(\n26:         user_id=g.current_user.id,\n27:         status=\"pending\",\n28:         total=float(payload.get(\"total\", 0.0)),\n29:         shipping_address=payload.get(\"shipping_address\", \"\"),\n30:     )\n31:     session.add(order)\n32:     session.commit()\n33:     return jsonify(order.to_dict()), 201\n34: \n35: \n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n41:     orders = (\n42:         session.query(Order)\n43:         .filter(Order.user_id == g.current_user.id)\n44:         .order_by(Order.created_at.desc())\n45:         .all()\n46:     )\n47:     return jsonify([o.to_dict() for o in orders])\n48: \n49: \n50: @orders_bp.route(\"/all\", methods=[\"GET\"])\n51: @require_role(\"manager\")\n52: def all_orders():\n53:     \"\"\"List every order. Managers and admins only.\"\"\"\n54:     session = get_session()\n55:     orders = session.query(Order).order_by(Order.created_at.desc()).all()\n56:     return jsonify([o.to_dict() for o in orders])\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "snapshot": "pr",
+                  "start_line": 36,
+                  "end_line": 48
+                },
+                "result": "[READ snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc path=app/routes/orders.py lines=36-48]\n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n41:     orders = (\n42:         session.query(Order)\n43:         .filter(Order.status != \"cancelled\")\n44:         .order_by(Order.created_at.desc())\n45:         .all()\n46:     )\n47:     return jsonify([o.to_dict() for o in orders])\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "users may view only their own orders authorization"
+                },
+                "result": "[api-spec.md:1-57] (relevance 0.34)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601.\n\n---\n\n[security-policy.md:1-48] (relevance 0.32)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[security-policy.md:45-65] (relevance 0.19)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def require_auth|def is_owner_or_admin|def require_role",
+                  "file_glob": "app/auth.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"def require_auth|def is_owner_or_admin|def require_role\"]\napp/auth.py:55:def require_auth(fn):\napp/auth.py:69:def require_role(minimum_role: str):\napp/auth.py:107:def is_owner_or_admin(user: User, owner_id: int) -> bool:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base",
+                  "start_line": 55,
+                  "end_line": 70
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/auth.py lines=55-70]\n55: def require_auth(fn):\n56:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57: \n58:     @functools.wraps(fn)\n59:     def wrapper(*args, **kwargs):\n60:         user = get_current_user()\n61:         if user is None:\n62:             return jsonify({\"error\": \"authentication required\"}), 401\n63:         g.current_user = user\n64:         return fn(*args, **kwargs)\n65: \n66:     return wrapper\n67: \n68: \n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class Order",
+                  "file_glob": "app/models.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"class Order\"]\napp/models.py:43:class Order(Base):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 43,
+                  "end_line": 70
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/models.py lines=43-70]\n43: class Order(Base):\n44:     __tablename__ = \"orders\"\n45: \n46:     id = Column(Integer, primary_key=True)\n47:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48:     status = Column(String(20), nullable=False, default=\"pending\")\n49:     total = Column(Float, nullable=False, default=0.0)\n50:     shipping_address = Column(String(500))\n51:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52: \n53:     user = relationship(\"User\", back_populates=\"orders\")\n54: \n55:     def to_dict(self) -> dict:\n56:         return {\n57:             \"id\": self.id,\n58:             \"user_id\": self.user_id,\n59:             \"status\": self.status,\n60:             \"total\": self.total,\n61:             \"shipping_address\": self.shipping_address,\n62:         }\n63: \n64: \n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "my_orders|/mine",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"my_orders|/mine\"]\napp/routes/orders.py:36:@orders_bp.route(\"/mine\", methods=[\"GET\"])\napp/routes/orders.py:38:def my_orders():\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "orders_bp",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"orders_bp\"]\napp/__init__.py:18:    from app.routes.orders import orders_bp\napp/__init__.py:22:    app.register_blueprint(orders_bp, url_prefix=\"/orders\")\napp/routes/orders.py:16:orders_bp = Blueprint(\"orders\", __name__)\napp/routes/orders.py:19:@orders_bp.route(\"\", methods=[\"POST\"])\napp/routes/orders.py:36:@orders_bp.route(\"/mine\", methods=[\"GET\"])\napp/routes/orders.py:50:@orders_bp.route(\"/all\", methods=[\"GET\"])\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/__init__.py",
+                  "snapshot": "base",
+                  "start_line": 10,
+                  "end_line": 30
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/__init__.py lines=10-24]\n10: \n11: \n12: def create_app(database_url: str = \"sqlite:///shoply.db\") -> Flask:\n13:     app = Flask(__name__)\n14:     app.config[\"DATABASE_URL\"] = database_url\n15:     init_db(database_url)\n16: \n17:     from app.routes.users import users_bp\n18:     from app.routes.orders import orders_bp\n19:     from app.routes.admin import admin_bp\n20: \n21:     app.register_blueprint(users_bp, url_prefix=\"/users\")\n22:     app.register_blueprint(orders_bp, url_prefix=\"/orders\")\n23:     app.register_blueprint(admin_bp, url_prefix=\"/admin\")\n24:     return app\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base",
+                  "start_line": 107,
+                  "end_line": 120
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/auth.py lines=107-109]\n107: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n108:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "cancelled",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"cancelled\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/orders.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\napp/routes/orders.py:27:        status=\"pending\",\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\napp/routes/orders.py:27:        status=\"pending\",\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\napp/main.py:16:    return jsonify({\"status\": \"ok\"})\napp/models.py:48:    status = Column(String(20), nullable=False, default=\"pending\")\napp/models.py:59:            \"status\": self.status,\napp/routes/orders.py:27:        status=\"pending\",\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/admin.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/users.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/report*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/reports.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"status\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "status",
+                  "file_glob": "app/routes/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc pattern=\"status\"]\napp/routes/orders.py:27:        status=\"pending\",\napp/routes/orders.py:43:        .filter(Order.status != \"cancelled\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "cancelled",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc pattern=\"cancelled\"]\napp/routes/orders.py:43:        .filter(Order.status != \"cancelled\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "cancelled",
+                  "file_glob": "*.md",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 pattern=\"cancelled\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "cancelled",
+                  "file_glob": "*.md",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc pattern=\"cancelled\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"orders-mine-ownership\",\n      \"title\": \"my_orders endpoint drops the per-user ownership filter\",\n      \"rationale\": \"The single hunk replaces the `Order.user_id == g.current_user.id` ownership predicate with a status-only filter, so the endpoint now returns every non-cancelled order to any authenticated user, violating the 'view ONLY their own orders' rule.\",\n      \"hunks\": [\"app/routes/orders.py#0\"],\n      \"context\": [\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"base\", \"why\": \"Shows the original ownership filter and the @require_auth decorator that only authenticates, not authorizes per-user scoping.\"},\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"my_orders\", \"start_line\": 36, \"end_line\": 47, \"snapshot\": \"pr\", \"why\": \"Shows the changed filter `Order.status != \\\"cancelled\\\"` with no user_id scoping.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_auth\", \"start_line\": 55, \"end_line\": 66, \"snapshot\": \"base\", \"why\": \"Confirms the decorator only sets g.current_user and does not enforce per-object ownership.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"is_owner_or_admin\", \"start_line\": 107, \"end_line\": 109, \"snapshot\": \"base\", \"why\": \"The policy-mandated ownership helper that is absent from the changed query.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 62, \"snapshot\": \"base\", \"why\": \"Confirms Order has a user_id column and to_dict() exposes user_id, status, total, shipping_address, so cross-user data is leaked.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"base\", \"why\": \"Confirms the blueprint is mounted at /orders, making /orders/mine the public endpoint affected.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "orders-mine-ownership",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc path=app/routes/orders.py lines=1-56]\n1: \"\"\"Order endpoints.\n2: \n3: Access rules (see security-policy.md \u00a73 and api-spec.md):\n4: - A user may create orders for themselves and view ONLY their own orders.\n5: - Managers and admins may list all orders; only admins may delete orders.\n6: - All database queries MUST use bound parameters (security-policy.md \u00a75).\n7: \"\"\"\n8: \n9: from __future__ import annotations\n10: \n11: from flask import Blueprint, g, jsonify, request\n12: \n13: from app.auth import is_owner_or_admin, require_auth, require_role\n14: from app.models import Order, get_session\n15: \n16: orders_bp = Blueprint(\"orders\", __name__)\n17: \n18: \n19: @orders_bp.route(\"\", methods=[\"POST\"])\n20: @require_auth\n21: def create_order():\n22:     \"\"\"Create an order for the authenticated user.\"\"\"\n23:     payload = request.get_json(silent=True) or {}\n24:     session = get_session()\n25:     order = Order(\n26:         user_id=g.current_user.id,\n27:         status=\"pending\",\n28:         total=float(payload.get(\"total\", 0.0)),\n29:         shipping_address=payload.get(\"shipping_address\", \"\"),\n30:     )\n31:     session.add(order)\n32:     session.commit()\n33:     return jsonify(order.to_dict()), 201\n34: \n35: \n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n41:     orders = (\n42:         session.query(Order)\n43:         .filter(Order.status != \"cancelled\")\n44:         .order_by(Order.created_at.desc())\n45:         .all()\n46:     )\n47:     return jsonify([o.to_dict() for o in orders])\n48: \n49: \n50: @orders_bp.route(\"/all\", methods=[\"GET\"])\n51: @require_role(\"manager\")\n52: def all_orders():\n53:     \"\"\"List every order. Managers and admins only.\"\"\"\n54:     session = get_session()\n55:     orders = session.query(Order).order_by(Order.created_at.desc()).all()\n56:     return jsonify([o.to_dict() for o in orders])\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/auth.py lines=1-109]\n1: \"\"\"Authentication and authorization helpers for Shoply.\n2: \n3: Every protected endpoint MUST use these decorators (see\n4: security-policy.md). Token auth uses an opaque bearer token stored against\n5: the user; API-key auth is for machine integrations and is scope-checked.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: import functools\n11: import hashlib\n12: import secrets\n13: \n14: from flask import g, jsonify, request\n15: \n16: from app.models import ApiKey, User, get_session\n17: \n18: # In-memory token store: token -> user_id (reset on restart; fine for demo)\n19: _TOKENS: dict[str, int] = {}\n20: \n21: ROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n22: \n23: \n24: def hash_password(password: str) -> str:\n25:     return hashlib.sha256(password.encode()).hexdigest()\n26: \n27: \n28: def issue_token(user: User) -> str:\n29:     token = secrets.token_hex(32)\n30:     _TOKENS[token] = user.id\n31:     return token\n32: \n33: \n34: def get_current_user() -> User | None:\n35:     \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36:     header = request.headers.get(\"Authorization\", \"\")\n37:     if not header.startswith(\"Bearer \"):\n38:         return None\n39:     token = header[len(\"Bearer \"):].strip()\n40:     user_id = _TOKENS.get(token)\n41:     if user_id is None:\n42:         return None\n43:     return get_session().get(User, user_id)\n44: \n45: \n46: def get_api_key() -> ApiKey | None:\n47:     \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n48:     raw = request.headers.get(\"X-Api-Key\", \"\")\n49:     if not raw:\n50:         return None\n51:     session = get_session()\n52:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53: \n54: \n55: def require_auth(fn):\n56:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57: \n58:     @functools.wraps(fn)\n59:     def wrapper(*args, **kwargs):\n60:         user = get_current_user()\n61:         if user is None:\n62:             return jsonify({\"error\": \"authentication required\"}), 401\n63:         g.current_user = user\n64:         return fn(*args, **kwargs)\n65: \n66:     return wrapper\n67: \n68: \n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71: \n72:     def decorator(fn):\n73:         @functools.wraps(fn)\n74:         def wrapper(*args, **kwargs):\n75:             user = get_current_user()\n76:             if user is None:\n77:                 return jsonify({\"error\": \"authentication required\"}), 401\n78:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79:                 return jsonify({\"error\": \"insufficient role\"}), 403\n80:             g.current_user = user\n81:             return fn(*args, **kwargs)\n82: \n83:         return wrapper\n84: \n85:     return decorator\n86: \n87: \n88: def require_api_key_scope(required_scope: str):\n89:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90: \n91:     def decorator(fn):\n92:         @functools.wraps(fn)\n93:         def wrapper(*args, **kwargs):\n94:             key = get_api_key()\n95:             if key is None:\n96:                 return jsonify({\"error\": \"valid API key required\"}), 401\n97:             if key.scope != required_scope:\n98:                 return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99:             g.api_key = key\n100:             return fn(*args, **kwargs)\n101: \n102:         return wrapper\n103: \n104:     return decorator\n105: \n106: \n107: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n108:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 40,
+                  "end_line": 70
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/models.py lines=40-70]\n40:         return data\n41: \n42: \n43: class Order(Base):\n44:     __tablename__ = \"orders\"\n45: \n46:     id = Column(Integer, primary_key=True)\n47:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48:     status = Column(String(20), nullable=False, default=\"pending\")\n49:     total = Column(Float, nullable=False, default=0.0)\n50:     shipping_address = Column(String(500))\n51:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52: \n53:     user = relationship(\"User\", back_populates=\"orders\")\n54: \n55:     def to_dict(self) -> dict:\n56:         return {\n57:             \"id\": self.id,\n58:             \"user_id\": self.user_id,\n59:             \"status\": self.status,\n60:             \"total\": self.total,\n61:             \"shipping_address\": self.shipping_address,\n62:         }\n63: \n64: \n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "I have all the evidence needed.",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "orders mine own orders only listing another user's orders"
+                },
+                "result": "[api-spec.md:1-57] (relevance 0.27)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601.\n\n---\n\n[security-policy.md:1-48] (relevance 0.25)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[security-policy.md:45-65] (relevance 0.18)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge."
+              }
+            ]
+          },
+          {
+            "assistant": "The evidence is conclusive. The PR removed the `Order.user_id == g.current_user.id` ownership filter from `/orders/mine`, replacing it with a status-only filter, so any authenticated user can now list all non-cancelled orders (including other users' `user_id`, `total`, `shipping_address`), violating policy \u00a73 and the API spec.\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removed the per-user ownership filter from GET /orders/mine. The base code scoped the query with `.filter(Order.user_id == g.current_user.id)`; the PR replaces it with `.filter(Order.status != \\\"cancelled\\\")`, so the query no longer restricts results to the requester. `@require_auth` (app/auth.py:55-66) only authenticates and sets g.current_user \u2014 it performs no per-object ownership check. As a result, any authenticated user can enumerate every other user's non-cancelled orders, and Order.to_dict() (app/models.py:55-62) exposes user_id, total, and shipping_address. This directly violates security-policy.md \u00a73 ('A user may view ONLY their own orders') and api-spec.md ('/orders/mine | GET | any authenticated user (own orders only)').\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/orders.py\", \"lines\": [36, 47], \"content\": \"@orders_bp.route(\\\"/mine\\\", methods=[\\\"GET\\\"])\\n@require_auth\\ndef my_orders():\\n    session = get_session()\\n    orders = (\\n        session.query(Order)\\n        .filter(Order.status != \\\"cancelled\\\")\\n        .order_by(Order.created_at.desc())\\n        .all()\\n    )\\n    return jsonify([o.to_dict() for o in orders])\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [55, 66], \"content\": \"def require_auth(fn):\\n    \\\"\\\"\\\"Reject the request unless a valid user token is presented.\\\"\\\"\\\"\\n    @functools.wraps(fn)\\n    def wrapper(*args, **kwargs):\\n        user = get_current_user()\\n        if user is None:\\n            return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n        g.current_user = user\\n        return fn(*args, **kwargs)\\n    return wrapper\"},\n        {\"type\": \"code\", \"file\": \"app/models.py\", \"lines\": [55, 62], \"content\": \"def to_dict(self) -> dict:\\n    return {\\n        \\\"id\\\": self.id,\\n        \\\"user_id\\\": self.user_id,\\n        \\\"status\\\": self.status,\\n        \\\"total\\\": self.total,\\n        \\\"shipping_address\\\": self.shipping_address,\\n    }\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 3. Order data access rules\\n- A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with `is_owner_or_admin(current_user, order.user_id)` before returning data.\\n- Listing another user's orders is restricted to that user themselves and administrators.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/mine` | GET | any authenticated user (own orders only) |\"}\n      ],\n      \"suggested_fix\": \"Restore the ownership scoping on the query, e.g. `.filter(Order.user_id == g.current_user.id, Order.status != \\\"cancelled\\\")`, or enforce it via `is_owner_or_admin(g.current_user, order.user_id)` per order. Do not rely on `@require_auth` alone for per-user data isolation.\",\n      \"file\": \"app/routes/orders.py\",\n      \"line\": 43\n    }\n  ]\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:orders-mine-ownership",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "start_line": 30,
+                  "end_line": 55,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc path=app/routes/orders.py lines=30-55]\n30:     )\n31:     session.add(order)\n32:     session.commit()\n33:     return jsonify(order.to_dict()), 201\n34: \n35: \n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n41:     orders = (\n42:         session.query(Order)\n43:         .filter(Order.status != \"cancelled\")\n44:         .order_by(Order.created_at.desc())\n45:         .all()\n46:     )\n47:     return jsonify([o.to_dict() for o in orders])\n48: \n49: \n50: @orders_bp.route(\"/all\", methods=[\"GET\"])\n51: @require_role(\"manager\")\n52: def all_orders():\n53:     \"\"\"List every order. Managers and admins only.\"\"\"\n54:     session = get_session()\n55:     orders = session.query(Order).order_by(Order.created_at.desc()).all()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "start_line": 40,
+                  "end_line": 70,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc path=app/models.py lines=40-70]\n40:         return data\n41: \n42: \n43: class Order(Base):\n44:     __tablename__ = \"orders\"\n45: \n46:     id = Column(Integer, primary_key=True)\n47:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48:     status = Column(String(20), nullable=False, default=\"pending\")\n49:     total = Column(Float, nullable=False, default=0.0)\n50:     shipping_address = Column(String(500))\n51:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52: \n53:     user = relationship(\"User\", back_populates=\"orders\")\n54: \n55:     def to_dict(self) -> dict:\n56:         return {\n57:             \"id\": self.id,\n58:             \"user_id\": self.user_id,\n59:             \"status\": self.status,\n60:             \"total\": self.total,\n61:             \"shipping_address\": self.shipping_address,\n62:         }\n63: \n64: \n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "start_line": 50,
+                  "end_line": 115,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc path=app/auth.py lines=50-109]\n50:         return None\n51:     session = get_session()\n52:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53: \n54: \n55: def require_auth(fn):\n56:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57: \n58:     @functools.wraps(fn)\n59:     def wrapper(*args, **kwargs):\n60:         user = get_current_user()\n61:         if user is None:\n62:             return jsonify({\"error\": \"authentication required\"}), 401\n63:         g.current_user = user\n64:         return fn(*args, **kwargs)\n65: \n66:     return wrapper\n67: \n68: \n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71: \n72:     def decorator(fn):\n73:         @functools.wraps(fn)\n74:         def wrapper(*args, **kwargs):\n75:             user = get_current_user()\n76:             if user is None:\n77:                 return jsonify({\"error\": \"authentication required\"}), 401\n78:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79:                 return jsonify({\"error\": \"insufficient role\"}), 403\n80:             g.current_user = user\n81:             return fn(*args, **kwargs)\n82: \n83:         return wrapper\n84: \n85:     return decorator\n86: \n87: \n88: def require_api_key_scope(required_scope: str):\n89:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90: \n91:     def decorator(fn):\n92:         @functools.wraps(fn)\n93:         def wrapper(*args, **kwargs):\n94:             key = get_api_key()\n95:             if key is None:\n96:                 return jsonify({\"error\": \"valid API key required\"}), 401\n97:             if key.scope != required_scope:\n98:                 return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99:             g.api_key = key\n100:             return fn(*args, **kwargs)\n101: \n102:         return wrapper\n103: \n104:     return decorator\n105: \n106: \n107: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n108:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "start_line": 36,
+                  "end_line": 47,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=551e1ae7fee903c4687de0f60fe1ffc32bd54568 path=app/routes/orders.py lines=36-47]\n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n41:     orders = (\n42:         session.query(Order)\n43:         .filter(Order.user_id == g.current_user.id)\n44:         .order_by(Order.created_at.desc())\n45:         .all()\n46:     )\n47:     return jsonify([o.to_dict() for o in orders])\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "f\"|f'|\\.format\\(|% \\(|execute\\(|text\\(",
+                  "file_glob": "app/routes/orders.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=7775b13b1391e7583260ae9fc4fff717144ec2cc pattern=\"f'|f'|\\.format\\(|% \\(|execute\\(|text\\(\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:orders-mine-ownership:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.9202,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "551e1ae7fee903c4687de0f60fe1ffc32bd54568",
+    "pr_sha": "7775b13b1391e7583260ae9fc4fff717144ec2cc",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/orders.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/routes/orders.py",
+      "old_range": [
+        43,
+        43
+      ],
+      "new_range": [
+        43,
+        43
+      ]
+    }
+  ],
+  "diff_shape": "decorator_outside_hunk",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "orders-mine-ownership",
+        "origin": "investigator",
+        "title": "my_orders endpoint drops the per-user ownership filter",
+        "files": [
+          "app/routes/orders.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/orders.py#0",
+            "file": "app/routes/orders.py",
+            "old_start": 40,
+            "old_count": 7,
+            "new_start": 40,
+            "new_count": 7,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:orders-mine-ownership:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "551e1ae7fee903c4687de0f60fe1ffc32bd54568",
+  "pr_sha": "7775b13b1391e7583260ae9fc4fff717144ec2cc",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "orders-mine-ownership"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

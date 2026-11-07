@@ -1,0 +1,214 @@
+{
+  "id": "django-raster-band-index-sqli-vulnerable",
+  "repo": "django/django",
+  "pr": 5460,
+  "title": "Adding spatial lookups to RasterField interpolated the user-supplied band index from the lookup tuple straight into the PostGIS SQL template, so a non-integer band index injects SQL.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "03efa304bce5ef0924948a74ae01cdf817dd416a",
+  "pr_sha": "bbfad84dd980a97174c3b061a3d1b5f1373c380d",
+  "files_changed": 11,
+  "python_files_changed": 7,
+  "added_lines": 523,
+  "diff_chars": 37985,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 191.8,
+  "index_seconds": 24.4,
+  "index_reused": false,
+  "index_chunks": 2997,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 1,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 26,
+    "hunks_reviewed": 26,
+    "sections_scheduled": 5,
+    "sections_completed": 5,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:raster-ops:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "django/contrib/gis/db/backends/postgis/operations.py",
+      "line": 61,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "In check_raster, lookup.band_lhs and lookup.band_rhs are concatenated directly into the SQL text via '%s, %s' % (template_params['lhs'], lookup.band_lhs) and the same for rhs. These band indices are attacker-influenced: band_rhs is taken verbatim from the lookup tuple (self.rhs[1] in lookups.py:87) and band_lhs from the RasterBandTransform band index (self.lhs.band_index + 1 in lookups.py:79,83). "
+    },
+    {
+      "finding_id": "sqli:raster-lookups:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "django/contrib/gis/db/models/lookups.py",
+      "line": 87,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new process_band_indices() stores self.band_rhs = self.rhs[1] (lookups.py:87), where self.rhs[1] is the band index supplied by the caller in the lookup tuple (e.g. Model.objects.filter(raster__band=2, other__band=3)). This value is later concatenated directly into the SQL text in PostGISOperator.check_raster() via template_params['rhs'] = '%s, %s' % (template_params['rhs'], lookup.band_rhs) (o"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 10,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 42,
+  "reviewer_units": 9,
+  "findings": [
+    {
+      "finding_id": "sqli:raster-ops:1",
+      "cwe_id": "CWE-89",
+      "explanation": "In check_raster, lookup.band_lhs and lookup.band_rhs are concatenated directly into the SQL text via '%s, %s' % (template_params['lhs'], lookup.band_lhs) and the same for rhs. These band indices are attacker-influenced: band_rhs is taken verbatim from the lookup tuple (self.rhs[1] in lookups.py:87) and band_lhs from the RasterBandTransform band index (self.lhs.band_index + 1 in lookups.py:79,83). Neither value is validated as an integer nor passed as a bound parameter, so a non-integer value (e.g. a string containing SQL) is interpolated straight into the executed SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "django/contrib/gis/db/backends/postgis/operations.py",
+          "lines": [
+            58,
+            66
+          ],
+          "source": null,
+          "content": "if lookup.band_lhs is not None and lhs_is_raster:\n            if not self.func:\n                raise ValueError('Band indices are not allowed for this operator, it works on bbox only.')\n            template_params['lhs'] = '%s, %s' % (template_params['lhs'], lookup.band_lhs)\n\n        if lookup.band_rhs is not None and rhs_is_raster:\n            if not self.func:\n                raise ValueError('Band indices are not allowed for this operator, it works on bbox only.')\n            template_params['rhs'] = '%s, %s' % (template_params['rhs'], lookup.band_rhs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/contrib/gis/db/models/lookups.py",
+          "lines": [
+            82,
+            87
+          ],
+          "source": null,
+          "content": "if isinstance(self.lhs, RasterBandTransform):\n            self.band_lhs = self.lhs.band_index + 1\n        else:\n            self.band_lhs = 1\n\n        self.band_rhs = self.rhs[1]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/topics/security.txt",
+          "content": "SQL injection is a type of attack where a malicious user is able to execute arbitrary SQL code on a database... you should always be careful to properly escape any parameters that the user can control.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate that band_lhs and band_rhs are integers (e.g. assert isinstance(..., int) or cast with int() and reject non-numeric values) before interpolating them into the SQL text, or pass them as bound parameters where the SQL dialect supports it.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7563,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "django/contrib/gis/db/backends/postgis/operations.py",
+      "line": 61,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:raster-lookups:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The new process_band_indices() stores self.band_rhs = self.rhs[1] (lookups.py:87), where self.rhs[1] is the band index supplied by the caller in the lookup tuple (e.g. Model.objects.filter(raster__band=2, other__band=3)). This value is later concatenated directly into the SQL text in PostGISOperator.check_raster() via template_params['rhs'] = '%s, %s' % (template_params['rhs'], lookup.band_rhs) (operations.py:66), and the resulting template is rendered into the final SQL string. The band index is never validated to be an integer and is not passed as a bound parameter, so a caller-controlled non-integer value (e.g. a string) is injected verbatim into the SQL statement.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "django/contrib/gis/db/models/lookups.py",
+          "lines": [
+            87,
+            91
+          ],
+          "source": null,
+          "content": "        self.band_rhs = self.rhs[1]\n        if len(self.rhs) == 1:\n            self.rhs = self.rhs[0]\n        else:\n            self.rhs = (self.rhs[0], ) + self.rhs[2:]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/contrib/gis/db/backends/postgis/operations.py",
+          "lines": [
+            63,
+            66
+          ],
+          "source": null,
+          "content": "        if lookup.band_rhs is not None and rhs_is_raster:\n            if not self.func:\n                raise ValueError('Band indices are not allowed for this operator, it works on bbox only.')\n            template_params['rhs'] = '%s, %s' % (template_params['rhs'], lookup.band_rhs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/topics/security.txt",
+          "content": "SQL injection is a type of attack where a malicious user is able to execute arbitrary SQL code on a database. This can result in records being deleted or data leakage.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate that the band index is an integer before storing it (e.g. self.band_rhs = int(self.rhs[1]) with a try/except raising ValueError), or pass it as a bound parameter instead of string-concatenating it into the SQL template.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7303,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "django/contrib/gis/db/models/lookups.py",
+      "line": 87,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "django-raster-band-index-sqli",
+  "url": "https://github.com/django/django/commit/bbfad84dd980a97174c3b061a3d1b5f1373c380d",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-mwm9-4648-f68q",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "django/contrib/gis/db/backends/postgis/operations.py",
+    "django/contrib/gis/db/models/lookups.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

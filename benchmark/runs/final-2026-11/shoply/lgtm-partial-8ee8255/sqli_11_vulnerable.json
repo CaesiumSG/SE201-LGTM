@@ -1,0 +1,1164 @@
+{
+  "id": "sqli_11_vulnerable",
+  "category": "sqli",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 78.23,
+  "est_tokens": 1618,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+      "cwe_id": "CWE-89",
+      "explanation": "The new /admin/purge-user endpoint (app/routes/admin.py:46-59) reads `username` directly from the JSON request body (line 51: `username = payload.get(\"username\", \"\")`) and interpolates it into a raw SQL string via Python `%` formatting (lines 54-57: `\"...username = '%s')\" % username`) before passing it to `conn.exec_driver_sql()`. No bound parameter is used, and there is no whitelist validation of the value. The input is fully attacker-controlled (any admin-role caller can supply arbitrary SQL, e.g. `x' OR '1'='1`), so this is a genuine SQL injection. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            59
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef purge_user_data():\n    \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )\n        conn.commit()\n    return jsonify({\"status\": \"purged\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            50,
+            57
+          ],
+          "source": null,
+          "content": "    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use a bound parameter instead of string interpolation. Replace the raw string with SQLAlchemy `text()` and a named placeholder, e.g. `conn.execute(text(\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\"), {\"username\": username})`, then `conn.commit()`. This ensures the driver escapes the value and prevents SQL injection.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.96,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/admin.py",
+      "line": 54,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1110
+    },
+    {
+      "finding_id": "authz:purge-user-endpoint:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new /admin/purge-user endpoint deletes orders for a user identified by a user-supplied 'username' string. The policy (security-policy.md \u00a73) requires that order access be scoped by user id and verified with is_owner_or_admin(current_user, order.user_id); the api-spec lists order deletion as admin-only by order id. Here the handler bypasses the ORM and the ownership/identity model entirely, matching on a free-text username via raw SQL. Because the identifier is a username string rather than a validated user id, the operation is not tied to a verified user object (e.g. a non-existent or ambiguous username, or a username that an attacker can influence, can cause the wrong rows to be deleted). The admin role check is present, but the per-object authorization/identity verification required by policy is missing, making this an incorrect-authorization flaw.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            46,
+            59
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n@require_role(\"admin\")\ndef purge_user_data():\n    payload = request.get_json(silent=True) or {}\n    username = payload.get(\"username\", \"\")\n    engine = get_engine()\n    with engine.connect() as conn:\n        conn.exec_driver_sql(\n            \"DELETE FROM orders WHERE user_id = \"\n            \"(SELECT id FROM users WHERE username = '%s')\" % username\n        )\n        conn.commit()\n    return jsonify({\"status\": \"purged\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data. ... Only admins may delete or refund orders.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/orders/<id>` | DELETE | admin only |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Resolve the target user by a validated identifier (e.g. user id) via the ORM, confirm the user exists, and delete their orders through the ORM session (session.query(Order).filter(Order.user_id == user.id).delete()) rather than raw SQL keyed on a free-text username. Keep the @require_role(\"admin\") check.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8908,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/admin.py",
+      "line": 56,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 979
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 40,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters dynamic SQL"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_engine",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 90,
+            "end_line": 110,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "username",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new /admin/purge-user endpoint (app/routes/admin.py:46-59) reads `username` directly from the JSON request body (line 51: `username = payload.get(\\\"username\\\", \\\"\\\")`) and interpolates it into a raw SQL string via Python `%` formatting (lines 54-57: `\\\"...username = '%s')\\\" % username`) before passing it to `conn.exec_driver_sql()`. No bound parameter is used, and there is no whitelist validation of the value. The input is fully attacker-controlled (any admin-role caller can supply arbitrary SQL, e.g. `x' OR '1'='1`), so this is a genuine SQL injection. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 59], \"content\": \"@admin_bp.route(\\\"/purge-user\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef purge_user_data():\\n    \\\"\\\"\\\"Purge a departed user's orders (data-erasure request).\\\"\\\"\\\"\\n    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\\n        conn.commit()\\n    return jsonify({\\\"status\\\": \\\"purged\\\"})\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a bound parameter instead of string interpolation. Replace the raw string with SQLAlchemy `text()` and a named placeholder, e.g. `conn.execute(text(\\\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\\\"), {\\\"username\\\": username})`, then `conn.commit()`. This ensures the driver escapes the value and prevents SQL injection.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator definition and how it checks roles"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "get_engine definition in app/models.py and Order model user_id relationship"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "admin purge user data deletion authorization policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 25,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 26,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 96,
+            "end_line": 101,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 69,
+            "end_line": 85,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 43,
+            "end_line": 53,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 34,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 78,
+            "end_line": 84,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 65,
+            "end_line": 75,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 34,
+            "end_line": 43,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 87,
+            "end_line": 93,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 18,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 15,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"purge-user-endpoint\",\n      \"title\": \"New admin /purge-user endpoint that deletes a user's orders via raw SQL\",\n      \"rationale\": \"Both hunks together add the new POST /admin/purge-user route: hunk #0 supplies the required imports (request, get_engine) and hunk #1 defines the endpoint, so they form one access-control and data-deletion concern.\",\n      \"hunks\": [\"app/routes/admin.py#0\", \"app/routes/admin.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to purge_user_data; enforces admin role via ROLE_RANK before the handler runs\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"get_current_user\", \"start_line\": 34, \"end_line\": 43, \"snapshot\": \"base\", \"why\": \"Resolves the bearer-token user that require_role checks; confirms the auth path the new endpoint depends on\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_engine\", \"start_line\": 96, \"end_line\": 97, \"snapshot\": \"base\", \"why\": \"Returns the raw engine the new handler uses for exec_driver_sql, bypassing the ORM session\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 53, \"snapshot\": \"base\", \"why\": \"Target of the DELETE; user_id FK to users.id is what the raw SQL subquery matches on\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 34, \"snapshot\": \"base\", \"why\": \"username column used in the interpolated subquery; also has orders/api_keys relationships the purge does not clean up\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "purge-user-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters string interpolation forbidden"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "purge",
+            "file_glob": "*.md",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new /admin/purge-user endpoint deletes orders for a user identified by a user-supplied 'username' string. The policy (security-policy.md \u00a73) requires that order access be scoped by user id and verified with is_owner_or_admin(current_user, order.user_id); the api-spec lists order deletion as admin-only by order id. Here the handler bypasses the ORM and the ownership/identity model entirely, matching on a free-text username via raw SQL. Because the identifier is a username string rather than a validated user id, the operation is not tied to a verified user object (e.g. a non-existent or ambiguous username, or a username that an attacker can influence, can cause the wrong rows to be deleted). The admin role check is present, but the per-object authorization/identity verification required by policy is missing, making this an incorrect-authorization flaw.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 59], \"content\": \"@admin_bp.route(\\\"/purge-user\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef purge_user_data():\\n    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\\n        conn.commit()\\n    return jsonify({\\\"status\\\": \\\"purged\\\"})\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data. ... Only admins may delete or refund orders.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/<id>` | DELETE | admin only |\"}\n      ],\n      \"suggested_fix\": \"Resolve the target user by a validated identifier (e.g. user id) via the ORM, confirm the user exists, and delete their orders through the ORM session (session.query(Order).filter(Order.user_id == user.id).delete()) rather than raw SQL keyed on a free-text username. Keep the @require_role(\\\"admin\\\") check.\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 56\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:purge-user-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 43,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 90,
+            "end_line": 100,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "bound parameters SQL string interpolation forbidden"
+          }
+        }
+      ],
+      "raw_answer": "The evidence is complete. The `username` from the JSON body is interpolated via `%` formatting into a raw SQL DELETE executed by `exec_driver_sql`, with no binding or allowlist \u2014 a clear CWE-89 in the newly added endpoint.\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The new /admin/purge-user endpoint reads `username` directly from the JSON request body (payload.get(\\\"username\\\", \\\"\\\")) and interpolates it into a raw SQL DELETE statement using `%` string formatting, then executes it with conn.exec_driver_sql(). The value is never passed as a bound parameter and is not validated against any allowlist, so an attacker (any admin-role caller) can inject arbitrary SQL, e.g. username = \\\"x' OR '1'='1\\\" to delete all orders, or stacked/conditional statements. This violates the security policy forbidding string interpolation of request-derived values into SQL.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [50, 57], \"content\": \"    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n      ],\n      \"suggested_fix\": \"Use a bound parameter instead of string interpolation, e.g. conn.execute(text(\\\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\\\"), {\\\"username\\\": username}), or better, look up the user id first with a bound query and delete by the integer id.\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 56\n    }\n  ]\n}\n```",
+      "limit_hit": null
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "start_line": 40,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/routes/admin.py lines=40-59]\n40:     return jsonify(\n41:         [\n42:             {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n43:             for e in events\n44:         ]\n45:     )\n46: @admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n47: @require_role(\"admin\")\n48: def purge_user_data():\n49:     \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n50:     payload = request.get_json(silent=True) or {}\n51:     username = payload.get(\"username\", \"\")\n52:     engine = get_engine()\n53:     with engine.connect() as conn:\n54:         conn.exec_driver_sql(\n55:             \"DELETE FROM orders WHERE user_id = \"\n56:             \"(SELECT id FROM users WHERE username = '%s')\" % username\n57:         )\n58:         conn.commit()\n59:     return jsonify({\"status\": \"purged\"})\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection bound parameters dynamic SQL"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.32)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[security-policy.md:1-48] (relevance 0.07)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.04)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_engine",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 pattern=\"def get_engine\"]\napp/models.py:96:def get_engine():\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 110,
+                  "path": "app/models.py",
+                  "start_line": 90,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/models.py lines=90-101]\n90:     _engine = create_engine(database_url, future=True)\n91:     SessionLocal.configure(bind=_engine)\n92:     Base.metadata.create_all(_engine)\n93:     return _engine\n94: \n95: \n96: def get_engine():\n97:     return _engine\n98: \n99: \n100: def get_session():\n101:     return SessionLocal()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "file_glob": "*.py",
+                  "pattern": "username",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 pattern=\"username\"]\napp/main.py:22:    username = payload.get(\"username\", \"\")\napp/main.py:25:    user = session.query(User).filter(User.username == username).first()\napp/models.py:27:    username = Column(String(80), unique=True, nullable=False)\napp/models.py:37:        data = {\"id\": self.id, \"username\": self.username, \"role\": self.role}\napp/routes/admin.py:51:    username = payload.get(\"username\", \"\")\napp/routes/admin.py:56:            \"(SELECT id FROM users WHERE username = '%s')\" % username\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new /admin/purge-user endpoint (app/routes/admin.py:46-59) reads `username` directly from the JSON request body (line 51: `username = payload.get(\\\"username\\\", \\\"\\\")`) and interpolates it into a raw SQL string via Python `%` formatting (lines 54-57: `\\\"...username = '%s')\\\" % username`) before passing it to `conn.exec_driver_sql()`. No bound parameter is used, and there is no whitelist validation of the value. The input is fully attacker-controlled (any admin-role caller can supply arbitrary SQL, e.g. `x' OR '1'='1`), so this is a genuine SQL injection. This directly violates security-policy.md \u00a75, which mandates bound parameters and forbids `%` formatting of request-derived values into SQL.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 59], \"content\": \"@admin_bp.route(\\\"/purge-user\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef purge_user_data():\\n    \\\"\\\"\\\"Purge a departed user's orders (data-erasure request).\\\"\\\"\\\"\\n    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\\n        conn.commit()\\n    return jsonify({\\\"status\\\": \\\"purged\\\"})\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a bound parameter instead of string interpolation. Replace the raw string with SQLAlchemy `text()` and a named placeholder, e.g. `conn.execute(text(\\\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\\\"), {\\\"username\\\": username})`, then `conn.commit()`. This ensures the driver escapes the value and prevents SQL injection.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "require_role decorator definition and how it checks roles"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 status=ok query=\"require_role decorator definition and how it checks roles\"]\n**Exploration: require_role decorator definition and how it checks roles**\n\nFound 12 symbols across 1 file.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `require_role` (app/auth.py:69) \u2014 3 callers in `app/routes/admin.py`, `app/routes/orders.py`, `app/routes/users.py`; no tests found within 3 caller hops\n- `decorator` (app/auth.py:72) \u2014 1 caller in `app/auth.py`; no tests found within 3 caller hops\n- `decorator` (app/auth.py:91) \u2014 1 caller in `app/auth.py`; no tests found within 3 caller hops\n- `require_auth` (app/auth.py:55) \u2014 2 callers in `app/routes/orders.py`, `app/routes/users.py`; no tests found within 3 caller hops\n- `wrapper` (app/auth.py:74) \u2014 1 caller in `app/auth.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`app/auth.py`** \u2014 require_role(function), decorator(function), require_auth(function), wrapper(function), ROLE_RANK(variable), +4 more\n\n```python\n1\t\"\"\"Authentication and authorization helpers for Shoply.\n2\t\n3\tEvery protected endpoint MUST use these decorators (see\n4\tsecurity-policy.md). Token auth uses an opaque bearer token stored against\n5\tthe user; API-key auth is for machine integrations and is scope-checked.\n6\t\"\"\"\n7\t\n8\tfrom __future__ import annotations\n9\t\n10\timport functools\n11\timport hashlib\n12\timport secrets\n13\t\n14\tfrom flask import g, jsonify, request\n15\t\n16\tfrom app.models import ApiKey, User, get_session\n17\t\n18\t# In-memory token store: token -> user_id (reset on restart; fine for demo)\n19\t_TOKENS: dict[str, int] = {}\n20\t\n21\tROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n22\t\n23\t\n24\tdef hash_password(password: str) -> str:\n25\t    return hashlib.sha256(password.encode()).hexdigest()\n26\t\n27\t\n28\tdef issue_token(user: User) -> str:\n29\t    token = secrets.token_hex(32)\n30\t    _TOKENS[token] = user.id\n31\t    return token\n32\t\n33\t\n34\tdef get_current_user() -> User | None:\n35\t    \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36\t    header = request.headers.get(\"Authorization\", \"\")\n37\t    if not header.startswith(\"Bearer \"):\n38\t        return None\n39\t    token = header[len(\"Bearer \"):].strip()\n40\t    user_id = _TOKENS.get(token)\n41\t    if user_id is None:\n42\t        return None\n43\t    return get_session().get(User, user_id)\n44\t\n45\t\n46\tdef get_api_key() -> ApiKey | None:\n47\t    \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n48\t    raw = request.headers.get(\"X-Api-Key\", \"\")\n49\t    if not raw:\n50\t        return None\n51\t    session = get_session()\n52\t    return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53\t\n54\t\n55\tdef require_auth(fn):\n56\t    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57\t\n58\t    @functools.wraps(fn)\n59\t    def wrapper(*args, **kwargs):\n60\t        user = get_current_user()\n61\t        if user is None:\n62\t            return jsonify({\"error\": \"authentication required\"}), 401\n63\t        g.current_user = user\n64\t        return fn(*args, **kwargs)\n65\t\n66\t    return wrapper\n67\t\n68\t\n69\tdef require_role(minimum_role: str):\n70\t    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71\t\n72\t    def decorator(fn):\n73\t        @functools.wraps(fn)\n74\t        def wrapper(*args, **kwargs):\n75\t            user = get_current_user()\n76\t            if user is None:\n77\t                return jsonify({\"error\": \"authentication required\"}), 401\n78\t            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79\t                return jsonify({\"error\": \"insufficient role\"}), 403\n80\t            g.current_user = user\n81\t            return fn(*args, **kwargs)\n82\t\n83\t        return wrapper\n84\t\n85\t    return decorator\n86\t\n87\t\n88\tdef require_api_key_scope(required_scope: str):\n89\t    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90\t\n91\t    def decorator(fn):\n92\t        @functools.wraps(fn)\n93\t        def wrapper(*args, **kwargs):\n94\t            key = get_api_key()\n95\t            if key is None:\n96\t                return jsonify({\"error\": \"valid API key required\"}), 401\n97\t            if key.scope != required_scope:\n98\t                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99\t            g.api_key = key\n100\t            return fn(*args, **kwargs)\n101\t\n102\t        return wrapper\n103\t\n104\t    return decorator\n105\t\n106\t\n107\tdef is_owner_or_admin(user: User, owner_id: int) -> bool:\n108\t    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109\t    return user.id == owner_id or user.role == \"admin\"\n```\n\n**Not shown above \u2014 explore these names for their source**\n\n- app/routes/orders.py: my_orders:38, create_order:21, GET /mine:36, POST /:19, all_orders:52, orders.py:1\n- app/routes/users.py: update_user:43, get_user:30, PUT /<int:user_id>:41, GET /<int:user_id>:28, list_users:21, users.py:1\n- app/models.py: get_session:100, User:23, ApiKey:65, Order:43, to_dict:55, to_dict:36, +1 more\n- app/routes/admin.py: stats:20, audit_log:34, admin.py:1\n- app/main.py: login:20\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr",
+                  "start_line": 1,
+                  "end_line": 60
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "get_engine definition in app/models.py and Order model user_id relationship"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 status=ok truncated=true query=\"get_engine definition in app/models.py and Order model user_id relationship\"]\n**Exploration: get_engine definition in app/models.py and Order model user_id relationship**\n\nFound 37 symbols across 4 files. 1 file pinned from the query.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_user` (app/routes/users.py:30) \u2014 1 caller in `app/routes/users.py`; no tests found within 3 caller hops\n- `User` (app/models.py:23) \u2014 10 callers in `app/auth.py`, `app/main.py`, `app/routes/admin.py`, `app/routes/users.py`; no tests found within 3 caller hops\n- `my_orders` (app/routes/orders.py:38) \u2014 1 caller in `app/routes/orders.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`app/models.py`** \u2014 get_engine(function), User(class), Order(class), get_session(function), to_dict(method), +6 more\n\n```python\n1\t\"\"\"Database models and session management for Shoply.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\timport datetime\n6\t\n7\tfrom sqlalchemy import (\n8\t    Column,\n9\t    DateTime,\n10\t    Float,\n11\t    ForeignKey,\n12\t    Integer,\n13\t    String,\n14\t    create_engine,\n15\t)\n16\tfrom sqlalchemy.orm import declarative_base, relationship, scoped_session, sessionmaker\n17\t\n18\tBase = declarative_base()\n19\tSessionLocal = scoped_session(sessionmaker())\n20\t_engine = None\n21\t\n22\t\n23\tclass User(Base):\n24\t    __tablename__ = \"users\"\n25\t\n26\t    id = Column(Integer, primary_key=True)\n27\t    username = Column(String(80), unique=True, nullable=False)\n28\t    email = Column(String(255), unique=True, nullable=False)\n29\t    password_hash = Column(String(255), nullable=False)\n30\t    role = Column(String(20), nullable=False, default=\"user\")  # user|manager|admin\n31\t    created_at = Column(DateTime, default=datetime.datetime.utcnow)\n32\t\n33\t    orders = relationship(\"Order\", back_populates=\"user\")\n34\t    api_keys = relationship(\"ApiKey\", back_populates=\"user\")\n35\t\n36\t    def to_dict(self, include_email: bool = False) -> dict:\n37\t        data = {\"id\": self.id, \"username\": self.username, \"role\": self.role}\n38\t        if include_email:\n39\t            data[\"email\"] = self.email\n40\t        return data\n41\t\n42\t\n43\tclass Order(Base):\n44\t    __tablename__ = \"orders\"\n45\t\n46\t    id = Column(Integer, primary_key=True)\n47\t    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48\t    status = Column(String(20), nullable=False, default=\"pending\")\n49\t    total = Column(Float, nullable=False, default=0.0)\n50\t    shipping_address = Column(String(500))\n51\t    created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52\t\n53\t    user = relationship(\"User\", back_populates=\"orders\")\n54\t\n55\t    def to_dict(self) -> dict:\n56\t        return {\n57\t            \"id\": self.id,\n58\t            \"user_id\": self.user_id,\n59\t            \"status\": self.status,\n60\t            \"total\": self.total,\n61\t            \"shipping_address\": self.shipping_address,\n62\t        }\n63\t\n64\t\n65\tclass ApiKey(Base):\n66\t    __tablename__ = \"api_keys\"\n67\t\n68\t    id = Column(Integer, primary_key=True)\n69\t    key = Column(String(64), unique=True, nullable=False)\n70\t    user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n71\t    # Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n72\t    scope = Column(String(50), nullable=False, default=\"orders:read\")\n73\t    created_at = Column(DateTime, default=datetime.datetime.utcnow)\n74\t\n75\t    user = relationship(\"User\", back_populates=\"api_keys\")\n76\t\n77\t\n78\tclass AuditLog(Base):\n79\t    __tablename__ = \"audit_log\"\n80\t\n81\t    id = Column(Integer, primary_key=True)\n82\t    user_id = Column(Integer, ForeignKey(\"users.id\"))\n83\t    action = Column(String(255), nullable=False)\n84\t    created_at = Column(DateTime, default=datetime.datetime.utcnow)\n85\t\n86\t\n87\tdef init_db(database_url: str = \"sqlite:///shoply.db\"):\n88\t    \"\"\"Create the engine, bind the session factory, create tables.\"\"\"\n89\t    global _engine\n90\t    _engine = create_engine(database_url, future=True)\n91\t    SessionLocal.configure(bind=_engine)\n92\t    Base.metadata.create_all(_engine)\n93\t    return _engine\n94\t\n95\t\n96\tdef get_engine():\n97\t    return _engine\n98\t\n99\t\n100\tdef get_session():\n101\t    return SessionLocal()\n```\n\n**`app/routes/users.py`** \u2014 GET /<int:user_id>(route), get_user(function), PUT /<int:user_id>(route), update_user(function), list_users(function), +2 more\n\n```python\n1\t\"\"\"User management endpoints.\n2\t\n3\tAccess rules (see security-policy.md \u00a72 and api-spec.md):\n4\t- Users may read and update ONLY their own profile; admins may access any.\n5\t- Listing all users requires the manager role or above.\n6\t- Deleting users and changing roles requires the admin role.\n7\t\"\"\"\n8\t\n9\tfrom __future__ import annotations\n10\t\n11\tfrom flask import Blueprint, g, jsonify, request\n12\t\n13\tfrom app.auth import is_owner_or_admin, require_auth, require_role\n14\tfrom app.models import User, get_session\n15\t\n16\tusers_bp = Blueprint(\"users\", __name__)\n17\t\n18\t\n19\t@users_bp.route(\"\", methods=[\"GET\"])\n20\t@require_role(\"manager\")\n21\tdef list_users():\n22\t    \"\"\"List all users. Managers and admins only.\"\"\"\n23\t    session = get_session()\n24\t    users = session.query(User).order_by(User.id).all()\n25\t    return jsonify([u.to_dict() for u in users])\n26\t\n27\t\n28\t@users_bp.route(\"/<int:user_id>\", methods=[\"GET\"])\n29\t@require_auth\n30\tdef get_user(user_id: int):\n31\t    \"\"\"Fetch a user profile. Owner or admin only.\"\"\"\n32\t    if not is_owner_or_admin(g.current_user, user_id):\n33\t        return jsonify({\"error\": \"forbidden\"\n[TRUNCATED omitted_chars=6613]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr",
+                  "start_line": 1,
+                  "end_line": 60
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "admin purge user data deletion authorization policy"
+                },
+                "result": "[security-policy.md:1-48] (relevance 0.41)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.30)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601.\n\n---\n\n[security-policy.md:45-65] (relevance 0.13)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr",
+                  "start_line": 1,
+                  "end_line": 25
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/routes/admin.py lines=1-25]\n1: \"\"\"Admin panel endpoints.\n2: \n3: Access rules (see security-policy.md \u00a74 and api-spec.md):\n4: - EVERY endpoint under /admin requires the admin role via\n5:   @require_role(\"admin\"). No exceptions, no alternative shortcuts.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: from flask import Blueprint, jsonify, request\n11: \n12: from app.auth import require_role\n13: from app.models import AuditLog, Order, User, get_engine, get_session\n14: \n15: admin_bp = Blueprint(\"admin\", __name__)\n16: \n17: \n18: @admin_bp.route(\"/stats\", methods=[\"GET\"])\n19: @require_role(\"admin\")\n20: def stats():\n21:     \"\"\"Aggregate platform statistics.\"\"\"\n22:     session = get_session()\n23:     return jsonify(\n24:         {\n25:             \"users\": session.query(User).count(),\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr",
+                  "start_line": 26,
+                  "end_line": 60
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/routes/admin.py lines=26-59]\n26:             \"orders\": session.query(Order).count(),\n27:             \"audit_events\": session.query(AuditLog).count(),\n28:         }\n29:     )\n30: \n31: \n32: @admin_bp.route(\"/audit\", methods=[\"GET\"])\n33: @require_role(\"admin\")\n34: def audit_log():\n35:     \"\"\"Most recent audit log entries.\"\"\"\n36:     session = get_session()\n37:     events = (\n38:         session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n39:     )\n40:     return jsonify(\n41:         [\n42:             {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n43:             for e in events\n44:         ]\n45:     )\n46: @admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n47: @require_role(\"admin\")\n48: def purge_user_data():\n49:     \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n50:     payload = request.get_json(silent=True) or {}\n51:     username = payload.get(\"username\", \"\")\n52:     engine = get_engine()\n53:     with engine.connect() as conn:\n54:         conn.exec_driver_sql(\n55:             \"DELETE FROM orders WHERE user_id = \"\n56:             \"(SELECT id FROM users WHERE username = '%s')\" % username\n57:         )\n58:         conn.commit()\n59:     return jsonify({\"status\": \"purged\"})\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 45
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/routes/admin.py lines=1-45]\n1: \"\"\"Admin panel endpoints.\n2: \n3: Access rules (see security-policy.md \u00a74 and api-spec.md):\n4: - EVERY endpoint under /admin requires the admin role via\n5:   @require_role(\"admin\"). No exceptions, no alternative shortcuts.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: from flask import Blueprint, jsonify\n11: \n12: from app.auth import require_role\n13: from app.models import AuditLog, Order, User, get_session\n14: \n15: admin_bp = Blueprint(\"admin\", __name__)\n16: \n17: \n18: @admin_bp.route(\"/stats\", methods=[\"GET\"])\n19: @require_role(\"admin\")\n20: def stats():\n21:     \"\"\"Aggregate platform statistics.\"\"\"\n22:     session = get_session()\n23:     return jsonify(\n24:         {\n25:             \"users\": session.query(User).count(),\n26:             \"orders\": session.query(Order).count(),\n27:             \"audit_events\": session.query(AuditLog).count(),\n28:         }\n29:     )\n30: \n31: \n32: @admin_bp.route(\"/audit\", methods=[\"GET\"])\n33: @require_role(\"admin\")\n34: def audit_log():\n35:     \"\"\"Most recent audit log entries.\"\"\"\n36:     session = get_session()\n37:     events = (\n38:         session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n39:     )\n40:     return jsonify(\n41:         [\n42:             {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n43:             for e in events\n44:         ]\n45:     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 96,
+                  "end_line": 101
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=96-101]\n96: def get_engine():\n97:     return _engine\n98: \n99: \n100: def get_session():\n101:     return SessionLocal()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base",
+                  "start_line": 69,
+                  "end_line": 85
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/auth.py lines=69-85]\n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71: \n72:     def decorator(fn):\n73:         @functools.wraps(fn)\n74:         def wrapper(*args, **kwargs):\n75:             user = get_current_user()\n76:             if user is None:\n77:                 return jsonify({\"error\": \"authentication required\"}), 401\n78:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79:                 return jsonify({\"error\": \"insufficient role\"}), 403\n80:             g.current_user = user\n81:             return fn(*args, **kwargs)\n82: \n83:         return wrapper\n84: \n85:     return decorator\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 43,
+                  "end_line": 53
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=43-53]\n43: class Order(Base):\n44:     __tablename__ = \"orders\"\n45: \n46:     id = Column(Integer, primary_key=True)\n47:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48:     status = Column(String(20), nullable=False, default=\"pending\")\n49:     total = Column(Float, nullable=False, default=0.0)\n50:     shipping_address = Column(String(500))\n51:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52: \n53:     user = relationship(\"User\", back_populates=\"orders\")\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 23,
+                  "end_line": 34
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=23-34]\n23: class User(Base):\n24:     __tablename__ = \"users\"\n25: \n26:     id = Column(Integer, primary_key=True)\n27:     username = Column(String(80), unique=True, nullable=False)\n28:     email = Column(String(255), unique=True, nullable=False)\n29:     password_hash = Column(String(255), nullable=False)\n30:     role = Column(String(20), nullable=False, default=\"user\")  # user|manager|admin\n31:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n32: \n33:     orders = relationship(\"Order\", back_populates=\"user\")\n34:     api_keys = relationship(\"ApiKey\", back_populates=\"user\")\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 78,
+                  "end_line": 84
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=78-84]\n78: class AuditLog(Base):\n79:     __tablename__ = \"audit_log\"\n80: \n81:     id = Column(Integer, primary_key=True)\n82:     user_id = Column(Integer, ForeignKey(\"users.id\"))\n83:     action = Column(String(255), nullable=False)\n84:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 65,
+                  "end_line": 75
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=65-75]\n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n71:     # Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n72:     scope = Column(String(50), nullable=False, default=\"orders:read\")\n73:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n74: \n75:     user = relationship(\"User\", back_populates=\"api_keys\")\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base",
+                  "start_line": 34,
+                  "end_line": 43
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/auth.py lines=34-43]\n34: def get_current_user() -> User | None:\n35:     \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36:     header = request.headers.get(\"Authorization\", \"\")\n37:     if not header.startswith(\"Bearer \"):\n38:         return None\n39:     token = header[len(\"Bearer \"):].strip()\n40:     user_id = _TOKENS.get(token)\n41:     if user_id is None:\n42:         return None\n43:     return get_session().get(User, user_id)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base",
+                  "start_line": 87,
+                  "end_line": 93
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=87-93]\n87: def init_db(database_url: str = \"sqlite:///shoply.db\"):\n88:     \"\"\"Create the engine, bind the session factory, create tables.\"\"\"\n89:     global _engine\n90:     _engine = create_engine(database_url, future=True)\n91:     SessionLocal.configure(bind=_engine)\n92:     Base.metadata.create_all(_engine)\n93:     return _engine\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 18,
+                  "end_line": 45
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/routes/admin.py lines=18-45]\n18: @admin_bp.route(\"/stats\", methods=[\"GET\"])\n19: @require_role(\"admin\")\n20: def stats():\n21:     \"\"\"Aggregate platform statistics.\"\"\"\n22:     session = get_session()\n23:     return jsonify(\n24:         {\n25:             \"users\": session.query(User).count(),\n26:             \"orders\": session.query(Order).count(),\n27:             \"audit_events\": session.query(AuditLog).count(),\n28:         }\n29:     )\n30: \n31: \n32: @admin_bp.route(\"/audit\", methods=[\"GET\"])\n33: @require_role(\"admin\")\n34: def audit_log():\n35:     \"\"\"Most recent audit log entries.\"\"\"\n36:     session = get_session()\n37:     events = (\n38:         session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n39:     )\n40:     return jsonify(\n41:         [\n42:             {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n43:             for e in events\n44:         ]\n45:     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/routes/admin.py lines=1-15]\n1: \"\"\"Admin panel endpoints.\n2: \n3: Access rules (see security-policy.md \u00a74 and api-spec.md):\n4: - EVERY endpoint under /admin requires the admin role via\n5:   @require_role(\"admin\"). No exceptions, no alternative shortcuts.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: from flask import Blueprint, jsonify\n11: \n12: from app.auth import require_role\n13: from app.models import AuditLog, Order, User, get_session\n14: \n15: admin_bp = Blueprint(\"admin\", __name__)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "NOTE: identical to an earlier read_file call with arguments {\"path\": \"app/routes/admin.py\", \"start_line\": 1, \"end_line\": 15, \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "NOTE: identical to an earlier read_file call with arguments {\"path\": \"app/routes/admin.py\", \"start_line\": 1, \"end_line\": 15, \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "NOTE: identical to an earlier read_file call with arguments {\"path\": \"app/routes/admin.py\", \"start_line\": 1, \"end_line\": 15, \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "NOTE: identical to an earlier read_file call with arguments {\"path\": \"app/routes/admin.py\", \"start_line\": 1, \"end_line\": 15, \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 15
+                },
+                "result": "NOTE: identical to an earlier read_file call with arguments {\"path\": \"app/routes/admin.py\", \"start_line\": 1, \"end_line\": 15, \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"purge-user-endpoint\",\n      \"title\": \"New admin /purge-user endpoint that deletes a user's orders via raw SQL\",\n      \"rationale\": \"Both hunks together add the new POST /admin/purge-user route: hunk #0 supplies the required imports (request, get_engine) and hunk #1 defines the endpoint, so they form one access-control and data-deletion concern.\",\n      \"hunks\": [\"app/routes/admin.py#0\", \"app/routes/admin.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Decorator applied to purge_user_data; enforces admin role via ROLE_RANK before the handler runs\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"get_current_user\", \"start_line\": 34, \"end_line\": 43, \"snapshot\": \"base\", \"why\": \"Resolves the bearer-token user that require_role checks; confirms the auth path the new endpoint depends on\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_engine\", \"start_line\": 96, \"end_line\": 97, \"snapshot\": \"base\", \"why\": \"Returns the raw engine the new handler uses for exec_driver_sql, bypassing the ORM session\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"Order\", \"start_line\": 43, \"end_line\": 53, \"snapshot\": \"base\", \"why\": \"Target of the DELETE; user_id FK to users.id is what the raw SQL subquery matches on\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 34, \"snapshot\": \"base\", \"why\": \"username column used in the interpolated subquery; also has orders/api_keys relationships the purge does not clean up\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "purge-user-endpoint",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/routes/admin.py lines=1-59]\n1: \"\"\"Admin panel endpoints.\n2: \n3: Access rules (see security-policy.md \u00a74 and api-spec.md):\n4: - EVERY endpoint under /admin requires the admin role via\n5:   @require_role(\"admin\"). No exceptions, no alternative shortcuts.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: from flask import Blueprint, jsonify, request\n11: \n12: from app.auth import require_role\n13: from app.models import AuditLog, Order, User, get_engine, get_session\n14: \n15: admin_bp = Blueprint(\"admin\", __name__)\n16: \n17: \n18: @admin_bp.route(\"/stats\", methods=[\"GET\"])\n19: @require_role(\"admin\")\n20: def stats():\n21:     \"\"\"Aggregate platform statistics.\"\"\"\n22:     session = get_session()\n23:     return jsonify(\n24:         {\n25:             \"users\": session.query(User).count(),\n26:             \"orders\": session.query(Order).count(),\n27:             \"audit_events\": session.query(AuditLog).count(),\n28:         }\n29:     )\n30: \n31: \n32: @admin_bp.route(\"/audit\", methods=[\"GET\"])\n33: @require_role(\"admin\")\n34: def audit_log():\n35:     \"\"\"Most recent audit log entries.\"\"\"\n36:     session = get_session()\n37:     events = (\n38:         session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n39:     )\n40:     return jsonify(\n41:         [\n42:             {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n43:             for e in events\n44:         ]\n45:     )\n46: @admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n47: @require_role(\"admin\")\n48: def purge_user_data():\n49:     \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n50:     payload = request.get_json(silent=True) or {}\n51:     username = payload.get(\"username\", \"\")\n52:     engine = get_engine()\n53:     with engine.connect() as conn:\n54:         conn.exec_driver_sql(\n55:             \"DELETE FROM orders WHERE user_id = \"\n56:             \"(SELECT id FROM users WHERE username = '%s')\" % username\n57:         )\n58:         conn.commit()\n59:     return jsonify({\"status\": \"purged\"})\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/auth.py lines=1-109]\n1: \"\"\"Authentication and authorization helpers for Shoply.\n2: \n3: Every protected endpoint MUST use these decorators (see\n4: security-policy.md). Token auth uses an opaque bearer token stored against\n5: the user; API-key auth is for machine integrations and is scope-checked.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: import functools\n11: import hashlib\n12: import secrets\n13: \n14: from flask import g, jsonify, request\n15: \n16: from app.models import ApiKey, User, get_session\n17: \n18: # In-memory token store: token -> user_id (reset on restart; fine for demo)\n19: _TOKENS: dict[str, int] = {}\n20: \n21: ROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n22: \n23: \n24: def hash_password(password: str) -> str:\n25:     return hashlib.sha256(password.encode()).hexdigest()\n26: \n27: \n28: def issue_token(user: User) -> str:\n29:     token = secrets.token_hex(32)\n30:     _TOKENS[token] = user.id\n31:     return token\n32: \n33: \n34: def get_current_user() -> User | None:\n35:     \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36:     header = request.headers.get(\"Authorization\", \"\")\n37:     if not header.startswith(\"Bearer \"):\n38:         return None\n39:     token = header[len(\"Bearer \"):].strip()\n40:     user_id = _TOKENS.get(token)\n41:     if user_id is None:\n42:         return None\n43:     return get_session().get(User, user_id)\n44: \n45: \n46: def get_api_key() -> ApiKey | None:\n47:     \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n48:     raw = request.headers.get(\"X-Api-Key\", \"\")\n49:     if not raw:\n50:         return None\n51:     session = get_session()\n52:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53: \n54: \n55: def require_auth(fn):\n56:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57: \n58:     @functools.wraps(fn)\n59:     def wrapper(*args, **kwargs):\n60:         user = get_current_user()\n61:         if user is None:\n62:             return jsonify({\"error\": \"authentication required\"}), 401\n63:         g.current_user = user\n64:         return fn(*args, **kwargs)\n65: \n66:     return wrapper\n67: \n68: \n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71: \n72:     def decorator(fn):\n73:         @functools.wraps(fn)\n74:         def wrapper(*args, **kwargs):\n75:             user = get_current_user()\n76:             if user is None:\n77:                 return jsonify({\"error\": \"authentication required\"}), 401\n78:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79:                 return jsonify({\"error\": \"insufficient role\"}), 403\n80:             g.current_user = user\n81:             return fn(*args, **kwargs)\n82: \n83:         return wrapper\n84: \n85:     return decorator\n86: \n87: \n88: def require_api_key_scope(required_scope: str):\n89:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90: \n91:     def decorator(fn):\n92:         @functools.wraps(fn)\n93:         def wrapper(*args, **kwargs):\n94:             key = get_api_key()\n95:             if key is None:\n96:                 return jsonify({\"error\": \"valid API key required\"}), 401\n97:             if key.scope != required_scope:\n98:                 return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99:             g.api_key = key\n100:             return fn(*args, **kwargs)\n101: \n102:         return wrapper\n103: \n104:     return decorator\n105: \n106: \n107: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n108:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=1-101]\n1: \"\"\"Database models and session management for Shoply.\"\"\"\n2: \n3: from __future__ import annotations\n4: \n5: import datetime\n6: \n7: from sqlalchemy import (\n8:     Column,\n9:     DateTime,\n10:     Float,\n11:     ForeignKey,\n12:     Integer,\n13:     String,\n14:     create_engine,\n15: )\n16: from sqlalchemy.orm import declarative_base, relationship, scoped_session, sessionmaker\n17: \n18: Base = declarative_base()\n19: SessionLocal = scoped_session(sessionmaker())\n20: _engine = None\n21: \n22: \n23: class User(Base):\n24:     __tablename__ = \"users\"\n25: \n26:     id = Column(Integer, primary_key=True)\n27:     username = Column(String(80), unique=True, nullable=False)\n28:     email = Column(String(255), unique=True, nullable=False)\n29:     password_hash = Column(String(255), nullable=False)\n30:     role = Column(String(20), nullable=False, default=\"user\")  # user|manager|admin\n31:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n32: \n33:     orders = relationship(\"Order\", back_populates=\"user\")\n34:     api_keys = relationship(\"ApiKey\", back_populates=\"user\")\n35: \n36:     def to_dict(self, include_email: bool = False) -> dict:\n37:         data = {\"id\": self.id, \"username\": self.username, \"role\": self.role}\n38:         if include_email:\n39:             data[\"email\"] = self.email\n40:         return data\n41: \n42: \n43: class Order(Base):\n44:     __tablename__ = \"orders\"\n45: \n46:     id = Column(Integer, primary_key=True)\n47:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n48:     status = Column(String(20), nullable=False, default=\"pending\")\n49:     total = Column(Float, nullable=False, default=0.0)\n50:     shipping_address = Column(String(500))\n51:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n52: \n53:     user = relationship(\"User\", back_populates=\"orders\")\n54: \n55:     def to_dict(self) -> dict:\n56:         return {\n57:             \"id\": self.id,\n58:             \"user_id\": self.user_id,\n59:             \"status\": self.status,\n60:             \"total\": self.total,\n61:             \"shipping_address\": self.shipping_address,\n62:         }\n63: \n64: \n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n71:     # Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n72:     scope = Column(String(50), nullable=False, default=\"orders:read\")\n73:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n74: \n75:     user = relationship(\"User\", back_populates=\"api_keys\")\n76: \n77: \n78: class AuditLog(Base):\n79:     __tablename__ = \"audit_log\"\n80: \n81:     id = Column(Integer, primary_key=True)\n82:     user_id = Column(Integer, ForeignKey(\"users.id\"))\n83:     action = Column(String(255), nullable=False)\n84:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n85: \n86: \n87: def init_db(database_url: str = \"sqlite:///shoply.db\"):\n88:     \"\"\"Create the engine, bind the session factory, create tables.\"\"\"\n89:     global _engine\n90:     _engine = create_engine(database_url, future=True)\n91:     SessionLocal.configure(bind=_engine)\n92:     Base.metadata.create_all(_engine)\n93:     return _engine\n94: \n95: \n96: def get_engine():\n97:     return _engine\n98: \n99: \n100: def get_session():\n101:     return SessionLocal()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection bound parameters string interpolation forbidden"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.32)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[security-policy.md:1-48] (relevance 0.06)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.05)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "purge",
+                  "file_glob": "*.md",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 pattern=\"purge\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new /admin/purge-user endpoint deletes orders for a user identified by a user-supplied 'username' string. The policy (security-policy.md \u00a73) requires that order access be scoped by user id and verified with is_owner_or_admin(current_user, order.user_id); the api-spec lists order deletion as admin-only by order id. Here the handler bypasses the ORM and the ownership/identity model entirely, matching on a free-text username via raw SQL. Because the identifier is a username string rather than a validated user id, the operation is not tied to a verified user object (e.g. a non-existent or ambiguous username, or a username that an attacker can influence, can cause the wrong rows to be deleted). The admin role check is present, but the per-object authorization/identity verification required by policy is missing, making this an incorrect-authorization flaw.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [46, 59], \"content\": \"@admin_bp.route(\\\"/purge-user\\\", methods=[\\\"POST\\\"])\\n@require_role(\\\"admin\\\")\\ndef purge_user_data():\\n    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\\n        conn.commit()\\n    return jsonify({\\\"status\\\": \\\"purged\\\"})\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"A user may view ONLY their own orders. Every endpoint that fetches an order by its identifier MUST verify ownership with is_owner_or_admin(current_user, order.user_id) before returning data. ... Only admins may delete or refund orders.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/orders/<id>` | DELETE | admin only |\"}\n      ],\n      \"suggested_fix\": \"Resolve the target user by a validated identifier (e.g. user id) via the ORM, confirm the user exists, and delete their orders through the ORM session (session.query(Order).filter(Order.user_id == user.id).delete()) rather than raw SQL keyed on a free-text username. Keep the @require_role(\\\"admin\\\") check.\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 56\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:purge-user-endpoint",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "start_line": 43,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=af7be91c1e6c34e270a974733b0b0213042fc405 path=app/routes/admin.py lines=43-59]\n43:             for e in events\n44:         ]\n45:     )\n46: @admin_bp.route(\"/purge-user\", methods=[\"POST\"])\n47: @require_role(\"admin\")\n48: def purge_user_data():\n49:     \"\"\"Purge a departed user's orders (data-erasure request).\"\"\"\n50:     payload = request.get_json(silent=True) or {}\n51:     username = payload.get(\"username\", \"\")\n52:     engine = get_engine()\n53:     with engine.connect() as conn:\n54:         conn.exec_driver_sql(\n55:             \"DELETE FROM orders WHERE user_id = \"\n56:             \"(SELECT id FROM users WHERE username = '%s')\" % username\n57:         )\n58:         conn.commit()\n59:     return jsonify({\"status\": \"purged\"})\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "start_line": 90,
+                  "end_line": 100,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=10b39ef8752131a0b06e6d50fd71d88c892e4059 path=app/models.py lines=90-100]\n90:     _engine = create_engine(database_url, future=True)\n91:     SessionLocal.configure(bind=_engine)\n92:     Base.metadata.create_all(_engine)\n93:     return _engine\n94: \n95: \n96: def get_engine():\n97:     return _engine\n98: \n99: \n100: def get_session():\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The code is clear. The `username` value from the JSON request body is interpolated directly into a raw SQL DELETE statement via `%` formatting and executed with `exec_driver_sql`, with no binding or allowlist.",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "bound parameters SQL string interpolation forbidden"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.33)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[security-policy.md:1-48] (relevance 0.05)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.04)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601."
+              }
+            ]
+          },
+          {
+            "assistant": "The evidence is complete. The `username` from the JSON body is interpolated via `%` formatting into a raw SQL DELETE executed by `exec_driver_sql`, with no binding or allowlist \u2014 a clear CWE-89 in the newly added endpoint.\n\n```json\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The new /admin/purge-user endpoint reads `username` directly from the JSON request body (payload.get(\\\"username\\\", \\\"\\\")) and interpolates it into a raw SQL DELETE statement using `%` string formatting, then executes it with conn.exec_driver_sql(). The value is never passed as a bound parameter and is not validated against any allowlist, so an attacker (any admin-role caller) can inject arbitrary SQL, e.g. username = \\\"x' OR '1'='1\\\" to delete all orders, or stacked/conditional statements. This violates the security policy forbidding string interpolation of request-derived values into SQL.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [50, 57], \"content\": \"    payload = request.get_json(silent=True) or {}\\n    username = payload.get(\\\"username\\\", \\\"\\\")\\n    engine = get_engine()\\n    with engine.connect() as conn:\\n        conn.exec_driver_sql(\\n            \\\"DELETE FROM orders WHERE user_id = \\\"\\n            \\\"(SELECT id FROM users WHERE username = '%s')\\\" % username\\n        )\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n      ],\n      \"suggested_fix\": \"Use a bound parameter instead of string interpolation, e.g. conn.execute(text(\\\"DELETE FROM orders WHERE user_id = (SELECT id FROM users WHERE username = :username)\\\"), {\\\"username\\\": username}), or better, look up the user id first with a bound query and delete by the integer id.\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 56\n    }\n  ]\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/admin.py:54",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.96,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "authz:purge-user-endpoint:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8908,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "8ee8255ff35398ed792a8ed0e9ea3c82da81d3e0",
+    "code_dirty": true,
+    "base_sha": "10b39ef8752131a0b06e6d50fd71d88c892e4059",
+    "pr_sha": "af7be91c1e6c34e270a974733b0b0213042fc405",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/admin.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "purge-user-endpoint",
+        "origin": "investigator",
+        "title": "New admin /purge-user endpoint that deletes a user's orders via raw SQL",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 7,
+            "old_count": 10,
+            "new_start": 7,
+            "new_count": 10,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "app/routes/admin.py#1",
+            "file": "app/routes/admin.py",
+            "old_start": 43,
+            "old_count": 3,
+            "new_start": 43,
+            "new_count": 17,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:purge-user-endpoint:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.54,
+  "base_sha": "10b39ef8752131a0b06e6d50fd71d88c892e4059",
+  "pr_sha": "af7be91c1e6c34e270a974733b0b0213042fc405",
+  "sast_error": null,
+  "semgrep_findings_total": 1,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "purge-user-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": [
+    "authz:purge-user-endpoint:1"
+  ]
+}

@@ -1,0 +1,956 @@
+{
+  "id": "alerta-query-string-parser-sqli-vulnerable",
+  "repo": "alerta/alerta",
+  "pr": 712,
+  "title": "Adding Lucene-style ?q= query string search for alerts made the Postgres backend build WHERE clauses by str.format()-ing user search terms into SQL.",
+  "mode": "lgtm",
+  "model": "bedrock:openai.gpt-oss-20b-1:0",
+  "base": "cc0993d0b245dbeaa19e8ec30c9992ec06fa293e",
+  "pr_sha": "aeba85a37a09e5769a7a2da56481aa979ff99a00",
+  "files_changed": 13,
+  "python_files_changed": 11,
+  "added_lines": 555,
+  "diff_chars": 24745,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 236.8,
+  "index_seconds": 0.1,
+  "index_reused": false,
+  "index_chunks": 12,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "fallback",
+    "investigator_status": "failed",
+    "hunks_total": 14,
+    "hunks_reviewed": 14,
+    "sections_scheduled": 11,
+    "sections_completed": 11,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:fallback:alerta/database/backends/postgres/utils.py:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "alerta/database/backends/postgres/utils.py",
+      "line": 92,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The function builds SQL fragments by inserting user\u2011supplied field names directly into the query string via string formatting (e.g. \"{0}\" in \"AND \"{0}\"=%({0})s\"). The only filtering is an exclusion list that does not cover all possible field names, so an attacker can supply a crafted field name that injects arbitrary SQL. The resulting query is executed with a raw\u2011SQL API, exposing a classic SQL i"
+    }
+  ],
+  "tool_calls_total": 1,
+  "investigator_tool_calls": 9,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 39,
+  "reviewer_units": 15,
+  "findings": [
+    {
+      "finding_id": "sqli:fallback:alerta/database/backends/postgres/utils.py:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The function builds SQL fragments by inserting user\u2011supplied field names directly into the query string via string formatting (e.g. \"{0}\" in \"AND \"{0}\"=%({0})s\"). The only filtering is an exclusion list that does not cover all possible field names, so an attacker can supply a crafted field name that injects arbitrary SQL. The resulting query is executed with a raw\u2011SQL API, exposing a classic SQL injection vector.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            92,
+            99
+          ],
+          "source": null,
+          "content": "        for field in params:\n            if field in EXCLUDE_QUERY:\n                continue\n            value = params.getlist(field)\n            if field in ['service', 'tags']:\n                query.append('AND {0} && %({0})s'.format(field))\n                qvars[field] = value\n            elif field.startswith('attributes.'):\n                field = field.replace('attributes.', '')\n                query.append('AND attributes @> %(attr_{})s'.format(field))\n                qvars['attr_' + field] = {field: value[0]}\n            elif len(value) == 1:\n                value = value[0]\n                if field.endswith('!'):\n                    if value.startswith('~'):\n                        query.append('AND NOT \"{0}\" ILIKE %(not_{0})s'.format(field[:-1]))\n                        qvars['not_' + field[:-1]] = '%' + value[1:] + '%'\n                    else:\n                        query.append('AND \"{0}\"!=%(not_{0})s'.format(field[:-1]))\n                        qvars['not_' + field[:-1]] = value\n                else:\n                    if value.startswith('~'):\n                        query.append('AND \"{0}\" ILIKE %({0})s'.format(field))\n                        qvars[field] = '%' + value[1:] + '%'\n                    else:\n                        query.append('AND \"{0}\"=%({0})s'.format(field))\n                        qvars[field] = value\n            else:\n                if field.endswith('!'):\n                    if '~' in [v[0] for v in value]:\n                        query.append('AND \"{0}\" !~* (%(not_regex_{0})s)'.format(field[:-1]))\n                        qvars['not_regex_' + field[:-1]] = '|'.join([v.lstrip('~') for v in value])\n                    else:\n                        query.append('AND NOT \"{0}\"=ANY(%(not_{0})s)'.format(field[:-1]))\n                        qvars['not_' + field[:-1]] = value\n                else:\n                    if '~' in [v[0] for v in value]:\n                        query.append('AND \"{0}\" ~* (%(regex_{0})s)'.format(field))\n   ",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Implement a strict allowlist of permitted field names and reject or sanitize any field that is not in the list. Alternatively, use a mapping from allowed field names to actual column names and construct the query using that mapping, ensuring that no user\u2011supplied string is interpolated directly into the SQL text.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8509,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/postgres/utils.py",
+      "line": 92,
+      "tool_calls_used": 1,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "class QueryBuilderImpl"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e status=ok truncated=true query=\"class QueryBuilderImpl\"]\n**Exploration: class QueryBuilderImpl**\n\nFound 57 symbols across 4 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `Query` (alerta/database/backends/mongodb/utils.py:12) \u2014 24 callers in `alerta/database/backends/mongodb/base.py`, `alerta/database/backends/mongodb/utils.py`; no tests found within 3 caller hops\n- `Query` (alerta/database/backends/postgres/utils.py:10) \u2014 23 callers in `alerta/database/backends/postgres/base.py`, `alerta/database/backends/postgres/utils.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`alerta/database/backends/mongodb/utils.py`** \u2014 from_dict(method), from_params(calls), from_params(method), parse(references), Query(calls), +2 more\n\n```python\n9\tfrom alerta.database.base import QueryBuilder\n10\tfrom alerta.utils.format import DateTime\n11\t\n12\tQuery = namedtuple('Query', ['where', 'sort', 'group'])\n13\tQuery.__new__.__defaults__ = ({}, {}, 'lastReceiveTime', 'status')  # type: ignore\n14\t\n15\t\n16\tclass QueryBuilderImpl(QueryBuilder):\n17\t\n18\t    @staticmethod\n19\t    def from_params(params, query_time=None):\n\n... (gap) ...\n\n31\t            customer_query = None\n32\t\n33\t        # from-date, to-date\n34\t        from_date = params.get('from-date', default=None, type=DateTime.parse)\n35\t        to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n36\t\n37\t        if from_date and to_date:\n\n... (gap) ...\n\n115\t        if customer_query:\n116\t            query = {'$and': [customer_query, query]}\n117\t\n118\t        return Query(where=query, sort=sort, group=group)\n119\t\n120\t    @staticmethod\n121\t    def from_dict(d, query_time=None):\n122\t        return QueryBuilderImpl.from_params(MultiDict(d), query_time)\n123\t\n```\n\n**`alerta/database/backends/postgres/utils.py`** \u2014 reverse_sort(calls), from_dict(method), from_params(calls), from_params(method), parse(references), +4 more\n\n```python\n7\tfrom alerta.database.base import QueryBuilder\n8\tfrom alerta.utils.format import DateTime\n9\t\n10\tQuery = namedtuple('Query', ['where', 'vars', 'sort', 'group'])\n11\tQuery.__new__.__defaults__ = ('1=1', {}, 'last_receive_time', 'status')  # type: ignore\n12\t\n13\t\n14\tclass QueryBuilderImpl(QueryBuilder):\n15\t\n16\t    @staticmethod\n17\t    def from_params(params, query_time=None):\n\n... (gap) ...\n\n29\t            qvars['customers'] = g.get('customers')\n30\t\n31\t        # from-date, to-date\n32\t        from_date = params.get('from-date', default=None, type=DateTime.parse)\n33\t        to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n34\t\n35\t        if from_date:\n\n... (gap) ...\n\n48\t            qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n49\t                                         in ['true', 't', '1', 'yes', 'y', 'on'])\n50\t\n51\t        def reverse_sort(direction):\n52\t            return 'ASC' if direction == 'DESC' else 'DESC'\n53\t\n54\t        # sort-by\n55\t        sort = list()\n\n... (gap) ...\n\n59\t        if params.get('sort-by', None):\n60\t            for sort_by in params.getlist('sort-by'):\n61\t                if sort_by == 'createTime':\n62\t                    sort.append('create_time ' + reverse_sort(direction))\n63\t                elif sort_by == 'receiveTime':\n64\t                    sort.append('receive_time ' + reverse_sort(direction))\n65\t                elif sort_by == 'lastReceiveTime':\n66\t                    sort.append('last_receive_time ' + reverse_sort(direction))\n67\t                elif sort_by == 'duplicateCount':\n68\t                    sort.append('duplicate_count ' + direction)\n69\t                else:\n70\t                    sort.append(sort_by + ' ' + direction)\n71\t        else:\n72\t            sort.append('last_receive_time ' + reverse_sort(direction))\n73\t\n74\t        # group-by\n75\t        group = params.getlist('group-by')\n\n... (gap) ...\n\n131\t                        query.append('AND \"{0}\"=ANY(%({0})s)'.format(field))\n132\t                        qvars[field] = value\n133\t\n134\t        return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n135\t\n136\t    @staticmethod\n137\t    def from_dict(d, query_time=None):\n138\t        return QueryBuilderImpl.from_params(MultiDict(d), query_time)\n139\t\n```\n\n**`alerta/database/backends/mongodb/base.py`** \u2014 Query(calls), imports(imports), Query(imports), extends(extends), get_counts_by_severity(method), +23 more\n\n```python\n436\t\n437\t    # BULK\n438\t\n439\t    def tag_alerts(self, query=None, tags=None):\n440\t        query = query or Query()\n441\t        updated = list(self.get_db().alerts.find(query.where, projection={'_id': 1}))\n442\t        response = self.get_db().alerts.update(query.where, {'$addToSet': {'tags': {'$each': tags}}})\n443\t        return updated if response['n'] else []\n444\t\n445\t    def untag_alerts(self, query=None, tags=None):\n446\t        query = query or Query()\n447\t        updated = list(self.get_db().alerts.find(query.where, projection={'_id': 1}))\n448\t        response = self.get_db().alerts.update(query.where, {'$pullAll': {'tags': tags}})\n449\t        return updated if response['n'] else []\n450\t\n451\t    def update_attributes_by_query(self, query=None, attributes=None):\n452\t        query = query or Query()\n453\t        update = dict()\n454\t        set_value = {'attributes.' + k: v for k, v in attributes.items() if v is not None}\n455\t        if set_value:\n456\t            update['$set'] = set_value\n457\t        unset_value = {'attributes.' + k: v for k, v in attri\n[TRUNCATED omitted_chars=8176]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 1,
+                  "end_line": 85,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 1,
+                  "end_line": 85,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class SearchAnd",
+                  "file_glob": "alerta/database/backends/mongodb/parser.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"class SearchAnd\"]\nalerta/database/backends/mongodb/parser.py:25:class SearchAnd(BinaryOperation):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 1,
+                  "end_line": 85,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 1,
+                  "end_line": 10,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 path=alerta/database/backends/mongodb/parser.py lines=1-10]\n1: \n2: \n3: from pyparsing import Optional, ParseException, infixNotation, opAssoc\n4: \n5: from alerta.database.backends.mongodb.syntax import (and_, expression, not_,\n6:                                                      or_, prohibit_modifier,\n7:                                                      required_modifier, term)\n8: \n9: \n10: class UnaryOperation:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 1,
+                  "end_line": 85,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/mongodb/parser.py",
+                  "start_line": 10,
+                  "end_line": 20,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 path=alerta/database/backends/mongodb/parser.py lines=10-20]\n10: class UnaryOperation:\n11:     \"\"\"takes one operand,e.g. not\"\"\"\n12: \n13:     def __init__(self, tokens):\n14:         self.op, self.operands = tokens[0]\n15: \n16: \n17: class BinaryOperation:\n18:     \"\"\"takes two or more operands, e.g. and, or\"\"\"\n19: \n20:     def __init__(self, tokens):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/mongodb/parser.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "query",
+                  "file_glob": "**/*.md",
+                  "snapshot": "base"
+                },
+                "result": "[docs/HOWTO.md:1-11] (relevance 0.27)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.14)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[requirements.txt:1-1] (relevance 0.10)\n.\n\n---\n\n[docs/README.md:1-1] (relevance 0.05)\nSee http://docs.alerta.io\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.02)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization",
+                  "file_glob": "**/*.md",
+                  "snapshot": "base"
+                },
+                "result": "[README.md:127-147] (relevance 0.25)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/README.md:1-1] (relevance 0.23)\nSee http://docs.alerta.io\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.10)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "access",
+                  "file_glob": "**/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.14)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.14)\n.\n\n---\n\n[README.md:127-147] (relevance 0.09)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.09)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[README.md:1-68] (relevance 0.04)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "attributes",
+                  "file_glob": "**/*.md",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.15)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.13)\n.\n\n---\n\n[README.md:1-68] (relevance 0.11)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.09)\nnose\npre-commit\ntwine\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.06)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "search",
+                  "file_glob": "**/*.md",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.18)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.13)\n.\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.08)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.08)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/mongodb/syntax.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "query",
+                  "snapshot": "base"
+                },
+                "result": "[docs/HOWTO.md:1-11] (relevance 0.27)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.14)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[requirements.txt:1-1] (relevance 0.10)\n.\n\n---\n\n[docs/README.md:1-1] (relevance 0.05)\nSee http://docs.alerta.io\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.02)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization",
+                  "snapshot": "base"
+                },
+                "result": "[README.md:127-147] (relevance 0.25)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/README.md:1-1] (relevance 0.23)\nSee http://docs.alerta.io\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.10)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "mongodb",
+                  "snapshot": "base"
+                },
+                "result": "[contrib/mongo/README.md:1-6] (relevance 0.43)\nMongoDB Contrib\n===============\n\n  * countTags.js - Report the number of times each tag is used\n  * housekeepingAlerts.js - [DEPRECATED] expire timed-out alerts and delete stale ones\n    (invoke the /management/housekeeping URL instead)\n\n---\n\n[README.md:62-129] (relevance 0.30)\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n    $ ALERTA_SVR_CONF_FILE=~/.alertad.conf\n    $ echo \"DEBUG=True\" > $ALERTA_SVR_CONF_FILE\n\nDocumentation\n-------------\n\nMore information on configuration and other aspects of alerta can be found\nat <http://docs.alerta.io>\n\nDevelopment\n-----------\n\nTo run in development mode, listening on port 5000:\n\n    $ export FLASK_APP=alerta FLASK_ENV=development\n    $ pip install -e .\n    $ flask run\n\nTo run in development mode, listening on port 8080, using Postgres and\nreporting errors to [Sentry](https://sentry.io):\n\n    $ export FLASK_APP=alerta FLASK_ENV=development\n    $ export DATABASE_URL=postgres://localhost:5432/alerta5\n    $ export SENTRY_DSN=https://8b56098250544fb78b9578d8af2a7e13:fa9d628da9c4459c922293db72a3203f@sentry.io/153768\n    $ pip install -e .\n    $ flask run --debugger --port 8080 --with-threads --reload\n\nTroubleshooting\n---------------\n\nProblems following a direct upgrade from versions 4.x to 5.x could be\nrelated to the flattening of the directory structure for the app. An\nexample `app.wsgi` file which works for both release 4 and 5 is as\nfollows:\n\n```\n#!/usr/bin/env python\n\ntry:\n    from alerta import app  # alerta >= 5.0\nexcept Exception:\n    from alerta.app import app  # alerta < 5.0\n```\n\nTests\n-----\n\nTo run the tests using a local Postgres database run:\n\n    $ pip install -r requirements.txt\n    $ pip install -e .\n    $ createdb test5\n    $ ALERTA_SVR_CONF_FILE= DATABASE_URL=postgres:///test5 nosetests\n\nCloud Deployment\n----------------\n\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\n---\n\n[docs/README.md:1-1] (relevance 0.16)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.12)\n.\n\n---\n\n[README.md:127-147] (relevance 0.11)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "syntax",
+                  "snapshot": "base"
+                },
+                "result": "[docs/banner.txt:1-4] (relevance 0.30)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/README.md:1-1] (relevance 0.17)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.15)\n.\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.10)\nnose\npre-commit\ntwine\n\n---\n\n[contrib/routing/README.md:1-18] (relevance 0.09)\nExample plug-in routing rules\n=============================\n\nIf severity is \"debug\" do not apply the \"reject\" policy to enforce a valid environment and a service.\n\n```python\ndef rules(alert, plugins):\n\n    if alert.severity == 'debug':\n        return []\n    else:\n        return [plugins['reject']]\n```\n\nInstallation\n------------\n\n    $ python setup.py install"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/mongodb/utils.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customers",
+                  "snapshot": "base"
+                },
+                "result": "[requirements.txt:1-1] (relevance 0.29)\n.\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.14)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.13)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/README.md:1-1] (relevance 0.10)\nSee http://docs.alerta.io\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.05)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization",
+                  "snapshot": "base"
+                },
+                "result": "[README.md:127-147] (relevance 0.25)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/README.md:1-1] (relevance 0.23)\nSee http://docs.alerta.io\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.10)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customer",
+                  "snapshot": "base"
+                },
+                "result": "[requirements.txt:1-1] (relevance 0.32)\n.\n\n---\n\n[docs/README.md:1-1] (relevance 0.15)\nSee http://docs.alerta.io\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.13)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.11)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.11)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_repo",
+                "args": {
+                  "pattern": "customers",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid input for tool 'search_repo': unknown tool; available tools: grep_repo, investigate_base_code, investigate_pr_code, read_file, search_policy. Fix the arguments and call the tool again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "customer",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e pattern=\"customer\"]\nalerta/auth/basic.py:4:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/basic.py:49:    # assign customers\nalerta/auth/basic.py:50:    customers = get_customers(user.email, groups=[user.domain])\nalerta/auth/basic.py:53:    token = create_token(user.id, user.name, user.email, provider='basic', customers=customers,\nalerta/auth/basic.py:81:    # assign customers\nalerta/auth/basic.py:82:    customers = get_customers(user.email, groups=[user.domain])\nalerta/auth/basic.py:85:    token = create_token(user.id, user.name, user.email, provider='basic', customers=customers,\nalerta/auth/basic_ldap.py:6:from alerta.auth.utils import create_token, get_customers\nalerta/auth/basic_ldap.py:52:    # Assign customers & update last login time\nalerta/auth/basic_ldap.py:53:    customers = get_customers(user.email, groups=[user.domain])\nalerta/auth/basic_ldap.py:57:    token = create_token(user.id, user.name, user.email, provider='basic_ldap', customers=customers,\nalerta/auth/decorators.py:8:from alerta.auth.utils import get_customers, not_authorized\nalerta/auth/decorators.py:38:                g.customers = [key_info.customer] if key_info.customer else []\nalerta/auth/decorators.py:61:                g.customers = jwt.customers\nalerta/auth/decorators.py:91:                g.customers = get_customers(user.email, groups=[user.domain])\nalerta/auth/decorators.py:101:                g.customers = []\nalerta/auth/github.py:6:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/github.py:49:    customers = get_customers(login, organizations)\nalerta/auth/github.py:51:    token = create_token(profile['id'], profile.get('name', '@' + login), login, provider='github', customers=customers,\nalerta/auth/gitlab.py:6:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/gitlab.py:62:    customers = get_customers(login, groups)\nalerta/auth/gitlab.py:64:    token = create_token(user_id, profile.get('name', '@' + login), login, provider='gitlab', customers=customers,\nalerta/auth/google.py:6:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/google.py:49:    customers = get_customers(id_token.email, groups=[domain])\nalerta/auth/google.py:52:    token = create_token(id_token.subject, name, id_token.email, provider='google', customers=customers,\nalerta/auth/keycloak.py:6:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/keycloak.py:47:    customers = get_customers(login, groups=roles)\nalerta/auth/keycloak.py:49:    token = create_token(profile['sub'], profile['name'], login, provider='keycloak', customers=customers, roles=roles)\nalerta/auth/pingfederate.py:7:from alerta.auth.utils import create_token, get_customers\nalerta/auth/pingfederate.py:41:    customers = get_customers(login, current_app.config['PINGFEDERATE_OPENID_PAYLOAD_GROUP'])\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/postgres/parser.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization",
+                  "snapshot": "base"
+                },
+                "result": "[README.md:127-147] (relevance 0.25)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/README.md:1-1] (relevance 0.23)\nSee http://docs.alerta.io\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.10)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "auth",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e pattern=\"auth\"]\nLICENSE:12:      \"Licensor\" shall mean the copyright owner or entity authorized by\nLICENSE:35:      \"Work\" shall mean the work of authorship, whether in Source or\nLICENSE:43:      represent, as a whole, an original work of authorship. For the purposes\nLICENSE:48:      \"Contribution\" shall mean any work of authorship, including\nLICENSE:52:      or by an individual or Legal Entity authorized to submit on behalf of\nalerta/app.py:63:    from alerta.auth import auth\nalerta/app.py:64:    app.register_blueprint(auth)\nalerta/auth/__init__.py:5:auth = Blueprint('auth', __name__)\nalerta/auth/__init__.py:17:@auth.before_request\nalerta/auth/__init__.py:20:    if request.method == 'POST' and request.path == '/auth/saml' and request.headers['Content-Type'] == 'application/x-www-form-urlencoded':\nalerta/auth/basic.py:4:from alerta.auth.utils import create_token, get_customers, not_authorized\nalerta/auth/basic.py:8:from . import auth\nalerta/auth/basic.py:11:@auth.route('/auth/signup', methods=['OPTIONS', 'POST'])\nalerta/auth/basic.py:28:    if not_authorized('ALLOWED_EMAIL_DOMAINS', groups=[user.domain]):\nalerta/auth/basic.py:29:        raise ApiError('unauthorized domain', 403)\nalerta/auth/basic.py:58:@auth.route('/auth/login', methods=['OPTIONS', 'POST'])\nalerta/auth/basic.py:78:    if not_authorized('ALLOWED_EMAIL_DOMAINS', groups=[user.domain]):\nalerta/auth/basic.py:79:        raise ApiError('unauthorized domain', 403)\nalerta/auth/basic.py:90:@auth.route('/auth/confirm/<hash>', methods=['OPTIONS', 'POST'])\nalerta/auth/basic.py:104:@auth.route('/auth/forgot', methods=['OPTIONS', 'POST'])\nalerta/auth/basic_ldap.py:6:from alerta.auth.utils import create_token, get_customers\nalerta/auth/basic_ldap.py:10:from . import auth\nalerta/auth/basic_ldap.py:13:@auth.route('/auth/login', methods=['OPTIONS', 'POST'])\nalerta/auth/basic_ldap.py:28:        raise ApiError('unauthorized domain', 403)\nalerta/auth/decorators.py:8:from alerta.auth.utils import get_customers, not_authorized\nalerta/auth/decorators.py:23:                auth_header = request.headers['Authorization']\nalerta/auth/decorators.py:24:                m = re.match(r'Key (\\S+)', auth_header)\nalerta/auth/decorators.py:47:            auth_header = request.headers.get('Authorization', '')\nalerta/auth/decorators.py:48:            m = re.match(r'Bearer (\\S+)', auth_header)\nalerta/auth/decorators.py:70:            auth_header = request.headers.get('Authorization', '')\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "search",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.18)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.13)\n.\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.08)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.08)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/postgres/syntax.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "postgres",
+                  "file_glob": "*",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e pattern=\"postgres\"]\n.travis.yml:13:  - DB=postgres DATABASE_URL=postgres://localhost:5432/alerta5\n.travis.yml:17:  - postgresql\n.travis.yml:20:  postgresql: \"9.5\"\n.travis.yml:23:  - sh -c \"if [ '$DB' = 'postgres' ]; then psql -c 'DROP DATABASE IF EXISTS alerta5;' -U postgres; fi\"\n.travis.yml:24:  - sh -c \"if [ '$DB' = 'postgres' ]; then psql -c 'CREATE DATABASE alerta5;' -U postgres; fi\"\nREADME.md:92:    $ export DATABASE_URL=postgres://localhost:5432/alerta5\nREADME.md:122:    $ ALERTA_SVR_CONF_FILE= DATABASE_URL=postgres:///test5 nosetests\nalerta/database/base.py:21:    if backend == 'postgresql':\nalerta/database/base.py:22:        backend = 'postgres'\nalerta/settings.py:37:POSTGRES_URI = 'postgres://localhost:5432/monitoring'  # not used (use DATABASE_URL)\ntests/test_search.py:35:        if self.app.config['DATABASE_URL'].startswith('postgres'):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "database"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.18)\nSee http://docs.alerta.io\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.12)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[requirements.txt:1-1] (relevance 0.10)\n.\n\n---\n\n[contrib/mongo/README.md:1-6] (relevance 0.09)\nMongoDB Contrib\n===============\n\n  * countTags.js - Report the number of times each tag is used\n  * housekeepingAlerts.js - [DEPRECATED] expire timed-out alerts and delete stale ones\n    (invoke the /management/housekeeping URL instead)\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.09)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/database/backends/postgres/utils.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "from_params",
+                  "snapshot": "pr"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 status=ok truncated=true query=\"from_params\"]\n**Exploration: from_params**\n\nFound 41 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `from_params` (alerta/database/backends/postgres/utils.py:18) \u2014 1 caller in `alerta/database/backends/postgres/utils.py`; no tests found within 3 caller hops\n- `from_params` (alerta/database/base.py:350) \u2014 22 callers in `alerta/views/blackouts.py`, `alerta/views/alerts.py`, `alerta/views/users.py`, `alerta/views/bulk.py` +3 more; tests: `tests/test_search.py`\n- `from_params` (alerta/database/backends/mongodb/utils.py:20) \u2014 1 caller in `alerta/database/backends/mongodb/utils.py`; no tests found within 3 caller hops\n- `from_params` (alerta/utils/paging.py:20) \u2014 2 callers in `alerta/views/alerts.py`; no tests found within 3 caller hops\n- `reverse_sort` (alerta/database/backends/postgres/utils.py:53) \u2014 1 caller in `alerta/database/backends/postgres/utils.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`alerta/database/backends/postgres/utils.py`** \u2014 reverse_sort(calls), from_dict(method), from_params(calls), from_params(method), parse(references), +4 more\n\n```python\n8\tfrom alerta.database.base import QueryBuilder\n9\tfrom alerta.utils.format import DateTime\n10\t\n11\tQuery = namedtuple('Query', ['where', 'vars', 'sort', 'group'])\n12\tQuery.__new__.__defaults__ = ('1=1', {}, 'last_receive_time', 'status')  # type: ignore\n13\t\n14\t\n15\tclass QueryBuilderImpl(QueryBuilder):\n16\t\n17\t    @staticmethod\n18\t    def from_params(params, query_time=None):\n\n... (gap) ...\n\n31\t            qvars['customers'] = g.get('customers')\n32\t\n33\t        # from-date, to-date\n34\t        from_date = params.get('from-date', default=None, type=DateTime.parse)\n35\t        to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n36\t\n37\t        if from_date:\n\n... (gap) ...\n\n50\t            qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n51\t                                         in ['true', 't', '1', 'yes', 'y', 'on'])\n52\t\n53\t        def reverse_sort(direction):\n54\t            return 'ASC' if direction == 'DESC' else 'DESC'\n55\t\n56\t        # sort-by\n57\t        sort = list()\n\n... (gap) ...\n\n61\t        if params.get('sort-by', None):\n62\t            for sort_by in params.getlist('sort-by'):\n63\t                if sort_by == 'createTime':\n64\t                    sort.append('create_time ' + reverse_sort(direction))\n65\t                elif sort_by == 'receiveTime':\n66\t                    sort.append('receive_time ' + reverse_sort(direction))\n67\t                elif sort_by == 'lastReceiveTime':\n68\t                    sort.append('last_receive_time ' + reverse_sort(direction))\n69\t                elif sort_by == 'duplicateCount':\n70\t                    sort.append('duplicate_count ' + direction)\n71\t                else:\n72\t                    sort.append(sort_by + ' ' + direction)\n73\t        else:\n74\t            sort.append('last_receive_time ' + reverse_sort(direction))\n75\t\n76\t        # group-by\n77\t        group = params.getlist('group-by')\n\n... (gap) ...\n\n133\t                        query.append('AND \"{0}\"=ANY(%({0})s)'.format(field))\n134\t                        qvars[field] = value\n135\t\n136\t        return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n137\t\n138\t    @staticmethod\n139\t    def from_dict(d, query_time=None):\n140\t        return QueryBuilderImpl.from_params(MultiDict(d), query_time)\n141\t\n```\n\n**`alerta/database/backends/mongodb/utils.py`** \u2014 Query(calls), Query(variable), from_dict(method), from_params(calls), from_params(method), +2 more\n\n```python\n17\tclass QueryBuilderImpl(QueryBuilder):\n18\t\n19\t    @staticmethod\n20\t    def from_params(params: MultiDict, query_time=None):\n21\t\n22\t        # q\n23\t        if params.get('q', None):\n24\t            query = json.loads(repr(expression.parseString(params.get('q'))[0]))\n25\t        else:\n26\t            query = dict()\n27\t\n28\t        # customers\n29\t        if g.get('customers', None):\n30\t            customer_query = {'customer': {'$in': g.get('customers')}}\n31\t        else:\n32\t            customer_query = None  # type: ignore\n33\t\n34\t        # from-date, to-date\n35\t        from_date = params.get('from-date', default=None, type=DateTime.parse)\n36\t        to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n37\t\n38\t        if from_date and to_date:\n39\t            query['lastReceiveTime'] = {'$gt': from_date.replace(\n40\t                tzinfo=pytz.utc), '$lte': to_date.replace(tzinfo=pytz.utc)}\n41\t        elif to_date:\n42\t            query['lastReceiveTime'] = {'$lte': to_date.replace(tzinfo=pytz.utc)}\n43\t\n44\t        # duplicateCount, repeat\n45\t        if params.get('duplicateCount', None):\n46\t            query['duplicateCount'] = params.get('duplicateCount', int)\n47\t        if params.get('repeat', None):\n48\t            query['repeat'] = params.get('repeat', default=True, type=lambda x: x == 'true')\n49\t\n50\t        # sort-by\n51\t        sort = list()\n52\t        direction = 1\n53\t        if params.get('reverse', None):\n54\t            direction = -1\n55\t        if params.get('sort-by', None):\n56\t            for sort_by in params.getlist('sort-by'):\n57\t                if sort_by in ['createTime', 'receiveTime', 'lastReceiveTime']:\n58\t                    sort.append((sort_by, -direction))  # reverse chronological\n59\t                else:\n60\t                    sort.append((sort_by, direction))\n61\t        else:\n6\n[TRUNCATED omitted_chars=10001]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customers",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[requirements.txt:1-1] (relevance 0.29)\n.\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.14)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.13)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/README.md:1-1] (relevance 0.10)\nSee http://docs.alerta.io\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.05)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customers",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[requirements.txt:1-1] (relevance 0.29)\n.\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.14)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.13)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/README.md:1-1] (relevance 0.10)\nSee http://docs.alerta.io\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.05)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customer",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[requirements.txt:1-1] (relevance 0.32)\n.\n\n---\n\n[docs/README.md:1-1] (relevance 0.15)\nSee http://docs.alerta.io\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.13)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.11)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.11)\nnose\npre-commit\ntwine"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization",
+                  "file_glob": "",
+                  "snapshot": "base"
+                },
+                "result": "[README.md:127-147] (relevance 0.25)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[docs/README.md:1-1] (relevance 0.23)\nSee http://docs.alerta.io\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[examples/plugins/README.md:1-14] (relevance 0.10)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:alerta/settings.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "DEFAULT_FIELD"
+                },
+                "result": "[docs/banner.txt:1-4] (relevance 0.14)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[requirements.txt:1-1] (relevance 0.08)\n.\n\n---\n\n[pypi.md:1-25] (relevance 0.05)\nCreate new release (use a python3 virt env)\n\n1. Ensure master is up-to-date\n```bash\n    $ git checkout master\n    $ git pull\n```\n2. Bump version number\n```bash\n    $ vi VERSION\n    $ vi alerta/version.py\n    $ git add .\n    $ git commit -m 'Bump version to 5.x.x'\n    $ git push\n```\n3. Update git tags\n```bash\n    $ make tag\n```\n4. Push wheel to PyPi\n```bash\n    $ make clean\n    $ make upload\n```\nSee http://pythonwheels.com/\n\n---\n\n[contrib/routing/README.md:1-18] (relevance 0.04)\nExample plug-in routing rules\n=============================\n\nIf severity is \"debug\" do not apply the \"reject\" policy to enforce a valid environment and a service.\n\n```python\ndef rules(alert, plugins):\n\n    if alert.severity == 'debug':\n        return []\n    else:\n        return [plugins['reject']]\n```\n\nInstallation\n------------\n\n    $ python setup.py install\n\n---\n\n[README.md:62-129] (relevance 0.03)\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n    $ ALERTA_SVR_CONF_FILE=~/.alertad.conf\n    $ echo \"DEBUG=True\" > $ALERTA_SVR_CONF_FILE\n\nDocumentation\n-------------\n\nMore information on configuration and other aspects of alerta can be found\nat <http://docs.alerta.io>\n\nDevelopment\n-----------\n\nTo run in development mode, listening on port 5000:\n\n    $ export FLASK_APP=alerta FLASK_ENV=development\n    $ pip install -e .\n    $ flask run\n\nTo run in development mode, listening on port 8080, using Postgres and\nreporting errors to [Sentry](https://sentry.io):\n\n    $ export FLASK_APP=alerta FLASK_ENV=development\n    $ export DATABASE_URL=postgres://localhost:5432/alerta5\n    $ export SENTRY_DSN=https://8b56098250544fb78b9578d8af2a7e13:fa9d628da9c4459c922293db72a3203f@sentry.io/153768\n    $ pip install -e .\n    $ flask run --debugger --port 8080 --with-threads --reload\n\nTroubleshooting\n---------------\n\nProblems following a direct upgrade from versions 4.x to 5.x could be\nrelated to the flattening of the directory structure for the app. An\nexample `app.wsgi` file which works for both release 4 and 5 is as\nfollows:\n\n```\n#!/usr/bin/env python\n\ntry:\n    from alerta import app  # alerta >= 5.0\nexcept Exception:\n    from alerta.app import app  # alerta < 5.0\n```\n\nTests\n-----\n\nTo run the tests using a local Postgres database run:\n\n    $ pip install -r requirements.txt\n    $ pip install -e .\n    $ createdb test5\n    $ ALERTA_SVR_CONF_FILE= DATABASE_URL=postgres:///test5 nosetests\n\nCloud Deployment\n----------------\n\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "DEFAULT_FIELD",
+                  "file_glob": "**/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e pattern=\"DEFAULT_FIELD\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "DEFAULT_FIELD",
+                  "file_glob": "**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"DEFAULT_FIELD\"]\nalerta/database/backends/postgres/parser.py:47:        self.default_field = current_app.config['DEFAULT_FIELD']\nalerta/settings.py:26:DEFAULT_FIELD = 'text'  # default field if no search prefix specified (Postgres only)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/parser.py",
+                  "start_line": 1,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 path=alerta/database/backends/postgres/parser.py lines=1-87]\n1: \n2: from flask import current_app\n3: from pyparsing import Optional, ParseException, infixNotation, opAssoc\n4: \n5: from alerta.database.backends.postgres.syntax import (and_, expression, not_,\n6:                                                       or_, prohibit_modifier,\n7:                                                       required_modifier, term)\n8: \n9: \n10: class UnaryOperation:\n11:     \"\"\"takes one operand,e.g. not\"\"\"\n12: \n13:     def __init__(self, tokens):\n14:         self.op, self.operands = tokens[0]\n15: \n16: \n17: class BinaryOperation:\n18:     \"\"\"takes two or more operands, e.g. and, or\"\"\"\n19: \n20:     def __init__(self, tokens):\n21:         self.op = tokens[0][1]\n22:         self.lhs = tokens[0][0]\n23:         self.rhs = tokens[0][2]\n24: \n25: \n26: class SearchAnd(BinaryOperation):\n27: \n28:     def __repr__(self):\n29:         return '{} AND {}'.format(self.lhs, self.rhs)\n30: \n31: \n32: class SearchOr(BinaryOperation):\n33: \n34:     def __repr__(self):\n35:         return '{} OR {}'.format(self.lhs, self.rhs)\n36: \n37: \n38: class SearchNot(UnaryOperation):\n39: \n40:     def __repr__(self):\n41:         return 'NOT {}'.format(self.operands)\n42: \n43: \n44: class SearchTerm:\n45: \n46:     def __init__(self, tokens):\n47:         self.default_field = current_app.config['DEFAULT_FIELD']\n48:         self.tokens = tokens\n49:         if 'field' in self.tokens:\n50:             self.term = self.tokens[2]\n51:         else:\n52:             self.term = self.tokens[0]\n53: \n54:     def __repr__(self):\n55:         if 'field' in self.tokens:\n56:             if 'word' in self.tokens:\n57:                 if self.tokens.field == '_exists_':\n58:                     return '\"attributes\"::jsonb ? \\'{}\\''.format(self.term)\n59:                 else:\n60:                     return '\"{}\" ILIKE \\'%%{}%%\\''.format(self.tokens.field, self.tokens.word)\n61:             if 'string' in self.tokens:\n62:                 return '\"{}\"=\\'{}\\''.format(self.tokens.field, self.tokens.string.strip('\"'))\n63:             if 'wildcard' in self.tokens:\n64:                 wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')\n65:                 return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, wildcard)\n66:             if 'regex' in self.tokens:\n67:                 return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, self.tokens.regex.strip('/'))\n68:         else:\n69:             if 'word' in self.tokens:\n70:                 return '\"{}\" ILIKE \\'%%{}%%\\''.format(self.default_field, self.tokens.word)\n71:             if 'string' in self.tokens:\n72:                 return '\"{}\" ~* \\'{}\\''.format(self.default_field, self.tokens.string.strip('\"'))\n73:             if 'regex' in self.tokens:\n74:                 return '\"{}\" ~* \\'{}\\''.format(self.default_field, self.tokens.regex.strip('/'))\n75:         raise ParseException('Search term did not match query syntax: %s' % self.tokens)\n76: \n77: \n78: term.addParseAction(SearchTerm)\n79: \n80: \n81: expression << infixNotation(term,\n82:                             [\n83:                                 (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT),\n84:                                 ((not_ | '!').setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),\n85:                                 ((and_ | '&&').setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),\n86:                                 (Optional(or_ | '||').setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),\n87:                             ])\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "search"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.18)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.13)\n.\n\n---\n\n[README.md:1-68] (relevance 0.12)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.08)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.08)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:setup.py",
+        "turns": [
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:tests/test_alerts.py",
+        "turns": [
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:tests/test_mongo_query.py",
+        "turns": [
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:tests/test_postgres_query.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "TESTING",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.17)\nSee http://docs.alerta.io\n\n---\n\n[requirements.txt:1-1] (relevance 0.15)\n.\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.12)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[requirements-dev.txt:1-3] (relevance 0.12)\nnose\npre-commit\ntwine\n\n---\n\n[README.md:1-68] (relevance 0.11)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "auth",
+                  "snapshot": "base"
+                },
+                "result": "[docs/README.md:1-1] (relevance 0.17)\nSee http://docs.alerta.io\n\n---\n\n[README.md:127-147] (relevance 0.17)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[requirements.txt:1-1] (relevance 0.08)\n.\n\n---\n\n[README.md:1-68] (relevance 0.08)\nAlerta Release 6.2\n==================\n\n[![Build Status](https://travis-ci.org/alerta/alerta.png)](https://travis-ci.org/alerta/alerta)\n[![Gitter chat](https://badges.gitter.im/alerta/chat.png)](https://gitter.im/alerta/chat)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![console](/docs/images/alert-list-rel32.png?raw=true)\n\nRelated projects can be found on the Alerta Org Repo at <https://github.com/alerta/>.\n\n----\n\nPython 2.7 support is EOL\n-------------------------\n\nStarting with Release 6.0 only Python 3.5+ is supported. Release 5.2 was the\nlast to support Python 2.7 and feature enhancements for this release ended on\nAugust 31, 2018. Only critical bug fixes will be backported to Release 5.2.\n\nRequirements\n------------\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 9.5 or better\n- MongoDB version 3.x\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n    \nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget -O alerta-web.tgz https://github.com/alerta/angular-alerta-webui/tarball/master\n    $ tar zxvf alerta-web.tgz\n    $ cd alerta-angular-alerta-webui-*/app\n    $ python -m http.server 8000\n\n    >> browse to http://localhost:8000\n    \n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n---\n\n[contrib/mongo/README.md:1-6] (relevance 0.06)\nMongoDB Contrib\n===============\n\n  * countTags.js - Report the number of times each tag is used\n  * housekeepingAlerts.js - [DEPRECATED] expire timed-out alerts and delete stale ones\n    (invoke the /management/housekeeping URL instead)"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "def create_app",
+                  "snapshot": "base"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=cc0993d0b245dbeaa19e8ec30c9992ec06fa293e status=ok truncated=true query=\"def create_app\"]\n**Exploration: def create_app**\n\nFound 122 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `create_app` (alerta/app.py:33) \u2014 34 callers in `alerta/app.py`, `alerta/commands.py`, `alerta/__init__.py`; tests: `tests/test_shelving.py`, `tests/test_customers.py`, `tests/test_scopes.py`, `tests/test_cors.py` +11\n- `create` (alerta/models/customer.py:62) \u2014 1 caller in `alerta/views/customers.py`; no tests found within 3 caller hops\n- `create` (alerta/models/user.py:130) \u2014 4 callers in `alerta/auth/basic.py`, `alerta/auth/basic_ldap.py`, `alerta/views/users.py`, `alerta/commands.py`; no tests found within 3 caller hops\n- `create` (alerta/models/alert.py:315) \u2014 1 caller in `alerta/utils/api.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`alerta/app.py`** \u2014 create_app(function), create_celery_app(function), key_helper(variable), custom_webhooks(variable), alarm_model(variable)\n\n```python\n1\tfrom typing import Any, Dict\n2\t\n3\tfrom flask import Flask\n4\tfrom flask_compress import Compress\n5\tfrom flask_cors import CORS\n6\tfrom raven.contrib.flask import Sentry\n7\t\n8\tfrom alerta.database.base import Database, QueryBuilder\n9\tfrom alerta.exceptions import ExceptionHandlers\n10\tfrom alerta.models.alarms import AlarmModel\n11\tfrom alerta.utils.config import Config\n12\tfrom alerta.utils.key import ApiKeyHelper\n13\tfrom alerta.utils.mailer import Mailer\n14\tfrom alerta.utils.plugin import Plugins\n15\tfrom alerta.utils.webhook import CustomWebhooks\n16\t\n17\tconfig = Config()\n18\talarm_model = AlarmModel()\n19\t\n20\tcors = CORS()\n21\tcompress = Compress()\n22\thandlers = ExceptionHandlers()\n23\tkey_helper = ApiKeyHelper()\n24\t\n25\tdb = Database()\n26\tqb = QueryBuilder()\n27\tsentry = Sentry()\n28\tmailer = Mailer()\n29\tplugins = Plugins()\n30\tcustom_webhooks = CustomWebhooks()\n31\t\n32\t\n33\tdef create_app(config_override: Dict[str, Any]=None, environment: str=None) -> Flask:\n34\t    app = Flask(__name__)\n35\t    app.config['ENVIRONMENT'] = environment\n36\t    config.init_app(app)\n37\t    app.config.update(config_override or {})\n38\t\n39\t    alarm_model.init_app(app)\n40\t\n41\t    cors.init_app(app)\n42\t    compress.init_app(app)\n43\t    handlers.register(app)\n44\t    key_helper.init_app(app)\n45\t\n46\t    db.init_db(app)\n47\t    qb.init_app(app)\n48\t    sentry.init_app(app)\n49\t\n50\t    mailer.register(app)\n51\t    plugins.register(app)\n52\t    custom_webhooks.register(app)\n53\t\n54\t    from alerta.utils.format import CustomJSONEncoder\n55\t    app.json_encoder = CustomJSONEncoder\n56\t\n57\t    from alerta.views import api\n58\t    app.register_blueprint(api)\n59\t\n60\t    from alerta.webhooks import webhooks\n61\t    app.register_blueprint(webhooks)\n62\t\n63\t    from alerta.auth import auth\n64\t    app.register_blueprint(auth)\n65\t\n66\t    from alerta.management import mgmt\n67\t    app.register_blueprint(mgmt)\n68\t\n69\t    return app\n70\t\n71\t\n72\ttry:\n73\t    from celery import Celery\n74\texcept ImportError:\n75\t    pass\n76\t\n77\t\n78\tdef create_celery_app(app: Flask=None) -> 'Celery':\n79\t\n80\t    from alerta.utils.format import register_custom_serializer\n81\t    register_custom_serializer()\n82\t\n83\t    app = app or create_app()\n84\t    celery = Celery(\n85\t        app.name,\n86\t        backend=app.config['CELERY_RESULT_BACKEND'],\n87\t        broker=app.config['CELERY_BROKER_URL']\n88\t    )\n89\t    celery.conf.update(app.config)\n90\t    TaskBase = celery.Task\n91\t\n92\t    class ContextTask(TaskBase):  # type: ignore\n93\t        abstract = True\n94\t\n95\t        def __call__(self, *args, **kwargs):\n96\t            with app.app_context():\n97\t                return TaskBase.__call__(self, *args, **kwargs)\n98\t\n99\t    celery.Task = ContextTask\n100\t    return celery\n```\n\n**`alerta/models/permission.py`** \u2014 JSON(variable), __init__(method), parse(method), __repr__(method), get_perm(calls), +19 more\n\n```python\n21\t        if not isinstance(json.get('scopes', []), list):\n22\t            raise ValueError('scopes must be a list')\n23\t\n24\t        return Permission(\n25\t            match=json.get('match', None),\n26\t            scopes=json.get('scopes', list())\n27\t        )\n\n... (gap) ...\n\n30\t    def serialize(self) -> Dict[str, Any]:\n31\t        return {\n32\t            'id': self.id,\n33\t            'href': absolute_url('/perm/' + self.id),\n34\t            'match': self.match,\n35\t            'scopes': self.scopes\n36\t        }\n\n... (gap) ...\n\n41\t\n42\t    @classmethod\n43\t    def from_document(cls, doc: Dict[str, Any]) -> 'Permission':\n44\t        return Permission(\n45\t            id=doc.get('id', None) or doc.get('_id'),\n46\t            match=doc.get('match', None),\n47\t            scopes=doc.get('scopes', list())\n\n... (gap) ...\n\n49\t\n50\t    @classmethod\n51\t    def from_record(cls, rec) -> 'Permission':\n52\t        return Permission(\n53\t            id=rec.id,\n54\t            match=rec.match,\n55\t            scopes=rec.scopes\n56\t        )\n57\t\n58\t    @classmethod\n59\t    def from_db(cls, r: Union[Dict, Tuple]) -> 'Permission':\n60\t        if isinstance(r, dict):\n61\t            return cls.from_document(r)\n62\t        elif isinstance(r, tuple):\n63\t            return cls.from_record(r)\n64\t\n65\t    def create(self) -> 'Permission':\n66\t        return Permission.from_db(db.create_perm(self))\n67\t\n68\t    @staticmethod\n69\t    def find_by_id(id: str) -> Optional['Permission']:\n```\n\n**`alerta/models/alert.py`** \u2014 calls(calls), History(instantiates), from_db(calls), serialize(method), absolute_url(calls), +23 more\n\n```python\n312\t  \n[TRUNCATED omitted_chars=9952]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "postgres_search",
+                  "snapshot": "base"
+                },
+                "result": "[docs/HOWTO.md:1-11] (relevance 0.16)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[requirements.txt:1-1] (relevance 0.09)\n.\n\n---\n\n[docs/banner.txt:1-4] (relevance 0.09)\n|           |\n  _` | |  _ \\  __| __|  _` |\n (   |_|  __/ |    |   (   |\n\\__,_|_)\\___|_|   \\__|\\__,_|\n\n---\n\n[pypi.md:1-25] (relevance 0.01)\nCreate new release (use a python3 virt env)\n\n1. Ensure master is up-to-date\n```bash\n    $ git checkout master\n    $ git pull\n```\n2. Bump version number\n```bash\n    $ vi VERSION\n    $ vi alerta/version.py\n    $ git add .\n    $ git commit -m 'Bump version to 5.x.x'\n    $ git push\n```\n3. Update git tags\n```bash\n    $ make tag\n```\n4. Push wheel to PyPi\n```bash\n    $ make clean\n    $ make upload\n```\nSee http://pythonwheels.com/\n\n---\n\n[README.md:127-147] (relevance 0.01)\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2018 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:fallback:alerta/database/backends/mongodb/syntax.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "execute",
+                  "file_glob": "alerta/database/backends/mongodb/syntax.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"execute\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:fallback:alerta/database/backends/mongodb/utils.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "execute",
+                  "file_glob": "*",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"execute\"]\nLICENSE:135:      the terms of any separate license agreement you may have executed\nalerta/database/backends/postgres/base.py:63:            conn.cursor().execute(f.read())\nalerta/database/backends/postgres/base.py:110:        cursor.execute('SELECT current_database()')\nalerta/database/backends/postgres/base.py:116:        cursor.execute('SHOW server_version')\nalerta/database/backends/postgres/base.py:122:        cursor.execute('SELECT true')\nalerta/database/backends/postgres/base.py:132:            cursor.execute('DROP TABLE IF EXISTS %s' % table)\nalerta/database/backends/postgres/base.py:992:        cursor.execute(query, vars)\nalerta/database/backends/postgres/base.py:1002:        cursor.execute(query, vars)\nalerta/database/backends/postgres/base.py:1014:        cursor.execute(query, vars)\nalerta/database/backends/postgres/base.py:1023:        cursor.execute(query, vars)\nalerta/database/backends/postgres/base.py:1033:        cursor.execute(query, vars)\npylintrc:6:# Python code to execute, usually for sys.path manipulation such as\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy<|channel|>commentary",
+                "args": {
+                  "query": "execute"
+                },
+                "result": "ERROR: invalid input for tool 'search_policy<|channel|>commentary': unknown tool; available tools: grep_repo, investigate_base_code, investigate_pr_code, read_file, search_policy. Fix the arguments and call the tool again."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:fallback:alerta/database/backends/postgres/syntax.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "execute",
+                  "file_glob": "alerta/database/backends/postgres/syntax.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"execute\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "sql",
+                  "file_glob": "alerta/database/backends/postgres/syntax.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 pattern=\"sql\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:fallback:alerta/database/backends/postgres/utils.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "start_line": 1,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=aeba85a37a09e5769a7a2da56481aa979ff99a00 path=alerta/database/backends/postgres/utils.py lines=1-140]\n1: from collections import namedtuple\n2: \n3: import pytz\n4: from flask import g\n5: from werkzeug.datastructures import MultiDict\n6: \n7: from alerta.database.backends.postgres.parser import expression\n8: from alerta.database.base import QueryBuilder\n9: from alerta.utils.format import DateTime\n10: \n11: Query = namedtuple('Query', ['where', 'vars', 'sort', 'group'])\n12: Query.__new__.__defaults__ = ('1=1', {}, 'last_receive_time', 'status')  # type: ignore\n13: \n14: \n15: class QueryBuilderImpl(QueryBuilder):\n16: \n17:     @staticmethod\n18:     def from_params(params, query_time=None):\n19: \n20:         # q\n21:         if params.get('q', None):\n22:             query = [repr(expression.parseString(params.get('q'))[0])]\n23:             qvars = dict()\n24:         else:\n25:             query = ['1=1']\n26:             qvars = dict()\n27: \n28:         # customer\n29:         if g.get('customers', None):\n30:             query.append('AND customer=ANY(%(customers)s)')\n31:             qvars['customers'] = g.get('customers')\n32: \n33:         # from-date, to-date\n34:         from_date = params.get('from-date', default=None, type=DateTime.parse)\n35:         to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n36: \n37:         if from_date:\n38:             query.append('AND last_receive_time > %(from_date)s')\n39:             qvars['from_date'] = from_date.replace(tzinfo=pytz.utc)\n40:         if to_date:\n41:             query.append('AND last_receive_time <= %(to_date)s')\n42:             qvars['to_date'] = to_date.replace(tzinfo=pytz.utc)\n43: \n44:         # duplicateCount, repeat\n45:         if params.get('duplicateCount', None):\n46:             query.append('AND duplicate_count=%(duplicate_count)s')\n47:             qvars['duplicate_count'] = params.get('duplicateCount', int)\n48:         if params.get('repeat', None):\n49:             query.append('AND repeat=%(repeat)s')\n50:             qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n51:                                          in ['true', 't', '1', 'yes', 'y', 'on'])\n52: \n53:         def reverse_sort(direction):\n54:             return 'ASC' if direction == 'DESC' else 'DESC'\n55: \n56:         # sort-by\n57:         sort = list()\n58:         direction = 'ASC'\n59:         if params.get('reverse', None):\n60:             direction = 'DESC'\n61:         if params.get('sort-by', None):\n62:             for sort_by in params.getlist('sort-by'):\n63:                 if sort_by == 'createTime':\n64:                     sort.append('create_time ' + reverse_sort(direction))\n65:                 elif sort_by == 'receiveTime':\n66:                     sort.append('receive_time ' + reverse_sort(direction))\n67:                 elif sort_by == 'lastReceiveTime':\n68:                     sort.append('last_receive_time ' + reverse_sort(direction))\n69:                 elif sort_by == 'duplicateCount':\n70:                     sort.append('duplicate_count ' + direction)\n71:                 else:\n72:                     sort.append(sort_by + ' ' + direction)\n73:         else:\n74:             sort.append('last_receive_time ' + reverse_sort(direction))\n75: \n76:         # group-by\n77:         group = params.getlist('group-by')\n78: \n79:         # id\n80:         ids = params.getlist('id')\n81:         if len(ids) == 1:\n82:             query.append('AND (id LIKE %(id)s OR last_receive_id LIKE %(id)s)')\n83:             qvars['id'] = ids[0] + '%'\n84:         elif ids:\n85:             query.append('AND (id ~* (%(regex_id)s) OR last_receive_id ~* (%(regex_id)s))')\n86:             qvars['regex_id'] = '|'.join(['^' + i for i in ids])\n87: \n88:         EXCLUDE_QUERY = ['_', 'callback', 'token', 'api-key', 'q', 'id', 'from-date',\n89:                          'to-date', 'duplicateCount', 'repeat', 'sort-by', 'reverse',\n90:                          'group-by', 'page', 'page-size', 'limit']\n91: \n92:         # fields\n93:         for field in params:\n94:             if field in EXCLUDE_QUERY:\n95:                 continue\n96:             value = params.getlist(field)\n97:             if field in ['service', 'tags']:\n98:                 query.append('AND {0} && %({0})s'.format(field))\n99:                 qvars[field] = value\n100:             elif field.startswith('attributes.'):\n101:                 field = field.replace('attributes.', '')\n102:                 query.append('AND attributes @> %(attr_{})s'.format(field))\n103:                 qvars['attr_' + field] = {field: value[0]}\n104:             elif len(value) == 1:\n105:                 value = value[0]\n106:                 if field.endswith('!'):\n107:                     if value.startswith('~'):\n108:                         query.append('AND NOT \"{0}\" ILIKE %(not_{0})s'.format(field[:-1]))\n109:                         qvars['not_' + field[:-1]] = '%' + value[1:] + '%'\n110:                     else:\n111:                         query.append('AND \"{0}\"!=%(not_{0})s'.format(field[:-1]))\n112:                         qvars['not_' + field[:-1]] = value\n113:                 else:\n114:                     if value.startswith('~'):\n115:                         query.append('AND \"{0}\" ILIKE %({0})s'.format(field))\n116:                         qvars[field] = '%' + value[1:] + '%'\n117:                     else:\n118:                         query.append('AND \"{0}\"=%({0})s'.format(field))\n119:                         qvars[field] = value\n120:             else:\n121:                 if field.endswith('!'):\n122:                     if '~' in [v[0] for v in value]:\n123:                         query.append('AND \"{0}\" !~* (%(not_regex_{0})s)'.format(field[:-1]))\n124:                         qvars['not_regex_' + field[:-1]] = '|'.join([v.lstrip('~') for v in value])\n125:                     else:\n126:                         query.append('AND NOT \"{0}\"=ANY(%(not_{0})s)'.format(field[:-1]))\n127:                         qvars['not_' + field[:-1]] = value\n128:                 else:\n129:                     if '~' in [v[0] for v in value]:\n130:                         query.append('AND \"{0}\" ~* (%(regex_{0})s)'.format(field))\n131:                         qvars['regex_' + field] = '|'.join([v.lstrip('~') for v in value])\n132:                     else:\n133:                         query.append('AND \"{0}\"=ANY(%({0})s)'.format(field))\n134:                         qvars[field] = value\n135: \n136:         return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n137: \n138:     @staticmethod\n139:     def from_dict(d, query_time=None):\n140:         return QueryBuilderImpl.from_params(MultiDict(d), query_time)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"findings\":[{\"cwe_id\":\"CWE-89\",\"explanation\":\"The function builds SQL fragments by inserting user\u2011supplied field names directly into the query string via string formatting (e.g. \\\"{0}\\\" in \\\"AND \\\"{0}\\\"=%({0})s\\\"). The only filtering is an exclusion list that does not cover all possible field names, so an attacker can supply a crafted field name that injects arbitrary SQL. The resulting query is executed with a raw\u2011SQL API, exposing a classic SQL injection vector.\",\"evidence\":[{\"type\":\"code\",\"file\":\"alerta/database/backends/postgres/utils.py\",\"lines\":[92,99],\"content\":\"        for field in params:\\n            if field in EXCLUDE_QUERY:\\n                continue\\n            value = params.getlist(field)\\n            if field in ['service', 'tags']:\\n                query.append('AND {0} && %({0})s'.format(field))\\n                qvars[field] = value\\n            elif field.startswith('attributes.'):\\n                field = field.replace('attributes.', '')\\n                query.append('AND attributes @> %(attr_{})s'.format(field))\\n                qvars['attr_' + field] = {field: value[0]}\\n            elif len(value) == 1:\\n                value = value[0]\\n                if field.endswith('!'):\\n                    if value.startswith('~'):\\n                        query.append('AND NOT \\\"{0}\\\" ILIKE %(not_{0})s'.format(field[:-1]))\\n                        qvars['not_' + field[:-1]] = '%' + value[1:] + '%'\\n                    else:\\n                        query.append('AND \\\"{0}\\\"!=%(not_{0})s'.format(field[:-1]))\\n                        qvars['not_' + field[:-1]] = value\\n                else:\\n                    if value.startswith('~'):\\n                        query.append('AND \\\"{0}\\\" ILIKE %({0})s'.format(field))\\n                        qvars[field] = '%' + value[1:] + '%'\\n                    else:\\n                        query.append('AND \\\"{0}\\\"=%({0})s'.format(field))\\n                        qvars[field] = value\\n            else:\\n                if field.endswith('!'):\\n                    if '~' in [v[0] for v in value]:\\n                        query.append('AND \\\"{0}\\\" !~* (%(not_regex_{0})s)'.format(field[:-1]))\\n                        qvars['not_regex_' + field[:-1]] = '|'.join([v.lstrip('~') for v in value])\\n                    else:\\n                        query.append('AND NOT \\\"{0}\\\"=ANY(%(not_{0})s)'.format(field[:-1]))\\n                        qvars['not_' + field[:-1]] = value\\n                else:\\n                    if '~' in [v[0] for v in value]:\\n                        query.append('AND \\\"{0}\\\" ~* (%(regex_{0})s)'.format(field))\\n                        qvars['regex_' + field] = '|'.join([v.lstrip('~') for v in value])\\n                    else:\\n                        query.append('AND \\\"{0}\\\"=ANY(%({0})s)'.format(field))\\n                        qvars[field] = value\"}],\"suggested_fix\":\"Implement a strict allowlist of permitted field names and reject or sanitize any field that is not in the list. Alternatively, use a mapping from allowed field names to actual column names and construct the query using that mapping, ensuring that no user\u2011supplied string is interpolated directly into the SQL text.\",\"file\":\"alerta/database/backends/postgres/utils.py\",\"line\":92}]}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "sqli:fallback:alerta/database/backends/postgres/utils.py:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8509,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "alerta-query-string-parser-sqli",
+  "url": "https://github.com/alerta/alerta/pull/712",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-8prr-286p-4w7j",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "alerta/database/backends/postgres/parser.py",
+    "alerta/database/backends/postgres/utils.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

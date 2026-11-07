@@ -1,0 +1,146 @@
+{
+  "id": "plane-bulk-issue-dates-idor-vulnerable",
+  "repo": "makeplane/plane",
+  "pr": 5915,
+  "title": "The Timeline revamp PR added IssueBulkUpdateDateEndpoint, which fetches issues by caller-supplied ids without filtering by the URL's workspace and project, so a member of any project can change start/target dates of any issue on the instance.",
+  "mode": "llm-only",
+  "model": "bedrock:openai.gpt-oss-20b-1:0",
+  "base": "f986bd83fd0832290b2be29b9e31ac308f581d95",
+  "pr_sha": "a88a39fb1e6b99d57ade4baf6763293c17a2b2b7",
+  "files_changed": 112,
+  "python_files_changed": 8,
+  "added_lines": 350,
+  "diff_chars": 21674,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 11.2,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 2
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 1,
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "plain:authz:1",
+      "agent": "plain_llm",
+      "category": "authz",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1040,
+      "cwe_id": "CWE-639 | CWE-862 | CWE-863",
+      "supported": null,
+      "kev_verdict": null,
+      "explanation": "The IssueBulkUpdateDateEndpoint allows any user with ADMIN or MEMBER role to POST updates for arbitrary issue IDs without verifying that those issues belong to the specified workspace/project or that the user has ownership/participation rights. This is a classic IDOR scenario. The IssueDetailEndpoint similarly fetches issues by workspace slug and project ID but does not enforce that the requesting"
+    }
+  ],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "All database interactions use Django ORM filter/annotate methods with parameters passed as keyword arguments; no raw SQL or string interpolation is present.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            980,
+            990
+          ],
+          "source": null,
+          "content": "        issue = (\n            Issue.issue_objects.filter(\n                workspace__slug=slug, project_id=project_id\n            )\n            .select_related(\"workspace\", \"project\", \"state\", \"parent\")\n            .prefetch_related(\"assignees\", \"labels\", \"issue_module__module\")\n            .annotate(\n                cycle_id=Subquery(\n                    CycleIssue.objects.filter(\n                        issue=OuterRef(\"id\"), deleted_at__isnull=True\n                    ).values(\"cycle_id\")[:1]\n                )\n            )\n            .annotate(\n                label_ids=Coalesce(\n                    ArrayAgg(\n                        \"labels__id\",\n                        distinct=True,\n                        filter=Q(\n                            ~Q(labels__id__isnull=True)\n                            & Q(label_issue__deleted_at__isnull=True),\n                        ),\n                    ),\n                    Value([], output_field=ArrayField(UUIDField())),\n                ),\n                assignee_ids=Coalesce(\n                    ArrayAgg(\n                        \"assignees__id\",\n                        distinct=True,\n                        filter=Q(\n                            ~Q(assignees__id__isnull=True)\n                            & Q(assignees__member_project__is_active=True)\n                            & Q(issue_assignee__deleted_at__isnull=True)\n                        ),\n                    ),\n                    Value([], output_field=ArrayField(UUIDField())),\n                ),\n                module_ids=Coalesce(\n                    ArrayAgg(\n                        \"issue_module__module_id\",\n                        distinct=True,\n                        filter=Q(\n                            ~Q(issue_module__module_id__isnull=True)\n                            & Q(issue_module__module__archived_at__isnull=True)\n                            & Q(issue_module__deleted_at__isnull=True)\n                        ),\n                    ),\n              ",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 980,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "cwe_id": "CWE-639 | CWE-862 | CWE-863",
+      "explanation": "The IssueBulkUpdateDateEndpoint allows any user with ADMIN or MEMBER role to POST updates for arbitrary issue IDs without verifying that those issues belong to the specified workspace/project or that the user has ownership/participation rights. This is a classic IDOR scenario. The IssueDetailEndpoint similarly fetches issues by workspace slug and project ID but does not enforce that the requesting user is a member of that workspace/project, relying solely on the allow_permission decorator which may not check membership. Both endpoints lack ownership checks on the protected operation.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "apiserver/plane/app/views/issue/base.py",
+          "lines": [
+            1040,
+            1065
+          ],
+          "source": null,
+          "content": "    @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n    def post(self, request, slug, project_id):\n\n        updates = request.data.get(\"updates\", [])\n\n        issue_ids = [update[\"id\"] for update in updates]\n        epoch = int(timezone.now().timestamp())\n\n        # Fetch all relevant issues in a single query\n        issues = list(Issue.objects.filter(id__in=issue_ids))\n        issues_dict = {str(issue.id): issue for issue in issues}\n        issues_to_update = []\n\n        for update in updates:\n            issue_id = update[\"id\"]\n            issue = issues_dict.get(issue_id)\n\n            if not issue:\n                continue\n\n            start_date = update.get(\"start_date\")\n            target_date = update.get(\"target_date\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "vulnerable",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "apiserver/plane/app/views/issue/base.py",
+      "line": 1040,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "plane-bulk-issue-dates-idor",
+  "url": "https://github.com/makeplane/plane/pull/5915",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-4q54-h4x9-m329",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "apiserver/plane/app/views/issue/base.py",
+    "apps/api/plane/app/views/issue/base.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

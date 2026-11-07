@@ -315,6 +315,8 @@ def _unreachable_judge(request):
 
 
 def _review(repo, llm, mode="lgtm", output_dir=None, judge=_unreachable_judge, **config):
+    # These tests pin the authz section stage; tests/test_sqli_reviewer.py covers the SQLi pass.
+    config.setdefault("sqli_review", False)
     pipeline = ReviewPipeline(repo, LGTMConfig(mode=mode, **config), llm=llm, judge=judge)
     return pipeline.run("main", "pr", output_dir)
 
@@ -2098,3 +2100,57 @@ class TestSectionRunRecords:
         assert list(limits.values()).count("steps") == 1
         assert limits["investigator"] is None
         assert set(limits.values()) == {None, "steps"}
+
+
+SQLI_USER_MARK = "Review how the section builds and runs SQL"
+
+
+class TestSQLiSectionReview:
+    """With Semgrep silent, the section SQLi pass still reviews the sections that build SQL."""
+
+    def test_only_sections_with_sql_get_the_sqli_pass(self, repo, install_graph, no_semgrep):
+        install_graph()
+        llm = RoutedLLM()
+
+        _review(repo, llm, sqli_review=True)
+
+        prompts = llm.user_prompts["section"]
+        sqli = sorted(_prompt_file(p) for p in prompts if SQLI_USER_MARK in p)
+        authz = sorted(_prompt_file(p) for p in prompts if SQLI_USER_MARK not in p)
+        assert sqli == ["a.py", "b.py", "c.py"]
+        assert authz == ["a.py", "app.py", "b.py", "c.py"]
+
+    def test_sqli_pass_findings_are_stamped_as_sqli_and_off_reproduces_v2(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+
+        def section(prompt):
+            if SQLI_USER_MARK not in prompt:
+                return _findings()
+            return _findings(_section_finding(cwe_id="CWE-89", file=_prompt_file(prompt), line=4))
+
+        on = _review(repo, RoutedLLM(section=section), sqli_review=True)
+        found = sorted((f.file, f.category, f.agent, f.cwe_id) for f in on.findings)
+        assert found == [(name, "sqli", "sqli_reviewer", "CWE-89") for name in FILES]
+        assert all(f.finding_id.startswith("sqli:") for f in on.findings)
+
+        off_llm = RoutedLLM(section=section)
+        off = _review(repo, off_llm, sqli_review=False)
+        assert off.findings == []
+        assert not [p for p in off_llm.user_prompts["section"] if SQLI_USER_MARK in p]
+
+    def test_a_failed_sqli_pass_is_reported_and_marks_its_section_incomplete(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+
+        def section(prompt):
+            return "no json here" if SQLI_USER_MARK in prompt else _findings()
+
+        result = _review(repo, RoutedLLM(section=section), sqli_review=True)
+
+        sources = sorted(e["source"] for e in result.meta.agent_errors)
+        assert sources and all(s.startswith("sqli:") for s in sources)
+        assert all("SQL injection review" in e["message"] for e in result.meta.agent_errors)
+        assert result.meta.coverage["complete"] is False

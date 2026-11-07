@@ -1,0 +1,1304 @@
+{
+  "id": "piccolo-savepoint-name-sqli-fixed",
+  "repo": "piccolo-orm/piccolo",
+  "pr": null,
+  "title": "Adding transaction savepoints interpolated the caller-supplied savepoint name into SAVEPOINT/ROLLBACK TO/RELEASE statements with f-strings.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "e4946d858e1aae1a9a4cf7714957d07983d94cde",
+  "pr_sha": "82679eb8cd1449cf31d87c9914a072e70168b6eb",
+  "files_changed": 4,
+  "python_files_changed": 4,
+  "added_lines": 36,
+  "diff_chars": 4279,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 159.1,
+  "index_seconds": 3.0,
+  "index_reused": false,
+  "index_chunks": 220,
+  "semgrep_findings_total": 7,
+  "semgrep_findings_in_diff": 6,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 0,
+    "unsupported": 2,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 2
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 30,
+  "sast_triage_units": 6,
+  "reviewer_tool_calls": 19,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:133",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query at piccolo/engine/postgres.py:133-135 builds `ROLLBACK TO SAVEPOINT {self.name}` via f-string. However, the PR adds a `validate_savepoint_name(self.name)` call immediately before execution (line 132). This validator, defined in piccolo/engine/base.py:26-32, enforces a strict whitelist: every character must be in `VALID_SAVEPOINT_CHARACTERS` (base.py:21-23), which is only ASCII letters, digits, `-`, and `_`. Any other character (spaces, quotes, semicolons, parentheses, etc.) raises a ValueError before the query runs. Because the dynamic part is strictly validated against a whitelist, no user-controlled input can inject SQL. The same validation is applied to the `release()` path (line 138) and the `savepoint()` creation path (line 241), so the name is validated at creation and again before use. This is a whitelist-validated dynamic identifier, which is the accepted mitigation for SQL identifiers that cannot be bound as parameters. This is a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            131,
+            135
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        validate_savepoint_name(self.name)\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/base.py",
+          "lines": [
+            21,
+            32
+          ],
+          "source": null,
+          "content": "VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n    string.ascii_letters + string.digits + \"-\" + \"_\"\n)\n\n\ndef validate_savepoint_name(savepoint_name: str) -> None:\n    \"\"\"Validates a save point's name meets the required character set.\"\"\"\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n        raise ValueError(\n            \"Savepoint names can only contain the following characters:\"\n            f\" {VALID_SAVEPOINT_CHARACTERS}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            239,
+            243
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        validate_savepoint_name(name)\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection - If you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            137,
+            141
+          ],
+          "source": null,
+          "content": "    async def release(self):\n        validate_savepoint_name(self.name)\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "No change required for security: the savepoint name is strictly whitelist-validated (ASCII letters, digits, `-`, `_`) via validate_savepoint_name before being interpolated, which prevents SQL injection. To silence the linter, add a Semgrep/`# noqa` suppression with a comment noting the whitelist validation, or refactor to a helper that documents the validation. Optionally, also validate at the Savepoint.__init__ boundary so all construction paths are covered.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.4736,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/postgres.py",
+      "line": 133,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:313",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged query at piccolo/engine/sqlite.py:313-315 builds 'ROLLBACK TO SAVEPOINT {self.name}' via f-string. However, the PR adds a whitelist validation call validate_savepoint_name(self.name) immediately before execution (line 312). This function (piccolo/engine/base.py:26-32) raises ValueError unless every character of the name is in VALID_SAVEPOINT_CHARACTERS (base.py:21-23), which is restricted to ASCII letters, digits, '-' and '_'. Because the dynamic part is strictly validated against a whitelist before the query runs, no user-controlled input can inject SQL. The same validation is applied to the sibling 'RELEASE SAVEPOINT' (line 318) and 'SAVEPOINT' (line 418) statements. This is a false positive: the dynamic identifier is constrained to a safe character set, so SQL injection is not possible.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            311,
+            315
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        validate_savepoint_name(self.name)\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/base.py",
+          "lines": [
+            21,
+            32
+          ],
+          "source": null,
+          "content": "VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n    string.ascii_letters + string.digits + \"-\" + \"_\"\n)\n\n\ndef validate_savepoint_name(savepoint_name: str) -> None:\n    \"\"\"Validates a save point's name meets the required character set.\"\"\"\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n        raise ValueError(\n            \"Savepoint names can only contain the following characters:\"\n            f\" {VALID_SAVEPOINT_CHARACTERS}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            416,
+            420
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        validate_savepoint_name(name)\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            317,
+            321
+          ],
+          "source": null,
+          "content": "    async def release(self):\n        validate_savepoint_name(self.name)\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "No change required for security: the savepoint name is already validated against a strict whitelist (ASCII letters, digits, '-', '_') via validate_savepoint_name before the f-string query is executed, which prevents SQL injection. If desired, the code could be refactored to use a parameterized/identifier-safe API, but SQLite savepoint identifiers cannot be bound as parameters, so whitelist validation is the appropriate mitigation and is already in place.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.4572,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 313,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:133",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 100,
+                  "end_line": 260,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=100-260]\n100: \n101:     async def run(self):\n102:         from piccolo.query.methods.objects import Create, GetOrCreate\n103: \n104:         try:\n105:             async with self.engine.transaction():\n106:                 for query in self.queries:\n107:                     if isinstance(query, (Query, DDL, Create, GetOrCreate)):\n108:                         await query.run()\n109:                     else:\n110:                         raise ValueError(\"Unrecognised query\")\n111:             self.queries = []\n112:         except Exception as exception:\n113:             self.queries = []\n114:             raise exception from exception\n115: \n116:     def run_sync(self):\n117:         return run_sync(self.run())\n118: \n119:     def __await__(self):\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         validate_savepoint_name(self.name)\n133:         await self.transaction.connection.execute(\n134:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n135:         )\n136: \n137:     async def release(self):\n138:         validate_savepoint_name(self.name)\n139:         await self.transaction.connection.execute(\n140:             f\"RELEASE SAVEPOINT {self.name}\"\n141:         )\n142: \n143: \n144: class PostgresTransaction:\n145:     \"\"\"\n146:     Used for wrapping queries in a transaction, using a context manager.\n147:     Currently it's async only.\n148: \n149:     Usage::\n150: \n151:         async with engine.transaction():\n152:             # Run some queries:\n153:             await Band.select().run()\n154: \n155:     \"\"\"\n156: \n157:     __slots__ = (\n158:         \"engine\",\n159:         \"transaction\",\n160:         \"context\",\n161:         \"connection\",\n162:         \"_savepoint_id\",\n163:         \"_parent\",\n164:         \"_committed\",\n165:         \"_rolled_back\",\n166:     )\n167: \n168:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n169:         \"\"\"\n170:         :param allow_nested:\n171:             If ``True`` then if we try creating a new transaction when another\n172:             is already active, we treat this as a no-op::\n173: \n174:                 async with DB.transaction():\n175:                     async with DB.transaction():\n176:                         pass\n177: \n178:             If we want to disallow this behaviour, then setting\n179:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n180:             raised.\n181: \n182:         \"\"\"\n183:         self.engine = engine\n184:         current_transaction = self.engine.current_transaction.get()\n185: \n186:         self._savepoint_id = 0\n187:         self._parent = None\n188:         self._committed = False\n189:         self._rolled_back = False\n190: \n191:         if current_transaction:\n192:             if allow_nested:\n193:                 self._parent = current_transaction\n194:             else:\n195:                 raise TransactionError(\n196:                     \"A transaction is already active - nested transactions \"\n197:                     \"aren't allowed.\"\n198:                 )\n199: \n200:     async def __aenter__(self) -> PostgresTransaction:\n201:         if self._parent is not None:\n202:             return self._parent\n203: \n204:         self.connection = await self.get_connection()\n205:         self.transaction = self.connection.transaction()\n206:         await self.begin()\n207:         self.context = self.engine.current_transaction.set(self)\n208:         return self\n209: \n210:     async def get_connection(self):\n211:         if self.engine.pool:\n212:             return await self.engine.pool.acquire()\n213:         else:\n214:             return await self.engine.get_new_connection()\n215: \n216:     async def begin(self):\n217:         await self.transaction.start()\n218: \n219:     async def commit(self):\n220:         await self.transaction.commit()\n221:         self._committed = True\n222: \n223:     async def rollback(self):\n224:         await self.transaction.rollback()\n225:         self._rolled_back = True\n226: \n227:     async def rollback_to(self, savepoint_name: str):\n228:         \"\"\"\n229:         Used to rollback to a savepoint just using the name.\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n250: \n251:         if exception:\n252:             # The user may have manually rolled it back.\n253:             if not self._rolled_back:\n254:                 await self.rollback()\n255:         else:\n256:             # The user may have manually committed it.\n257:             if not self._committed and not self._rolled_back:\n258:                 await self.commit()\n259: \n260:         if self.engine.pool:\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "validate_savepoint_name"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"validate_savepoint_name\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"def validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n45: \n46:     def __init__(self):\n47:         run_sync(self.check_version())\n48:         run_sync(self.prep_database())\n49:         self.query_id = 0\n50: \n51:     @property\n52:     @abstractmethod\n53:     def engine_type(self) -> str:\n54:         pass\n55: \n56:     @property\n57:     @abstractmethod\n58:     def min_version_number(self) -> float:\n59:         pass\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection savepoint name validation whitelist"
+                },
+                "result": "[docs/src/piccolo/serialization/index.rst:206-289] (relevance 0.31)\nValidationError - name field required\n\nYou can override this behaviour using the ``all_optional`` argument. An example\nuse case is when you have a model which is used for filtering, then you'll want\nall fields to be optional.\n\n.. code-block:: python\n\n    class Band(Table):\n        name = Varchar(required=True)\n\n    BandFilterModel = create_pydantic_model(\n        Band,\n        all_optional=True,\n        model_name='BandFilterModel',\n    )\n\n    # This no longer raises an exception:\n    >>> BandModel()\n\nSubclassing the model\n~~~~~~~~~~~~~~~~~~~~~\n\nIf the generated model doesn't perfectly fit your needs, you can subclass it to\nadd additional fields, and to override existing fields.\n\n.. code-block:: python\n\n    class Band(Table):\n        name = Varchar(required=True)\n\n    BandModel = create_pydantic_model(Band)\n\n    class CustomBandModel(BandModel):\n        genre: str\n\n    >>> CustomBandModel(name=\"Pythonistas\", genre=\"Rock\")\n\nOr even simpler still:\n\n.. code-block:: python\n\n    class BandModel(create_pydantic_model(Band)):\n        genre: str\n\n\nAvoiding type warnings\n~~~~~~~~~~~~~~~~~~~~~~\n\nSome linters will complain if you use variables in type annotations:\n\n.. code-block:: python\n\n    BandModel = create_pydantic_model(Band)\n\n\n    def my_function(band: BandModel):  # Variable not allowed in type expression!\n        ...\n\n\nThe fix is really simple:\n\n.. code-block:: python\n\n    # We now have a class instead of a variable:\n    class BandModel(create_pydantic_model(Band)):\n        ...\n\n\n    def my_function(band: BandModel):\n        ...\n\nSource\n~~~~~~\n\n.. currentmodule:: piccolo.utils.pydantic\n\n.. autofunction:: create_pydantic_model\n\n.. hint:: A good place to see ``create_pydantic_model`` in action is `PiccoloCRUD <https://github.com/piccolo-orm/piccolo_api/blob/master/piccolo_api/crud/endpoints.py>`_,\n  as it uses ``create_pydantic_model`` extensively to create Pydantic models\n  from Piccolo tables.\n\n-------------------------------------------------------------------------------\n\n---\n\n[CHANGES.rst:1482-1536] (relevance 0.30)\nWe also improved the error messages if schema generation fails for some reason\nby letting the user know which table caused the error. Courtesy @AliSayyah.\n\n-------------------------------------------------------------------------------\n\n0.69.4\n------\n\nWe used to raise a ``ValueError`` if a column was both ``null=False`` and\n``default=None``. This has now been removed, as there are situations where\nit's valid for columns to be configured that way. Thanks to @gmos for\nsuggesting this change.\n\n-------------------------------------------------------------------------------\n\n0.69.3\n------\n\nThe ``where`` clause now raises a ``ValueError`` if a boolean value is\npassed in by accident. This was possible in the following situation:\n\n.. code-block:: python\n\n  await Band.select().where(Band.has_drummer is None)\n\nPiccolo can't override the ``is`` operator because Python doesn't allow it,\nso ``Band.has_drummer is None`` will always equal ``False``. Thanks to\n@trondhindenes for reporting this issue.\n\nWe've also put a lot of effort into improving documentation throughout the\nproject.\n\n-------------------------------------------------------------------------------\n\n0.69.2\n------\n\n* Lots of documentation improvements, including how to customise ``BaseUser``\n  (courtesy @sinisaos).\n* Fixed a bug with creating indexes when the column name clashes with a SQL\n  keyword (e.g. ``'order'``). See `Pr 433 <https://github.com/piccolo-orm/piccolo/pull/433>`_.\n  Thanks to @wmshort for reporting this issue.\n* Fixed an issue where some slots were incorrectly configured (courtesy\n  @ariebovenberg). See `PR 426 <https://github.com/piccolo-orm/piccolo/pull/426>`_.\n\n-------------------------------------------------------------------------------\n\n0.69.1\n------\n\nFixed a bug with auto migrations which rename columns - see\n`PR 423 <https://github.com/piccolo-orm/piccolo/pull/423>`_. Thanks to\n@theelderbeever for reporting this, and @sinisaos for help investigating.\n\n-------------------------------------------------------------------------------\n\n---\n\n[docs/src/piccolo/features/security.rst:1-12] (relevance 0.30)\n.. _Security:\n\nSecurity\n========\n\nSQL Injection protection\n------------------------\n\nIf you look under the hood, Piccolo uses a custom class called ``QueryString``\nfor composing queries. It keeps query parameters separate from the query\nstring, so we can pass parameterised queries to the engine. This helps\nprevent SQL Injection attacks.\n\n---\n\n[CHANGES.rst:148-226] (relevance 0.30)\nThanks to @sinisaos for this.\n\nProtected table names\n~~~~~~~~~~~~~~~~~~~~~\n\nWe used to raise a ``ValueError`` if a table was called ``user``.\n\n.. code-block:: python\n\n  class User(Table):  # ValueError!\n      ...\n\nIt's because ``user`` is already used by Postgres (e.g. try ``SELECT user`` or\n``SELECT * FROM user``).\n\nWe now emit a warning instead for these reasons:\n\n* Piccolo wraps table names in quotes to avoid clashes with reserved keywords.\n* Sometimes you're stuck with a table name from a pre-existing schema, and\n  can't easily rename it.\n\nRe-export ``WhereRaw``\n~~~~~~~~~~~~~~~~~~~~~~\n\nIf you want to write raw SQL in your where queries you use ``WhereRaw``:\n\n.. code-block:: python\n\n  >>> Band.select().where(WhereRaw('TRIM(name) = {}', 'Pythonistas'))\n\nYou can now import it from ``piccolo.query`` to be consistent with\n``SelectRaw`` and ``OrderByRaw``.\n\n.. code-block:: python\n\n  from piccolo.query import WhereRaw\n\n-------------------------------------------------------------------------------\n\n0.115.0\n-------\n\nFixture upserting\n~~~~~~~~~~~~~~~~~\n\nFixtures can now be upserted. For example:\n\n.. code-block:: bash\n\n  piccolo fixtures load my_fixture.json --on_conflict='DO UPDATE'\n\nThe options are:\n\n* ``DO NOTHING``, meaning any rows with a matching primary key will be left\n  alone.\n* ``DO UPDATE``, meaning any rows with a matching primary key will be updated.\n\nThis is really useful, as you can now edit fixtures and load them multiple\ntimes without getting foreign key constraint errors.\n\nSchema fixes\n~~~~~~~~~~~~\n\nWe recently added support for schemas, for example:\n\n.. code-block:: python\n\n  class Band(Table, schema='music'):\n      ...\n\nThis release contains:\n\n* A fix for migrations when changing a table's schema back to 'public' (thanks to\n  @sinisaos for discovering this).\n* A fix for ``M2M`` queries, when the tables are in a schema other than\n  'public' (thanks to @quinnalfaro for reporting this).\n\nAdded ``distinct`` method to ``count`` queries\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n---\n\n[docs/src/piccolo/query_types/transactions.rst:149-186] (relevance 0.25)\nasync with DB.transaction() as transaction:\n        await Band.insert(Band(name='Pythonistas'))\n\n        savepoint_1 = await transaction.savepoint()\n\n        await Band.insert(Band(name='Terrible band'))\n\n        # Oops, I made a mistake!\n        await savepoint_1.rollback_to()\n\nIn the above example, the first query will be committed, but not the second.\n\nNamed savepoints\n~~~~~~~~~~~~~~~~\n\nBy default, we assign a name to the savepoint for you. But you can explicitly\ngive it a name:\n\n.. code-block:: python\n\n    await transaction.savepoint('my_savepoint')\n\nThis means you can rollback to this savepoint at any point just using the name:\n\n.. code-block:: python\n\n    await transaction.rollback_to('my_savepoint')\n\n-------------------------------------------------------------------------------\n\nTransaction types\n-----------------\n\nSQLite\n~~~~~~\n\nFor SQLite you may want to specify the :ref:`transaction type <SQLiteTransactionTypes>`,\nas it can have an effect on how well the database handles concurrent requests."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:133\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at piccolo/engine/postgres.py:133-135 builds `ROLLBACK TO SAVEPOINT {self.name}` via f-string. However, the PR adds a `validate_savepoint_name(self.name)` call immediately before execution (line 132). This validator, defined in piccolo/engine/base.py:26-32, enforces a strict whitelist: every character must be in `VALID_SAVEPOINT_CHARACTERS` (base.py:21-23), which is only ASCII letters, digits, `-`, and `_`. Any other character (spaces, quotes, semicolons, parentheses, etc.) raises a ValueError before the query runs. Because the dynamic part is strictly validated against a whitelist, no user-controlled input can inject SQL. The same validation is applied to the `release()` path (line 138) and the `savepoint()` creation path (line 241), so the name is validated at creation and again before use. This is a whitelist-validated dynamic identifier, which is the accepted mitigation for SQL identifiers that cannot be bound as parameters. This is a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/postgres.py\", \"lines\": [131, 135], \"content\": \"    async def rollback_to(self):\\n        validate_savepoint_name(self.name)\\n        await self.transaction.connection.execute(\\n            f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/postgres.py\", \"lines\": [239, 243], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"},\n    {\"type\": \"policy\", \"source\": \"docs/src/piccolo/features/security.rst\", \"content\": \"SQL Injection protection - If you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the savepoint name is strictly whitelist-validated (ASCII letters, digits, `-`, `_`) via validate_savepoint_name before being interpolated, which prevents SQL injection. To silence the linter, add a Semgrep/`# noqa` suppression with a comment noting the whitelist validation, or refactor to a helper that documents the validation. Optionally, also validate at the Savepoint.__init__ boundary so all construction paths are covered.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:139",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 150,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=120-150]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         validate_savepoint_name(self.name)\n133:         await self.transaction.connection.execute(\n134:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n135:         )\n136: \n137:     async def release(self):\n138:         validate_savepoint_name(self.name)\n139:         await self.transaction.connection.execute(\n140:             f\"RELEASE SAVEPOINT {self.name}\"\n141:         )\n142: \n143: \n144: class PostgresTransaction:\n145:     \"\"\"\n146:     Used for wrapping queries in a transaction, using a context manager.\n147:     Currently it's async only.\n148: \n149:     Usage::\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"def validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 45,
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 20,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=20-45]\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 250,
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 230,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=230-250]\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 232,
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 215,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=215-232]\n215: \n216:     async def begin(self):\n217:         await self.transaction.start()\n218: \n219:     async def commit(self):\n220:         await self.transaction.commit()\n221:         self._committed = True\n222: \n223:     async def rollback(self):\n224:         await self.transaction.rollback()\n225:         self._rolled_back = True\n226: \n227:     async def rollback_to(self, savepoint_name: str):\n228:         \"\"\"\n229:         Used to rollback to a savepoint just using the name.\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:139\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at piccolo/engine/postgres.py:139-141 builds `RELEASE SAVEPOINT {self.name}` via f-string, but the PR adds a whitelist validation call `validate_savepoint_name(self.name)` immediately before execution (line 138). That function (piccolo/engine/base.py:26-32) raises ValueError unless every character is in VALID_SAVEPOINT_CHARACTERS (base.py:21-23), which is restricted to ASCII letters, digits, '-' and '_'. This character set excludes spaces, quotes, semicolons and all other characters needed to break out of the identifier, so no user-controlled input can reach the query in an injectable form. The same validation is applied to the sibling `ROLLBACK TO SAVEPOINT` (line 132) and `SAVEPOINT` (line 241) statements, and the default name is generated internally as `savepoint_{int}` (line 240). Because the dynamic part is strictly validated against a whitelist, this is a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/postgres.py\", \"lines\": [137, 141], \"content\": \"    async def release(self):\\n        validate_savepoint_name(self.name)\\n        await self.transaction.connection.execute(\\n            f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/postgres.py\", \"lines\": [239, 243], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the savepoint name is already strictly whitelist-validated (ASCII letters, digits, '-', '_') before being interpolated, which prevents SQL injection. If desired, the f-string could be replaced with a parameterized/quoted identifier (e.g. psycopg's quoted identifier or a bound parameter) to satisfy the static rule, but the current whitelist validation is sufficient to neutralize the injection risk.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:242",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 230,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=230-250]\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"def validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 45,
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 20,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=20-45]\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 19,
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-19]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"savepoint\\(\"]\npiccolo/engine/postgres.py:239:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\npiccolo/engine/sqlite.py:416:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\ntests/engine/test_transaction.py:274:    def test_savepoint(self):\ntests/engine/test_transaction.py:278:                savepoint = await transaction.savepoint()\ntests/engine/test_transaction.py:288:    def test_named_savepoint(self):\ntests/engine/test_transaction.py:292:                await transaction.savepoint(\"my_savepoint\")\ntests/engine/test_transaction.py:306:                await transaction.savepoint(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:242\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged line builds the SQL statement with an f-string: `await self.connection.execute(f\\\"SAVEPOINT {name}\\\")` (piccolo/engine/postgres.py:242). However, the PR adds a whitelist validation call `validate_savepoint_name(name)` immediately before the query (line 241). That function (piccolo/engine/base.py:26-32) raises ValueError unless every character of the name is in VALID_SAVEPOINT_CHARACTERS, which is restricted to ASCII letters, digits, '-' and '_' (base.py:21-23). Because the dynamic part is strictly validated against a whitelist that excludes spaces, quotes, semicolons and any other SQL metacharacters, no user-controlled input can reach the query in an injectable form. This matches the false-positive condition where the dynamic parts are strictly validated against a whitelist.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/postgres.py\", \"lines\": [239, 243], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the savepoint name is already validated against a strict whitelist (ASCII letters, digits, '-', '_') before being interpolated, which prevents SQL injection. If desired, the f-string could be replaced with a parameterized/identifier-quoted approach for defense in depth, but the current whitelist validation is sufficient to neutralize the injection risk.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:313",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 290,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=290-330]\n290:                         raise ValueError(\"Unrecognised query\")\n291:             self.queries = []\n292:         except Exception as exception:\n293:             self.queries = []\n294:             raise exception from exception\n295: \n296:     def run_sync(self):\n297:         return run_sync(self.run())\n298: \n299:     def __await__(self):\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         validate_savepoint_name(self.name)\n313:         await self.transaction.connection.execute(\n314:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n315:         )\n316: \n317:     async def release(self):\n318:         validate_savepoint_name(self.name)\n319:         await self.transaction.connection.execute(\n320:             f\"RELEASE SAVEPOINT {self.name}\"\n321:         )\n322: \n323: \n324: class SQLiteTransaction:\n325:     \"\"\"\n326:     Used for wrapping queries in a transaction, using a context manager.\n327:     Currently it's async only.\n328: \n329:     Usage::\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"def validate_savepoint_name\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"def validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n45: \n46:     def __init__(self):\n47:         run_sync(self.check_version())\n48:         run_sync(self.prep_database())\n49:         self.query_id = 0\n50: \n51:     @property\n52:     @abstractmethod\n53:     def engine_type(self) -> str:\n54:         pass\n55: \n56:     @property\n57:     @abstractmethod\n58:     def min_version_number(self) -> float:\n59:         pass\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 410,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=410-425]\n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:313\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at piccolo/engine/sqlite.py:313-315 builds 'ROLLBACK TO SAVEPOINT {self.name}' via f-string. However, the PR adds a whitelist validation call validate_savepoint_name(self.name) immediately before execution (line 312). This function (piccolo/engine/base.py:26-32) raises ValueError unless every character of the name is in VALID_SAVEPOINT_CHARACTERS (base.py:21-23), which is restricted to ASCII letters, digits, '-' and '_'. Because the dynamic part is strictly validated against a whitelist before the query runs, no user-controlled input can inject SQL. The same validation is applied to the sibling 'RELEASE SAVEPOINT' (line 318) and 'SAVEPOINT' (line 418) statements. This is a false positive: the dynamic identifier is constrained to a safe character set, so SQL injection is not possible.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/sqlite.py\", \"lines\": [311, 315], \"content\": \"    async def rollback_to(self):\\n        validate_savepoint_name(self.name)\\n        await self.transaction.connection.execute(\\n            f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/sqlite.py\", \"lines\": [416, 420], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the savepoint name is already validated against a strict whitelist (ASCII letters, digits, '-', '_') via validate_savepoint_name before the f-string query is executed, which prevents SQL injection. If desired, the code could be refactored to use a parameterized/identifier-safe API, but SQLite savepoint identifiers cannot be bound as parameters, so whitelist validation is the appropriate mitigation and is already in place.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:319",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 290,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=290-330]\n290:                         raise ValueError(\"Unrecognised query\")\n291:             self.queries = []\n292:         except Exception as exception:\n293:             self.queries = []\n294:             raise exception from exception\n295: \n296:     def run_sync(self):\n297:         return run_sync(self.run())\n298: \n299:     def __await__(self):\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         validate_savepoint_name(self.name)\n313:         await self.transaction.connection.execute(\n314:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n315:         )\n316: \n317:     async def release(self):\n318:         validate_savepoint_name(self.name)\n319:         await self.transaction.connection.execute(\n320:             f\"RELEASE SAVEPOINT {self.name}\"\n321:         )\n322: \n323: \n324: class SQLiteTransaction:\n325:     \"\"\"\n326:     Used for wrapping queries in a transaction, using a context manager.\n327:     Currently it's async only.\n328: \n329:     Usage::\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"def validate_savepoint_name\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"def validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n45: \n46:     def __init__(self):\n47:         run_sync(self.check_version())\n48:         run_sync(self.prep_database())\n49:         self.query_id = 0\n50: \n51:     @property\n52:     @abstractmethod\n53:     def engine_type(self) -> str:\n54:         pass\n55: \n56:     @property\n57:     @abstractmethod\n58:     def min_version_number(self) -> float:\n59:         pass\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 410,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=410-425]\n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:319\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged query at piccolo/engine/sqlite.py:319-321 builds `RELEASE SAVEPOINT {self.name}` via f-string, but the PR adds a whitelist validation call `validate_savepoint_name(self.name)` immediately before execution (line 318). That function (piccolo/engine/base.py:26-32) raises ValueError unless every character of the name is in VALID_SAVEPOINT_CHARACTERS (base.py:21-23), which is restricted to ASCII letters, digits, '-' and '_'. This is a strict whitelist that excludes spaces, quotes, semicolons and any other SQL metacharacters, so no user-controlled input can inject SQL. The same validation is applied at the source where the name is created (savepoint(), sqlite.py:418) and in rollback_to (sqlite.py:312). Because the dynamic part is strictly validated against a whitelist, this is a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/sqlite.py\", \"lines\": [317, 321], \"content\": \"    async def release(self):\\n        validate_savepoint_name(self.name)\\n        await self.transaction.connection.execute(\\n            f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/sqlite.py\", \"lines\": [416, 420], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the savepoint name is strictly whitelist-validated (only [A-Za-z0-9_-]) before being interpolated, which prevents SQL injection. If desired to silence the static analyzer, add a brief comment noting the whitelist validation, or refactor to a helper that documents the validated input. Note that SAVEPOINT/RELEASE SAVEPOINT identifiers cannot be bound as parameters in SQLite, so string interpolation with whitelist validation is the appropriate approach.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:419",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 405,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=405-425]\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def validate_savepoint_name"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"def validate_savepoint_name\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "validate_savepoint_name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"validate_savepoint_name\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\npiccolo/engine/postgres.py:7:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/postgres.py:132:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:138:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:241:        validate_savepoint_name(name)\npiccolo/engine/sqlite.py:13:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/sqlite.py:312:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:318:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:418:        validate_savepoint_name(name)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 20,
+                  "end_line": 45,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=20-45]\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 24,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-24]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:419\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged line builds the query with an f-string: `await self.connection.execute(f\\\"SAVEPOINT {name}\\\")` (piccolo/engine/sqlite.py:419). However, immediately before it (line 418) the PR adds `validate_savepoint_name(name)`. That function (piccolo/engine/base.py:26-32) raises ValueError unless every character of the name is in VALID_SAVEPOINT_CHARACTERS, which is strictly `string.ascii_letters + string.digits + '-' + '_'` (base.py:21-23). This is a strict whitelist that excludes spaces, quotes, semicolons and any other SQL metacharacters, so no user-controlled input can inject SQL. Note that SAVEPOINT/RELEASE/ROLLBACK TO SAVEPOINT are DDL statements that cannot use bound parameters in SQLite, so string interpolation with a validated identifier is the correct approach. This is a false positive.\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"piccolo/engine/sqlite.py\", \"lines\": [416, 420], \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        validate_savepoint_name(name)\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"},\n    {\"type\": \"code\", \"file\": \"piccolo/engine/base.py\", \"lines\": [21, 32], \"content\": \"VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\\n    string.ascii_letters + string.digits + \\\"-\\\" + \\\"_\\\"\\n)\\n\\n\\ndef validate_savepoint_name(savepoint_name: str) -> None:\\n    \\\"\\\"\\\"Validates a save point's name meets the required character set.\\\"\\\"\\\"\\n    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\\n        raise ValueError(\\n            \\\"Savepoint names can only contain the following characters:\\\"\\n            f\\\" {VALID_SAVEPOINT_CHARACTERS}\\\"\\n        )\"}\n  ],\n  \"suggested_fix\": \"No change required for security: the identifier is strictly whitelist-validated before interpolation, and SAVEPOINT is a DDL statement that cannot use bound parameters in SQLite. If desired, the Semgrep rule can be suppressed with a `# nosemgrep` comment on line 419, or the validation could be centralized so the linter recognizes the safe pattern.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-40]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 115,
+                  "end_line": 150,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=115-150]\n115: \n116:     def run_sync(self):\n117:         return run_sync(self.run())\n118: \n119:     def __await__(self):\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         validate_savepoint_name(self.name)\n133:         await self.transaction.connection.execute(\n134:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n135:         )\n136: \n137:     async def release(self):\n138:         validate_savepoint_name(self.name)\n139:         await self.transaction.connection.execute(\n140:             f\"RELEASE SAVEPOINT {self.name}\"\n141:         )\n142: \n143: \n144: class PostgresTransaction:\n145:     \"\"\"\n146:     Used for wrapping queries in a transaction, using a context manager.\n147:     Currently it's async only.\n148: \n149:     Usage::\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 225,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=225-250]\n225:         self._rolled_back = True\n226: \n227:     async def rollback_to(self, savepoint_name: str):\n228:         \"\"\"\n229:         Used to rollback to a savepoint just using the name.\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 295,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=295-330]\n295: \n296:     def run_sync(self):\n297:         return run_sync(self.run())\n298: \n299:     def __await__(self):\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         validate_savepoint_name(self.name)\n313:         await self.transaction.connection.execute(\n314:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n315:         )\n316: \n317:     async def release(self):\n318:         validate_savepoint_name(self.name)\n319:         await self.transaction.connection.execute(\n320:             f\"RELEASE SAVEPOINT {self.name}\"\n321:         )\n322: \n323: \n324: class SQLiteTransaction:\n325:     \"\"\"\n326:     Used for wrapping queries in a transaction, using a context manager.\n327:     Currently it's async only.\n328: \n329:     Usage::\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 400,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=400-425]\n400:     async def rollback(self):\n401:         await self.connection.execute(\"ROLLBACK\")\n402:         self._rolled_back = True\n403: \n404:     async def rollback_to(self, savepoint_name: str):\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/engine/test_transaction.py",
+                  "start_line": 290,
+                  "end_line": 312,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=tests/engine/test_transaction.py lines=290-311]\n290:             async with Manager._meta.db.transaction() as transaction:\n291:                 await Manager.insert(Manager(name=\"Manager 1\"))\n292:                 await transaction.savepoint(\"my_savepoint\")\n293:                 await Manager.insert(Manager(name=\"Manager 2\"))\n294:                 await transaction.rollback_to(\"my_savepoint\")\n295: \n296:         run_sync(run_test())\n297: \n298:         self.assertListEqual(\n299:             Manager.select(Manager.name).run_sync(), [{\"name\": \"Manager 1\"}]\n300:         )\n301: \n302:     def test_savepoint_sqli_checks(self):\n303:         # Added to test the fix for GHSA-xq59-7jf3-rjc6\n304:         async def run_test():\n305:             async with Manager._meta.db.transaction() as transaction:\n306:                 await transaction.savepoint(\n307:                     \"my_savepoint; SELECT * FROM Manager\"\n308:                 )\n309: \n310:         with pytest.raises(ValueError):\n311:             run_sync(run_test())\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"savepoint\"]\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\npiccolo/engine/base.py:28:    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\npiccolo/engine/postgres.py:7:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/postgres.py:132:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:138:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:162:        \"_savepoint_id\",\npiccolo/engine/postgres.py:186:        self._savepoint_id = 0\npiccolo/engine/postgres.py:227:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:229:        Used to rollback to a savepoint just using the name.\npiccolo/engine/postgres.py:231:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/postgres.py:235:    def get_savepoint_id(self) -> int:\npiccolo/engine/postgres.py:236:        self._savepoint_id += 1\npiccolo/engine/sqlite.py:13:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/sqlite.py:312:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:318:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:343:        \"_savepoint_id\",\npiccolo/engine/sqlite.py:367:        self._savepoint_id = 0\npiccolo/engine/sqlite.py:404:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:406:        Used to rollback to a savepoint just using the name.\npiccolo/engine/sqlite.py:408:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:412:    def get_savepoint_id(self) -> int:\npiccolo/engine/sqlite.py:413:        self._savepoint_id += 1\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.savepoint\\(|rollback_to\\(",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"\\.savepoint\\(|rollback_to\\(\"]\npiccolo/engine/postgres.py:131:    async def rollback_to(self):\npiccolo/engine/postgres.py:227:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:231:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:311:    async def rollback_to(self):\npiccolo/engine/sqlite.py:404:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:408:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"savepoint\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"savepoint\"]\npiccolo/engine/postgres.py:160:        \"_savepoint_id\",\npiccolo/engine/postgres.py:184:        self._savepoint_id = 0\npiccolo/engine/postgres.py:225:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:227:        Used to rollback to a savepoint just using the name.\npiccolo/engine/postgres.py:229:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/postgres.py:233:    def get_savepoint_id(self) -> int:\npiccolo/engine/postgres.py:234:        self._savepoint_id += 1\npiccolo/engine/postgres.py:235:        return self._savepoint_id\npiccolo/engine/postgres.py:237:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\npiccolo/engine/postgres.py:238:        name = name or f\"savepoint_{self.get_savepoint_id()}\"\npiccolo/engine/sqlite.py:341:        \"_savepoint_id\",\npiccolo/engine/sqlite.py:365:        self._savepoint_id = 0\npiccolo/engine/sqlite.py:402:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:404:        Used to rollback to a savepoint just using the name.\npiccolo/engine/sqlite.py:406:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:410:    def get_savepoint_id(self) -> int:\npiccolo/engine/sqlite.py:411:        self._savepoint_id += 1\npiccolo/engine/sqlite.py:412:        return self._savepoint_id\npiccolo/engine/sqlite.py:414:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\npiccolo/engine/sqlite.py:415:        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 126,
+                  "end_line": 142,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde path=piccolo/engine/postgres.py lines=126-142]\n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         await self.transaction.connection.execute(\n133:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n134:         )\n135: \n136:     async def release(self):\n137:         await self.transaction.connection.execute(\n138:             f\"RELEASE SAVEPOINT {self.name}\"\n139:         )\n140: \n141: \n142: class PostgresTransaction:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 304,
+                  "end_line": 320,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde path=piccolo/engine/sqlite.py lines=304-320]\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         await self.transaction.connection.execute(\n313:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n314:         )\n315: \n316:     async def release(self):\n317:         await self.transaction.connection.execute(\n318:             f\"RELEASE SAVEPOINT {self.name}\"\n319:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint|SAVEPOINT",
+                  "file_glob": "docs/**/*.rst",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"savepoint|SAVEPOINT\"]\ndocs/src/piccolo/query_types/transactions.rst:102:similar using `savepoints <Savepoints>`_.\ndocs/src/piccolo/query_types/transactions.rst:144:Postgres supports savepoints, which is a way of partially rolling back a\ndocs/src/piccolo/query_types/transactions.rst:152:        savepoint_1 = await transaction.savepoint()\ndocs/src/piccolo/query_types/transactions.rst:157:        await savepoint_1.rollback_to()\ndocs/src/piccolo/query_types/transactions.rst:161:Named savepoints\ndocs/src/piccolo/query_types/transactions.rst:164:By default, we assign a name to the savepoint for you. But you can explicitly\ndocs/src/piccolo/query_types/transactions.rst:169:    await transaction.savepoint('my_savepoint')\ndocs/src/piccolo/query_types/transactions.rst:171:This means you can rollback to this savepoint at any point just using the name:\ndocs/src/piccolo/query_types/transactions.rst:175:    await transaction.rollback_to('my_savepoint')\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 247,
+                  "end_line": 275,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=247-275]\n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n250: \n251:         if exception:\n252:             # The user may have manually rolled it back.\n253:             if not self._rolled_back:\n254:                 await self.rollback()\n255:         else:\n256:             # The user may have manually committed it.\n257:             if not self._committed and not self._rolled_back:\n258:                 await self.commit()\n259: \n260:         if self.engine.pool:\n261:             await self.engine.pool.release(self.connection)\n262:         else:\n263:             await self.connection.close()\n264: \n265:         self.engine.current_transaction.reset(self.context)\n266: \n267:         return exception is None\n268: \n269: \n270: ###############################################################################\n271: \n272: \n273: class PostgresEngine(Engine[t.Optional[PostgresTransaction]]):\n274:     \"\"\"\n275:     Used to connect to PostgreSQL.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint|SAVEPOINT",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"savepoint|SAVEPOINT\"]\npiccolo/engine/base.py:21:VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\npiccolo/engine/base.py:26:def validate_savepoint_name(savepoint_name: str) -> None:\npiccolo/engine/base.py:28:    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\npiccolo/engine/base.py:31:            f\" {VALID_SAVEPOINT_CHARACTERS}\"\npiccolo/engine/postgres.py:7:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/postgres.py:132:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:134:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:138:        validate_savepoint_name(self.name)\npiccolo/engine/postgres.py:140:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:162:        \"_savepoint_id\",\npiccolo/engine/postgres.py:186:        self._savepoint_id = 0\npiccolo/engine/postgres.py:227:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:229:        Used to rollback to a savepoint just using the name.\npiccolo/engine/postgres.py:231:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:13:from piccolo.engine.base import Batch, Engine, validate_savepoint_name\npiccolo/engine/sqlite.py:312:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:314:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:318:        validate_savepoint_name(self.name)\npiccolo/engine/sqlite.py:320:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:343:        \"_savepoint_id\",\npiccolo/engine/sqlite.py:367:        self._savepoint_id = 0\npiccolo/engine/sqlite.py:404:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:406:        Used to rollback to a savepoint just using the name.\npiccolo/engine/sqlite.py:408:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint|SAVEPOINT",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint|SAVEPOINT\", \"file_glob\": \"piccolo/**/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "SAVEPOINT",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"SAVEPOINT\"]\npiccolo/engine/base.py:21:VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\npiccolo/engine/base.py:28:    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\npiccolo/engine/base.py:31:            f\" {VALID_SAVEPOINT_CHARACTERS}\"\npiccolo/engine/postgres.py:134:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:140:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:242:        await self.connection.execute(f\"SAVEPOINT {name}\")\npiccolo/engine/sqlite.py:314:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:320:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:419:        await self.connection.execute(f\"SAVEPOINT {name}\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/**/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/query/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/**/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/query/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/query/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/query/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint",
+                  "file_glob": "piccolo/query/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"savepoint\", \"file_glob\": \"piccolo/query/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"savepoint-sqli-validation\",\n      \"title\": \"Add savepoint-name validation to prevent SQL injection in SAVEPOINT/ROLLBACK/RELEASE statements\",\n      \"rationale\": \"These hunks together introduce a shared allowlist validator in base.py and wire it into every code path that interpolates a user-supplied savepoint name into raw SQL in both the Postgres and SQLite engines.\",\n      \"hunks\": [\n        \"piccolo/engine/base.py#0\",\n        \"piccolo/engine/base.py#1\",\n        \"piccolo/engine/postgres.py#0\",\n        \"piccolo/engine/postgres.py#1\",\n        \"piccolo/engine/postgres.py#2\",\n        \"piccolo/engine/sqlite.py#0\",\n        \"piccolo/engine/sqlite.py#1\",\n        \"piccolo/engine/sqlite.py#2\"\n      ],\n      \"context\": [\n        {\"path\": \"piccolo/engine/base.py\", \"symbol\": \"validate_savepoint_name\", \"start_line\": 26, \"end_line\": 32, \"snapshot\": \"pr\", \"why\": \"New shared validator that all engine call sites import and invoke before executing SQL\"},\n        {\"path\": \"piccolo/engine/base.py\", \"symbol\": \"VALID_SAVEPOINT_CHARACTERS\", \"start_line\": 21, \"end_line\": 23, \"snapshot\": \"pr\", \"why\": \"Allowlist set used by the validator to reject non-alphanumeric savepoint names\"},\n        {\"path\": \"piccolo/engine/postgres.py\", \"symbol\": \"Savepoint.rollback_to\", \"start_line\": 131, \"end_line\": 135, \"snapshot\": \"pr\", \"why\": \"Interpolates self.name into ROLLBACK TO SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/postgres.py\", \"symbol\": \"Savepoint.release\", \"start_line\": 137, \"end_line\": 141, \"snapshot\": \"pr\", \"why\": \"Interpolates self.name into RELEASE SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/postgres.py\", \"symbol\": \"PostgresTransaction.savepoint\", \"start_line\": 239, \"end_line\": 243, \"snapshot\": \"pr\", \"why\": \"Interpolates user-supplied name into SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/postgres.py\", \"symbol\": \"PostgresTransaction.rollback_to\", \"start_line\": 227, \"end_line\": 231, \"snapshot\": \"pr\", \"why\": \"Public entry point that constructs a Savepoint and delegates to the now-validated rollback_to\"},\n        {\"path\": \"piccolo/engine/sqlite.py\", \"symbol\": \"Savepoint.rollback_to\", \"start_line\": 311, \"end_line\": 315, \"snapshot\": \"pr\", \"why\": \"Interpolates self.name into ROLLBACK TO SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/sqlite.py\", \"symbol\": \"Savepoint.release\", \"start_line\": 317, \"end_line\": 321, \"snapshot\": \"pr\", \"why\": \"Interpolates self.name into RELEASE SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/sqlite.py\", \"symbol\": \"SQLiteTransaction.savepoint\", \"start_line\": 416, \"end_line\": 420, \"snapshot\": \"pr\", \"why\": \"Interpolates user-supplied name into SAVEPOINT SQL; now guarded by validate_savepoint_name\"},\n        {\"path\": \"piccolo/engine/sqlite.py\", \"symbol\": \"SQLiteTransaction.rollback_to\", \"start_line\": 404, \"end_line\": 408, \"snapshot\": \"pr\", \"why\": \"Public entry point that constructs a Savepoint and delegates to the now-validated rollback_to\"}\n      ]\n    },\n    {\n      \"id\": \"savepoint-sqli-test\",\n      \"title\": \"Add regression test asserting savepoint name with SQL injection payload raises ValueError\",\n      \"rationale\": \"This test exercises the new validate_savepoint_name guard by passing a malicious savepoint name and expecting a ValueError, confirming the injection vector is closed.\",\n      \"hunks\": [\n        \"tests/engine/test_transaction.py#0\",\n        \"tests/engine/test_transaction.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"piccolo/engine/base.py\", \"symbol\": \"validate_savepoint_name\", \"start_line\": 26, \"end_line\": 32, \"snapshot\": \"pr\", \"why\": \"The function under test that raises ValueError for disallowed characters\"},\n        {\"path\": \"piccolo/engine/sqlite.py\", \"symbol\": \"SQLiteTransaction.savepoint\", \"start_line\": 416, \"end_line\": 420, \"snapshot\": \"pr\", \"why\": \"The code path the test invokes via transaction.savepoint() with a malicious name\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "savepoint-sqli-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-40]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection savepoint name validation authorization"
+                },
+                "result": "[CHANGES.rst:1591-1663] (relevance 0.33)\n-------------------------------------------------------------------------------\n\n0.67.0\n------\n\ncreate_user\n~~~~~~~~~~~\n\n``BaseUser`` now has a ``create_user`` method, which adds some extra password\nvalidation vs just instantiating and saving ``BaseUser`` directly.\n\n.. code-block:: python\n\n  >>> await BaseUser.create_user(username='bob', password='abc123XYZ')\n  <BaseUser: 1>\n\nWe check that passwords are a reasonable length, and aren't already hashed.\nSee `PR 402 <https://github.com/piccolo-orm/piccolo/pull/402>`_.\n\nasync first\n~~~~~~~~~~~\n\nAll of the docs have been updated to show the async version of queries.\n\nFor example:\n\n.. code-block:: python\n\n  # Previous:\n  Band.select().run_sync()\n\n  # Now:\n  await Band.select()\n\nMost people use Piccolo in async apps, and the playground supports top level\nawait, so you can just paste in ``await Band.select()`` and it will still work.\nSee `PR 407 <https://github.com/piccolo-orm/piccolo/pull/407>`_.\n\nWe decided to use ``await Band.select()`` instead of ``await Band.select().run()``.\nBoth work, and have their merits, but the simpler version is probably easier\nfor newcomers.\n\n-------------------------------------------------------------------------------\n\n0.66.1\n------\n\nIn Piccolo you can print out any query to see the SQL which will be generated:\n\n.. code-block:: python\n\n  >>> print(Band.select())\n  SELECT \"band\".\"id\", \"band\".\"name\", \"band\".\"manager\", \"band\".\"popularity\" FROM band\n\nIt didn't represent ``UUID`` and ``datetime`` values correctly, which is now fixed (courtesy @theelderbeever).\nSee `PR 405 <https://github.com/piccolo-orm/piccolo/pull/405>`_.\n\n-------------------------------------------------------------------------------\n\n0.66.0\n------\n\nUsing descriptors to improve MyPy support (`PR 399 <https://github.com/piccolo-orm/piccolo/pull/399>`_).\n\nMyPy is now able to correctly infer the type in lots of different scenarios:\n\n.. code-block:: python\n\n  class Band(Table):\n      name = Varchar()\n\n  # MyPy knows this is a Varchar\n\n---\n\n[docs/src/piccolo/authentication/baseuser.rst:80-150] (relevance 0.32)\ncreate_user / create_user_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo create a new user:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.create_user(username=\"bob\", password=\"abc123\", active=True)\n\n    # When not in an event loop:\n    BaseUser.create_user_sync(username=\"bob\", password=\"abc123\", active=True)\n\nIt saves the user in the database, and returns the created ``BaseUser``\ninstance.\n\n.. note:: It is preferable to use this rather than instantiating and saving\n    ``BaseUser`` directly, as we add additional validation.\n\nlogin / login_sync\n~~~~~~~~~~~~~~~~~~\n\nTo check a user's credentials, do the following:\n\n.. code-block:: python\n\n    from piccolo.apps.user.tables import BaseUser\n\n    # From within a coroutine:\n    >>> await BaseUser.login(username=\"bob\", password=\"abc123\")\n    1\n\n    # When not in an event loop:\n    >>> BaseUser.login_sync(username=\"bob\", password=\"abc123\")\n    1\n\nIf the login is successful, the user's id is returned, otherwise ``None`` is\nreturned.\n\nupdate_password / update_password_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo change a user's password:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.update_password(username=\"bob\", password=\"abc123\")\n\n    # When not in an event loop:\n    BaseUser.update_password_sync(username=\"bob\", password=\"abc123\")\n\n.. warning:: Don't use bulk updates for passwords - use ``update_password`` /\n   ``update_password_sync``, and they'll correctly hash the password.\n\n-------------------------------------------------------------------------------\n\nLimits\n------\n\nThe maximum password length allowed is 128 characters. This should be\nsufficiently long for most use cases.\n\n-------------------------------------------------------------------------------\n\nExtending ``BaseUser``\n----------------------\n\nIf you want to extend ``BaseUser`` with additional fields, we recommend creating\na ``Profile`` table with a ``ForeignKey`` to ``BaseUser``, which can include\nany custom fields.\n\n---\n\n[docs/src/piccolo/features/security.rst:1-12] (relevance 0.26)\n.. _Security:\n\nSecurity\n========\n\nSQL Injection protection\n------------------------\n\nIf you look under the hood, Piccolo uses a custom class called ``QueryString``\nfor composing queries. It keeps query parameters separate from the query\nstring, so we can pass parameterised queries to the engine. This helps\nprevent SQL Injection attacks.\n\n---\n\n[docs/src/piccolo/serialization/index.rst:206-289] (relevance 0.24)\nValidationError - name field required\n\nYou can override this behaviour using the ``all_optional`` argument. An example\nuse case is when you have a model which is used for filtering, then you'll want\nall fields to be optional.\n\n.. code-block:: python\n\n    class Band(Table):\n        name = Varchar(required=True)\n\n    BandFilterModel = create_pydantic_model(\n        Band,\n        all_optional=True,\n        model_name='BandFilterModel',\n    )\n\n    # This no longer raises an exception:\n    >>> BandModel()\n\nSubclassing the model\n~~~~~~~~~~~~~~~~~~~~~\n\nIf the generated model doesn't perfectly fit your needs, you can subclass it to\nadd additional fields, and to override existing fields.\n\n.. code-block:: python\n\n    class Band(Table):\n        name = Varchar(required=True)\n\n    BandModel = create_pydantic_model(Band)\n\n    class CustomBandModel(BandModel):\n        genre: str\n\n    >>> CustomBandModel(name=\"Pythonistas\", genre=\"Rock\")\n\nOr even simpler still:\n\n.. code-block:: python\n\n    class BandModel(create_pydantic_model(Band)):\n        genre: str\n\n\nAvoiding type warnings\n~~~~~~~~~~~~~~~~~~~~~~\n\nSome linters will complain if you use variables in type annotations:\n\n.. code-block:: python\n\n    BandModel = create_pydantic_model(Band)\n\n\n    def my_function(band: BandModel):  # Variable not allowed in type expression!\n        ...\n\n\nThe fix is really simple:\n\n.. code-block:: python\n\n    # We now have a class instead of a variable:\n    class BandModel(create_pydantic_model(Band)):\n        ...\n\n\n    def my_function(band: BandModel):\n        ...\n\nSource\n~~~~~~\n\n.. currentmodule:: piccolo.utils.pydantic\n\n.. autofunction:: create_pydantic_model\n\n.. hint:: A good place to see ``create_pydantic_model`` in action is `PiccoloCRUD <https://github.com/piccolo-orm/piccolo_api/blob/master/piccolo_api/crud/endpoints.py>`_,\n  as it uses ``create_pydantic_model`` extensively to create Pydantic models\n  from Piccolo tables.\n\n-------------------------------------------------------------------------------\n\n---\n\n[CHANGES.rst:1482-1536] (relevance 0.23)\nWe also improved the error messages if schema generation fails for some reason\nby letting the user know which table caused the error. Courtesy @AliSayyah.\n\n-------------------------------------------------------------------------------\n\n0.69.4\n------\n\nWe used to raise a ``ValueError`` if a column was both ``null=False`` and\n``default=None``. This has now been removed, as there are situations where\nit's valid for columns to be configured that way. Thanks to @gmos for\nsuggesting this change.\n\n-------------------------------------------------------------------------------\n\n0.69.3\n------\n\nThe ``where`` clause now raises a ``ValueError`` if a boolean value is\npassed in by accident. This was possible in the following situation:\n\n.. code-block:: python\n\n  await Band.select().where(Band.has_drummer is None)\n\nPiccolo can't override the ``is`` operator because Python doesn't allow it,\nso ``Band.has_drummer is None`` will always equal ``False``. Thanks to\n@trondhindenes for reporting this issue.\n\nWe've also put a lot of effort into improving documentation throughout the\nproject.\n\n-------------------------------------------------------------------------------\n\n0.69.2\n------\n\n* Lots of documentation improvements, including how to customise ``BaseUser``\n  (courtesy @sinisaos).\n* Fixed a bug with creating indexes when the column n"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=120-250]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         validate_savepoint_name(self.name)\n133:         await self.transaction.connection.execute(\n134:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n135:         )\n136: \n137:     async def release(self):\n138:         validate_savepoint_name(self.name)\n139:         await self.transaction.connection.execute(\n140:             f\"RELEASE SAVEPOINT {self.name}\"\n141:         )\n142: \n143: \n144: class PostgresTransaction:\n145:     \"\"\"\n146:     Used for wrapping queries in a transaction, using a context manager.\n147:     Currently it's async only.\n148: \n149:     Usage::\n150: \n151:         async with engine.transaction():\n152:             # Run some queries:\n153:             await Band.select().run()\n154: \n155:     \"\"\"\n156: \n157:     __slots__ = (\n158:         \"engine\",\n159:         \"transaction\",\n160:         \"context\",\n161:         \"connection\",\n162:         \"_savepoint_id\",\n163:         \"_parent\",\n164:         \"_committed\",\n165:         \"_rolled_back\",\n166:     )\n167: \n168:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n169:         \"\"\"\n170:         :param allow_nested:\n171:             If ``True`` then if we try creating a new transaction when another\n172:             is already active, we treat this as a no-op::\n173: \n174:                 async with DB.transaction():\n175:                     async with DB.transaction():\n176:                         pass\n177: \n178:             If we want to disallow this behaviour, then setting\n179:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n180:             raised.\n181: \n182:         \"\"\"\n183:         self.engine = engine\n184:         current_transaction = self.engine.current_transaction.get()\n185: \n186:         self._savepoint_id = 0\n187:         self._parent = None\n188:         self._committed = False\n189:         self._rolled_back = False\n190: \n191:         if current_transaction:\n192:             if allow_nested:\n193:                 self._parent = current_transaction\n194:             else:\n195:                 raise TransactionError(\n196:                     \"A transaction is already active - nested transactions \"\n197:                     \"aren't allowed.\"\n198:                 )\n199: \n200:     async def __aenter__(self) -> PostgresTransaction:\n201:         if self._parent is not None:\n202:             return self._parent\n203: \n204:         self.connection = await self.get_connection()\n205:         self.transaction = self.connection.transaction()\n206:         await self.begin()\n207:         self.context = self.engine.current_transaction.set(self)\n208:         return self\n209: \n210:     async def get_connection(self):\n211:         if self.engine.pool:\n212:             return await self.engine.pool.acquire()\n213:         else:\n214:             return await self.engine.get_new_connection()\n215: \n216:     async def begin(self):\n217:         await self.transaction.start()\n218: \n219:     async def commit(self):\n220:         await self.transaction.commit()\n221:         self._committed = True\n222: \n223:     async def rollback(self):\n224:         await self.transaction.rollback()\n225:         self._rolled_back = True\n226: \n227:     async def rollback_to(self, savepoint_name: str):\n228:         \"\"\"\n229:         Used to rollback to a savepoint just using the name.\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=300-425]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         validate_savepoint_name(self.name)\n313:         await self.transaction.connection.execute(\n314:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n315:         )\n316: \n317:     async def release(self):\n318:         validate_savepoint_name(self.name)\n319:         await self.transaction.connection.execute(\n320:             f\"RELEASE SAVEPOINT {self.name}\"\n321:         )\n322: \n323: \n324: class SQLiteTransaction:\n325:     \"\"\"\n326:     Used for wrapping queries in a transaction, using a context manager.\n327:     Currently it's async only.\n328: \n329:     Usage::\n330: \n331:         async with engine.transaction():\n332:             # Run some queries:\n333:             await Band.select().run()\n334: \n335:     \"\"\"\n336: \n337:     __slots__ = (\n338:         \"engine\",\n339:         \"context\",\n340:         \"connection\",\n341:         \"transaction_type\",\n342:         \"allow_nested\",\n343:         \"_savepoint_id\",\n344:         \"_parent\",\n345:         \"_committed\",\n346:         \"_rolled_back\",\n347:     )\n348: \n349:     def __init__(\n350:         self,\n351:         engine: SQLiteEngine,\n352:         transaction_type: TransactionType = TransactionType.deferred,\n353:         allow_nested: bool = True,\n354:     ):\n355:         \"\"\"\n356:         :param transaction_type:\n357:             If your transaction just contains ``SELECT`` queries, then use\n358:             ``TransactionType.deferred``. This will give you the best\n359:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n360:             queries, we recommend using ``TransactionType.immediate`` to\n361:             avoid database locks.\n362:         \"\"\"\n363:         self.engine = engine\n364:         self.transaction_type = transaction_type\n365:         current_transaction = self.engine.current_transaction.get()\n366: \n367:         self._savepoint_id = 0\n368:         self._parent = None\n369:         self._committed = False\n370:         self._rolled_back = False\n371: \n372:         if current_transaction:\n373:             if allow_nested:\n374:                 self._parent = current_transaction\n375:             else:\n376:                 raise TransactionError(\n377:                     \"A transaction is already active - nested transactions \"\n378:                     \"aren't allowed.\"\n379:                 )\n380: \n381:     async def __aenter__(self) -> SQLiteTransaction:\n382:         if self._parent is not None:\n383:             return self._parent\n384: \n385:         self.connection = await self.get_connection()\n386:         await self.begin()\n387:         self.context = self.engine.current_transaction.set(self)\n388:         return self\n389: \n390:     async def get_connection(self):\n391:         return await self.engine.get_connection()\n392: \n393:     async def begin(self):\n394:         await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")\n395: \n396:     async def commit(self):\n397:         await self.connection.execute(\"COMMIT\")\n398:         self._committed = True\n399: \n400:     async def rollback(self):\n401:         await self.connection.execute(\"ROLLBACK\")\n402:         self._rolled_back = True\n403: \n404:     async def rollback_to(self, savepoint_name: str):\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Savepoint\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"Savepoint\\(\"]\npiccolo/engine/postgres.py:231:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/postgres.py:243:        return Savepoint(name=name, transaction=self)\npiccolo/engine/sqlite.py:408:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:420:        return Savepoint(name=name, transaction=self)\ntests/engine/test_transaction.py:267:class TestSavepoint(TestCase):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.savepoint\\(|rollback_to\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "savepoint-sqli-test",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n45: \n46:     def __init__(self):\n47:         run_sync(self.check_version())\n48:         run_sync(self.prep_database())\n49:         self.query_id = 0\n50: \n51:     @property\n52:     @abstractmethod\n53:     def engine_type(self) -> str:\n54:         pass\n55: \n56:     @property\n57:     @abstractmethod\n58:     def min_version_number(self) -> float:\n59:         pass\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 400,
+                  "end_line": 440,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=400-440]\n400:     async def rollback(self):\n401:         await self.connection.execute(\"ROLLBACK\")\n402:         self._rolled_back = True\n403: \n404:     async def rollback_to(self, savepoint_name: str):\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n426:             return exception is None\n427: \n428:         if exception:\n429:             # The user may have manually rolled it back.\n430:             if not self._rolled_back:\n431:                 await self.rollback()\n432:         else:\n433:             # The user may have manually committed it.\n434:             if not self._committed and not self._rolled_back:\n435:                 await self.commit()\n436: \n437:         await self.connection.close()\n438:         self.engine.current_transaction.reset(self.context)\n439: \n440:         return exception is None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review is a test file (`tests/engine/test_transaction.py`) that adds a test verifying `validate_savepoint_name` raises `ValueError` for a malicious savepoint name. This is a test for SQL injection protection, not an authorization concern.\n\nThe test:\n- Opens a transaction\n- Attempts to create a savepoint with a name containing `; SELECT * FROM Manager`\n- Expects `ValueError` to be raised\n\nThe implementation in `piccolo/engine/base.py:26-32` validates savepoint names against a whitelist of allowed characters (alphanumeric, `-`, `_`), and `piccolo/engine/sqlite.py:416-420` calls this validation before executing the SQL.\n\nThis is a test file that tests SQL injection protection. There is no authorization logic here \u2014 no user-controlled identifiers being fetched, no protected operations without auth checks, no incorrect authorization checks. The test is verifying that the validation function works correctly.\n\nNo authorization flaws are present in this section.",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/engine/test_transaction.py",
+                  "start_line": 298,
+                  "end_line": 311,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=tests/engine/test_transaction.py lines=298-311]\n298:         self.assertListEqual(\n299:             Manager.select(Manager.name).run_sync(), [{\"name\": \"Manager 1\"}]\n300:         )\n301: \n302:     def test_savepoint_sqli_checks(self):\n303:         # Added to test the fix for GHSA-xq59-7jf3-rjc6\n304:         async def run_test():\n305:             async with Manager._meta.db.transaction() as transaction:\n306:                 await transaction.savepoint(\n307:                     \"my_savepoint; SELECT * FROM Manager\"\n308:                 )\n309: \n310:         with pytest.raises(ValueError):\n311:             run_sync(run_test())\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "This is a test file that verifies SQL injection protection for savepoint names. There is no authorization logic involved \u2014 no user-controlled identifiers being fetched without ownership checks, no protected operations missing auth checks, and no incorrect authorization checks. The test simply verifies that `validate_savepoint_name` raises `ValueError` for disallowed characters.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:savepoint-sqli-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-40]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/postgres.py lines=120-250]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         validate_savepoint_name(self.name)\n133:         await self.transaction.connection.execute(\n134:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n135:         )\n136: \n137:     async def release(self):\n138:         validate_savepoint_name(self.name)\n139:         await self.transaction.connection.execute(\n140:             f\"RELEASE SAVEPOINT {self.name}\"\n141:         )\n142: \n143: \n144: class PostgresTransaction:\n145:     \"\"\"\n146:     Used for wrapping queries in a transaction, using a context manager.\n147:     Currently it's async only.\n148: \n149:     Usage::\n150: \n151:         async with engine.transaction():\n152:             # Run some queries:\n153:             await Band.select().run()\n154: \n155:     \"\"\"\n156: \n157:     __slots__ = (\n158:         \"engine\",\n159:         \"transaction\",\n160:         \"context\",\n161:         \"connection\",\n162:         \"_savepoint_id\",\n163:         \"_parent\",\n164:         \"_committed\",\n165:         \"_rolled_back\",\n166:     )\n167: \n168:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n169:         \"\"\"\n170:         :param allow_nested:\n171:             If ``True`` then if we try creating a new transaction when another\n172:             is already active, we treat this as a no-op::\n173: \n174:                 async with DB.transaction():\n175:                     async with DB.transaction():\n176:                         pass\n177: \n178:             If we want to disallow this behaviour, then setting\n179:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n180:             raised.\n181: \n182:         \"\"\"\n183:         self.engine = engine\n184:         current_transaction = self.engine.current_transaction.get()\n185: \n186:         self._savepoint_id = 0\n187:         self._parent = None\n188:         self._committed = False\n189:         self._rolled_back = False\n190: \n191:         if current_transaction:\n192:             if allow_nested:\n193:                 self._parent = current_transaction\n194:             else:\n195:                 raise TransactionError(\n196:                     \"A transaction is already active - nested transactions \"\n197:                     \"aren't allowed.\"\n198:                 )\n199: \n200:     async def __aenter__(self) -> PostgresTransaction:\n201:         if self._parent is not None:\n202:             return self._parent\n203: \n204:         self.connection = await self.get_connection()\n205:         self.transaction = self.connection.transaction()\n206:         await self.begin()\n207:         self.context = self.engine.current_transaction.set(self)\n208:         return self\n209: \n210:     async def get_connection(self):\n211:         if self.engine.pool:\n212:             return await self.engine.pool.acquire()\n213:         else:\n214:             return await self.engine.get_new_connection()\n215: \n216:     async def begin(self):\n217:         await self.transaction.start()\n218: \n219:     async def commit(self):\n220:         await self.transaction.commit()\n221:         self._committed = True\n222: \n223:     async def rollback(self):\n224:         await self.transaction.rollback()\n225:         self._rolled_back = True\n226: \n227:     async def rollback_to(self, savepoint_name: str):\n228:         \"\"\"\n229:         Used to rollback to a savepoint just using the name.\n230:         \"\"\"\n231:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n232: \n233:     ###########################################################################\n234: \n235:     def get_savepoint_id(self) -> int:\n236:         self._savepoint_id += 1\n237:         return self._savepoint_id\n238: \n239:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n240:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n241:         validate_savepoint_name(name)\n242:         await self.connection.execute(f\"SAVEPOINT {name}\")\n243:         return Savepoint(name=name, transaction=self)\n244: \n245:     ###########################################################################\n246: \n247:     async def __aexit__(self, exception_type, exception, traceback):\n248:         if self._parent:\n249:             return exception is None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 425,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=300-425]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         validate_savepoint_name(self.name)\n313:         await self.transaction.connection.execute(\n314:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n315:         )\n316: \n317:     async def release(self):\n318:         validate_savepoint_name(self.name)\n319:         await self.transaction.connection.execute(\n320:             f\"RELEASE SAVEPOINT {self.name}\"\n321:         )\n322: \n323: \n324: class SQLiteTransaction:\n325:     \"\"\"\n326:     Used for wrapping queries in a transaction, using a context manager.\n327:     Currently it's async only.\n328: \n329:     Usage::\n330: \n331:         async with engine.transaction():\n332:             # Run some queries:\n333:             await Band.select().run()\n334: \n335:     \"\"\"\n336: \n337:     __slots__ = (\n338:         \"engine\",\n339:         \"context\",\n340:         \"connection\",\n341:         \"transaction_type\",\n342:         \"allow_nested\",\n343:         \"_savepoint_id\",\n344:         \"_parent\",\n345:         \"_committed\",\n346:         \"_rolled_back\",\n347:     )\n348: \n349:     def __init__(\n350:         self,\n351:         engine: SQLiteEngine,\n352:         transaction_type: TransactionType = TransactionType.deferred,\n353:         allow_nested: bool = True,\n354:     ):\n355:         \"\"\"\n356:         :param transaction_type:\n357:             If your transaction just contains ``SELECT`` queries, then use\n358:             ``TransactionType.deferred``. This will give you the best\n359:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n360:             queries, we recommend using ``TransactionType.immediate`` to\n361:             avoid database locks.\n362:         \"\"\"\n363:         self.engine = engine\n364:         self.transaction_type = transaction_type\n365:         current_transaction = self.engine.current_transaction.get()\n366: \n367:         self._savepoint_id = 0\n368:         self._parent = None\n369:         self._committed = False\n370:         self._rolled_back = False\n371: \n372:         if current_transaction:\n373:             if allow_nested:\n374:                 self._parent = current_transaction\n375:             else:\n376:                 raise TransactionError(\n377:                     \"A transaction is already active - nested transactions \"\n378:                     \"aren't allowed.\"\n379:                 )\n380: \n381:     async def __aenter__(self) -> SQLiteTransaction:\n382:         if self._parent is not None:\n383:             return self._parent\n384: \n385:         self.connection = await self.get_connection()\n386:         await self.begin()\n387:         self.context = self.engine.current_transaction.set(self)\n388:         return self\n389: \n390:     async def get_connection(self):\n391:         return await self.engine.get_connection()\n392: \n393:     async def begin(self):\n394:         await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")\n395: \n396:     async def commit(self):\n397:         await self.connection.execute(\"COMMIT\")\n398:         self._committed = True\n399: \n400:     async def rollback(self):\n401:         await self.connection.execute(\"ROLLBACK\")\n402:         self._rolled_back = True\n403: \n404:     async def rollback_to(self, savepoint_name: str):\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.savepoint\\(|rollback_to\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb pattern=\"\\.savepoint\\(|rollback_to\\(\"]\npiccolo/engine/postgres.py:131:    async def rollback_to(self):\npiccolo/engine/postgres.py:227:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:231:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:311:    async def rollback_to(self):\npiccolo/engine/sqlite.py:404:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:408:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\ntests/engine/test_transaction.py:278:                savepoint = await transaction.savepoint()\ntests/engine/test_transaction.py:280:                await savepoint.rollback_to()\ntests/engine/test_transaction.py:292:                await transaction.savepoint(\"my_savepoint\")\ntests/engine/test_transaction.py:294:                await transaction.rollback_to(\"my_savepoint\")\ntests/engine/test_transaction.py:306:                await transaction.savepoint(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/engine/test_transaction.py",
+                  "start_line": 270,
+                  "end_line": 320,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=tests/engine/test_transaction.py lines=270-311]\n270: \n271:     def tearDown(self):\n272:         Manager.alter().drop_table().run_sync()\n273: \n274:     def test_savepoint(self):\n275:         async def run_test():\n276:             async with Manager._meta.db.transaction() as transaction:\n277:                 await Manager.insert(Manager(name=\"Manager 1\"))\n278:                 savepoint = await transaction.savepoint()\n279:                 await Manager.insert(Manager(name=\"Manager 2\"))\n280:                 await savepoint.rollback_to()\n281: \n282:         run_sync(run_test())\n283: \n284:         self.assertListEqual(\n285:             Manager.select(Manager.name).run_sync(), [{\"name\": \"Manager 1\"}]\n286:         )\n287: \n288:     def test_named_savepoint(self):\n289:         async def run_test():\n290:             async with Manager._meta.db.transaction() as transaction:\n291:                 await Manager.insert(Manager(name=\"Manager 1\"))\n292:                 await transaction.savepoint(\"my_savepoint\")\n293:                 await Manager.insert(Manager(name=\"Manager 2\"))\n294:                 await transaction.rollback_to(\"my_savepoint\")\n295: \n296:         run_sync(run_test())\n297: \n298:         self.assertListEqual(\n299:             Manager.select(Manager.name).run_sync(), [{\"name\": \"Manager 1\"}]\n300:         )\n301: \n302:     def test_savepoint_sqli_checks(self):\n303:         # Added to test the fix for GHSA-xq59-7jf3-rjc6\n304:         async def run_test():\n305:             async with Manager._meta.db.transaction() as transaction:\n306:                 await transaction.savepoint(\n307:                     \"my_savepoint; SELECT * FROM Manager\"\n308:                 )\n309: \n310:         with pytest.raises(ValueError):\n311:             run_sync(run_test())\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The PR introduces a strict allowlist validator (`validate_savepoint_name`) that restricts savepoint names to `[a-zA-Z0-9_-]` and invokes it before every f-string SQL execution (SAVEPOINT, ROLLBACK TO SAVEPOINT, RELEASE SAVEPOINT) in both the Postgres and SQLite engines. This is a fixed allowlist on the identifier, which the rubric explicitly treats as safe. The test `test_savepoint_sqli_checks` confirms injection attempts are rejected with a `ValueError`. No candidate flaw.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:savepoint-sqli-test",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/base.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/base.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: import contextvars\n4: import logging\n5: import pprint\n6: import string\n7: import typing as t\n8: from abc import ABCMeta, abstractmethod\n9: \n10: from piccolo.querystring import QueryString\n11: from piccolo.utils.sync import run_sync\n12: from piccolo.utils.warnings import Level, colored_string, colored_warning\n13: \n14: if t.TYPE_CHECKING:  # pragma: no cover\n15:     from piccolo.query.base import Query\n16: \n17: \n18: logger = logging.getLogger(__name__)\n19: # This is a set to speed up lookups from O(n) when\n20: # using str vs O(1) when using set[str]\n21: VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(\n22:     string.ascii_letters + string.digits + \"-\" + \"_\"\n23: )\n24: \n25: \n26: def validate_savepoint_name(savepoint_name: str) -> None:\n27:     \"\"\"Validates a save point's name meets the required character set.\"\"\"\n28:     if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):\n29:         raise ValueError(\n30:             \"Savepoint names can only contain the following characters:\"\n31:             f\" {VALID_SAVEPOINT_CHARACTERS}\"\n32:         )\n33: \n34: \n35: class Batch:\n36:     pass\n37: \n38: \n39: TransactionClass = t.TypeVar(\"TransactionClass\")\n40: \n41: \n42: class Engine(t.Generic[TransactionClass], metaclass=ABCMeta):\n43: \n44:     __slots__ = (\"query_id\",)\n45: \n46:     def __init__(self):\n47:         run_sync(self.check_version())\n48:         run_sync(self.prep_database())\n49:         self.query_id = 0\n50: \n51:     @property\n52:     @abstractmethod\n53:     def engine_type(self) -> str:\n54:         pass\n55: \n56:     @property\n57:     @abstractmethod\n58:     def min_version_number(self) -> float:\n59:         pass\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 400,
+                  "end_line": 440,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=82679eb8cd1449cf31d87c9914a072e70168b6eb path=piccolo/engine/sqlite.py lines=400-440]\n400:     async def rollback(self):\n401:         await self.connection.execute(\"ROLLBACK\")\n402:         self._rolled_back = True\n403: \n404:     async def rollback_to(self, savepoint_name: str):\n405:         \"\"\"\n406:         Used to rollback to a savepoint just using the name.\n407:         \"\"\"\n408:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n409: \n410:     ###########################################################################\n411: \n412:     def get_savepoint_id(self) -> int:\n413:         self._savepoint_id += 1\n414:         return self._savepoint_id\n415: \n416:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n417:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n418:         validate_savepoint_name(name)\n419:         await self.connection.execute(f\"SAVEPOINT {name}\")\n420:         return Savepoint(name=name, transaction=self)\n421: \n422:     ###########################################################################\n423: \n424:     async def __aexit__(self, exception_type, exception, traceback):\n425:         if self._parent:\n426:             return exception is None\n427: \n428:         if exception:\n429:             # The user may have manually rolled it back.\n430:             if not self._rolled_back:\n431:                 await self.rollback()\n432:         else:\n433:             # The user may have manually committed it.\n434:             if not self._committed and not self._rolled_back:\n435:                 await self.commit()\n436: \n437:         await self.connection.close()\n438:         self.engine.current_transaction.reset(self.context)\n439: \n440:         return exception is None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "validate_savepoint_name",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"validate_savepoint_name\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "SAVEPOINT",
+                  "file_glob": "piccolo/engine/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde pattern=\"SAVEPOINT\"]\npiccolo/engine/postgres.py:133:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:138:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/postgres.py:239:        await self.connection.execute(f\"SAVEPOINT {name}\")\npiccolo/engine/sqlite.py:313:            f\"ROLLBACK TO SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:318:            f\"RELEASE SAVEPOINT {self.name}\"\npiccolo/engine/sqlite.py:416:        await self.connection.execute(f\"SAVEPOINT {name}\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 405,
+                  "end_line": 420,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=e4946d858e1aae1a9a4cf7714957d07983d94cde path=piccolo/engine/sqlite.py lines=405-420]\n405:         \"\"\"\n406:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n407: \n408:     ###########################################################################\n409: \n410:     def get_savepoint_id(self) -> int:\n411:         self._savepoint_id += 1\n412:         return self._savepoint_id\n413: \n414:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n415:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n416:         await self.connection.execute(f\"SAVEPOINT {name}\")\n417:         return Savepoint(name=name, transaction=self)\n418: \n419:     ###########################################################################\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:133",
+        "judged": true,
+        "kev_verdict": "not_real",
+        "kev_severity": "low",
+        "supported": false,
+        "provenance_confidence": 0.4736,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:313",
+        "judged": true,
+        "kev_verdict": "not_real",
+        "kev_severity": "low",
+        "supported": false,
+        "provenance_confidence": 0.4572,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "piccolo-savepoint-name-sqli",
+  "url": "https://github.com/piccolo-orm/piccolo/commit/82679eb8cd1449cf31d87c9914a072e70168b6eb",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xq59-7jf3-rjc6",
+  "expected": "safe",
+  "vulnerable_files": [
+    "piccolo/engine/postgres.py",
+    "piccolo/engine/sqlite.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

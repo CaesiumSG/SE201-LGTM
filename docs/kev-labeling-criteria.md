@@ -1,6 +1,6 @@
 # Kev labeling criteria
 
-Labels for judge candidates (`benchmark/kev_model_labels.json`). Each unit is one cited code item
+Labels for judge candidates. Each unit is one cited code item
 of a candidate finding.
 
 Claude Opus 5.5 writes the labels under these criteria. Kev, the judge being measured, is not the
@@ -24,12 +24,14 @@ guarded, unreachable, or not a vulnerability. A supported claim can be `not_real
 
 ## severity
 
-Set only on `real` units.
+Set only on `real` units. The levels and their wording are `SEVERITY_DESCRIPTIONS` in
+`src/lgtm/validation/judge.py`, the text Kev is given.
 
-- `low`: limited impact or hard to reach.
-- `medium`: exploitable with constraints or partial data exposure.
-- `high`: exploitable by an ordinary user with significant data or integrity impact.
-- `critical`: unauthenticated or trivially exploitable with full compromise.
+## acceptable answers
+
+`verdict` and `severity` hold the single best answer. When the cited code supports more than one
+reading, `acceptable` lists every verdict and severity a careful reviewer could justify from the
+claim and the quoted code, and `rationale` gives the reason. An answer outside the set is wrong.
 
 ## kind
 

@@ -1,0 +1,1250 @@
+{
+  "id": "pyload_sqli_vulnerable",
+  "category": "sqli",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 118.2,
+  "case_seconds": 128.1,
+  "est_tokens": 1565,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR diff replaces a parameterized query with an f-string that interpolates user-influenced data directly into the SQL statement. The base code at line 271 used placeholders: `self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)` where `placeholders = ','.join('?' * len(urls))`. The PR changes this to: `statuses = \"','\".join(x[3] for x in data)` followed by `self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")`. The `data` parameter originates from `update_file_info` in file_manager.py (line 590), which is called from `info_thread.py` (line 126) with `result` data that contains URLs from user-submitted download links. Since URLs are user-controlled input and are now interpolated directly into the SQL string without parameterization, an attacker could inject arbitrary SQL via a crafted URL (e.g., a URL containing `') OR 1=1 --`). This is a genuine SQL injection vulnerability introduced by the PR.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pyload/core/database/file_database.py",
+          "lines": [
+            269,
+            271
+          ],
+          "source": null,
+          "content": "        urls = [x[3] for x in data]\n        placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\n        self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/managers/file_manager.py",
+          "lines": [
+            586,
+            590
+          ],
+          "source": null,
+          "content": "    def update_file_info(self, data, pid):\n        \"\"\"\n        updates file info (name, size, status, url)\n        \"\"\"\n        self.pyload.db.update_link_info(data)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/threads/info_thread.py",
+          "lines": [
+            125,
+            126
+          ],
+          "source": null,
+          "content": "    def update_db(self, plugin, result):\n        self.pyload.files.update_file_info(result, self.pid)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Revert to the parameterized query approach. Use `placeholders = ','.join('?' * len(urls))` and pass the URLs as a parameter list: `self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)`. This ensures the database driver properly escapes the values and prevents SQL injection.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8215,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "src/pyload/core/database/file_database.py",
+      "line": 271,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1043
+    },
+    {
+      "finding_id": "sqli:sql-injection-update-link-info:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR replaces a parameterized SELECT with a query built by string interpolation. `statuses` is built by joining `x[3]` (the url field) from `data` with `','` and embedded directly into an f-string passed to `self.c.execute`. The `data` tuples come from `update_file_info` -> `update_link_info`, whose url values originate from plugin `get_info()` results and from user-supplied/external URLs (e.g. `result = [(url, 0, 3, url) for url in urls]`). Because the url values are attacker-influenced and are concatenated into the SQL text without binding or allowlisting, a url containing a single quote (e.g. `x' OR '1'='1`) breaks out of the IN-list literal and injects arbitrary SQL executed against the live links table.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pyload/core/database/file_database.py",
+          "lines": [
+            269,
+            271
+          ],
+          "source": null,
+          "content": "        ids = []\n        statuses = \"','\".join(x[3] for x in data)\n        self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/managers/file_manager.py",
+          "lines": [
+            586,
+            590
+          ],
+          "source": null,
+          "content": "    def update_file_info(self, data, pid):\n        \"\"\"\n        updates file info (name, size, status, url)\n        \"\"\"\n        self.pyload.db.update_link_info(data)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/core/threads/info_thread.py",
+          "lines": [
+            117,
+            126
+          ],
+          "source": null,
+          "content": "                    result = [(url, 0, 3, url) for url in urls]\n\n                    self.update_result(pluginname, result, True)\n...\n    def update_db(self, plugin, result):\n        self.pyload.files.update_file_info(result, self.pid)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pyload/plugins/base/hoster.py",
+          "lines": [
+            46,
+            55
+          ],
+          "source": null,
+          "content": "    def get_info(self, url=\"\", html=\"\"):\n        url = fixurl(url, unquote=True)\n        info = {\n            \"name\": parse.name(url),\n            ...\n            \"url\": replace_patterns(url, self.URL_REPLACEMENTS),\n        }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Restore the parameterized query: build a placeholder list matching the number of urls and pass the url values as bound parameters, e.g. `placeholders = ','.join('?' * len(urls)); self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", [x[3] for x in data])`. Never interpolate user/attacker-influenced values into SQL text.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8891,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "src/pyload/core/database/file_database.py",
+      "line": 271,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1119
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 230,
+            "end_line": 285,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_link_info",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/managers/file_manager.py",
+            "start_line": 560,
+            "end_line": 600,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_file_info",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 80,
+            "end_line": 130,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The PR diff replaces a parameterized query with an f-string that interpolates user-influenced data directly into the SQL statement. The base code at line 271 used placeholders: `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)` where `placeholders = ','.join('?' * len(urls))`. The PR changes this to: `statuses = \\\"','\\\".join(x[3] for x in data)` followed by `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ('{statuses}')\\\")`. The `data` parameter originates from `update_file_info` in file_manager.py (line 590), which is called from `info_thread.py` (line 126) with `result` data that contains URLs from user-submitted download links. Since URLs are user-controlled input and are now interpolated directly into the SQL string without parameterization, an attacker could inject arbitrary SQL via a crafted URL (e.g., a URL containing `') OR 1=1 --`). This is a genuine SQL injection vulnerability introduced by the PR.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/database/file_database.py\",\n      \"lines\": [269, 271],\n      \"content\": \"        urls = [x[3] for x in data]\\n        placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\\n        self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/managers/file_manager.py\",\n      \"lines\": [586, 590],\n      \"content\": \"    def update_file_info(self, data, pid):\\n        \\\"\\\"\\\"\\n        updates file info (name, size, status, url)\\n        \\\"\\\"\\\"\\n        self.pyload.db.update_link_info(data)\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/threads/info_thread.py\",\n      \"lines\": [125, 126],\n      \"content\": \"    def update_db(self, plugin, result):\\n        self.pyload.files.update_file_info(result, self.pid)\"\n    }\n  ],\n  \"suggested_fix\": \"Revert to the parameterized query approach. Use `placeholders = ','.join('?' * len(urls))` and pass the URLs as a parameter list: `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)`. This ensures the database driver properly escapes the values and prevents SQL injection.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 240,
+            "end_line": 300,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 240,
+            "end_line": 300,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "callers of update_link_info in file_database"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_link_info",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/managers/file_manager.py",
+            "start_line": 560,
+            "end_line": 600,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_file_info",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 90,
+            "end_line": 135,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def style|class style|queue =|async_ =",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/utils/struct/style.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 1,
+            "end_line": 72,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def queue|def async_|def commit",
+            "file_glob": "src/pyload/core/database/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def queue|def async_|def commit|DatabaseThread",
+            "file_glob": "src/pyload/core/database/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def queue|def async_|def commit",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/database_thread.py",
+            "start_line": 220,
+            "end_line": 260,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 128,
+            "end_line": 175,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 175,
+            "end_line": 210,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "update_db",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 30,
+            "end_line": 90,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_info",
+            "file_glob": "src/pyload/plugins/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/base/hoster.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/downloaders/FilefactoryCom.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/downloaders/GofileIo.py",
+            "start_line": 30,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/downloaders/SoundcloudCom.py",
+            "start_line": 40,
+            "end_line": 70,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"sql-injection-update-link-info\",\n      \"title\": \"update_link_info SELECT rewritten from parameterized query to f-string interpolation of URLs\",\n      \"rationale\": \"The single hunk replaces a parameterized `IN (?)` SELECT with an f-string that splices raw URL values into the SQL literal, introducing a SQL-injection vector for attacker-controlled URLs.\",\n      \"hunks\": [\"src/pyload/core/database/file_database.py#0\"],\n      \"context\": [\n        {\"path\": \"src/pyload/core/managers/file_manager.py\", \"symbol\": \"update_file_info\", \"start_line\": 586, \"end_line\": 594, \"snapshot\": \"base\", \"why\": \"Direct caller that passes plugin-supplied `data` (name,size,status,url) into update_link_info\"},\n        {\"path\": \"src/pyload/core/threads/info_thread.py\", \"symbol\": \"update_db\", \"start_line\": 125, \"end_line\": 126, \"snapshot\": \"base\", \"why\": \"Feeds plugin get_info() results (URLs from external hosts) into update_file_info, making the interpolated values attacker-influenced\"},\n        {\"path\": \"src/pyload/plugins/base/hoster.py\", \"symbol\": \"get_info\", \"start_line\": 46, \"end_line\": 55, \"snapshot\": \"base\", \"why\": \"Source of the url field returned to the DB layer; confirms URLs are external/untrusted input\"},\n        {\"path\": \"src/pyload/core/threads/database_thread.py\", \"symbol\": \"queue\", \"start_line\": 243, \"end_line\": 248, \"snapshot\": \"base\", \"why\": \"Shows @style.queue runs the method on the shared DB cursor, so the injected query executes against the live links table\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sql-injection-update-link-info",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 255,
+            "end_line": 285,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/managers/file_manager.py",
+            "start_line": 580,
+            "end_line": 600,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 110,
+            "end_line": 135,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/base/hoster.py",
+            "start_line": 40,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        }
+      ],
+      "raw_answer": "The section under review is a SQL injection regression, not an authorization flaw. The PR replaces a parameterized `SELECT ... WHERE url IN (?)` query with an f-string that interpolates attacker-influenced URL values (sourced from external hoster plugins via `get_info` \u2192 `update_db` \u2192 `update_file_info` \u2192 `update_link_info`) directly into the SQL statement. This is a CWE-89 (SQL injection) issue, which is outside the scope of the authorization flaw classes I am instructed to report (CWE-639, CWE-862, CWE-863).\n\nThere is no authentication/role/ownership check being added, removed, or bypassed in this section, and no object is fetched by a user-controlled identifier without an ownership check in the authorization sense. The policy excerpts retrieved contain no explicit access-control rule that this code violates. Therefore, no authorization candidate flaw is established.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:sql-injection-update-link-info",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/database/file_database.py",
+            "start_line": 255,
+            "end_line": 280,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/managers/file_manager.py",
+            "start_line": 580,
+            "end_line": 600,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 110,
+            "end_line": 135,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/plugins/base/hoster.py",
+            "start_line": 40,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/pyload/core/threads/info_thread.py",
+            "start_line": 80,
+            "end_line": 120,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR replaces a parameterized SELECT with a query built by string interpolation. `statuses` is built by joining `x[3]` (the url field) from `data` with `','` and embedded directly into an f-string passed to `self.c.execute`. The `data` tuples come from `update_file_info` -> `update_link_info`, whose url values originate from plugin `get_info()` results and from user-supplied/external URLs (e.g. `result = [(url, 0, 3, url) for url in urls]`). Because the url values are attacker-influenced and are concatenated into the SQL text without binding or allowlisting, a url containing a single quote (e.g. `x' OR '1'='1`) breaks out of the IN-list literal and injects arbitrary SQL executed against the live links table.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"src/pyload/core/database/file_database.py\", \"lines\": [269, 271], \"content\": \"        ids = []\\n        statuses = \\\"','\\\".join(x[3] for x in data)\\n        self.c.execute(f\\\"SELECT id FROM links WHERE url IN ('{statuses}')\\\")\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/core/managers/file_manager.py\", \"lines\": [586, 590], \"content\": \"    def update_file_info(self, data, pid):\\n        \\\"\\\"\\\"\\n        updates file info (name, size, status, url)\\n        \\\"\\\"\\\"\\n        self.pyload.db.update_link_info(data)\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/core/threads/info_thread.py\", \"lines\": [117, 126], \"content\": \"                    result = [(url, 0, 3, url) for url in urls]\\n\\n                    self.update_result(pluginname, result, True)\\n...\\n    def update_db(self, plugin, result):\\n        self.pyload.files.update_file_info(result, self.pid)\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/plugins/base/hoster.py\", \"lines\": [46, 55], \"content\": \"    def get_info(self, url=\\\"\\\", html=\\\"\\\"):\\n        url = fixurl(url, unquote=True)\\n        info = {\\n            \\\"name\\\": parse.name(url),\\n            ...\\n            \\\"url\\\": replace_patterns(url, self.URL_REPLACEMENTS),\\n        }\"}\n      ],\n      \"suggested_fix\": \"Restore the parameterized query: build a placeholder list matching the number of urls and pass the url values as bound parameters, e.g. `placeholders = ','.join('?' * len(urls)); self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", [x[3] for x in data])`. Never interpolate user/attacker-influenced values into SQL text.\",\n      \"file\": \"src/pyload/core/database/file_database.py\",\n      \"line\": 271\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 230,
+                  "end_line": 285
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/database/file_database.py lines=230-285]\n230:             data[r[0]] = {\n231:                 \"id\": r[0],\n232:                 \"url\": r[1],\n233:                 \"name\": r[2],\n234:                 \"size\": r[3],\n235:                 \"format_size\": format.size(r[3]),\n236:                 \"status\": r[4],\n237:                 \"statusmsg\": self.pyload.files.status_msg[r[4]],\n238:                 \"error\": r[5],\n239:                 \"plugin\": r[6],\n240:                 \"package\": r[7],\n241:                 \"order\": r[8],\n242:             }\n243: \n244:         return data\n245: \n246:     @style.async_\n247:     def update_link(self, f):\n248:         self.c.execute(\n249:             \"UPDATE links SET url=?,name=?,size=?,status=?,error=?,package=? WHERE id=?\",\n250:             (f.url, f.name, f.size, f.status, f.error, str(f.packageid), str(f.id)),\n251:         )\n252: \n253:     @style.queue\n254:     def update_package(self, p):\n255:         self.c.execute(\n256:             \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257:             (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258:         )\n259: \n260:     @style.queue\n261:     def update_link_info(self, data):\n262:         \"\"\"\n263:         data is list of tuples (name, size, status, url)\n264:         \"\"\"\n265:         self.c.executemany(\n266:             \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267:             data,\n268:         )\n269:         urls = [x[3] for x in data]\n270:         placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\n271:         self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)\n272: \n273:         ids = [int(row[0]) for row in self.c.fetchall()]\n274:         return ids\n275: \n276:     @style.queue\n277:     def reorder_package(self, p, position, no_move=False):\n278:         if position == -1:\n279:             position = self._next_package_order(p.queue)\n280:         if not no_move:\n281:             if p.order > position:\n282:                 self.c.execute(\n283:                     \"UPDATE packages SET packageorder=packageorder+1 WHERE packageorder >= ? AND packageorder < ? AND queue=? AND packageorder >= 0\",\n284:                     (position, p.order, p.queue),\n285:                 )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "update_link_info"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"update_link_info\"]\nsrc/pyload/core/database/file_database.py:261:    def update_link_info(self, data):\nsrc/pyload/core/managers/file_manager.py:590:        self.pyload.db.update_link_info(data)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/managers/file_manager.py",
+                  "start_line": 560,
+                  "end_line": 600
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/managers/file_manager.py lines=560-600]\n560:         for pyfile in pyfiles:\n561:             if pyfile.packageid != f[\"package\"] or pyfile.order < 0:\n562:                 continue\n563:             if f[\"order\"] > position:\n564:                 if pyfile.order >= position and pyfile.order < f[\"order\"]:\n565:                     pyfile.order += 1\n566:                     pyfile.notify_change()\n567:             elif f[\"order\"] < position:\n568:                 if pyfile.order <= position and pyfile.order > f[\"order\"]:\n569:                     pyfile.order -= 1\n570:                     pyfile.notify_change()\n571: \n572:         if id in self.cache:\n573:             self.cache[id].order = position\n574: \n575:         self.pyload.db.commit()\n576: \n577:         e = InsertEvent(\n578:             \"file\",\n579:             id,\n580:             position,\n581:             \"collector\" if not self.get_package(f[\"package\"]).queue else \"queue\",\n582:         )\n583:         self.pyload.event_manager.add_event(e)\n584: \n585:     @change\n586:     def update_file_info(self, data, pid):\n587:         \"\"\"\n588:         updates file info (name, size, status, url)\n589:         \"\"\"\n590:         self.pyload.db.update_link_info(data)\n591:         e = UpdateEvent(\n592:             \"pack\", pid, \"collector\" if not self.get_package(pid).queue else \"queue\"\n593:         )\n594:         self.pyload.event_manager.add_event(e)\n595: \n596:     def check_package_finished(self, pyfile):\n597:         \"\"\"\n598:         checks if package is finished and calls addon_manager.\n599:         \"\"\"\n600:         ids = self.pyload.db.get_unfinished(pyfile.packageid)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "update_file_info"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"update_file_info\"]\nsrc/pyload/core/managers/file_manager.py:586:    def update_file_info(self, data, pid):\nsrc/pyload/core/threads/info_thread.py:126:        self.pyload.files.update_file_info(result, self.pid)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 80,
+                  "end_line": 130
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=80-130]\n80:             del self.cache[:]\n81: \n82:         else:  #: post the results\n83: \n84:             for name, url in container:\n85:                 # attach container content\n86:                 try:\n87:                     data = self.decrypt_container(name, url)\n88:                 except Exception:\n89:                     self.pyload.log.warning(\n90:                         \"Could not decrypt container.\",\n91:                         exc_info=self.pyload.debug > 1,\n92:                         stack_info=self.pyload.debug > 2,\n93:                     )\n94:                     data = []\n95: \n96:                 for url, plugin in data:\n97:                     if plugin in plugins:\n98:                         plugins[plugin].append(url)\n99:                     else:\n100:                         plugins[plugin] = [url]\n101: \n102:             self.m.info_results[self.rid] = {}\n103: \n104:             for pluginname, urls in plugins.items():\n105:                 plugin = self.pyload.plugin_manager.get_plugin(pluginname, True)\n106:                 if hasattr(plugin, \"get_info\"):\n107:                     self.fetch_for_plugin(\n108:                         pluginname, plugin, urls, self.update_result, True\n109:                     )\n110: \n111:                     # force to process cache\n112:                     if self.cache:\n113:                         self.update_result(pluginname, [], True)\n114: \n115:                 else:\n116:                     # generate default result\n117:                     result = [(url, 0, 3, url) for url in urls]\n118: \n119:                     self.update_result(pluginname, result, True)\n120: \n121:             self.m.info_results[self.rid][\"ALL_INFO_FETCHED\"] = {}\n122: \n123:         self.m.timestamp = time.time() + timedelta(minutes=5).total_seconds()\n124: \n125:     def update_db(self, plugin, result):\n126:         self.pyload.files.update_file_info(result, self.pid)\n127: \n128:     def update_result(self, plugin, result, force=False):\n129:         # parse package name and generate result\n130:         # accumulate results\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The PR diff replaces a parameterized query with an f-string that interpolates user-influenced data directly into the SQL statement. The base code at line 271 used placeholders: `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)` where `placeholders = ','.join('?' * len(urls))`. The PR changes this to: `statuses = \\\"','\\\".join(x[3] for x in data)` followed by `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ('{statuses}')\\\")`. The `data` parameter originates from `update_file_info` in file_manager.py (line 590), which is called from `info_thread.py` (line 126) with `result` data that contains URLs from user-submitted download links. Since URLs are user-controlled input and are now interpolated directly into the SQL string without parameterization, an attacker could inject arbitrary SQL via a crafted URL (e.g., a URL containing `') OR 1=1 --`). This is a genuine SQL injection vulnerability introduced by the PR.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/database/file_database.py\",\n      \"lines\": [269, 271],\n      \"content\": \"        urls = [x[3] for x in data]\\n        placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\\n        self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/managers/file_manager.py\",\n      \"lines\": [586, 590],\n      \"content\": \"    def update_file_info(self, data, pid):\\n        \\\"\\\"\\\"\\n        updates file info (name, size, status, url)\\n        \\\"\\\"\\\"\\n        self.pyload.db.update_link_info(data)\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"src/pyload/core/threads/info_thread.py\",\n      \"lines\": [125, 126],\n      \"content\": \"    def update_db(self, plugin, result):\\n        self.pyload.files.update_file_info(result, self.pid)\"\n    }\n  ],\n  \"suggested_fix\": \"Revert to the parameterized query approach. Use `placeholders = ','.join('?' * len(urls))` and pass the URLs as a parameter list: `self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", urls)`. This ensures the database driver properly escapes the values and prevents SQL injection.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 240,
+                  "end_line": 300,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=46aaa35a947d601deb0e9e1b01666928e30b4a29 path=src/pyload/core/database/file_database.py lines=240-300]\n240:                 \"package\": r[7],\n241:                 \"order\": r[8],\n242:             }\n243: \n244:         return data\n245: \n246:     @style.async_\n247:     def update_link(self, f):\n248:         self.c.execute(\n249:             \"UPDATE links SET url=?,name=?,size=?,status=?,error=?,package=? WHERE id=?\",\n250:             (f.url, f.name, f.size, f.status, f.error, str(f.packageid), str(f.id)),\n251:         )\n252: \n253:     @style.queue\n254:     def update_package(self, p):\n255:         self.c.execute(\n256:             \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257:             (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258:         )\n259: \n260:     @style.queue\n261:     def update_link_info(self, data):\n262:         \"\"\"\n263:         data is list of tuples (name, size, status, url)\n264:         \"\"\"\n265:         self.c.executemany(\n266:             \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267:             data,\n268:         )\n269:         ids = []\n270:         statuses = \"','\".join(x[3] for x in data)\n271:         self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")\n272:         for r in self.c:\n273:             ids.append(int(r[0]))\n274:         return ids\n275: \n276:     @style.queue\n277:     def reorder_package(self, p, position, no_move=False):\n278:         if position == -1:\n279:             position = self._next_package_order(p.queue)\n280:         if not no_move:\n281:             if p.order > position:\n282:                 self.c.execute(\n283:                     \"UPDATE packages SET packageorder=packageorder+1 WHERE packageorder >= ? AND packageorder < ? AND queue=? AND packageorder >= 0\",\n284:                     (position, p.order, p.queue),\n285:                 )\n286:             elif p.order < position:\n287:                 self.c.execute(\n288:                     \"UPDATE packages SET packageorder=packageorder-1 WHERE packageorder <= ? AND packageorder > ? AND queue=? AND packageorder >= 0\",\n289:                     (position, p.order, p.queue),\n290:                 )\n291: \n292:         self.c.execute(\n293:             \"UPDATE packages SET packageorder=? WHERE id=?\", (position, str(p.id))\n294:         )\n295: \n296:     @style.queue\n297:     def reorder_link(self, f, position):\n298:         \"\"\"\n299:         reorder link with f as dict for pyfile.\n300:         \"\"\"\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 240,
+                  "end_line": 300,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/database/file_database.py lines=240-300]\n240:                 \"package\": r[7],\n241:                 \"order\": r[8],\n242:             }\n243: \n244:         return data\n245: \n246:     @style.async_\n247:     def update_link(self, f):\n248:         self.c.execute(\n249:             \"UPDATE links SET url=?,name=?,size=?,status=?,error=?,package=? WHERE id=?\",\n250:             (f.url, f.name, f.size, f.status, f.error, str(f.packageid), str(f.id)),\n251:         )\n252: \n253:     @style.queue\n254:     def update_package(self, p):\n255:         self.c.execute(\n256:             \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257:             (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258:         )\n259: \n260:     @style.queue\n261:     def update_link_info(self, data):\n262:         \"\"\"\n263:         data is list of tuples (name, size, status, url)\n264:         \"\"\"\n265:         self.c.executemany(\n266:             \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267:             data,\n268:         )\n269:         urls = [x[3] for x in data]\n270:         placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\n271:         self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)\n272: \n273:         ids = [int(row[0]) for row in self.c.fetchall()]\n274:         return ids\n275: \n276:     @style.queue\n277:     def reorder_package(self, p, position, no_move=False):\n278:         if position == -1:\n279:             position = self._next_package_order(p.queue)\n280:         if not no_move:\n281:             if p.order > position:\n282:                 self.c.execute(\n283:                     \"UPDATE packages SET packageorder=packageorder+1 WHERE packageorder >= ? AND packageorder < ? AND queue=? AND packageorder >= 0\",\n284:                     (position, p.order, p.queue),\n285:                 )\n286:             elif p.order < position:\n287:                 self.c.execute(\n288:                     \"UPDATE packages SET packageorder=packageorder-1 WHERE packageorder <= ? AND packageorder > ? AND queue=? AND packageorder >= 0\",\n289:                     (position, p.order, p.queue),\n290:                 )\n291: \n292:         self.c.execute(\n293:             \"UPDATE packages SET packageorder=? WHERE id=?\", (position, str(p.id))\n294:         )\n295: \n296:     @style.queue\n297:     def reorder_link(self, f, position):\n298:         \"\"\"\n299:         reorder link with f as dict for pyfile.\n300:         \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "callers of update_link_info in file_database"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b status=ok truncated=true incomplete=true query=\"callers of update_link_info in file_database\"]\n**Exploration: callers of update_link_info in file_database**\n\nFound 138 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `update` (src/pyload/plugins/addons/UpdateManager.py:155) \u2014 3 callers in `src/pyload/plugins/addons/UpdateManager.py`, `src/pyload/core/utils/struct/info.py`; no tests found within 3 caller hops\n- `Info` (src/pyload/core/utils/struct/info.py:20) \u2014 1 caller in `src/pyload/core/utils/struct/info.py`; no tests found within 3 caller hops\n- `update` (src/pyload/webui/app/themes/modern/templates/js/dashboard.js:97) \u2014 2 callers in `src/pyload/webui/app/templates/js/dashboard.js`, `src/pyload/webui/app/themes/modern/templates/js/dashboard.js`; no tests found within 3 caller hops\n- `update` (src/pyload/webui/app/themes/pyplex/templates/js/dashboard.js:97) \u2014 1 caller in `src/pyload/webui/app/themes/pyplex/templates/js/dashboard.js`; no tests found within 3 caller hops\n\n**Relationships**\n\n**calls:**\n- update \u2192 pause_server\n- update \u2192 log_warning\n- update \u2192 get\n- update \u2192 restart\n- update \u2192 _update\n- update \u2192 status_downloads\n- activate \u2192 update\n- periodical_task \u2192 update\n- synclocal \u2192 update\n- update_plugins \u2192 pause_server\n- ... and 124 more\n\n**decorates:**\n- update \u2192 expose\n- update \u2192 threaded\n\n**extends:**\n- UpdateManager \u2192 BaseAddon\n- SyncInfo \u2192 Info\n- InscInfo \u2192 Info\n\n**references:**\n- __init__ \u2192 Info\n- loadJsonToContent \u2192 notificationHandler\n- loadJsonToContent \u2192 uiHandler\n- initButtonHandlers \u2192 loadJsonToContent\n- loadJsonToContent \u2192 uiHandler\n- loadJsonToContent \u2192 notificationHandler\n- initButtonHandlers \u2192 loadJsonToContent\n- download_finished \u2192 info\n- get_package \u2192 files\n- get_file \u2192 files\n\n**instantiates:**\n- async_ \u2192 DatabaseJob\n- queue \u2192 DatabaseJob\n- _init_database \u2192 DatabaseThread\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`src/pyload/core/database/file_database.py`** \u2014 _next_package_order(calls), size(calls), filecount(method), processcount(method), _next_package_order(method), add_links(method), delete_link(method), get_all_links(method), get_package_data(method), reorder_link(method), +19 more\n\n```python\n73\t        \"\"\"\n74\t        links is a list of tuples (url,plugin)\n75\t        \"\"\"\n76\t        order = self._next_file_order(package)\n77\t        orders = [order + x for x in range(len(links))]\n78\t        links = [(x[0], parse.name(x[0]), x[1], package, o) for x, o in zip(links, orders)]\n79\t        self.c.executemany(\n80\t            \"INSERT INTO links(url, name, plugin, package, linkorder) VALUES(?,?,?,?,?)\",\n81\t            links,\n82\t        )\n83\t\n84\t    @style.queue\n85\t    def add_package(self, name, folder, queue):\n86\t        order = self._next_package_order(queue)\n87\t        self.c.execute(\n88\t            \"INSERT INTO packages(name, folder, queue, packageorder) VALUES(?,?,?,?)\",\n89\t            (name, folder, queue, order),\n90\t        )\n91\t        return self.c.lastrowid\n92\t\n93\t    @style.queue\n94\t    def delete_package(self, p):\n95\t        self.c.execute(\"DELETE FROM links WHERE package=?\", (str(p.id),))\n96\t        self.c.execute(\"DELETE FROM packages WHERE id=?\", (str(p.id),))\n97\t        self.c.execute(\n\n... (gap) ...\n\n232\t                \"url\": r[1],\n233\t                \"name\": r[2],\n234\t                \"size\": r[3],\n235\t                \"format_size\": format.size(r[3]),\n236\t                \"status\": r[4],\n237\t                \"statusmsg\": self.pyload.files.status_msg[r[4]],\n238\t                \"error\": r[5],\n239\t                \"plugin\": r[6],\n240\t                \"package\": r[7],\n241\t                \"order\": r[8],\n242\t            }\n243\t\n244\t        return data\n245\t\n246\t    @style.async_\n247\t    def update_link(self, f):\n248\t        self.c.execute(\n249\t            \"UPDATE links SET url=?,name=?,size=?,status=?,error=?,package=? WHERE id=?\",\n250\t            (f.url, f.name, f.size, f.status, f.error, str(f.packageid), str(f.id)),\n251\t        )\n252\t\n253\t    @style.queue\n254\t    def update_package(self, p):\n255\t        self.c.execute(\n256\t            \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257\t            (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258\t        )\n259\t\n260\t    @style.queue\n261\t    def update_link_info(self, data):\n262\t        \"\"\"\n263\t        data is list of tuples (name, size, status, url)\n264\t        \"\"\"\n265\t        self.c.executemany(\n266\t            \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267\t            data,\n268\t        )\n269\t        urls = [x[3] for x in data]\n270\t        placeholders = ','.join('?' * len(urls))  # Create a parameterized query with the correct number of placeholders\n271\t        self.c.execute(f\"SELECT id FROM links WHERE url IN ({placeholders})\", urls)\n272\t\n273\t        ids = [int(row[0]) for row in self.c.fetchall()]\n274\t        return ids\n275\t\n276\t    @style.queue\n277\t    def reorder_package(self, p, position, no_move=False):\n278\t        if position == -1:\n279\t            position = self._next_package_order(p.queue)\n280\t        if not no_move:\n281\t            if p.order > position:\n282\t                self.c.execute(\n\n... (gap: reorder_link (src/pyload/core/database/file_database.py:297)) ...\n\n312\t        self.c.execute(\"UPDATE links SET linkorder=? WHERE id=?\", (position, f[\"id\"]))\n313\t\n314\t    @style.queue\n315\t    def clear_package_order(self, p):\n316\t        self.c.exec\n[TRUNCATED omitted_chars=19312]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "update_link_info",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"update_link_info\"]\nsrc/pyload/core/database/file_database.py:261:    def update_link_info(self, data):\nsrc/pyload/core/managers/file_manager.py:590:        self.pyload.db.update_link_info(data)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/managers/file_manager.py",
+                  "start_line": 560,
+                  "end_line": 600,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/managers/file_manager.py lines=560-600]\n560:         for pyfile in pyfiles:\n561:             if pyfile.packageid != f[\"package\"] or pyfile.order < 0:\n562:                 continue\n563:             if f[\"order\"] > position:\n564:                 if pyfile.order >= position and pyfile.order < f[\"order\"]:\n565:                     pyfile.order += 1\n566:                     pyfile.notify_change()\n567:             elif f[\"order\"] < position:\n568:                 if pyfile.order <= position and pyfile.order > f[\"order\"]:\n569:                     pyfile.order -= 1\n570:                     pyfile.notify_change()\n571: \n572:         if id in self.cache:\n573:             self.cache[id].order = position\n574: \n575:         self.pyload.db.commit()\n576: \n577:         e = InsertEvent(\n578:             \"file\",\n579:             id,\n580:             position,\n581:             \"collector\" if not self.get_package(f[\"package\"]).queue else \"queue\",\n582:         )\n583:         self.pyload.event_manager.add_event(e)\n584: \n585:     @change\n586:     def update_file_info(self, data, pid):\n587:         \"\"\"\n588:         updates file info (name, size, status, url)\n589:         \"\"\"\n590:         self.pyload.db.update_link_info(data)\n591:         e = UpdateEvent(\n592:             \"pack\", pid, \"collector\" if not self.get_package(pid).queue else \"queue\"\n593:         )\n594:         self.pyload.event_manager.add_event(e)\n595: \n596:     def check_package_finished(self, pyfile):\n597:         \"\"\"\n598:         checks if package is finished and calls addon_manager.\n599:         \"\"\"\n600:         ids = self.pyload.db.get_unfinished(pyfile.packageid)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "update_file_info",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"update_file_info\"]\nsrc/pyload/core/managers/file_manager.py:586:    def update_file_info(self, data, pid):\nsrc/pyload/core/threads/info_thread.py:126:        self.pyload.files.update_file_info(result, self.pid)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 90,
+                  "end_line": 135,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=90-135]\n90:                         \"Could not decrypt container.\",\n91:                         exc_info=self.pyload.debug > 1,\n92:                         stack_info=self.pyload.debug > 2,\n93:                     )\n94:                     data = []\n95: \n96:                 for url, plugin in data:\n97:                     if plugin in plugins:\n98:                         plugins[plugin].append(url)\n99:                     else:\n100:                         plugins[plugin] = [url]\n101: \n102:             self.m.info_results[self.rid] = {}\n103: \n104:             for pluginname, urls in plugins.items():\n105:                 plugin = self.pyload.plugin_manager.get_plugin(pluginname, True)\n106:                 if hasattr(plugin, \"get_info\"):\n107:                     self.fetch_for_plugin(\n108:                         pluginname, plugin, urls, self.update_result, True\n109:                     )\n110: \n111:                     # force to process cache\n112:                     if self.cache:\n113:                         self.update_result(pluginname, [], True)\n114: \n115:                 else:\n116:                     # generate default result\n117:                     result = [(url, 0, 3, url) for url in urls]\n118: \n119:                     self.update_result(pluginname, result, True)\n120: \n121:             self.m.info_results[self.rid][\"ALL_INFO_FETCHED\"] = {}\n122: \n123:         self.m.timestamp = time.time() + timedelta(minutes=5).total_seconds()\n124: \n125:     def update_db(self, plugin, result):\n126:         self.pyload.files.update_file_info(result, self.pid)\n127: \n128:     def update_result(self, plugin, result, force=False):\n129:         # parse package name and generate result\n130:         # accumulate results\n131: \n132:         self.cache.extend(result)\n133: \n134:         if len(self.cache) >= 20 or force:\n135:             # used for package generating\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection parameterized queries security policy"
+                },
+                "result": "[LICENSE.md:590-631] (relevance 0.21)\nAPPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT\nHOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM \"AS IS\" WITHOUT\nWARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND\nPERFORMANCE OF THE PROGRAM IS WITH YOU. SHOULD THE PROGRAM PROVE\nDEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR\nCORRECTION.\n\n#### 16. Limitation of Liability.\n\nIN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING\nWILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR\nCONVEYS THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES,\nINCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES\nARISING OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT\nNOT LIMITED TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR\nLOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE PROGRAM\nTO OPERATE WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER\nPARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.\n\n#### 17. Interpretation of Sections 15 and 16.\n\nIf the disclaimer of warranty and limitation of liability provided\nabove cannot be given local legal effect according to their terms,\nreviewing courts shall apply local law that most closely approximates\nan absolute waiver of all civil liability in connection with the\nProgram, unless a warranty or assumption of liability accompanies a\ncopy of the Program in return for a fee.\n\nEND OF TERMS AND CONDITIONS\n\n### How to Apply These Terms to Your New Programs\n\nIf you develop a new program, and you want it to be of the greatest\npossible use to the public, the best way to achieve this is to make it\nfree software which everyone can redistribute and change under these\nterms.\n\nTo do so, attach the following notices to the program. It is safest to\nattach them to the start of each source file to most effectively state\nthe exclusion of warranty; and each file should have at least the\n\n---\n\n[.github/ISSUE_TEMPLATE/question.md:1-18] (relevance 0.19)\n---\nname: Question\nabout: Ask us something\ntitle: \"\"\nlabels: question\nassignees: gammac0de\n---\n\n<!-- ANNOTATIONS LIKE THIS WILL NOT BE VISIBLE IN YOUR TICKET -->\n\n### Question\n\n<!-- WRITE HERE -->\n\n### Additional references\n<!-- Any other reference, related issues, pull requests or screenshots about this question. -->\n\n<!-- WRITE HERE - OPTIONAL -->\n\n---\n\n[LICENSE.md:354-390] (relevance 0.19)\nadd to a covered work, you may (if authorized by the copyright holders\nof that material) supplement the terms of this License with terms:\n\n- a) Disclaiming warranty or limiting liability differently from the\n  terms of sections 15 and 16 of this License; or\n- b) Requiring preservation of specified reasonable legal notices or\n  author attributions in that material or in the Appropriate Legal\n  Notices displayed by works containing it; or\n- c) Prohibiting misrepresentation of the origin of that material,\n  or requiring that modified versions of such material be marked in\n  reasonable ways as different from the original version; or\n- d) Limiting the use for publicity purposes of names of licensors\n  or authors of the material; or\n- e) Declining to grant rights under trademark law for use of some\n  trade names, trademarks, or service marks; or\n- f) Requiring indemnification of licensors and authors of that\n  material by anyone who conveys the material (or modified versions\n  of it) with contractual assumptions of liability to the recipient,\n  for any liability that these contractual assumptions directly\n  impose on those licensors and authors.\n\nAll other non-permissive additional terms are considered \"further\nrestrictions\" within the meaning of section 10. If the Program as you\nreceived it, or any part of it, contains a notice stating that it is\ngoverned by this License along with a term that is a further\nrestriction, you may remove that term. If a license document contains\na further restriction but permits relicensing or conveying under this\nLicense, you may add to a covered work material governed by the terms\nof that license document, provided that the further restriction does\nnot survive such relicensing or conveying.\n\nIf you add terms to a covered work in accord with this section, you\nmust place, in the relevant source files, a statement of the\nadditional terms that apply to those files, or a notice indicating\nwhere to find the applicable terms.\n\nAdditional terms, permissive or non-permissive, may be stated in the\n\n---\n\n[LICENSE.md:321-358] (relevance 0.19)\nrequirement to continue to provide support service, warranty, or\nupdates for a work that has been modified or installed by the\nrecipient, or for the User Product in which it has been modified or\ninstalled. Access to a network may be denied when the modification\nitself materially and adversely affects the operation of the network\nor violates the rules and protocols for communication across the\nnetwork.\n\nCorresponding Source conveyed, and Installation Information provided,\nin accord with this section must be in a format that is publicly\ndocumented (and with an implementation available to the public in\nsource code form), and must require no special password or key for\nunpacking, reading or copying.\n\n#### 7. Additional Terms.\n\n\"Additional permissions\" are terms that supplement the terms of this\nLicense by making exceptions from one or more of its conditions.\nAdditional permissions that are applicable to the entire Program shall\nbe treated as though they were included in this License, to the extent\nthat they are valid under applicable law. If additional permissions\napply only to part of the Program, that part may be used separately\nunder those permissions, but the entire Program remains governed by\nthis License without regard to the additional permissions.\n\nWhen you convey a copy of a covered work, you may at your option\nremove any additional permissions from that copy, or from any part of\nit. (Additional permissions may be written to require their own\nremoval in certain cases when you modify the work.) You may place\nadditional permissions on material, added by you to a covered work,\nfor which you have or can give appropriate copyright permission.\n\nNotwithstanding any other provision of this License, for material you\nadd to a covered work, you may (if authorized by the copyright holders\nof that material) supplement the terms of this License with terms:\n\n- a) Disclaiming warranty or limiting liability differently from the\n  terms of sections 15 and 16 of this License; or\n\n---\n\n[LICENSE.md:290-324] (relevance 0.18)\nincorporation into a dwelling. In determining whether a product is a\nconsumer product, doubtful cases shall be resolved in favor of\ncoverage. For a particular product received by a particular user,\n\"normally used\" refers to a typical or common use of that class of\nproduct, regardless of the status of the particular user or of the way\nin which the particular user actually uses, or expects or is expected\nto use, the product. A product is a consumer product regardless of\nwhether the product has substantial commercial, industrial or\nnon-consumer uses, unless such uses represent the only significant\nmode of use of the product.\n\n\"Installation Information\" for a User Product means any methods,\nprocedures, authorization keys, or other information required to\ninstall and execute modified versions of a covered work in that User\nProduct from a modified version of its Corresponding Source. The\ninformation must suffice to ensure that the continued functioning of\nthe modified object code is in no case prevented or interfered with\nsolely because modification has been made.\n\nIf you convey an object code work under this section in, or with, or\nspecifically for use in, a User Product, and the conveying occurs as\npart of a transaction in which the right of possession and use of the\nUser Product is transferred"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def style|class style|queue =|async_ =",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"def style|class style|queue =|async_ =\"]\nsrc/pyload/core/datatypes/data.py:327:        self.queue = queue\nsrc/pyload/core/datatypes/pypackage.py:22:        self.queue = queue\nsrc/pyload/core/managers/file_manager.py:94:        queue = queue.value\nsrc/pyload/core/managers/file_manager.py:116:        queue = queue.value\nsrc/pyload/core/managers/file_manager.py:173:        queue = p.queue\nsrc/pyload/core/managers/file_manager.py:192:            if pack.queue == queue and pack.order > oldorder:\nsrc/pyload/core/managers/file_manager.py:487:        queue = queue.value\nsrc/pyload/core/managers/file_manager.py:498:        p.queue = queue\nsrc/pyload/core/scheduler.py:38:        self.queue = PriorityQueue()\nsrc/pyload/core/scheduler.py:109:        self.queue = []\nsrc/pyload/core/threads/download_thread.py:24:        self.queue = Queue()  #: job queue\nsrc/pyload/core/utils/struct/style.py:4:class style:\nsrc/pyload/plugins/addons/Captcha9Kw.py:251:        max_queue = min(self.config.get(\"queue\"), 999)\nsrc/pyload/plugins/addons/Checksum.py:279:            failed_queue = []\nsrc/pyload/plugins/addons/ExtractArchive.py:40:        queue = self.get()\nsrc/pyload/plugins/addons/ExtractArchive.py:47:        queue = self.get()\nsrc/pyload/plugins/addons/ExtractArchive.py:109:        self.queue = ArchiveQueue(self, \"Queue\")\nsrc/pyload/plugins/base/decrypter.py:80:        pack_queue = self.pyfile.package().queue\nsrc/pyload/plugins/helpers.py:167:        queue = self.get()\nsrc/pyload/plugins/helpers.py:174:        queue = self.get()\nsrc/pyload/webui/app/blueprints/app_blueprint.py:118:    queue = api.get_queue()\nsrc/pyload/webui/app/blueprints/app_blueprint.py:128:    queue = api.get_collector()\nsrc/pyload/webui/app/blueprints/json_blueprint.py:144:    queue = int(flask.request.form[\"add_dest\"])\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/utils/struct/style.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/utils/struct/style.py lines=1-33]\n1: # -*- coding: utf-8 -*-\n2: \n3: \n4: class style:\n5:     db = None\n6: \n7:     @classmethod\n8:     def set_db(cls, db):\n9:         cls.db = db\n10: \n11:     @classmethod\n12:     def inner(cls, fn):\n13:         @staticmethod\n14:         def x(*args, **kwargs):\n15:             return fn(cls.db, *args, **kwargs)\n16: \n17:         return x\n18: \n19:     @classmethod\n20:     def queue(cls, fn):\n21:         @staticmethod\n22:         def x(*args, **kwargs):\n23:             return cls.db.queue(fn, *args, **kwargs)\n24: \n25:         return x\n26: \n27:     @classmethod\n28:     def async_(cls, fn):\n29:         @staticmethod\n30:         def x(*args, **kwargs):\n31:             return cls.db.async_(fn, *args, **kwargs)\n32: \n33:         return x\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 1,
+                  "end_line": 72,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/database/file_database.py lines=1-72]\n1: # -*- coding: utf-8 -*-\n2: \n3: from ..datatypes.pyfile import PyFile\n4: from ..datatypes.pypackage import PyPackage\n5: from ..utils import format\n6: from ..utils.struct.style import style\n7: from ..utils.web import parse\n8: \n9: \n10: class FileDatabaseMethods:\n11:     @style.queue\n12:     def filecount(self, queue):\n13:         \"\"\"\n14:         returns number of files in queue.\n15:         \"\"\"\n16:         self.c.execute(\n17:             \"SELECT COUNT(*) FROM links as l INNER JOIN packages as p ON l.package=p.id WHERE p.queue=?\",\n18:             (queue,),\n19:         )\n20:         return self.c.fetchone()[0]\n21: \n22:     @style.queue\n23:     def queuecount(self, queue):\n24:         \"\"\"\n25:         number of files in queue not finished yet.\n26:         \"\"\"\n27:         self.c.execute(\n28:             \"SELECT COUNT(*) FROM links as l INNER JOIN packages as p ON l.package=p.id WHERE p.queue=? AND l.status NOT IN (0,4)\",\n29:             (queue,),\n30:         )\n31:         return self.c.fetchone()[0]\n32: \n33:     @style.queue\n34:     def processcount(self, queue, fid):\n35:         \"\"\"\n36:         number of files which have to be processed.\n37:         \"\"\"\n38:         self.c.execute(\n39:             \"SELECT COUNT(*) FROM links as l INNER JOIN packages as p ON l.package=p.id WHERE p.queue=? AND l.status IN (2,3,5,7,12) AND l.id != ?\",\n40:             (queue, str(fid)),\n41:         )\n42:         return self.c.fetchone()[0]\n43: \n44:     @style.inner\n45:     def _next_package_order(self, queue=0):\n46:         self.c.execute(\"SELECT MAX(packageorder) FROM packages WHERE queue=?\", (queue,))\n47:         max_order = self.c.fetchone()[0]\n48:         if max_order is not None:\n49:             return max_order + 1\n50:         else:\n51:             return 0\n52: \n53:     @style.inner\n54:     def _next_file_order(self, package):\n55:         self.c.execute(\"SELECT MAX(linkorder) FROM links WHERE package=?\", (package,))\n56:         max_order = self.c.fetchone()[0]\n57:         if max_order is not None:\n58:             return max_order + 1\n59:         else:\n60:             return 0\n61: \n62:     @style.queue\n63:     def add_link(self, url, name, plugin, package):\n64:         order = self._next_file_order(package)\n65:         self.c.execute(\n66:             \"INSERT INTO links(url, name, plugin, package, linkorder) VALUES(?,?,?,?,?)\",\n67:             (url, name, plugin, package, order),\n68:         )\n69:         return self.c.lastrowid\n70: \n71:     @style.queue\n72:     def add_links(self, links, package):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def queue|def async_|def commit",
+                  "file_glob": "src/pyload/core/database/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"def queue|def async_|def commit\"]\nsrc/pyload/core/database/file_database.py:23:    def queuecount(self, queue):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def queue|def async_|def commit|DatabaseThread",
+                  "file_glob": "src/pyload/core/database/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"def queue|def async_|def commit|DatabaseThread\"]\nsrc/pyload/core/database/file_database.py:23:    def queuecount(self, queue):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def queue|def async_|def commit",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"def queue|def async_|def commit\"]\nsrc/pyload/core/database/file_database.py:23:    def queuecount(self, queue):\nsrc/pyload/core/threads/database_thread.py:227:    def commit(self):\nsrc/pyload/core/threads/database_thread.py:238:    def async_(self, f, *args, **kwargs):\nsrc/pyload/core/threads/database_thread.py:243:    def queue(self, f, *args, **kwargs):\nsrc/pyload/core/utils/struct/style.py:20:    def queue(cls, fn):\nsrc/pyload/core/utils/struct/style.py:28:    def async_(cls, fn):\nsrc/pyload/webui/app/blueprints/app_blueprint.py:116:def queue():\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/database_thread.py",
+                  "start_line": 220,
+                  "end_line": 260,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/database_thread.py lines=220-260]\n220: \n221:         self.c.execute(\"VACUUM\")\n222: \n223:     def create_cursor(self):\n224:         return self.conn.cursor()\n225: \n226:     @style.async_\n227:     def commit(self):\n228:         self.conn.commit()\n229: \n230:     @style.queue\n231:     def sync_save(self):\n232:         self.conn.commit()\n233: \n234:     @style.async_\n235:     def rollback(self):\n236:         self.conn.rollback()\n237: \n238:     def async_(self, f, *args, **kwargs):\n239:         args = (self,) + args\n240:         job = DatabaseJob(f, *args, **kwargs)\n241:         self.jobs.put(job)\n242: \n243:     def queue(self, f, *args, **kwargs):\n244:         args = (self,) + args\n245:         job = DatabaseJob(f, *args, **kwargs)\n246:         self.jobs.put(job)\n247:         job.wait()\n248:         return job.result\n249: \n250:     @classmethod\n251:     def register_sub(cls, klass):\n252:         cls.subs.append(klass)\n253: \n254:     @classmethod\n255:     def unregister_sub(cls, klass):\n256:         cls.subs.remove(klass)\n257: \n258:     def __getattr__(self, attr):\n259:         for sub in DatabaseThread.subs:\n260:             if hasattr(sub, attr):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 128,
+                  "end_line": 175,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=128-175]\n128:     def update_result(self, plugin, result, force=False):\n129:         # parse package name and generate result\n130:         # accumulate results\n131: \n132:         self.cache.extend(result)\n133: \n134:         if len(self.cache) >= 20 or force:\n135:             # used for package generating\n136:             tmp = [\n137:                 (name, (url, OnlineStatus(name, plugin, \"unknown\", status, int(size))))\n138:                 for name, size, status, url in self.cache\n139:             ]\n140: \n141:             data = parse_names(tmp)\n142:             result = {}\n143:             for k, v in data.items():\n144:                 for url, status in v:\n145:                     status.packagename = k\n146:                     result[url] = status\n147: \n148:             self.m.set_info_results(self.rid, result)\n149: \n150:             self.cache = []\n151: \n152:     def update_cache(self, plugin, result):\n153:         self.cache.extend(result)\n154: \n155:     def fetch_for_plugin(self, pluginname, plugin, urls, cb, err=None):\n156:         try:\n157:             result = []  #: result loaded from cache\n158:             process = []  #: urls to process\n159:             for url in urls:\n160:                 if url in self.m.info_cache:\n161:                     result.append(self.m.info_cache[url])\n162:                 else:\n163:                     process.append(url)\n164: \n165:             if result:\n166:                 self.pyload.log.debug(\n167:                     f\"Fetched {len(result)} values from cache for {pluginname}\"\n168:                 )\n169:                 cb(pluginname, result)\n170: \n171:             if process:\n172:                 self.pyload.log.debug(f\"Run Info Fetching for {pluginname}\")\n173:                 for result in plugin.get_info(process):\n174:                     # result = [ .. (name, size, status, url) .. ]\n175:                     if not isinstance(result, list):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 175,
+                  "end_line": 210,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=175-210]\n175:                     if not isinstance(result, list):\n176:                         result = [result]\n177: \n178:                     for res in result:\n179:                         self.m.info_cache[res[3]] = res\n180: \n181:                     cb(pluginname, result)\n182: \n183:             self.pyload.log.debug(f\"Finished Info Fetching for {pluginname}\")\n184:         except Exception as exc:\n185:             self.pyload.log.warning(\n186:                 self._(\"Info Fetching for {name} failed | {err}\").format(\n187:                     name=pluginname, err=exc\n188:                 ),\n189:                 exc_info=self.pyload.debug > 1,\n190:                 stack_info=self.pyload.debug > 2,\n191:             )\n192: \n193:             # generate default results\n194:             if err:\n195:                 result = [(url, 0, 3, url) for url in urls]\n196:                 cb(pluginname, result)\n197: \n198:     def decrypt_container(self, plugin, url):\n199:         data = []\n200:         # only works on container plugins\n201: \n202:         self.pyload.log.debug(f\"Pre-decrypting {url} with {plugin}\")\n203: \n204:         # dummy pyfile\n205:         pyfile = PyFile(self.pyload.files, -1, url, url, 0, 0, \"\", plugin, -1, -1)\n206: \n207:         pyfile.init_plugin()\n208: \n209:         # little plugin lifecycle\n210:         try:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "update_db",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"update_db\"]\nsrc/pyload/core/threads/info_thread.py:55:                    self.fetch_for_plugin(pluginname, plugin, urls, self.update_db)\nsrc/pyload/core/threads/info_thread.py:125:    def update_db(self, plugin, result):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 30,
+                  "end_line": 90,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=30-90]\n30:     def run(self):\n31:         \"\"\"\n32:         run method.\n33:         \"\"\"\n34:         plugins = {}\n35:         container = []\n36: \n37:         for url, plugin in self.data:\n38:             if plugin in plugins:\n39:                 plugins[plugin].append(url)\n40:             else:\n41:                 plugins[plugin] = [url]\n42: \n43:         # filter out container plugins\n44:         for name in self.pyload.plugin_manager.container_plugins:\n45:             if name in plugins:\n46:                 container.extend((name, url) for url in plugins[name])\n47: \n48:                 del plugins[name]\n49: \n50:         # directly write to database\n51:         if self.pid > -1:\n52:             for pluginname, urls in plugins.items():\n53:                 plugin = self.pyload.plugin_manager.get_plugin(pluginname, True)\n54:                 if hasattr(plugin, \"get_info\"):\n55:                     self.fetch_for_plugin(pluginname, plugin, urls, self.update_db)\n56:                     self.pyload.files.save()\n57: \n58:         elif self.add:\n59:             for pluginname, urls in plugins.items():\n60:                 plugin = self.pyload.plugin_manager.get_plugin(pluginname, True)\n61:                 if hasattr(plugin, \"get_info\"):\n62:                     self.fetch_for_plugin(\n63:                         pluginname, plugin, urls, self.update_cache, True\n64:                     )\n65: \n66:                 else:\n67:                     # generate default result\n68:                     result = [(url, 0, 3, url) for url in urls]\n69: \n70:                     self.update_cache(pluginname, result)\n71: \n72:             packs = parse_names((name, url) for name, x, y, url in self.cache)\n73: \n74:             self.pyload.log.debug(f\"Fetched and generated {len(packs)} packages\")\n75: \n76:             for k, v in packs.items():\n77:                 self.pyload.api.add_package(k, v)\n78: \n79:             # empty cache\n80:             del self.cache[:]\n81: \n82:         else:  #: post the results\n83: \n84:             for name, url in container:\n85:                 # attach container content\n86:                 try:\n87:                     data = self.decrypt_container(name, url)\n88:                 except Exception:\n89:                     self.pyload.log.warning(\n90:                         \"Could not decrypt container.\",\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_info",
+                  "file_glob": "src/pyload/plugins/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b pattern=\"def get_info\"]\nsrc/pyload/plugins/base/account.py:224:    def get_info(self, refresh=True):\nsrc/pyload/plugins/base/dead_decrypter.py:20:    def get_info(self, *args, **kwargs):\nsrc/pyload/plugins/base/dead_downloader.py:20:    def get_info(self, *args, **kwargs):\nsrc/pyload/plugins/base/hoster.py:17:def get_info(urls):\nsrc/pyload/plugins/base/hoster.py:46:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/base/multi_downloader.py:38:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/base/simple_decrypter.py:97:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/base/simple_downloader.py:143:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/containers/TORRENT.py:184:def get_info_hash(input_data: object) -> str:\nsrc/pyload/plugins/downloaders/CloudMailRu.py:31:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/DailymotionCom.py:12:def get_info(urls):\nsrc/pyload/plugins/downloaders/DailymotionCom.py:77:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/FilefactoryCom.py:12:def get_info(urls):\nsrc/pyload/plugins/downloaders/GofileIo.py:38:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/PornhubCom.py:38:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/SmuleCom.py:31:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/SoundcloudCom.py:47:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/VimeoCom.py:40:    def get_info(self, url=\"\", html=\"\"):\nsrc/pyload/plugins/downloaders/YadiSk.py:31:    def get_info(self, url=\"\", html=\"\"):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/base/hoster.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/base/hoster.py lines=1-60]\n1: # -*- coding: utf-8 -*-\n2: import inspect\n3: import re\n4: import time\n5: import urllib.parse\n6: \n7: from pyload.core.network.exceptions import Abort, Fail, Reconnect, Retry, Skip\n8: from pyload.core.utils import format, parse\n9: from pyload.core.utils.old import fixurl\n10: \n11: from ..helpers import parse_html_form, replace_patterns\n12: from .captcha import BaseCaptcha\n13: from .plugin import BasePlugin\n14: \n15: \n16: # TODO: Recheck in 0.6.x\n17: def get_info(urls):\n18:     #: result = [ .. (name, size, status, url) .. ]\n19:     pass\n20: \n21: \n22: # TODO: Remove in 0.6.x\n23: def parse_file_info(klass, url=\"\", html=\"\"):\n24:     info = klass.get_info(url, html)\n25:     return info[\"name\"], info[\"size\"], info[\"status\"], info[\"url\"]\n26: \n27: \n28: class BaseHoster(BasePlugin):\n29:     __name__ = \"BaseHoster\"\n30:     __type__ = \"base\"\n31:     __version__ = \"0.41\"\n32:     __status__ = \"stable\"\n33: \n34:     __pattern__ = r\"^unmatchable$\"\n35:     __config__ = [\n36:         (\"enabled\", \"bool\", \"Activated\", True),\n37:         (\"use_premium\", \"bool\", \"Use premium account if available\", True),\n38:     ]\n39: \n40:     __description__ = \"\"\"Base hoster plugin\"\"\"\n41:     __license__ = \"GPLv3\"\n42:     __authors__ = [(\"Walter Purcaro\", \"vuolter@gmail.com\")]\n43: \n44:     URL_REPLACEMENTS = []\n45: \n46:     def get_info(self, url=\"\", html=\"\"):\n47:         url = fixurl(url, unquote=True)\n48:         info = {\n49:             \"name\": parse.name(url),\n50:             \"hash\": {},\n51:             \"pattern\": {},\n52:             \"size\": 0,\n53:             \"status\": 7 if url else 8,\n54:             \"url\": replace_patterns(url, self.URL_REPLACEMENTS),\n55:         }\n56: \n57:         try:\n58:             info[\"pattern\"] = re.match(self.__pattern__, url).groupdict()\n59: \n60:         except Exception:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/downloaders/FilefactoryCom.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/downloaders/FilefactoryCom.py lines=1-40]\n1: # -*- coding: utf-8 -*-\n2: \n3: import re\n4: from datetime import timedelta\n5: \n6: from pyload.core.network.request_factory import get_url\n7: \n8: from ..base.hoster import parse_file_info\n9: from ..base.simple_downloader import SimpleDownloader\n10: \n11: \n12: def get_info(urls):\n13:     for url in urls:\n14:         h = get_url(url, just_header=True)\n15:         m = re.search(r\"Location: (.+)\\r\\n\", h)\n16: \n17:         if m and not re.match(\n18:             m.group(1), FilefactoryCom.__pattern__\n19:         ):  #: : It's a direct link! Skipping\n20:             yield (url, 0, 7, url)\n21:         else:\n22:             #: It's a standard html page\n23:             yield parse_file_info(FilefactoryCom, url, get_url(url))\n24: \n25: \n26: class FilefactoryCom(SimpleDownloader):\n27:     __name__ = \"FilefactoryCom\"\n28:     __type__ = \"downloader\"\n29:     __version__ = \"0.64\"\n30:     __status__ = \"testing\"\n31: \n32:     __pattern__ = r\"https?://(?:www\\.)?filefactory\\.com/(file|trafficshare/\\w+)/\\w+\"\n33:     __config__ = [\n34:         (\"enabled\", \"bool\", \"Activated\", True),\n35:         (\"use_premium\", \"bool\", \"Use premium account if available\", True),\n36:         (\"fallback\", \"bool\", \"Fallback to free download if premium fails\", True),\n37:         (\"chk_filesize\", \"bool\", \"Check file size\", True),\n38:         (\"max_wait\", \"int\", \"Reconnect if waiting time is greater than minutes\", 10),\n39:     ]\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/downloaders/GofileIo.py",
+                  "start_line": 30,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/downloaders/GofileIo.py lines=30-60]\n30:     URL_REPLACEMENTS = [(\"http://\", \"https://\")]\n31: \n32:     API_URL = \"https://api.gofile.io/\"\n33: \n34:     def api_request(self, method, **kwargs):\n35:         json_data = self.load(self.API_URL + method, get=kwargs)\n36:         return json.loads(json_data)\n37: \n38:     def get_info(self, url=\"\", html=\"\"):\n39:         info = super().get_info(url, html)\n40: \n41:         qs = re.match(self.__pattern__, url).group('QS')\n42:         file_info = json.loads(base64.b64decode(qs).decode(\"utf-8\"))\n43: \n44:         info.update({\n45:             'name': file_info['n'],\n46:             'size': file_info['s'],\n47:             'md5': file_info['m'],\n48:             'u': file_info['u'],\n49:             \"token\": file_info[\"t\"]\n50:         })\n51: \n52:         return info\n53: \n54:     def setup(self):\n55:         self.chunk_limit = -1\n56:         self.resume_download = True\n57:         self.multi_dl = True\n58: \n59:     def process(self, pyfile):\n60:         token = self.info[\"token\"]\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/downloaders/SoundcloudCom.py",
+                  "start_line": 40,
+                  "end_line": 70,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/downloaders/SoundcloudCom.py lines=40-70]\n40: \n41:         self.req.http = HTTPRequest(\n42:             cookies=self.req.cj,\n43:             options=self.pyload.request_factory.get_options(),\n44:             limit=5_000_000,\n45:         )\n46: \n47:     def get_info(self, url=\"\", html=\"\"):\n48:         info = super(SoundcloudCom, self).get_info(url, html)\n49:         # Unfortunately, NAME_PATTERN does not include file extension, so we add '.mp3' as an extension.\n50:         if \"name\" in info:\n51:             info[\"name\"] += \".mp3\"\n52: \n53:         return info\n54: \n55:     def handle_free(self, pyfile):\n56:         try:\n57:             json_data = re.search(\n58:                 r\"<script>window\\.__sc_hydration = (.+?);</script>\", self.data\n59:             ).group(1)\n60: \n61:         except (AttributeError, IndexError):\n62:             self.fail(\"Failed to retrieve json_data\")\n63: \n64:         try:\n65:             js_url = re.findall(r'script crossorigin src=\"(.+?)\"></script>', self.data)[-1]\n66:         except IndexError:\n67:             self.fail(self._(\"Failed to find js_url\"))\n68: \n69:         js_data = self.load(js_url)\n70:         m = re.search(r'[ ,]client_id:\"(.+?)\"', js_data)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"sql-injection-update-link-info\",\n      \"title\": \"update_link_info SELECT rewritten from parameterized query to f-string interpolation of URLs\",\n      \"rationale\": \"The single hunk replaces a parameterized `IN (?)` SELECT with an f-string that splices raw URL values into the SQL literal, introducing a SQL-injection vector for attacker-controlled URLs.\",\n      \"hunks\": [\"src/pyload/core/database/file_database.py#0\"],\n      \"context\": [\n        {\"path\": \"src/pyload/core/managers/file_manager.py\", \"symbol\": \"update_file_info\", \"start_line\": 586, \"end_line\": 594, \"snapshot\": \"base\", \"why\": \"Direct caller that passes plugin-supplied `data` (name,size,status,url) into update_link_info\"},\n        {\"path\": \"src/pyload/core/threads/info_thread.py\", \"symbol\": \"update_db\", \"start_line\": 125, \"end_line\": 126, \"snapshot\": \"base\", \"why\": \"Feeds plugin get_info() results (URLs from external hosts) into update_file_info, making the interpolated values attacker-influenced\"},\n        {\"path\": \"src/pyload/plugins/base/hoster.py\", \"symbol\": \"get_info\", \"start_line\": 46, \"end_line\": 55, \"snapshot\": \"base\", \"why\": \"Source of the url field returned to the DB layer; confirms URLs are external/untrusted input\"},\n        {\"path\": \"src/pyload/core/threads/database_thread.py\", \"symbol\": \"queue\", \"start_line\": 243, \"end_line\": 248, \"snapshot\": \"base\", \"why\": \"Shows @style.queue runs the method on the shared DB cursor, so the injected query executes against the live links table\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sql-injection-update-link-info",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 255,
+                  "end_line": 285,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=46aaa35a947d601deb0e9e1b01666928e30b4a29 path=src/pyload/core/database/file_database.py lines=255-285]\n255:         self.c.execute(\n256:             \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257:             (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258:         )\n259: \n260:     @style.queue\n261:     def update_link_info(self, data):\n262:         \"\"\"\n263:         data is list of tuples (name, size, status, url)\n264:         \"\"\"\n265:         self.c.executemany(\n266:             \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267:             data,\n268:         )\n269:         ids = []\n270:         statuses = \"','\".join(x[3] for x in data)\n271:         self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")\n272:         for r in self.c:\n273:             ids.append(int(r[0]))\n274:         return ids\n275: \n276:     @style.queue\n277:     def reorder_package(self, p, position, no_move=False):\n278:         if position == -1:\n279:             position = self._next_package_order(p.queue)\n280:         if not no_move:\n281:             if p.order > position:\n282:                 self.c.execute(\n283:                     \"UPDATE packages SET packageorder=packageorder+1 WHERE packageorder >= ? AND packageorder < ? AND queue=? AND packageorder >= 0\",\n284:                     (position, p.order, p.queue),\n285:                 )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/managers/file_manager.py",
+                  "start_line": 580,
+                  "end_line": 600,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/managers/file_manager.py lines=580-600]\n580:             position,\n581:             \"collector\" if not self.get_package(f[\"package\"]).queue else \"queue\",\n582:         )\n583:         self.pyload.event_manager.add_event(e)\n584: \n585:     @change\n586:     def update_file_info(self, data, pid):\n587:         \"\"\"\n588:         updates file info (name, size, status, url)\n589:         \"\"\"\n590:         self.pyload.db.update_link_info(data)\n591:         e = UpdateEvent(\n592:             \"pack\", pid, \"collector\" if not self.get_package(pid).queue else \"queue\"\n593:         )\n594:         self.pyload.event_manager.add_event(e)\n595: \n596:     def check_package_finished(self, pyfile):\n597:         \"\"\"\n598:         checks if package is finished and calls addon_manager.\n599:         \"\"\"\n600:         ids = self.pyload.db.get_unfinished(pyfile.packageid)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 110,
+                  "end_line": 135,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=110-135]\n110: \n111:                     # force to process cache\n112:                     if self.cache:\n113:                         self.update_result(pluginname, [], True)\n114: \n115:                 else:\n116:                     # generate default result\n117:                     result = [(url, 0, 3, url) for url in urls]\n118: \n119:                     self.update_result(pluginname, result, True)\n120: \n121:             self.m.info_results[self.rid][\"ALL_INFO_FETCHED\"] = {}\n122: \n123:         self.m.timestamp = time.time() + timedelta(minutes=5).total_seconds()\n124: \n125:     def update_db(self, plugin, result):\n126:         self.pyload.files.update_file_info(result, self.pid)\n127: \n128:     def update_result(self, plugin, result, force=False):\n129:         # parse package name and generate result\n130:         # accumulate results\n131: \n132:         self.cache.extend(result)\n133: \n134:         if len(self.cache) >= 20 or force:\n135:             # used for package generating\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/base/hoster.py",
+                  "start_line": 40,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/base/hoster.py lines=40-60]\n40:     __description__ = \"\"\"Base hoster plugin\"\"\"\n41:     __license__ = \"GPLv3\"\n42:     __authors__ = [(\"Walter Purcaro\", \"vuolter@gmail.com\")]\n43: \n44:     URL_REPLACEMENTS = []\n45: \n46:     def get_info(self, url=\"\", html=\"\"):\n47:         url = fixurl(url, unquote=True)\n48:         info = {\n49:             \"name\": parse.name(url),\n50:             \"hash\": {},\n51:             \"pattern\": {},\n52:             \"size\": 0,\n53:             \"status\": 7 if url else 8,\n54:             \"url\": replace_patterns(url, self.URL_REPLACEMENTS),\n55:         }\n56: \n57:         try:\n58:             info[\"pattern\"] = re.match(self.__pattern__, url).groupdict()\n59: \n60:         except Exception:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection parameterized queries security policy"
+                },
+                "result": "[LICENSE.md:590-631] (relevance 0.21)\nAPPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT\nHOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM \"AS IS\" WITHOUT\nWARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND\nPERFORMANCE OF THE PROGRAM IS WITH YOU. SHOULD THE PROGRAM PROVE\nDEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR\nCORRECTION.\n\n#### 16. Limitation of Liability.\n\nIN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING\nWILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR\nCONVEYS THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES,\nINCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES\nARISING OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT\nNOT LIMITED TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR\nLOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE PROGRAM\nTO OPERATE WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER\nPARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.\n\n#### 17. Interpretation of Sections 15 and 16.\n\nIf the disclaimer of warranty and limitation of liability provided\nabove cannot be given local legal effect according to their terms,\nreviewing courts shall apply local law that most closely approximates\nan absolute waiver of all civil liability in connection with the\nProgram, unless a warranty or assumption of liability accompanies a\ncopy of the Program in return for a fee.\n\nEND OF TERMS AND CONDITIONS\n\n### How to Apply These Terms to Your New Programs\n\nIf you develop a new program, and you want it to be of the greatest\npossible use to the public, the best way to achieve this is to make it\nfree software which everyone can redistribute and change under these\nterms.\n\nTo do so, attach the following notices to the program. It is safest to\nattach them to the start of each source file to most effectively state\nthe exclusion of warranty; and each file should have at least the\n\n---\n\n[.github/ISSUE_TEMPLATE/question.md:1-18] (relevance 0.19)\n---\nname: Question\nabout: Ask us something\ntitle: \"\"\nlabels: question\nassignees: gammac0de\n---\n\n<!-- ANNOTATIONS LIKE THIS WILL NOT BE VISIBLE IN YOUR TICKET -->\n\n### Question\n\n<!-- WRITE HERE -->\n\n### Additional references\n<!-- Any other reference, related issues, pull requests or screenshots about this question. -->\n\n<!-- WRITE HERE - OPTIONAL -->\n\n---\n\n[LICENSE.md:354-390] (relevance 0.19)\nadd to a covered work, you may (if authorized by the copyright holders\nof that material) supplement the terms of this License with terms:\n\n- a) Disclaiming warranty or limiting liability differently from the\n  terms of sections 15 and 16 of this License; or\n- b) Requiring preservation of specified reasonable legal notices or\n  author attributions in that material or in the Appropriate Legal\n  Notices displayed by works containing it; or\n- c) Prohibiting misrepresentation of the origin of that material,\n  or requiring that modified versions of such material be marked in\n  reasonable ways as different from the original version; or\n- d) Limiting the use for publicity purposes of names of licensors\n  or authors of the material; or\n- e) Declining to grant rights under trademark law for use of some\n  trade names, trademarks, or service marks; or\n- f) Requiring indemnification of licensors and authors of that\n  material by anyone who conveys the material (or modified versions\n  of it) with contractual assumptions of liability to the recipient,\n  for any liability that these contractual assumptions directly\n  impose on those licensors and authors.\n\nAll other non-permissive additional terms are considered \"further\nrestrictions\" within the meaning of section 10. If the Program as you\nreceived it, or any part of it, contains a notice stating that it is\ngoverned by this License along with a term that is a further\nrestriction, you may remove that term. If a license document contains\na further restriction but permits relicensing or conveying under this\nLicense, you may add to a covered work material governed by the terms\nof that license document, provided that the further restriction does\nnot survive such relicensing or conveying.\n\nIf you add terms to a covered work in accord with this section, you\nmust place, in the relevant source files, a statement of the\nadditional terms that apply to those files, or a notice indicating\nwhere to find the applicable terms.\n\nAdditional terms, permissive or non-permissive, may be stated in the\n\n---\n\n[LICENSE.md:321-358] (relevance 0.19)\nrequirement to continue to provide support service, warranty, or\nupdates for a work that has been modified or installed by the\nrecipient, or for the User Product in which it has been modified or\ninstalled. Access to a network may be denied when the modification\nitself materially and adversely affects the operation of the network\nor violates the rules and protocols for communication across the\nnetwork.\n\nCorresponding Source conveyed, and Installation Information provided,\nin accord with this section must be in a format that is publicly\ndocumented (and with an implementation available to the public in\nsource code form), and must require no special password or key for\nunpacking, reading or copying.\n\n#### 7. Additional Terms.\n\n\"Additional permissions\" are terms that supplement the terms of this\nLicense by making exceptions from one or more of its conditions.\nAdditional permissions that are applicable to the entire Program shall\nbe treated as though they were included in this License, to the extent\nthat they are valid under applicable law. If additional permissions\napply only to part of the Program, that part may be used separately\nunder those permissions, but the entire Program remains governed by\nthis License without regard to the additional permissions.\n\nWhen you convey a copy of a covered work, you may at your option\nremove any additional permissions from that copy, or from any part of\nit. (Additional permissions may be written to require their own\nremoval in certain cases when you modify the work.) You may place\nadditional permissions on material, added by you to a covered work,\nfor which you have or can give appropriate copyright permission.\n\nNotwithstanding any other provision of this License, for material you\nadd to a covered work, you may (if authorized by the copyright holders\nof that material) supplement the terms of this License with terms:\n\n- a) Disclaiming warranty or limiting liability differently from the\n  terms of sections 15 and 16 of this License; or\n\n---\n\n[LICENSE.md:290-324] (relevance 0.18)\nincorporation into a dwelling. In determining whether a product is a\nconsumer product, doubtful cases shall be resolved in favor of\ncoverage. For a particular product received by a particular user,\n\"normally used\" refers to a typical or common use of that class of\nproduct, regardless of the status of the particular user or of the way\nin which the particular user actually uses, or expects or is expected\nto use, the product. A product is a consumer product regardless of\nwhether the product has substantial commercial, industrial or\nnon-consumer uses, unless such uses represent the only significant\nmode of use of the product.\n\n\"Installation Information\" for a User Product means any methods,\nprocedures, authorization keys, or other information required to\ninstall and execute modified versions of a covered work in that User\nProduct from a modified version of its Corresponding Source. The\ninformation must suffice to ensure that the continued functioning of\nthe modified object code is in no case prevented or interfered with\nsolely because modification has been made.\n\nIf you convey an object code work under this section in, or with, or\nspecifically for use in, a User Product, and the conveying occurs as\npart of a transaction in which the right of possession and use of the\nUser Product is transferred"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review is a SQL injection regression, not an authorization flaw. The PR replaces a parameterized `SELECT ... WHERE url IN (?)` query with an f-string that interpolates attacker-influenced URL values (sourced from external hoster plugins via `get_info` \u2192 `update_db` \u2192 `update_file_info` \u2192 `update_link_info`) directly into the SQL statement. This is a CWE-89 (SQL injection) issue, which is outside the scope of the authorization flaw classes I am instructed to report (CWE-639, CWE-862, CWE-863).\n\nThere is no authentication/role/ownership check being added, removed, or bypassed in this section, and no object is fetched by a user-controlled identifier without an ownership check in the authorization sense. The policy excerpts retrieved contain no explicit access-control rule that this code violates. Therefore, no authorization candidate flaw is established.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:sql-injection-update-link-info",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/database/file_database.py",
+                  "start_line": 255,
+                  "end_line": 280,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=46aaa35a947d601deb0e9e1b01666928e30b4a29 path=src/pyload/core/database/file_database.py lines=255-280]\n255:         self.c.execute(\n256:             \"UPDATE packages SET name=?,folder=?,site=?,password=?,queue=? WHERE id=?\",\n257:             (p.name, p.folder, p.site, p.password, p.queue, str(p.id)),\n258:         )\n259: \n260:     @style.queue\n261:     def update_link_info(self, data):\n262:         \"\"\"\n263:         data is list of tuples (name, size, status, url)\n264:         \"\"\"\n265:         self.c.executemany(\n266:             \"UPDATE links SET name=?, size=?, status=? WHERE url=? AND status IN (1,2,3,14)\",\n267:             data,\n268:         )\n269:         ids = []\n270:         statuses = \"','\".join(x[3] for x in data)\n271:         self.c.execute(f\"SELECT id FROM links WHERE url IN ('{statuses}')\")\n272:         for r in self.c:\n273:             ids.append(int(r[0]))\n274:         return ids\n275: \n276:     @style.queue\n277:     def reorder_package(self, p, position, no_move=False):\n278:         if position == -1:\n279:             position = self._next_package_order(p.queue)\n280:         if not no_move:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/managers/file_manager.py",
+                  "start_line": 580,
+                  "end_line": 600,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/managers/file_manager.py lines=580-600]\n580:             position,\n581:             \"collector\" if not self.get_package(f[\"package\"]).queue else \"queue\",\n582:         )\n583:         self.pyload.event_manager.add_event(e)\n584: \n585:     @change\n586:     def update_file_info(self, data, pid):\n587:         \"\"\"\n588:         updates file info (name, size, status, url)\n589:         \"\"\"\n590:         self.pyload.db.update_link_info(data)\n591:         e = UpdateEvent(\n592:             \"pack\", pid, \"collector\" if not self.get_package(pid).queue else \"queue\"\n593:         )\n594:         self.pyload.event_manager.add_event(e)\n595: \n596:     def check_package_finished(self, pyfile):\n597:         \"\"\"\n598:         checks if package is finished and calls addon_manager.\n599:         \"\"\"\n600:         ids = self.pyload.db.get_unfinished(pyfile.packageid)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 110,
+                  "end_line": 135,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=110-135]\n110: \n111:                     # force to process cache\n112:                     if self.cache:\n113:                         self.update_result(pluginname, [], True)\n114: \n115:                 else:\n116:                     # generate default result\n117:                     result = [(url, 0, 3, url) for url in urls]\n118: \n119:                     self.update_result(pluginname, result, True)\n120: \n121:             self.m.info_results[self.rid][\"ALL_INFO_FETCHED\"] = {}\n122: \n123:         self.m.timestamp = time.time() + timedelta(minutes=5).total_seconds()\n124: \n125:     def update_db(self, plugin, result):\n126:         self.pyload.files.update_file_info(result, self.pid)\n127: \n128:     def update_result(self, plugin, result, force=False):\n129:         # parse package name and generate result\n130:         # accumulate results\n131: \n132:         self.cache.extend(result)\n133: \n134:         if len(self.cache) >= 20 or force:\n135:             # used for package generating\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/plugins/base/hoster.py",
+                  "start_line": 40,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/plugins/base/hoster.py lines=40-60]\n40:     __description__ = \"\"\"Base hoster plugin\"\"\"\n41:     __license__ = \"GPLv3\"\n42:     __authors__ = [(\"Walter Purcaro\", \"vuolter@gmail.com\")]\n43: \n44:     URL_REPLACEMENTS = []\n45: \n46:     def get_info(self, url=\"\", html=\"\"):\n47:         url = fixurl(url, unquote=True)\n48:         info = {\n49:             \"name\": parse.name(url),\n50:             \"hash\": {},\n51:             \"pattern\": {},\n52:             \"size\": 0,\n53:             \"status\": 7 if url else 8,\n54:             \"url\": replace_patterns(url, self.URL_REPLACEMENTS),\n55:         }\n56: \n57:         try:\n58:             info[\"pattern\"] = re.match(self.__pattern__, url).groupdict()\n59: \n60:         except Exception:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/pyload/core/threads/info_thread.py",
+                  "start_line": 80,
+                  "end_line": 120,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=45711cac191bc8276fcdb9fb792308fa2c688d1b path=src/pyload/core/threads/info_thread.py lines=80-120]\n80:             del self.cache[:]\n81: \n82:         else:  #: post the results\n83: \n84:             for name, url in container:\n85:                 # attach container content\n86:                 try:\n87:                     data = self.decrypt_container(name, url)\n88:                 except Exception:\n89:                     self.pyload.log.warning(\n90:                         \"Could not decrypt container.\",\n91:                         exc_info=self.pyload.debug > 1,\n92:                         stack_info=self.pyload.debug > 2,\n93:                     )\n94:                     data = []\n95: \n96:                 for url, plugin in data:\n97:                     if plugin in plugins:\n98:                         plugins[plugin].append(url)\n99:                     else:\n100:                         plugins[plugin] = [url]\n101: \n102:             self.m.info_results[self.rid] = {}\n103: \n104:             for pluginname, urls in plugins.items():\n105:                 plugin = self.pyload.plugin_manager.get_plugin(pluginname, True)\n106:                 if hasattr(plugin, \"get_info\"):\n107:                     self.fetch_for_plugin(\n108:                         pluginname, plugin, urls, self.update_result, True\n109:                     )\n110: \n111:                     # force to process cache\n112:                     if self.cache:\n113:                         self.update_result(pluginname, [], True)\n114: \n115:                 else:\n116:                     # generate default result\n117:                     result = [(url, 0, 3, url) for url in urls]\n118: \n119:                     self.update_result(pluginname, result, True)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR replaces a parameterized SELECT with a query built by string interpolation. `statuses` is built by joining `x[3]` (the url field) from `data` with `','` and embedded directly into an f-string passed to `self.c.execute`. The `data` tuples come from `update_file_info` -> `update_link_info`, whose url values originate from plugin `get_info()` results and from user-supplied/external URLs (e.g. `result = [(url, 0, 3, url) for url in urls]`). Because the url values are attacker-influenced and are concatenated into the SQL text without binding or allowlisting, a url containing a single quote (e.g. `x' OR '1'='1`) breaks out of the IN-list literal and injects arbitrary SQL executed against the live links table.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"src/pyload/core/database/file_database.py\", \"lines\": [269, 271], \"content\": \"        ids = []\\n        statuses = \\\"','\\\".join(x[3] for x in data)\\n        self.c.execute(f\\\"SELECT id FROM links WHERE url IN ('{statuses}')\\\")\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/core/managers/file_manager.py\", \"lines\": [586, 590], \"content\": \"    def update_file_info(self, data, pid):\\n        \\\"\\\"\\\"\\n        updates file info (name, size, status, url)\\n        \\\"\\\"\\\"\\n        self.pyload.db.update_link_info(data)\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/core/threads/info_thread.py\", \"lines\": [117, 126], \"content\": \"                    result = [(url, 0, 3, url) for url in urls]\\n\\n                    self.update_result(pluginname, result, True)\\n...\\n    def update_db(self, plugin, result):\\n        self.pyload.files.update_file_info(result, self.pid)\"},\n        {\"type\": \"code\", \"file\": \"src/pyload/plugins/base/hoster.py\", \"lines\": [46, 55], \"content\": \"    def get_info(self, url=\\\"\\\", html=\\\"\\\"):\\n        url = fixurl(url, unquote=True)\\n        info = {\\n            \\\"name\\\": parse.name(url),\\n            ...\\n            \\\"url\\\": replace_patterns(url, self.URL_REPLACEMENTS),\\n        }\"}\n      ],\n      \"suggested_fix\": \"Restore the parameterized query: build a placeholder list matching the number of urls and pass the url values as bound parameters, e.g. `placeholders = ','.join('?' * len(urls)); self.c.execute(f\\\"SELECT id FROM links WHERE url IN ({placeholders})\\\", [x[3] for x in data])`. Never interpolate user/attacker-influenced values into SQL text.\",\n      \"file\": \"src/pyload/core/database/file_database.py\",\n      \"line\": 271\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "lgtm-python-sqli-fstring:src/pyload/core/database/file_database.py:271",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8215,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "sqli:sql-injection-update-link-info:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8891,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "project": "pyload",
+  "mode": "lgtm",
+  "case_scope": "in",
+  "file": "src/pyload/core/database/file_database.py",
+  "diff_files": 1,
+  "diff_added": 5,
+  "diff_deleted": 5,
+  "diff_py_chars": 820,
+  "diff_max_file_chars": 820,
+  "index_seconds": 8.49,
+  "index_chunks": 44,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "45711cac191bc8276fcdb9fb792308fa2c688d1b",
+    "pr_sha": "46aaa35a947d601deb0e9e1b01666928e30b4a29",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "semgrep_findings_in_diff": 1,
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "sql-injection-update-link-info",
+        "origin": "investigator",
+        "title": "update_link_info SELECT rewritten from parameterized query to f-string interpolation of URLs",
+        "files": [
+          "src/pyload/core/database/file_database.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "src/pyload/core/database/file_database.py#0",
+            "file": "src/pyload/core/database/file_database.py",
+            "old_start": 266,
+            "old_count": 11,
+            "new_start": 266,
+            "new_count": 11,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      }
+    ]
+  },
+  "coverage_summary": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions_total": 0
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 11.62,
+  "base_sha": "45711cac191bc8276fcdb9fb792308fa2c688d1b",
+  "pr_sha": "46aaa35a947d601deb0e9e1b01666928e30b4a29",
+  "sast_error": null,
+  "semgrep_findings_total": 3,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "sql-injection-update-link-info"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

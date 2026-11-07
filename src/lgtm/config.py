@@ -68,6 +68,18 @@ class LGTMConfig:
     # tell the authz agent to judge ownership checks by what the policy lets
     # the endpoint's required role access (round 5)
     authz_role_guidance: bool = False
+    # review each section for SQL injection too, not only lines Semgrep flags
+    # (v2.1; off reproduces v2.0-eval, where SQLi review was SAST-seeded only)
+    sqli_review: bool = True
+    # Reviewer model backend: "ollama" (local or the GPU tunnel) or "bedrock"
+    # (Claude on Amazon Bedrock via the Anthropic SDK; bearer token in
+    # AWS_BEARER_TOKEN_BEDROCK). The Kev judge is unchanged either way.
+    llm_backend: str = "ollama"
+    bedrock_model: str = "global.anthropic.claude-sonnet-4-6"
+    bedrock_region: str = "us-east-1"
+    bedrock_budget_usd: float = 100.0
+    bedrock_ledger: str = "~/.lgtm/bedrock-spend.jsonl"
+    bedrock_run_label: str = ""
     # Prompt-injection mitigations; LGTM modes only, the llm-only baseline keeps the raw diff.
     strip_comments: bool = True
     detect_prompt_injection: bool = True

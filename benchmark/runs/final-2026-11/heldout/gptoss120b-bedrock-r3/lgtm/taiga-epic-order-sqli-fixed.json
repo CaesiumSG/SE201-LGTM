@@ -1,0 +1,441 @@
+{
+  "id": "taiga-epic-order-sqli-fixed",
+  "repo": "taigaio/taiga-back",
+  "pr": null,
+  "title": "Adding epic order to user-story listings took the ?epic= query parameter and str.format()-ed it into a raw SQL subquery passed to queryset.extra(), enabling time-based blind SQL injection.",
+  "mode": "lgtm",
+  "model": "bedrock:openai.gpt-oss-120b-1:0",
+  "base": "38bb4f088e26d987be567394210fe7ad89257baf",
+  "pr_sha": "107f116b8c1fe526bde35e5fc329b832968c2a9b",
+  "files_changed": 1,
+  "python_files_changed": 1,
+  "added_lines": 1,
+  "diff_chars": 531,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 77.0,
+  "index_seconds": 0.3,
+  "index_reused": false,
+  "index_chunks": 33,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 1,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 16,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 9,
+  "reviewer_units": 2,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 300
+                },
+                "result": "[READ snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf path=taiga/projects/userstories/utils.py lines=1-188]\n1: # -*- coding: utf-8 -*-\n2: # This Source Code Form is subject to the terms of the Mozilla Public\n3: # License, v. 2.0. If a copy of the MPL was not distributed with this\n4: # file, You can obtain one at http://mozilla.org/MPL/2.0/.\n5: #\n6: # Copyright (c) 2021-present Kaleidos INC\n7: \n8: from taiga.projects.attachments.utils import attach_basic_attachments\n9: from taiga.projects.attachments.utils import attach_total_attachments\n10: from taiga.projects.notifications.utils import attach_watchers_to_queryset\n11: from taiga.projects.notifications.utils import attach_total_watchers_to_queryset\n12: from taiga.projects.notifications.utils import attach_is_watcher_to_queryset\n13: from taiga.projects.history.utils import attach_total_comments_to_queryset\n14: from taiga.projects.votes.utils import attach_total_voters_to_queryset\n15: from taiga.projects.votes.utils import attach_is_voter_to_queryset\n16: \n17: \n18: def attach_total_points(queryset, as_field=\"total_points_attr\"):\n19:     \"\"\"Attach total of point values to each object of the queryset.\n20: \n21:     :param queryset: A Django user stories queryset object.\n22:     :param as_field: Attach the points as an attribute with this name.\n23: \n24:     :return: Queryset object with the additional `as_field` field.\n25:     \"\"\"\n26:     model = queryset.model\n27:     sql = \"\"\"SELECT SUM(projects_points.value)\n28:                     FROM userstories_rolepoints\n29:                     INNER JOIN projects_points ON userstories_rolepoints.points_id = projects_points.id\n30:                     WHERE userstories_rolepoints.user_story_id = {tbl}.id\"\"\"\n31: \n32:     sql = sql.format(tbl=model._meta.db_table)\n33:     queryset = queryset.extra(select={as_field: sql})\n34:     return queryset\n35: \n36: \n37: def attach_role_points(queryset, as_field=\"role_points_attr\"):\n38:     \"\"\"Attach role point as json column to each object of the queryset.\n39: \n40:     :param queryset: A Django user stories queryset object.\n41:     :param as_field: Attach the role points as an attribute with this name.\n42: \n43:     :return: Queryset object with the additional `as_field` field.\n44:     \"\"\"\n45:     model = queryset.model\n46:     sql = \"\"\"SELECT FORMAT('{{%%s}}',\n47:                            STRING_AGG(format(\n48:                                 '\"%%s\":%%s',\n49:                                 TO_JSON(userstories_rolepoints.role_id),\n50:                                 TO_JSON(userstories_rolepoints.points_id)\n51:                             ), ',')\n52:                           )::json\n53:                     FROM userstories_rolepoints\n54:                     WHERE userstories_rolepoints.user_story_id = {tbl}.id\"\"\"\n55:     sql = sql.format(tbl=model._meta.db_table)\n56:     queryset = queryset.extra(select={as_field: sql})\n57:     return queryset\n58: \n59: \n60: def attach_tasks(queryset, as_field=\"tasks_attr\"):\n61:     \"\"\"Attach tasks as json column to each object of the queryset.\n62: \n63:     :param queryset: A Django user stories queryset object.\n64:     :param as_field: Attach tasks as an attribute with this name.\n65: \n66:     :return: Queryset object with the additional `as_field` field.\n67:     \"\"\"\n68: \n69:     model = queryset.model\n70:     sql = \"\"\"SELECT json_agg(row_to_json(t))\n71:                 FROM(\n72:                     SELECT\n73:                         tasks_task.id,\n74:                         tasks_task.ref,\n75:                         tasks_task.subject,\n76:                         tasks_task.status_id,\n77:                         tasks_task.is_blocked,\n78:                         tasks_task.is_iocaine,\n79:                         projects_taskstatus.is_closed\n80:                 FROM tasks_task\n81:                 INNER JOIN projects_taskstatus on projects_taskstatus.id = tasks_task.status_id\n82:                 WHERE user_story_id = {tbl}.id\n83:                 ORDER BY tasks_task.us_order, tasks_task.ref\n84:                 ) t\n85:                 \"\"\"\n86: \n87:     sql = sql.format(tbl=model._meta.db_table)\n88:     queryset = queryset.extra(select={as_field: sql})\n89:     return queryset\n90: \n91: \n92: def attach_epics(queryset, as_field=\"epics_attr\"):\n93:     \"\"\"Attach epics as json column to each object of the queryset.\n94: \n95:     :param queryset: A Django user stories queryset object.\n96:     :param as_field: Attach the epics as an attribute with this name.\n97: \n98:     :return: Queryset object with the additional `as_field` field.\n99:     \"\"\"\n100: \n101:     model = queryset.model\n102:     sql = \"\"\"SELECT json_agg(row_to_json(t))\n103:                FROM (SELECT \"epics_epic\".\"id\" AS \"id\",\n104:                             \"epics_epic\".\"ref\" AS \"ref\",\n105:                             \"epics_epic\".\"subject\" AS \"subject\",\n106:                             \"epics_epic\".\"color\" AS \"color\",\n107:                             (SELECT row_to_json(p)\n108:                               FROM (SELECT \"projects_project\".\"id\"    AS \"id\",\n109:                                            \"projects_project\".\"name\"  AS \"name\",\n110:                                            \"projects_project\".\"slug\"  AS \"slug\"\n111:                                    ) p\n112:                             ) AS \"project\"\n113:                        FROM \"epics_relateduserstory\"\n114:                  INNER JOIN \"epics_epic\" ON \"epics_epic\".\"id\" = \"epics_relateduserstory\".\"epic_id\"\n115:                  INNER JOIN \"projects_project\" ON \"projects_project\".\"id\" = \"epics_epic\".\"project_id\"\n116:                       WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id\n117:                    ORDER BY \"projects_project\".\"name\", \"epics_epic\".\"ref\") t\"\"\"\n118: \n119:     sql = sql.format(tbl=model._meta.db_table)\n120:     queryset = queryset.extra(select={as_field: sql})\n121:     return queryset\n122: \n123: \n124: def attach_epic_order(queryset, epic_id, as_field=\"epic_order\"):\n125:     \"\"\"Attach epic_order column to each object of the queryset.\n126: \n127:     :param queryset: A Django user stories queryset object.\n128:     :param epic_id: Order related to this epic.\n129:     :param as_field: Attach order as an attribute with this name.\n130: \n131:     :return: Queryset object with the additional `as_field` field.\n132:     \"\"\"\n133: \n134:     model = queryset.model\n135:     sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n136:                FROM \"epics_relateduserstory\"\n137:               WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n138:                     \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n139: \n140:     sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)\n141:     queryset = queryset.extra(select={as_field: sql})\n142:     return queryset\n143: \n144: \n145: def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n146:     queryset = attach_total_points(queryset)\n147:     queryset = attach_role_points(queryset)\n148:     queryset = attach_epics(queryset)\n149: \n150:     if include_attachments:\n151:         queryset = attach_basic_attachments(queryset)\n152:         queryset = queryset.extra(select={\"include_attachments\": \"True\"})\n153: \n154:     if include_tasks:\n155:         queryset = attach_tasks(queryset)\n156:         queryset = queryset.extra(select={\"include_tasks\": \"True\"})\n157: \n158:     if epic_id is not None:\n159:         queryset = attach_epic_order(queryset, epic_id)\n160:         queryset = queryset.extra(select={\"include_epic_order\": \"True\"})\n161: \n162:     queryset = attach_total_attachments(queryset)\n163:     queryset = attach_total_voters_to_queryset(queryset)\n164:     queryset = attach_watchers_to_queryset(queryset)\n165:     queryset = attach_total_watchers_to_queryset(queryset)\n166:     queryset = attach_is_voter_to_queryset(queryset, user)\n167:     queryset = attach_is_watcher_to_queryset(queryset, user)\n168:     que\n[TRUNCATED]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_epic_order",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf pattern=\"attach_epic_order\"]\ntaiga/projects/userstories/utils.py:124:def attach_epic_order(queryset, epic_id, as_field=\"epic_order\"):\ntaiga/projects/userstories/utils.py:159:        queryset = attach_epic_order(queryset, epic_id)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "attach_epic_order"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=107f116b8c1fe526bde35e5fc329b832968c2a9b status=ok truncated=true query=\"attach_epic_order\"]\n**Exploration: attach_epic_order**\n\nFound 44 symbols across 7 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `attach_epic_order` (taiga/projects/userstories/utils.py:124) \u2014 1 caller in `taiga/projects/userstories/utils.py`; tested via callers: `tests/integration/resources_permissions/test_userstories_resources.py`\n- `Epic` (taiga/projects/epics/models.py:23) \u2014 19 callers in `taiga/hooks/event_hooks.py`, `taiga/importers/jira/agile.py`, `taiga/importers/jira/common.py`, `taiga/importers/jira/normal.py` +4 more; tests: `tests/integration/resources_permissions/test_epics_related_userstories_resources.py`, `tests/integration/resources_permissions/test_epics_resources.py`, `tests/integration/test_hooks_bitbucket.py`, `tests/integration/test_hooks_github.py` +3\n- `OrderedSet` (taiga/base/utils/collections.py:11) \u2014 3 callers in `taiga/projects/tagging/api.py`, `taiga/base/utils/collections.py`; no tests found within 3 caller hops\n- `copy_backlog_order_to_kanban_order` (taiga/projects/userstories/migrations/0003_userstory_order_fields.py:13) \u2014 1 caller in `taiga/projects/userstories/migrations/0003_userstory_order_fields.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- Epic \u2192 WatchedModelMixin\n- Epic \u2192 OCCModelMixin\n- Epic \u2192 BlockedMixin\n- Epic \u2192 TaggedMixin\n- IssueViewSet \u2192 TaggedResourceMixin\n- EpicViewSet \u2192 TaggedResourceMixin\n- PointsViewSet \u2192 BulkUpdateOrderMixin\n- SwimlaneViewSet \u2192 BulkUpdateOrderMixin\n- SeverityViewSet \u2192 BulkUpdateOrderMixin\n- TaskCustomAttributeViewSet \u2192 BulkUpdateOrderMixin\n- ... and 65 more\n\n**calls:**\n- attach_extra_info \u2192 attach_epic_order\n- attach_extra_info \u2192 attach_epics\n- attach_extra_info \u2192 attach_total_points\n- attach_extra_info \u2192 attach_tasks\n- attach_extra_info \u2192 attach_total_watchers_to_queryset\n- attach_extra_info \u2192 attach_basic_attachments\n- attach_extra_info \u2192 attach_watchers_to_queryset\n- attach_extra_info \u2192 attach_is_voter_to_queryset\n- attach_extra_info \u2192 attach_total_attachments\n- attach_extra_info \u2192 attach_role_points\n- ... and 61 more\n\n**references:**\n- Epic \u2192 timestamp_ms\n- Epic \u2192 generate_random_predefined_hex_color\n- EpicStatusViewSet \u2192 Epic\n- get_item_classes \u2192 Epic\n- _transform_history_data \u2192 Epic\n- _import_to_custom_fields \u2192 Epic\n- __eq__ \u2192 OrderedSet\n- userstory_values \u2192 _get_role_values\n- userstory_values \u2192 _get_us_status_values\n- userstory_values \u2192 _get_swimlane_values\n- ... and 19 more\n\n**instantiates:**\n- get_epics_from_bulk \u2192 Epic\n- _pre_save_new_tags_in_project_tags_colors \u2192 OrderedSet\n- bulk_update_order \u2192 Blocked\n- bulk_update_order \u2192 NoContent\n- bulk_update_order \u2192 BadRequest\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`taiga/projects/userstories/utils.py`** \u2014 attach_total_points(calls), attach_total_points(function), attach_role_points(calls), attach_role_points(function), attach_tasks(calls), attach_tasks(function), attach_epics(calls), attach_epics(function), attach_basic_attachments(calls), attach_epic_order(calls), +9 more\n\n```python\n121\t    return queryset\n122\t\n123\t\n124\tdef attach_epic_order(queryset, epic_id, as_field=\"epic_order\"):\n125\t    \"\"\"Attach epic_order column to each object of the queryset.\n126\t\n127\t    :param queryset: A Django user stories queryset object.\n128\t    :param epic_id: Order related to this epic.\n129\t    :param as_field: Attach order as an attribute with this name.\n130\t\n131\t    :return: Queryset object with the additional `as_field` field.\n132\t    \"\"\"\n133\t\n134\t    model = queryset.model\n135\t    sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n136\t               FROM \"epics_relateduserstory\"\n137\t              WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n138\t                    \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n139\t\n140\t    sql = sql.format(tbl=model._meta.db_table, epic_id=int(epic_id))\n141\t    queryset = queryset.extra(select={as_field: sql})\n142\t    return queryset\n143\t\n144\t\n145\tdef attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n146\t    queryset = attach_total_points(queryset)\n147\t    queryset = attach_role_points(queryset)\n148\t    queryset = attach_epics(queryset)\n149\t\n150\t    if include_attachments:\n151\t        queryset = attach_basic_attachments(queryset)\n152\t        queryset = queryset.extra(select={\"include_attachments\": \"True\"})\n153\t\n154\t    if include_tasks:\n155\t        queryset = attach_tasks(queryset)\n156\t        queryset = queryset.extra(select={\"include_tasks\": \"True\"})\n157\t\n158\t    if epic_id is not None:\n159\t        queryset = attach_epic_order(queryset, epic_id)\n160\t        queryset = queryset.extra(select={\"include_epic_order\": \"True\"})\n161\t\n162\t    queryset = attach_total_attachments(queryset)\n163\t    queryset = attach_total_voters_to_queryset(queryset)\n164\t    queryset = attach_watchers_to_queryset(queryset)\n165\t    queryset = attach_total_watchers_to_queryset(queryset)\n166\t    queryset = attach_is_voter_to_queryset(queryset, user)\n167\t    queryset = attach_is_watcher_to_queryset(queryset, user)\n168\t    queryset = attach_total_comments_to_queryset(queryset)\n169\t    return queryset\n170\t\n171\t\n172\tdef attach_assigned_users(queryset, as_field=\"assigned_users_attr\"):\n```\n\n**`taiga/projects/api.py`** \u2014 BlockedByProjectMixin(extends), ModelCrudViewSet(extends), BulkUpdateOrderMixin(extends), MoveOnDestroyMixin(extends), imports(imports), ModelCrudViewSet(imports), BlockedByProjectMixin(imports),\n[TRUNCATED omitted_chars=19263]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf pattern=\"attach_extra_info\"]\ntaiga/export_import/api.py:383:            project_from_qs = project_utils.attach_extra_info(Project.objects.all()).get(id=project.id)\ntaiga/projects/api.py:114:            qs = project_utils.attach_extra_info(qs, user=self.request.user)\ntaiga/projects/epics/api.py:74:        qs = epics_utils.attach_extra_info(qs, user=self.request.user,\ntaiga/projects/epics/utils.py:16:def attach_extra_info(queryset, user=None, include_attachments=False):\ntaiga/projects/issues/api.py:32:from .utils import attach_extra_info\ntaiga/projects/issues/api.py:148:        qs = attach_extra_info(qs, user=self.request.user,\ntaiga/projects/issues/utils.py:39:def attach_extra_info(queryset, user=None, include_attachments=False):\ntaiga/projects/milestones/api.py:92:        qs = milestones_utils.attach_extra_info(qs, user=self.request.user)\ntaiga/projects/milestones/utils.py:54:def attach_extra_info(queryset, user=None):\ntaiga/projects/tasks/api.py:93:        qs = tasks_utils.attach_extra_info(qs, user=self.request.user,\ntaiga/projects/tasks/utils.py:80:def attach_extra_info(queryset, user=None, include_attachments=False):\ntaiga/projects/userstories/api.py:39:from taiga.projects.userstories.utils import attach_extra_info\ntaiga/projects/userstories/api.py:136:        qs = attach_extra_info(qs, user=self.request.user,\ntaiga/projects/userstories/utils.py:145:def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\ntaiga/projects/utils.py:580:def attach_extra_info(queryset, user=None):\ntaiga/projects/wiki/api.py:50:        qs = wiki_utils.attach_extra_info(qs, user=self.request.user)\ntaiga/projects/wiki/utils.py:13:def attach_extra_info(queryset, user=None, include_attachments=False):\ntaiga/users/api.py:74:        qs = user_utils.attach_extra_info(qs, user=self.request.user)\ntaiga/users/utils.py:29:def attach_extra_info(queryset, user=None):\ntests/integration/resources_permissions/test_epics_related_userstories_resources.py:17:from taiga.projects.epics.utils import attach_extra_info as attach_epic_extra_info\ntests/integration/resources_permissions/test_epics_related_userstories_resources.py:18:from taiga.projects.utils import attach_extra_info as attach_project_extra_info\ntests/integration/resources_permissions/test_epics_resources.py:17:from taiga.projects.epics.utils import attach_extra_info as attach_epic_extra_info\ntests/integration/resources_permissions/test_epics_resources.py:18:from taiga.projects.utils import attach_extra_info as attach_project_extra_info\ntests/integration/resources_permissions/test_issues_resources.py:14:from taiga.projects.utils import attach_extra_info as attach_project_extra_info\ntests/integration/resources_permissions/test_issues_resources.py:17:from taiga.projects.issues.utils import attach_extra_info as attach_issue_extra_info\ntests/integration/resources_permissions/test_milestones_resources.py:14:from taiga.projects.utils import attach_extra_info as attach_project_extra_info\ntests/integration/resources_permissions/test_milestones_resources.py:17:from taiga.projects.milestones.utils import attach_extra_info as attach_milestone_extra_info\ntests/integration/resources_permissions/test_projects_resource.py:16:from taiga.projects.utils import attach_extra_info\ntests/integration/resources_permissions/test_projects_resource.py:38:    m.public_project = attach_extra_info(project_models.Project.objects.all()).get(id=m.public_project.id)\ntests/integration/resources_permissions/test_projects_resource.py:44:    m.private_project1 = attach_extra_info(project_models.Project.objects.all()).get(id=m.private_project1.id)\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_epic_order(",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 17"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info(.*epic_id",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 17"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info(.*epic_id",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"attach_extra_info(.*epic_id\", \"file_glob\": \"\", \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info(.*epic_id",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"attach_extra_info(.*epic_id\", \"file_glob\": \"\", \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info(.*epic_id",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 17"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_extra_info(.*epic_id",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"attach_extra_info(.*epic_id\", \"file_glob\": \"\", \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "attach_epic_order(",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"attach_epic_order(\", \"file_glob\": \"\", \"snapshot\": \"base\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "path_glob": "**/*.py",
+                  "pattern": "epic_id=",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf pattern=\"epic_id=\"]\ntaiga/projects/userstories/api.py:139:                               epic_id=epic_id)\ntaiga/projects/userstories/utils.py:140:    sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)\ntaiga/projects/userstories/utils.py:145:def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/api.py",
+                  "snapshot": "base",
+                  "start_line": 120,
+                  "end_line": 170
+                },
+                "result": "[READ snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf path=taiga/projects/userstories/api.py lines=120-170]\n120:         qs = qs.select_related(\"milestone\",\n121:                                \"owner\",\n122:                                \"generated_from_issue\",\n123:                                \"generated_from_task\")\n124: \n125:         qs = qs.prefetch_related(\"assigned_users\")\n126:         include_attachments = \"include_attachments\" in self.request.QUERY_PARAMS\n127:         include_tasks = \"include_tasks\" in self.request.QUERY_PARAMS\n128: \n129:         epic_id = self.request.QUERY_PARAMS.get(\"epic\", None)\n130:         # We can be filtering by more than one epic so epic_id can consist\n131:         # of different ids separated by comma. In that situation we will use\n132:         # only the first\n133:         if epic_id is not None:\n134:             epic_id = epic_id.split(\",\")[0]\n135: \n136:         qs = attach_extra_info(qs, user=self.request.user,\n137:                                include_attachments=include_attachments,\n138:                                include_tasks=include_tasks,\n139:                                epic_id=epic_id)\n140:         return qs\n141: \n142:     # Updating some attributes of the userstory can affect the ordering in the backlog, kanban or taskboard\n143:     # These three methods generate a key for the user story and can be used to be compared before and after\n144:     # saving. If there is any difference it means an extra ordering update must be done\n145:     def _backlog_order_key(self, obj):\n146:         return f\"{obj.project_id}-{obj.backlog_order}\"\n147: \n148:     def _kanban_order_key(self, obj):\n149:         return f\"{obj.project_id}-{obj.swimlane_id}-{obj.status_id}-{obj.kanban_order}\"\n150: \n151:     def _sprint_order_key(self, obj):\n152:         return f\"{obj.project_id}-{obj.milestone_id}-{obj.sprint_order}\"\n153: \n154:     def _add_taiga_info_headers(self):\n155:         try:\n156:             project_id = int(self.request.QUERY_PARAMS.get(\"project\", None))\n157:         except TypeError:\n158:             project_id = None\n159: \n160:         milestone = self.request.QUERY_PARAMS.get(\"milestone\", \"\").lower()\n161: \n162:         if project_id and milestone == \"null\":\n163:             # Add this header only to draw the backlog (milestone=null)\n164:             total_backlog_userstories = self.queryset.filter(project_id=project_id, milestone__isnull=True).count()\n165:             self.headers[\"Taiga-Info-Backlog-Total-Userstories\"] = total_backlog_userstories\n166: \n167:         if project_id:\n168:             # Add this header to show if there are user stories not assigned to any swimlane.\n169:             # Useful to show _Unclassified user stories_ option in swimlane selector at create/edit forms.\n170:             without_swimlane = self.queryset.filter(project_id=project_id, swimlane__isnull=True).exists()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "snapshot": "base",
+                  "start_line": 136,
+                  "end_line": 142
+                },
+                "result": "[READ snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf path=taiga/projects/userstories/utils.py lines=136-142]\n136:                FROM \"epics_relateduserstory\"\n137:               WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n138:                     \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n139: \n140:     sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)\n141:     queryset = queryset.extra(select={as_field: sql})\n142:     return queryset\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "snapshot": "base",
+                  "start_line": 124,
+                  "end_line": 142
+                },
+                "result": "[READ snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf path=taiga/projects/userstories/utils.py lines=124-142]\n124: def attach_epic_order(queryset, epic_id, as_field=\"epic_order\"):\n125:     \"\"\"Attach epic_order column to each object of the queryset.\n126: \n127:     :param queryset: A Django user stories queryset object.\n128:     :param epic_id: Order related to this epic.\n129:     :param as_field: Attach order as an attribute with this name.\n130: \n131:     :return: Queryset object with the additional `as_field` field.\n132:     \"\"\"\n133: \n134:     model = queryset.model\n135:     sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n136:                FROM \"epics_relateduserstory\"\n137:               WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n138:                     \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n139: \n140:     sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)\n141:     queryset = queryset.extra(select={as_field: sql})\n142:     return queryset\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "snapshot": "base",
+                  "start_line": 145,
+                  "end_line": 162
+                },
+                "result": "[READ snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf path=taiga/projects/userstories/utils.py lines=145-162]\n145: def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n146:     queryset = attach_total_points(queryset)\n147:     queryset = attach_role_points(queryset)\n148:     queryset = attach_epics(queryset)\n149: \n150:     if include_attachments:\n151:         queryset = attach_basic_attachments(queryset)\n152:         queryset = queryset.extra(select={\"include_attachments\": \"True\"})\n153: \n154:     if include_tasks:\n155:         queryset = attach_tasks(queryset)\n156:         queryset = queryset.extra(select={\"include_tasks\": \"True\"})\n157: \n158:     if epic_id is not None:\n159:         queryset = attach_epic_order(queryset, epic_id)\n160:         queryset = queryset.extra(select={\"include_epic_order\": \"True\"})\n161: \n162:     queryset = attach_total_attachments(queryset)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"sql-injection-epic-id\",\n      \"title\": \"Cast epic_id to int in attach_epic_order to prevent SQL injection\",\n      \"rationale\": \"attach_epic_order builds a raw SQL fragment using the epic_id supplied from request query parameters. The original code interpolated the raw value, which could allow SQL injection if a non\u2011numeric string were provided. The PR changes the formatting line to cast epic_id to int, ensuring only numeric identifiers are inserted. This change impacts the attach_epic_order function itself and its callers (attach_extra_info and the user\u2011story API view) that obtain epic_id from the request.\",\n      \"hunks\": [\n        \"taiga/projects/userstories/utils.py#0\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"taiga/projects/userstories/utils.py\",\n          \"symbol\": \"attach_epic_order\",\n          \"start_line\": 124,\n          \"end_line\": 142,\n          \"snapshot\": \"base\",\n          \"why\": \"Function where epic_id is formatted into raw SQL; shows original line (sql.format(..., epic_id=epic_id)) and the changed line (sql.format(..., epic_id=int(epic_id)))\"\n        },\n        {\n          \"path\": \"taiga/projects/userstories/utils.py\",\n          \"symbol\": \"attach_extra_info\",\n          \"start_line\": 145,\n          \"end_line\": 162,\n          \"snapshot\": \"base\",\n          \"why\": \"Caller that forwards the epic_id argument to attach_epic_order\"\n        },\n        {\n          \"path\": \"taiga/projects/userstories/api.py\",\n          \"symbol\": \"UserStoryListView epic_id handling\",\n          \"start_line\": 129,\n          \"end_line\": 139,\n          \"snapshot\": \"base\",\n          \"why\": \"Extracts epic_id from request query parameters, splits possible list, and passes it to attach_extra_info (and thus to attach_epic_order)\"\n        }\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sql-injection-epic-id",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "epic access authorization policy"
+                },
+                "result": "[CHANGELOG.md:768-829] (relevance 0.19)\n- [API] projects resource: Random order if `discover_mode=true` and `is_featured=true`.\n- Webhooks: Improve webhook data:\n    - add permalinks\n    - owner, assigned_to, status, type, priority, severity, user_story, milestone, project are objects\n    - add role to 'points' object\n    - add the owner to every notification ('by' field)\n    - add the date of the notification ('date' field)\n    - show human diffs in 'changes'\n    - remove unnecessary data\n- CSV Reports:\n    - Change field name: 'milestone' to 'sprint'\n    - Add new fields: 'sprint_estimated_start' and 'sprint_estimated_end'\n- Importer:\n    - Remove project after load a dump file fails\n    - Add more info the the logger if load a dump file fails\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 2.0.0 Pulsatilla Patens (2016-04-04)\n\n### Features\n- Ability to create url custom fields. (thanks to [@astagi](https://github.com/astagi)).\n- Blocked projects support\n- Transfer projects ownership support\n- Customizable max private and public projects per user\n- Customizable max of memberships per owned private and public projects\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.10.0 Dryas Octopetala (2016-01-30)\n\n### Features\n- Add logo field to project model\n- Add is_featured field to project model\n- Add is_looking_for_people and looking_for_people_note fields to project model\n- Filter projects list by\n    - is_looking_for_people\n    - is_featured\n    - is_backlog_activated\n    - is_kanban_activated\n- Search projects by text query (order by ranking name > tags > description)\n- Order projects list:\n    - alphabetically by default\n    - by fans (last week/moth/year/all time)\n    - by activity (last week/moth/year/all time)\n- Show stats for discover secction\n- i18n.\n  - Add swedish (sv) translation.\n  - Add turkish (tr) translation.\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.9.1 Taiga Tribe (2016-01-05)\n\n### Features\n- [CSV Reports] Add fields \"created_date\", \"modified_date\", \"finished_date\" to issues CSV report.\n\n---\n\n[thankyou.md:1-43] (relevance 0.18)\n# Thank you\n\nTaiga would like to acknowledge selected individuals and organisations who\ncontributed to the product development in some way.\n\n## Security contributions\n\nWe would like to thank everyone listed here for their help, whether small or\nbig, to improve Taiga's overall security rating.\n\n### 2019\n\n- Joshua Osabel\n\n### 2020\n\n- Faizan Ahmed\n\n- Anton Perekopni\n\n- Ather Iqbal ( Alpha Inferno Smc Pvt Ltd )\n\n- Qazi Abdullah\n\n### 2021\n\n- Petar Kosic ( Sec-Research GmbH )\n\n- Kunal Mhaske\n\n### 2022\n\n- Husnain Iqbal (CEO of Alpha Inferno PVT LTD)\n\n### 2023\n\n- Khurram Shoaib\n\n- Kamran Khan\n\n### 2024\n\n- G. Vishal Goud\n\n---\n\n[taiga/projects/management/commands/sample_data/sample_attachment_2.txt:1-15] (relevance 0.16)\nWHAT IS THE PI WEEK?\n====================\n\n\u03a0WEEK /pa\u026a wi\u02d0k/ is an original idea by Kaleidos and it consists in allowing employees from participant technology companies to leave their ongoing work in standby and dedicate an entire week to personal projects. The plan is to enjoy a \u03a0WEEK every six months, particularly in December and July, and allow employees to play and innovate with only two rules in mind:\n\n* Only free & open source code can be used for development.\n* By the end of the \u03a0WEEK, there must be a functional demo of some type.\n\n\u03a0WEEK stands for Personal Innovation Week and it is meant to foster innovation and creativity in a near limitless environment of several fellow companies. No commercial purpose is asked, no specific agenda imposed, just a week for everyone to do whatever they wish most.\n\nThe mechanics is fairly simple. During the weeks prior to the \u03a0WEEK, some people will privately announce their projects so they can attract partners. This process naturally ends the Sunday before \u03a0WEEK starts so projects and teams are ready for action Monday morning.\n\nSo far, there has been two \u03a0WEEKs, on December 2011, with just Kaleidos as a participant company and on July 2012, with Kaleidos, Secuoyas and Yaco. This edition, on December 2012, has Wadobo and Secuoyas as excited fellow companies. We will continue to invite more and more companies each edition until this becomes a nationwide event.\n\nThe ultimate goal is to defy the current state of mind that relegates \u201cinnovation\u201d to an empty word or, in the best case, to a top-down strategy. For the doubtful out there, try it before you despise it. The first to see the benefits were our clients.\n\n---\n\n[CHANGELOG.md:157-284] (relevance 0.16)\n## 6.0.7 (2021-03-09)\n\n- fix(email): catch smtp errors to prevent app crashes\n\n## 6.0.6 (2021-03-01)\n\n- Fix api message\n\n## 6.0.5 (2021-02-22)\n\n- Added translation to Dansk\n- Added translation to Serbian\n- Added translation to Vietnamese\n- Simplify and improve docker configuration\n- Improve Github integration (edit, close and reopen issue events)\n- Fix Asana importer\n\n## 6.0.4 (2021-02-15)\n\n### Misc\n\n- Fix importer: ignore epic related user stories from another project\n- Change default sitemap page size\n- Improve docker configuration\n\n## 6.0.3 (2020-02-08)\n\n### Misc\n\n- Fix: ENABLE_WEBHOOKS for docker images\n\n## 6.0.2 (2020-02-08)\n\n### Features\n\n- Update colors for default project template fixtures.\n\n### Misc\n\n- Minor fixes related to importers and integrations.\n\n## 6.0.1 (2020-02-02)\n\n### Misc\n\n- Fix 'create user' form in django admin panel.\n\n## 6.0.0 (2020-02-02)\n\n### Features\n\n- Swimlanes\n- Generate docker image\n- Revamp email design\n- Improve Gitlab integration (edit, close and reopen issue events)\n\n### Misc\n\n- Changed the configuration style to expect DJANGO_SETTINGS_MODULE\n- Improved performance when reordering\n- Updated dependencies\n\n## 5.5.9 (2020-12-21)\n\n### Fix\n\n- Fix attachment refresh feature.\n- Fix welcome email template layout.\n\n### Misc\n\n- Updated requirements. **Please note that Python 3.5 is not supported**.\n- Several minor changes.\n\n### i18n\n\n- Add Arabic.\n- Update Russian.\n\n## 5.5.7 (2020-11-11)\n\n### Misc\n\n- Upgrade requirements.\n- Fix deprecation warnings.\n\n## 5.5.5 (2020-09-16)\n\n### Misc\n\n- Improve verify email feature for invited users.\n\n### i18n\n\n- Update catalog.\n- Update fa.\n\n## 5.5.4 (2020-09-08)\n\n### Misc\n\n- Upgrade requirements.\n\n### i18n\n\n- Update French translation.\n\n## 5.5.3 (2020-09-02)\n\n### Misc\n\n- Parametrize mdrender cache options.\n- Minor bug fix.\n\n## 5.5.2 (2020-08-26)\n\n### Misc\n\n- Tweaks mdrender cache.\n\n## 5.5.1 (2020-08-23)\n\n### Features\n\n- Prevent member creation to users with unverified email address.\n\n## 5.5.0 (2020-08-19)\n\n---\n\n[README.md:1-32] (relevance 0.16)\n## Taiga Backend\n\n[![Managed with Taiga.io](https://img.shields.io/badge/managed%20with-TAIGA.io-709f14.svg)](https://tree.taiga.io/project/taiga/ \"Managed with Taiga.io\")\n[![Tests Status](https://github.com/taigaio/taiga-back/workflows/Taiga%20Back%20-%20Test%20and%20Coverage/badge.svg?branch=main)](https://github.com/taigaio/taiga-back/actions?query=workflow%3A%22Taiga+Back+-+Test+and+Coverage%22 \"Tests Status\")\n[![Coverage Status](https://img.shields.io/coveralls/taigaio/taiga-back/main.svg)](https://coveralls.io/r/taigaio/taiga-back?branch=main \"Coverage Status\")\n\n## Documentation\n\nCurrently, we have authored three main documentation hubs:\n\n- **[API](https://docs.taiga.io/api.html)**: Our API documentation and reference for developing from Taiga API.\n- **[Documentation](https://docs.taiga.io/)**: If you need to install Taiga on your own server, this is the place to find some guides.\n- **[Taiga Resources](https://community.taiga.io/)**: This page is intended to be the support reference page for the users.\n\n## Bug reports\n\nIf you **find a bug** in Taiga you can always report it:\n\n- in [Taiga issues](https://tree.taiga.io/project/taiga/issues). **This is the preferred way**\n- in [Github issues](https://github.com/taigaio/taiga-back/issues)\n- send us a mail to support@taiga.io if is a bug related to [tree.taiga.io](https://tree.taiga.io)\n- send us a mail to security@taiga.io if is"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "epic access authorization"
+                },
+                "result": "[CHANGELOG.md:768-829] (relevance 0.20)\n- [API] projects resource: Random order if `discover_mode=true` and `is_featured=true`.\n- Webhooks: Improve webhook data:\n    - add permalinks\n    - owner, assigned_to, status, type, priority, severity, user_story, milestone, project are objects\n    - add role to 'points' object\n    - add the owner to every notification ('by' field)\n    - add the date of the notification ('date' field)\n    - show human diffs in 'changes'\n    - remove unnecessary data\n- CSV Reports:\n    - Change field name: 'milestone' to 'sprint'\n    - Add new fields: 'sprint_estimated_start' and 'sprint_estimated_end'\n- Importer:\n    - Remove project after load a dump file fails\n    - Add more info the the logger if load a dump file fails\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 2.0.0 Pulsatilla Patens (2016-04-04)\n\n### Features\n- Ability to create url custom fields. (thanks to [@astagi](https://github.com/astagi)).\n- Blocked projects support\n- Transfer projects ownership support\n- Customizable max private and public projects per user\n- Customizable max of memberships per owned private and public projects\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.10.0 Dryas Octopetala (2016-01-30)\n\n### Features\n- Add logo field to project model\n- Add is_featured field to project model\n- Add is_looking_for_people and looking_for_people_note fields to project model\n- Filter projects list by\n    - is_looking_for_people\n    - is_featured\n    - is_backlog_activated\n    - is_kanban_activated\n- Search projects by text query (order by ranking name > tags > description)\n- Order projects list:\n    - alphabetically by default\n    - by fans (last week/moth/year/all time)\n    - by activity (last week/moth/year/all time)\n- Show stats for discover secction\n- i18n.\n  - Add swedish (sv) translation.\n  - Add turkish (tr) translation.\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.9.1 Taiga Tribe (2016-01-05)\n\n### Features\n- [CSV Reports] Add fields \"created_date\", \"modified_date\", \"finished_date\" to issues CSV report.\n\n---\n\n[thankyou.md:1-43] (relevance 0.19)\n# Thank you\n\nTaiga would like to acknowledge selected individuals and organisations who\ncontributed to the product development in some way.\n\n## Security contributions\n\nWe would like to thank everyone listed here for their help, whether small or\nbig, to improve Taiga's overall security rating.\n\n### 2019\n\n- Joshua Osabel\n\n### 2020\n\n- Faizan Ahmed\n\n- Anton Perekopni\n\n- Ather Iqbal ( Alpha Inferno Smc Pvt Ltd )\n\n- Qazi Abdullah\n\n### 2021\n\n- Petar Kosic ( Sec-Research GmbH )\n\n- Kunal Mhaske\n\n### 2022\n\n- Husnain Iqbal (CEO of Alpha Inferno PVT LTD)\n\n### 2023\n\n- Khurram Shoaib\n\n- Kamran Khan\n\n### 2024\n\n- G. Vishal Goud\n\n---\n\n[CHANGELOG.md:157-284] (relevance 0.17)\n## 6.0.7 (2021-03-09)\n\n- fix(email): catch smtp errors to prevent app crashes\n\n## 6.0.6 (2021-03-01)\n\n- Fix api message\n\n## 6.0.5 (2021-02-22)\n\n- Added translation to Dansk\n- Added translation to Serbian\n- Added translation to Vietnamese\n- Simplify and improve docker configuration\n- Improve Github integration (edit, close and reopen issue events)\n- Fix Asana importer\n\n## 6.0.4 (2021-02-15)\n\n### Misc\n\n- Fix importer: ignore epic related user stories from another project\n- Change default sitemap page size\n- Improve docker configuration\n\n## 6.0.3 (2020-02-08)\n\n### Misc\n\n- Fix: ENABLE_WEBHOOKS for docker images\n\n## 6.0.2 (2020-02-08)\n\n### Features\n\n- Update colors for default project template fixtures.\n\n### Misc\n\n- Minor fixes related to importers and integrations.\n\n## 6.0.1 (2020-02-02)\n\n### Misc\n\n- Fix 'create user' form in django admin panel.\n\n## 6.0.0 (2020-02-02)\n\n### Features\n\n- Swimlanes\n- Generate docker image\n- Revamp email design\n- Improve Gitlab integration (edit, close and reopen issue events)\n\n### Misc\n\n- Changed the configuration style to expect DJANGO_SETTINGS_MODULE\n- Improved performance when reordering\n- Updated dependencies\n\n## 5.5.9 (2020-12-21)\n\n### Fix\n\n- Fix attachment refresh feature.\n- Fix welcome email template layout.\n\n### Misc\n\n- Updated requirements. **Please note that Python 3.5 is not supported**.\n- Several minor changes.\n\n### i18n\n\n- Add Arabic.\n- Update Russian.\n\n## 5.5.7 (2020-11-11)\n\n### Misc\n\n- Upgrade requirements.\n- Fix deprecation warnings.\n\n## 5.5.5 (2020-09-16)\n\n### Misc\n\n- Improve verify email feature for invited users.\n\n### i18n\n\n- Update catalog.\n- Update fa.\n\n## 5.5.4 (2020-09-08)\n\n### Misc\n\n- Upgrade requirements.\n\n### i18n\n\n- Update French translation.\n\n## 5.5.3 (2020-09-02)\n\n### Misc\n\n- Parametrize mdrender cache options.\n- Minor bug fix.\n\n## 5.5.2 (2020-08-26)\n\n### Misc\n\n- Tweaks mdrender cache.\n\n## 5.5.1 (2020-08-23)\n\n### Features\n\n- Prevent member creation to users with unverified email address.\n\n## 5.5.0 (2020-08-19)\n\n---\n\n[CHANGELOG.md:694-735] (relevance 0.15)\n## 3.1.0 Perovskia Atriplicifolia (2017-03-10)\n\n### Features\n- Contact with the project: if the projects have this module enabled Taiga users can contact them.\n- Ability to create rich text custom fields in Epics, User Stories, Tasks and Isues.\n- Full text search now use simple as tokenizer so search with non-english text are allowed.\n- Duplicate project: allows creating a new project based on the structure of another (status, tags, colors, default values...)\n- Add thumbnails and preview for PSD files.\n- Add thumbnails and preview for SVG files (Cario lib is needed).\n- i18n:\n  - Add japanese (ja) translation.\n  - Add korean (ko) translation.\n  - Add chinese simplified (zh-Hans) translation.\n- Third party services project importers:\n  - Trello\n  - Jira 7\n  - Github\n  - Asana\n\n### Misc\n- API:\n    - Memberships API endpoints now allows using usernames and emails instead of using only emails.\n    - Contacts API allow full text search (by the username, full name or email).\n    - Filter milestones, user stories and tasks by estimated_start and estimated_finish dates.\n    - Add project_extra_info to epics, tasks, milestones, issues and wiki pages endpoints.\n- Gogs integration: Adding new Gogs signature method.\n- Lots of small and not so small bugfixes.\n\n\n## 3.0.0 Stellaria Borealis (2016-10-02)\n\n### Features\n- Add Epics.\n- Include created, modified and finished dates for tasks in CSV reports.\n- Add gravatar url to Users API endpoint.\n- ProjectTemplates now are sorted by the attribute 'order'.\n- Create enpty wiki pages (if not exist) when a new link is created.\n- Diff messages in history entries now show only the relevant changes (with some context).\n- User stories and tasks listing API call support extra params to include more data (tasks and attachemnts and attachments, respectively)\n- Comments:\n    - Now comment owners and project admins can edit existing comments with the history Entry endpoint.\n    - Add a new permissions to allow add comments instead of use the existent modify permission for this purpose.\n\n---\n\n[AUTHORS.rst:1-49] (relevance 0.15)\nCurrently, PRIMARY AUTHORS are:\n\n- Carlos Goce <carlos.goce@revelio.dev>\n- Carlos Letamendia <carlos.letamendia@revelio.dev>\n- David Barrag\u00e1n Merino <dbarragan@dbarragan.com>\n- Daniel Herrero <daniel.herrero@kaleidos.net>\n- Juanfran Alc\u00e1ntara <juanfran.alcantara@kaleidos.net>\n- Miguel Gonz\u00e1lez <miguel.gonzalez@revelio.dev>\n- Miryam Gonz\u00e1lez <miryam.gonzalez@kaleidos.net>\n- Natacha Menjibar <natacha.menjibar@kaleidos.net>\n- Pablo Ruiz <pablo.ruiz@kaleidos.net>\n- Ramiro S\u00e1nchez <ramiro.sanchez@kaleidos.net>\n- Teresa de la Torre <teresa.delatorre@kaleidos.net>\n- Xavi Julian <xavier.julian@kaleidos.net>\n- Yamila Moreno <yamila.moreno@kaleidos.net>\n\nOther previous core team members:\n\n- Alejandro Alonso <alejandro.alonso@kaleidos.net>\n- Alex Hermida <alexhermida@gmail.com>\n- Andrey Antukh <niwi@niwi.nz>\n- Anler Hern\u00e1ndez <hello@anler.me>\n- Daniel Garc\u00eda <dangarbar@gmail.com>\n- Esther Moreno <esther.moreno@kaleidos.net>\n- Jesus Espino Garcia <jespinog@gmail.com>\n\nSpecial thanks to `Kaleidos Open Source S.L. <https://kaleidos.net/>`_ for providing time for Taiga development.\n\nAnd her"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "epic authorization"
+                },
+                "result": "[CHANGELOG.md:768-829] (relevance 0.29)\n- [API] projects resource: Random order if `discover_mode=true` and `is_featured=true`.\n- Webhooks: Improve webhook data:\n    - add permalinks\n    - owner, assigned_to, status, type, priority, severity, user_story, milestone, project are objects\n    - add role to 'points' object\n    - add the owner to every notification ('by' field)\n    - add the date of the notification ('date' field)\n    - show human diffs in 'changes'\n    - remove unnecessary data\n- CSV Reports:\n    - Change field name: 'milestone' to 'sprint'\n    - Add new fields: 'sprint_estimated_start' and 'sprint_estimated_end'\n- Importer:\n    - Remove project after load a dump file fails\n    - Add more info the the logger if load a dump file fails\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 2.0.0 Pulsatilla Patens (2016-04-04)\n\n### Features\n- Ability to create url custom fields. (thanks to [@astagi](https://github.com/astagi)).\n- Blocked projects support\n- Transfer projects ownership support\n- Customizable max private and public projects per user\n- Customizable max of memberships per owned private and public projects\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.10.0 Dryas Octopetala (2016-01-30)\n\n### Features\n- Add logo field to project model\n- Add is_featured field to project model\n- Add is_looking_for_people and looking_for_people_note fields to project model\n- Filter projects list by\n    - is_looking_for_people\n    - is_featured\n    - is_backlog_activated\n    - is_kanban_activated\n- Search projects by text query (order by ranking name > tags > description)\n- Order projects list:\n    - alphabetically by default\n    - by fans (last week/moth/year/all time)\n    - by activity (last week/moth/year/all time)\n- Show stats for discover secction\n- i18n.\n  - Add swedish (sv) translation.\n  - Add turkish (tr) translation.\n\n### Misc\n- Lots of small and not so small bugfixes.\n\n\n## 1.9.1 Taiga Tribe (2016-01-05)\n\n### Features\n- [CSV Reports] Add fields \"created_date\", \"modified_date\", \"finished_date\" to issues CSV report.\n\n---\n\n[thankyou.md:1-43] (relevance 0.25)\n# Thank you\n\nTaiga would like to acknowledge selected individuals and organisations who\ncontributed to the product development in some way.\n\n## Security contributions\n\nWe would like to thank everyone listed here for their help, whether small or\nbig, to improve Taiga's overall security rating.\n\n### 2019\n\n- Joshua Osabel\n\n### 2020\n\n- Faizan Ahmed\n\n- Anton Perekopni\n\n- Ather Iqbal ( Alpha Inferno Smc Pvt Ltd )\n\n- Qazi Abdullah\n\n### 2021\n\n- Petar Kosic ( Sec-Research GmbH )\n\n- Kunal Mhaske\n\n### 2022\n\n- Husnain Iqbal (CEO of Alpha Inferno PVT LTD)\n\n### 2023\n\n- Khurram Shoaib\n\n- Kamran Khan\n\n### 2024\n\n- G. Vishal Goud\n\n---\n\n[CHANGELOG.md:157-284] (relevance 0.22)\n## 6.0.7 (2021-03-09)\n\n- fix(email): catch smtp errors to prevent app crashes\n\n## 6.0.6 (2021-03-01)\n\n- Fix api message\n\n## 6.0.5 (2021-02-22)\n\n- Added translation to Dansk\n- Added translation to Serbian\n- Added translation to Vietnamese\n- Simplify and improve docker configuration\n- Improve Github integration (edit, close and reopen issue events)\n- Fix Asana importer\n\n## 6.0.4 (2021-02-15)\n\n### Misc\n\n- Fix importer: ignore epic related user stories from another project\n- Change default sitemap page size\n- Improve docker configuration\n\n## 6.0.3 (2020-02-08)\n\n### Misc\n\n- Fix: ENABLE_WEBHOOKS for docker images\n\n## 6.0.2 (2020-02-08)\n\n### Features\n\n- Update colors for default project template fixtures.\n\n### Misc\n\n- Minor fixes related to importers and integrations.\n\n## 6.0.1 (2020-02-02)\n\n### Misc\n\n- Fix 'create user' form in django admin panel.\n\n## 6.0.0 (2020-02-02)\n\n### Features\n\n- Swimlanes\n- Generate docker image\n- Revamp email design\n- Improve Gitlab integration (edit, close and reopen issue events)\n\n### Misc\n\n- Changed the configuration style to expect DJANGO_SETTINGS_MODULE\n- Improved performance when reordering\n- Updated dependencies\n\n## 5.5.9 (2020-12-21)\n\n### Fix\n\n- Fix attachment refresh feature.\n- Fix welcome email template layout.\n\n### Misc\n\n- Updated requirements. **Please note that Python 3.5 is not supported**.\n- Several minor changes.\n\n### i18n\n\n- Add Arabic.\n- Update Russian.\n\n## 5.5.7 (2020-11-11)\n\n### Misc\n\n- Upgrade requirements.\n- Fix deprecation warnings.\n\n## 5.5.5 (2020-09-16)\n\n### Misc\n\n- Improve verify email feature for invited users.\n\n### i18n\n\n- Update catalog.\n- Update fa.\n\n## 5.5.4 (2020-09-08)\n\n### Misc\n\n- Upgrade requirements.\n\n### i18n\n\n- Update French translation.\n\n## 5.5.3 (2020-09-02)\n\n### Misc\n\n- Parametrize mdrender cache options.\n- Minor bug fix.\n\n## 5.5.2 (2020-08-26)\n\n### Misc\n\n- Tweaks mdrender cache.\n\n## 5.5.1 (2020-08-23)\n\n### Features\n\n- Prevent member creation to users with unverified email address.\n\n## 5.5.0 (2020-08-19)\n\n---\n\n[CHANGELOG.md:694-735] (relevance 0.22)\n## 3.1.0 Perovskia Atriplicifolia (2017-03-10)\n\n### Features\n- Contact with the project: if the projects have this module enabled Taiga users can contact them.\n- Ability to create rich text custom fields in Epics, User Stories, Tasks and Isues.\n- Full text search now use simple as tokenizer so search with non-english text are allowed.\n- Duplicate project: allows creating a new project based on the structure of another (status, tags, colors, default values...)\n- Add thumbnails and preview for PSD files.\n- Add thumbnails and preview for SVG files (Cario lib is needed).\n- i18n:\n  - Add japanese (ja) translation.\n  - Add korean (ko) translation.\n  - Add chinese simplified (zh-Hans) translation.\n- Third party services project importers:\n  - Trello\n  - Jira 7\n  - Github\n  - Asana\n\n### Misc\n- API:\n    - Memberships API endpoints now allows using usernames and emails instead of using only emails.\n    - Contacts API allow full text search (by the username, full name or email).\n    - Filter milestones, user stories and tasks by estimated_start and estimated_finish dates.\n    - Add project_extra_info to epics, tasks, milestones, issues and wiki pages endpoints.\n- Gogs integration: Adding new Gogs signature method.\n- Lots of small and not so small bugfixes.\n\n\n## 3.0.0 Stellaria Borealis (2016-10-02)\n\n### Features\n- Add Epics.\n- Include created, modified and finished dates for tasks in CSV reports.\n- Add gravatar url to Users API endpoint.\n- ProjectTemplates now are sorted by the attribute 'order'.\n- Create enpty wiki pages (if not exist) when a new link is created.\n- Diff messages in history entries now show only the relevant changes (with some context).\n- User stories and tasks listing API call support extra params to include more data (tasks and attachemnts and attachments, respectively)\n- Comments:\n    - Now comment owners and project admins can edit existing comments with the history Entry endpoint.\n    - Add a new permissions to allow add comments instead of use the existent modify permission for this purpose.\n\n---\n\n[AUTHORS.rst:1-49] (relevance 0.20)\nCurrently, PRIMARY AUTHORS are:\n\n- Carlos Goce <carlos.goce@revelio.dev>\n- Carlos Letamendia <carlos.letamendia@revelio.dev>\n- David Barrag\u00e1n Merino <dbarragan@dbarragan.com>\n- Daniel Herrero <daniel.herrero@kaleidos.net>\n- Juanfran Alc\u00e1ntara <juanfran.alcantara@kaleidos.net>\n- Miguel Gonz\u00e1lez <miguel.gonzalez@revelio.dev>\n- Miryam Gonz\u00e1lez <miryam.gonzalez@kaleidos.net>\n- Natacha Menjibar <natacha.menjibar@kaleidos.net>\n- Pablo Ruiz <pablo.ruiz@kaleidos.net>\n- Ramiro S\u00e1nchez <ramiro.sanchez@kaleidos.net>\n- Teresa de la Torre <teresa.delatorre@kaleidos.net>\n- Xavi Julian <xavier.julian@kaleidos.net>\n- Yamila Moreno <yamila.moreno@kaleidos.net>\n\nOther previous core team members:\n\n- Alejandro Alonso <alejandro.alonso@kaleidos.net>\n- Alex Hermida <alexhermida@gmail.com>\n- Andrey Antukh <niwi@niwi.nz>\n- Anler Hern\u00e1ndez <hello@anler.me>\n- Daniel Garc\u00eda <dangarbar@gmail.com>\n- Esther Moreno <esther.moreno@kaleidos.net>\n- Jesus Espino Garcia <jespinog@gmail.com>\n\nSpecial thanks to `Kaleidos Open Source S.L. <https://kaleidos.net/>`_ for providing time for Taiga development.\n\nAnd her"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "UserStoryListView epic_id"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf status=ok truncated=true query=\"UserStoryListView epic_id\"]\n**Exploration: UserStoryListView epic_id**\n\nFound 70 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `view` (taiga/base/api/viewsets.py:77) \u2014 1 caller in `taiga/base/api/viewsets.py`; no tests found within 3 caller hops\n- `Epic` (taiga/projects/epics/models.py:23) \u2014 19 callers in `taiga/hooks/event_hooks.py`, `taiga/importers/jira/agile.py`, `taiga/importers/jira/common.py`, `taiga/importers/jira/normal.py` +4 more; tests: `tests/integration/resources_permissions/test_epics_related_userstories_resources.py`, `tests/integration/resources_permissions/test_epics_resources.py`, `tests/integration/test_hooks_bitbucket.py`, `tests/integration/test_hooks_github.py` +3\n\n**Relationships**\n\n**extends:**\n- Epic \u2192 WatchedModelMixin\n- Epic \u2192 OCCModelMixin\n- Epic \u2192 BlockedMixin\n- Epic \u2192 TaggedMixin\n- ViewSet \u2192 ViewSetMixin\n- GenericViewSet \u2192 ViewSetMixin\n- ViewSet \u2192 APIView\n- HistoryViewSet \u2192 ReadOnlyListViewSet\n- EpicHistory \u2192 HistoryViewSet\n- WikiHistory \u2192 HistoryViewSet\n- ... and 36 more\n\n**calls:**\n- view \u2192 dispatch\n- dispatch \u2192 initial\n- dispatch \u2192 handle_exception\n- dispatch \u2192 initialize_request\n- dispatch \u2192 finalize_response\n- test_epic_put_update_with_project_change \u2192 save\n- create_epic \u2192 save\n- HistoryViewSet \u2192 detail_route\n- list \u2192 paginate_queryset\n- list \u2192 get_queryset\n- ... and 76 more\n\n**references:**\n- as_view \u2192 view\n- dispatch \u2192 http_method_not_allowed\n- initialize_request \u2192 ViewSetMixin\n- Epic \u2192 timestamp_ms\n- Epic \u2192 generate_random_predefined_hex_color\n- EpicStatusViewSet \u2192 Epic\n- get_item_classes \u2192 Epic\n- _transform_history_data \u2192 Epic\n- _import_to_custom_fields \u2192 Epic\n- VIEWSET /web-notifications \u2192 WebNotificationsViewSet\n- ... and 6 more\n\n**instantiates:**\n- get_epics_from_bulk \u2192 Epic\n- list \u2192 NotFound\n- exception_handler \u2192 NotFound\n- exception_handler \u2192 NotFound\n- comment_versions \u2192 NotFound\n- edit_comment \u2192 NotFound\n- csv \u2192 NotFound\n- undelete_comment \u2192 NotFound\n- retrieve \u2192 NotFound\n- csv \u2192 NotFound\n- ... and 16 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`taiga/base/response.py`** \u2014 Response(extends), Response(class), NotFound(class), Ok(class)\n\n```python\n117\t        return state\n118\t\n119\t\n120\tclass Ok(Response):\n121\t    \"\"\"200 OK\n122\t\n123\t    Should be used to indicate nonspecific success. Must not be used to\n124\t    communicate errors in the response body.\n125\t    In most cases, 200 is the code the client hopes to see. It indicates that\n126\t    the REST API successfully carried out whatever action the client requested,\n127\t    and that no more specific code in the 2xx series is appropriate. Unlike\n128\t    the 204 status code, a 200 response should include a response body.\n129\t    \"\"\"\n130\t    status_code = 200\n131\t\n132\t\n133\tclass Created(Response):\n\n... (gap: Accepted (taiga/base/response.py:145), NoContent (taiga/base/response.py:160), MultipleChoices (taiga/base/response.py:173), MovedPermanently (taiga/base/response.py:183), Found (taiga/base/response.py:195), SeeOther (taiga/base/response.py:215), +5 more) ...\n\n294\t    status_code = 403\n295\t\n296\t\n297\tclass NotFound(Response):\n298\t    \"\"\"404 Not Found\n299\t\n300\t    Must be used when a client's URI cannot be mapped to a resource.\n301\t    The 404 error status code indicates that the REST API can't map the\n302\t    client's URI to a resource.\n303\t    \"\"\"\n304\t    status_code = 404\n305\t\n306\t\n307\tclass MethodNotAllowed(Response):\n```\n\n**`taiga/base/api/views.py`** \u2014 calls(calls), permission_denied(calls), perform_content_negotiation(calls), exception_handler(function), Response(instantiates), Response(references), NotFound(instantiates), instantiates(instantiates), http_method_not_allowed(method), http_method_not_allowed(references), +26 more\n\n```python\n295\t        \"\"\"\n296\t        Determine which renderer and media type to use render the response.\n297\t        \"\"\"\n298\t        renderers = self.get_renderers()\n299\t        conneg = self.get_content_negotiator()\n300\t\n301\t        try:\n302\t            return conneg.select_renderer(request, renderers, self.format_kwarg)\n\n... (gap: perform_authentication (taiga/base/api/views.py:308)) ...\n\n317\t\n318\t    def check_permissions(self, request, action:str=None, obj=None):\n319\t        if action is None:\n320\t            self.permission_denied(request)\n321\t\n322\t        for permission in self.get_permissions():\n323\t            if not permission.check_permissions(action=action, obj=obj):\n324\t                self.permission_denied(request)\n325\t\n326\t    def check_object_permissions(self, request, obj):\n327\t        self.check_permissions(request, None, obj)\n328\t\n329\t    def check_throttles(self, request):\n330\t        \"\"\"\n\n... (gap: finalize_throttles (taiga/base/api/views.py:338)) ...\n\n340\t        Check if request should be throttled.\n341\t        Raises an appropriate exception if the request is throttled.\n342\t        \"\"\"\n343\t        for throttle in self.get_throttles():\n344\t            if throttle.has_to_finalize(request, response, self):\n345\t                throttle.finalize(request, response, self)\n346\t\n347\t    # Dispatch methods\n348\t\n349\t    def initialize_request(self, request, *args, **kwargs):\n350\t        \"\"\"\n351\t        Returns the initial request object.\n352\t        \"\"\"\n353\t        parser_context = self.get_parser_context(request)\n354\t\n355\t        return Request(request,\n356\t                       parsers=self.get_parsers(),\n357\t                       authenticators=self.get_authenticators(),\n\n[TRUNCATED omitted_chars=18885]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "attach_extra_info"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=38bb4f088e26d987be567394210fe7ad89257baf status=ok truncated=true query=\"attach_extra_info\"]\n**Exploration: attach_extra_info**\n\nFound 44 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `attach_extra_info` (taiga/projects/utils.py:580) \u2014 20 callers in `taiga/export_import/api.py`, `taiga/projects/api.py`; tests: `tests/integration/resources_permissions/test_issues_resources.py`, `tests/integration/resources_permissions/test_epics_resources.py`, `tests/integration/resources_permissions/test_projects_resource.py`, `tests/integration/resources_permissions/test_epics_related_userstories_resources.py` +3\n- `attach_extra_info` (taiga/projects/milestones/utils.py:54) \u2014 3 callers in `taiga/projects/milestones/api.py`; tests: `tests/integration/resources_permissions/test_milestones_resources.py`\n- `attach_extra_info` (taiga/users/utils.py:29) \u2014 1 caller in `taiga/users/api.py`; no tests found within 3 caller hops\n- `attach_extra_info` (taiga/projects/tasks/utils.py:80) \u2014 4 callers in `taiga/projects/tasks/api.py`; tests: `tests/integration/resources_permissions/test_tasks_resources.py`\n- `attach_extra_info` (taiga/projects/epics/utils.py:16) \u2014 6 callers in `taiga/projects/epics/api.py`; tests: `tests/integration/resources_permissions/test_epics_resources.py`, `tests/integration/resources_permissions/test_epics_related_userstories_resources.py`\n\n**Relationships**\n\n**calls:**\n- attach_extra_info \u2192 attach_closed_milestones\n- attach_extra_info \u2192 attach_issue_custom_attributes\n- attach_extra_info \u2192 attach_task_custom_attributes\n- attach_extra_info \u2192 attach_members\n- attach_extra_info \u2192 attach_task_statuses\n- attach_extra_info \u2192 attach_userstory_custom_attributes\n- attach_extra_info \u2192 attach_is_fan\n- attach_extra_info \u2192 attach_milestones\n- attach_extra_info \u2192 attach_priorities\n- attach_extra_info \u2192 attach_epic_statuses\n- ... and 112 more\n\n**instantiates:**\n- data \u2192 ProjectFactory\n- data \u2192 MembershipFactory\n- data \u2192 MilestoneFactory\n- data \u2192 RelatedUserStory\n- data \u2192 EpicFactory\n- data \u2192 UserStoryFactory\n- test_issue_put_update_with_project_change \u2192 ProjectFactory\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`taiga/projects/utils.py`** \u2014 attach_members(calls), attach_members(function), attach_milestones(calls), attach_milestones(function), attach_issue_statuses(calls), attach_issue_statuses(function), attach_issue_types(calls), attach_issue_types(function), attach_issue_duedates(calls), attach_issue_duedates(function), +39 more\n\n```python\n67\t    return queryset\n68\t\n69\t\n70\tdef attach_closed_milestones(queryset, as_field=\"closed_milestones_attr\"):\n71\t    \"\"\"Attach a closed milestones counter to each object of the queryset.\n72\t\n73\t    :param queryset: A Django projects queryset object.\n74\t    :param as_field: Attach the counter as an attribute with this name.\n75\t\n76\t    :return: Queryset object with the additional `as_field` field.\n77\t    \"\"\"\n78\t    model = queryset.model\n79\t    sql = \"\"\"\n80\t             SELECT COUNT(milestones_milestone.id)\n81\t               FROM milestones_milestone\n82\t              WHERE milestones_milestone.project_id = {tbl}.id AND\n83\t                    milestones_milestone.closed = True\n84\t          \"\"\"\n85\t\n86\t    sql = sql.format(tbl=model._meta.db_table)\n87\t    queryset = queryset.extra(select={as_field: sql})\n88\t    return queryset\n89\t\n90\t\n91\tdef attach_notify_policies(queryset, as_field=\"notify_policies_attr\"):\n92\t    \"\"\"Attach a json notification policies representation to each object of the queryset.\n93\t\n94\t    :param queryset: A Django projects queryset object.\n95\t    :param as_field: Attach the notification policies as an attribute with this name.\n96\t\n97\t    :return: Queryset object with the additional `as_field` field.\n98\t    \"\"\"\n99\t    model = queryset.model\n100\t    sql = \"\"\"\n101\t             SELECT json_agg(row_to_json(notifications_notifypolicy))\n102\t               FROM notifications_notifypolicy\n103\t              WHERE notifications_notifypolicy.project_id = {tbl}.id\n104\t          \"\"\"\n105\t\n106\t    sql = sql.format(tbl=model._meta.db_table)\n107\t    queryset = queryset.extra(select={as_field: sql})\n108\t    return queryset\n109\t\n110\t\n111\tdef attach_epic_statuses(queryset, as_field=\"epic_statuses_attr\"):\n112\t    \"\"\"Attach a json epic statuses representation to each object of the queryset.\n113\t\n114\t    :param queryset: A Django projects queryset object.\n115\t    :param as_field: Attach the epic statuses as an attribute with this name.\n116\t\n117\t    :return: Queryset object with the additional `as_field` field.\n118\t    \"\"\"\n119\t    model = queryset.model\n120\t    sql = \"\"\"\n121\t             SELECT json_agg(\n122\t                        row_to_json(projects_epicstatus)\n123\t                        ORDER BY projects_epicstatus.order\n124\t                    )\n125\t               FROM projects_epicstatus\n126\t              WHERE projects_epicstatus.project_id = {tbl}.id\n127\t          \"\"\"\n128\t\n129\t    sql = sql.format(tbl=model._meta.db_table)\n130\t    queryset = queryset.extra(select={as_field: sql})\n131\t    return queryset\n132\t\n133\t\n134\tdef attach_swimlanes(queryset, as_field=\"swimlanes_attr\"):\n135\t    \"\"\"Attach a json swimlanes representation to each object of the queryset.\n136\t\n137\t    :param queryset: A Django projects queryset object.\n138\t    :param as_field: Attach the swimalne as an attribute with this name.\n139\t\n140\t    :return: Queryset object with the additional `as_field` field.\n141\t    \"\"\"\n142\t    model = queryset.model\n143\t    sql = \"\"\"\n144\t             SELECT json_agg(\n145\t       \n[TRUNCATED omitted_chars=19209]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:sql-injection-epic-id",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def attach_extra_info",
+                  "file_glob": "taiga/projects/userstories/utils.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=107f116b8c1fe526bde35e5fc329b832968c2a9b pattern=\"def attach_extra_info\"]\ntaiga/projects/userstories/utils.py:145:def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "start_line": 140,
+                  "end_line": 170,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=107f116b8c1fe526bde35e5fc329b832968c2a9b path=taiga/projects/userstories/utils.py lines=140-170]\n140:     sql = sql.format(tbl=model._meta.db_table, epic_id=int(epic_id))\n141:     queryset = queryset.extra(select={as_field: sql})\n142:     return queryset\n143: \n144: \n145: def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):\n146:     queryset = attach_total_points(queryset)\n147:     queryset = attach_role_points(queryset)\n148:     queryset = attach_epics(queryset)\n149: \n150:     if include_attachments:\n151:         queryset = attach_basic_attachments(queryset)\n152:         queryset = queryset.extra(select={\"include_attachments\": \"True\"})\n153: \n154:     if include_tasks:\n155:         queryset = attach_tasks(queryset)\n156:         queryset = queryset.extra(select={\"include_tasks\": \"True\"})\n157: \n158:     if epic_id is not None:\n159:         queryset = attach_epic_order(queryset, epic_id)\n160:         queryset = queryset.extra(select={\"include_epic_order\": \"True\"})\n161: \n162:     queryset = attach_total_attachments(queryset)\n163:     queryset = attach_total_voters_to_queryset(queryset)\n164:     queryset = attach_watchers_to_queryset(queryset)\n165:     queryset = attach_total_watchers_to_queryset(queryset)\n166:     queryset = attach_is_voter_to_queryset(queryset, user)\n167:     queryset = attach_is_watcher_to_queryset(queryset, user)\n168:     queryset = attach_total_comments_to_queryset(queryset)\n169:     return queryset\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "epic_id",
+                  "file_glob": "taiga/projects/userstories/api.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=107f116b8c1fe526bde35e5fc329b832968c2a9b pattern=\"epic_id\"]\ntaiga/projects/userstories/api.py:129:        epic_id = self.request.QUERY_PARAMS.get(\"epic\", None)\ntaiga/projects/userstories/api.py:130:        # We can be filtering by more than one epic so epic_id can consist\ntaiga/projects/userstories/api.py:133:        if epic_id is not None:\ntaiga/projects/userstories/api.py:134:            epic_id = epic_id.split(\",\")[0]\ntaiga/projects/userstories/api.py:139:                               epic_id=epic_id)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "taiga/projects/userstories/utils.py",
+                  "start_line": 120,
+                  "end_line": 138,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=107f116b8c1fe526bde35e5fc329b832968c2a9b path=taiga/projects/userstories/utils.py lines=120-138]\n120:     queryset = queryset.extra(select={as_field: sql})\n121:     return queryset\n122: \n123: \n124: def attach_epic_order(queryset, epic_id, as_field=\"epic_order\"):\n125:     \"\"\"Attach epic_order column to each object of the queryset.\n126: \n127:     :param queryset: A Django user stories queryset object.\n128:     :param epic_id: Order related to this epic.\n129:     :param as_field: Attach order as an attribute with this name.\n130: \n131:     :return: Queryset object with the additional `as_field` field.\n132:     \"\"\"\n133: \n134:     model = queryset.model\n135:     sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n136:                FROM \"epics_relateduserstory\"\n137:               WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n138:                     \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "taiga-epic-order-sqli",
+  "url": "https://github.com/taigaio/taiga-back/commit/107f116b8c1fe526bde35e5fc329b832968c2a9b",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-chm9-9wwq-xffj",
+  "expected": "safe",
+  "vulnerable_files": [
+    "taiga/projects/userstories/utils.py",
+    "taiga/projects/userstories/api.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}
