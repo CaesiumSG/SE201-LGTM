@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 0.75
 
+# A quote line holding only "..." (optionally as a comment) stands for skipped lines.
+_ELISION_LINE = re.compile(r"^[ \t]*(?:#|//)?[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
+
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
@@ -129,6 +132,10 @@ class EvidenceValidator:
         return candidates[-1]
 
     def _snippet_in_text(self, snippet: str, haystack: str) -> bool:
+        parts = [p for p in _ELISION_LINE.split(snippet) if p.strip()]
+        if len(parts) > 1:
+            # shortcut: parts are matched independently, not in order; enforce order if out-of-order quotes slip through.
+            return all(self._snippet_in_text(p, haystack) for p in parts)
         snippet_n = _normalize(snippet)
         if not snippet_n:
             return True
