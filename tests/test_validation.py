@@ -213,6 +213,84 @@ class TestValidatorRegressions:
         assert validator._snippet_in_text(snippet, _normalize(haystack))
 
 
+BATCH_STATUS_SOURCE = (
+    '@orders_bp.route("/batch-status", methods=["GET"])\n'
+    '@require_role("manager")\n'
+    "def batch_order_status():\n"
+    '    """Fetch the status of several orders by comma-separated ids."""\n'
+    '    raw_ids = request.args.get("ids", "")\n'
+    "    try:\n"
+    '        id_list = [int(part) for part in raw_ids.split(",") if part.strip()]\n'
+    "    except ValueError:\n"
+    '        return jsonify({"error": "ids must be integers"}), 400\n'
+    "    if not id_list:\n"
+    "        return jsonify([])\n"
+    '    params = {f"id{i}": value for i, value in enumerate(id_list)}\n'
+    '    placeholders = ", ".join(":" + key for key in params)\n'
+    "    session = get_session()\n"
+    "    rows = session.execute(\n"
+    '        text("SELECT id, status FROM orders WHERE id IN (" + placeholders + ")"),\n'
+    "        params,\n"
+    "    )\n"
+    "    return jsonify([dict(r._mapping) for r in rows])\n"
+)
+
+
+@pytest.fixture
+def orders_validator(tmp_path):
+    from tests.conftest import git
+
+    repo = tmp_path / "orders"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@t.local")
+    git(repo, "config", "user.name", "T")
+    (repo / "orders.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    (repo / "orders.py").write_text(BATCH_STATUS_SOURCE, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "pr")
+    sha = git(repo, "rev-parse", "HEAD").strip()
+    base = git(repo, "rev-parse", "HEAD~1").strip()
+    return EvidenceValidator(repo, "main", shas={"base": base, "pr": sha})
+
+
+def _orders_item(content):
+    return EvidenceItem(type="code", file="orders.py", lines=[1, 19], content=content, snapshot="pr")
+
+
+class TestElidedQuote:
+    """Shoply run 2026-11-06: a quote shortened with '...' was rejected and re-asked to exhaustion."""
+
+    @pytest.mark.parametrize("marker", ["...", "# ...", "…"])
+    def test_quote_with_an_elision_line_over_many_skipped_lines_resolves(self, orders_validator, marker):
+        quote = (
+            '@orders_bp.route("/batch-status", methods=["GET"])\n'
+            '@require_role("manager")\n'
+            "def batch_order_status():\n"
+            '    raw_ids = request.args.get("ids", "")\n'
+            f"    {marker}\n"
+            "    rows = session.execute(\n"
+            '        text("SELECT id, status FROM orders WHERE id IN (" + placeholders + ")"),\n'
+            "        params,\n"
+            "    )\n"
+            "    return jsonify([dict(r._mapping) for r in rows])"
+        )
+
+        assert orders_validator.resolves(_orders_item(quote)) is True
+
+    def test_elided_quote_with_a_part_missing_from_the_file_does_not_resolve(self, orders_validator):
+        quote = (
+            "def batch_order_status():\n"
+            "    ...\n"
+            "    if not is_owner_or_admin(current_user, order.user_id):\n"
+            "        abort(403)\n"
+        )
+
+        assert orders_validator.resolves(_orders_item(quote)) is False
+
+
 def test_fuzzy_match_is_fast_on_large_files():
     import random
     import time
