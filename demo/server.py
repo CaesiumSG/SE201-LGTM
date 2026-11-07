@@ -42,6 +42,7 @@ import github_app as gh  # noqa: E402
 import results  # noqa: E402
 import report  # noqa: E402
 import reviews  # noqa: E402
+import claude_judge  # noqa: E402
 import liveapp  # noqa: E402
 import workspace  # noqa: E402
 from bedrock_env import ledger_total, read_bedrock_key  # noqa: E402
@@ -179,7 +180,7 @@ def run_row(r: dict) -> dict:
         "id", "source", "repo", "pr_number", "pr_title", "pr_url", "author", "author_avatar", "head_sha", "base_sha",
         "head_ref", "base_ref", "trigger", "status", "conclusion", "verdict", "n_flagged", "n_candidates",
         "severity_max", "stage", "check_url", "review_url", "created_at", "started_at", "finished_at", "latency",
-        "backend", "model", "error", "imported_dataset", "outcome", "expected", "advisory", "merged")}
+        "backend", "model", "error", "imported_dataset", "outcome", "expected", "advisory", "merged", "judge")}
     out["ts"] = time.mktime(time.strptime(r["created_at"][:19], "%Y-%m-%dT%H:%M:%S")) if r.get("created_at") else 0
     return out
 
@@ -316,9 +317,15 @@ def _check_qwen(data: dict) -> dict:
 
 
 def _check_kev(data: dict) -> dict:
-    if not data.get("data"):
+    if not (data.get("data") or data.get("models")):   # OpenAI-style "data", or the System One server's "models"
         return {"ok": False, "state": "no_model", "detail": "Kev server is up but lists no model."}
-    return {"ok": True, "state": "ok", "detail": "Kev-4B judge answering on the GPU job."}
+    return {"ok": True, "state": "ok", "detail": "Kev-4B judge answering on 127.0.0.1:8008 (this Mac or the GPU job)."}
+
+
+def _check_claude_judge(data: dict) -> dict:
+    if not data.get("ready"):
+        return {"ok": False, "state": "no_key", "detail": "Claude judge needs a Bedrock key in .env."}
+    return {"ok": True, "state": "ok", "detail": "Claude on Bedrock answering as the judge (a stand-in, not Kev)."}
 
 
 def gpu_status() -> dict:
@@ -335,9 +342,12 @@ def gpu_status() -> dict:
 
 def health() -> dict:
     app = gh.public_app_info()
-    gpu = gpu_status()
+    gpu = dict(gpu_status())
+    judge_kind = STORE.settings().get("judge", "kev")
+    if judge_kind == "claude":
+        gpu["judge"] = _probe(("127.0.0.1", claude_judge.PORT), "/v1/models", "the LGTM server", _check_claude_judge)
     return {
-        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "bedrock": bool(ENGINE.bedrock_key),
+        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "judge_kind": judge_kind, "bedrock": bool(ENGINE.bedrock_key),
         "gpu": gpu, "backend": STORE.settings().get("backend", "gpu"),
         "app": app, "relay": {**ENGINE.relay_state, "configured": bool(gh.load_relay())},
         "poll": ENGINE.poll_state, "queue": ENGINE.queue.qsize(), "current": ENGINE.current,
@@ -550,6 +560,8 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/settings":
                 if "backend" in body and body["backend"] not in ("gpu", "bedrock"):
                     return self.send_json({"error": "backend must be gpu or bedrock"}, HTTPStatus.BAD_REQUEST)
+                if "judge" in body and body["judge"] not in ("kev", "claude"):
+                    return self.send_json({"error": "judge must be kev or claude"}, HTTPStatus.BAD_REQUEST)
                 for k, v in body.items():
                     STORE.set_setting(k, v)
                 return self.send_json(STORE.settings())
@@ -785,6 +797,7 @@ def main() -> int:
     budget = ledger_total() + args.bedrock_allowance
     ENGINE = reviews.Engine(STORE, sys.executable, BASE_URL, key, budget)
     ENGINE.start(args.port)
+    claude_judge.serve(key, budget)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     app = gh.public_app_info()

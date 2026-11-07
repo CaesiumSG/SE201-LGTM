@@ -51,7 +51,14 @@ STAGE_LABELS = {
     "fetch": "Fetch the pull request", "index": "Index repository docs", "context": "Read the diff and build code graphs",
     "sast": "Semgrep on changed files", "triage": "Triage Semgrep hits", "investigator": "Investigator agent",
     "review": "Section reviewers (authorization, SQL injection)", "validate": "Check cited evidence",
-    "judge": "Kev judge", "report": "Write the report",
+    "judge": "Evidence judge", "report": "Write the report",
+}
+
+
+# Evidence judges: (endpoint, short name, long name). Kev is the evaluated judge; Claude is a labelled stand-in.
+JUDGES = {
+    "kev": ("http://127.0.0.1:8008", "Kev judge", "Kev-4B"),
+    "claude": ("http://127.0.0.1:8009", "Claude judge", "Claude (stand-in)"),
 }
 
 
@@ -267,7 +274,8 @@ class Engine:
         backend = settings["backend"] if settings["backend"] in ("gpu", "bedrock") else "gpu"
         if backend == "bedrock" and not self.bedrock_key:
             backend = "gpu"
-        self.store.update("runs", run_id, status="running", started_at=now(), stage="fetch", backend=backend)
+        judge = settings.get("judge") if settings.get("judge") in JUDGES else "kev"
+        self.store.update("runs", run_id, status="running", started_at=now(), stage="fetch", backend=backend, judge=judge)
         self._emit(run_id, {"type": "accepted", "run_id": run_id, "repo": full, "pr": run["pr_number"],
                             "title": run["pr_title"], "backend": backend})
         self._check_progress(run, "fetch", started)
@@ -299,7 +307,8 @@ class Engine:
 
         # 2. the pipeline, in a subprocess
         cmd = [self.python, "-u", str(HERE / "live_runner.py"), "--case-json", str(case_file),
-               "--cache", str(cache), "--out", str(out), "--backend", backend]
+               "--cache", str(cache), "--out", str(out), "--backend", backend,
+               "--judge-endpoint", JUDGES[judge][0], "--judge-name", JUDGES[judge][1]]
         penv = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src"), "PYTHONUNBUFFERED": "1"}
         penv.pop("AWS_BEARER_TOKEN_BEDROCK", None)
         if backend == "bedrock":
@@ -462,9 +471,9 @@ class Engine:
                                     "and found nothing it could back with evidence."]),
             "",
             f"{len(findings)} candidate finding(s) raised by the agents; {filtered} filtered out by evidence checks "
-            f"and the Kev judge. Semgrep: {record.get('semgrep_findings_in_diff', 0) if isinstance(record.get('semgrep_findings_in_diff'), int) else len(record.get('semgrep_findings_in_diff') or [])} hit(s) in the diff.",
+            f"and the {JUDGES.get(run.get('judge') or 'kev', JUDGES['kev'])[1]}. Semgrep: {record.get('semgrep_findings_in_diff', 0) if isinstance(record.get('semgrep_findings_in_diff'), int) else len(record.get('semgrep_findings_in_diff') or [])} hit(s) in the diff.",
             "",
-            f"Reviewed in {mins} by {model or 'the reviewer model'} with the Kev-4B judge. [Open the full trace in LGTM]({link})",
+            f"Reviewed in {mins} by {model or 'the reviewer model'} with the {JUDGES.get(run.get('judge') or 'kev', JUDGES['kev'])[2]} judge. [Open the full trace in LGTM]({link})",
         ])
         annotations = []
         for f in flagged:

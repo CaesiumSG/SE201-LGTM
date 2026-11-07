@@ -60,7 +60,7 @@
     ["fetch", "Fetch the pull request"], ["index", "Index repository docs"], ["context", "Read the diff, build code graphs"],
     ["sast", "Semgrep on changed files"], ["triage", "Triage Semgrep hits"], ["investigator", "Investigator agent"],
     ["review", "Authorization and SQL-injection reviewers"], ["validate", "Check the cited evidence"],
-    ["judge", "Kev judge"], ["report", "Write the report"],
+    ["judge", "Evidence judge"], ["report", "Write the report"],
   ];
   const AGENTS = { investigator: "Investigator", authz_reviewer: "Authorization reviewer", sqli_reviewer: "SQL-injection reviewer", sast_triage: "Semgrep triage" };
   const TOOLS = { code: "read code", rag: "looked up policy", graph: "queried the code graph", other: "used a tool" };
@@ -147,11 +147,11 @@
       title="${esc(title)}"><span class="dot ${ok ? "ok" : "off"}" aria-hidden="true"></span>${label}</button>`;
     const engine = `<div class="engine${usable ? "" : " engine-bad"}" role="group" aria-label="Reviewer model">
       ${seg("gpu", "GPU", gpu.reviewer.ok, `Qwen 3.8 27B on our GPU job. ${gpu.reviewer.detail}`, false)}
-      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The Kev judge still runs on the GPU job." : "No Bedrock key found in .env", !h.bedrock)}
+      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The evidence judge is chosen in Settings." : "No Bedrock key found in .env", !h.bedrock)}
     </div>${usable ? "" : `<span class="engine-warn" title="${esc(gpu.reviewer.detail)}">GPU offline: reviews will fail</span>`}`;
     const html = [
       engine,
-      dot(gpu.judge.ok, "Judge", gpu.judge.ok ? gpu.judge.detail : `${gpu.judge.detail} Findings will be posted as not judged.`),
+      dot(gpu.judge.ok, h.judge_kind === "claude" ? "Judge: Claude" : "Judge: Kev", gpu.judge.ok ? gpu.judge.detail : `${gpu.judge.detail} Without a judge, LGTM cannot confirm any finding, so reviews pass.`),
       dot(relay.connected, "Webhooks", relay.connected ? "Relay connected" : "Relay offline: polling every 30 s"),
     ].join("");
     const busy = h.current ? `<a class="busy" href="#/runs/${enc(h.current)}">Reviewing now</a>` : "";
@@ -262,7 +262,7 @@
         <section class="panel funnel-panel">
           <h2>Noise LGTM removed</h2>
           ${funnel([["Raised by the agents", t.candidates], ["Reported to developers", t.flagged]])}
-          <p class="note">Every candidate must cite code that exists and pass the Kev judge before it reaches a pull request. ${t.candidates ? Math.round(100 * t.filtered / t.candidates) : 0}% never did.</p>
+          <p class="note">Every candidate must cite code that exists and pass the evidence judge before it reaches a pull request. ${t.candidates ? Math.round(100 * t.filtered / t.candidates) : 0}% never did.</p>
         </section>
         <section class="panel">
           <h2>Reviews per day</h2>
@@ -402,6 +402,7 @@
     const tab = args[1] || "";
     const d = await get(`/api/runs/${enc(id)}`);
     const r = d.run;
+    S.judgeName = r.judge === "claude" ? "Claude judge" : "Kev judge";
     const res = d.result;
     const active = r.status === "queued" || r.status === "running";
     const findings = res ? res.findings : [];
@@ -420,7 +421,7 @@
             ${r.author ? `<span>${r.author_avatar ? `<img class="av" src="${esc(r.author_avatar)}&s=32" alt="">` : ""}${esc(r.author)}</span>` : ""}
             ${r.head_ref ? `<span><code>${esc(r.head_ref)}</code> into <code>${esc(r.base_ref)}</code></span>` : ""}
             ${r.head_sha ? `<span>at <code>${short(r.head_sha)}</code></span>` : ""}
-            <span>${when(r.created_at)}</span>${r.latency ? `<span>${secs(r.latency)}</span>` : ""}${r.model ? `<span>${esc(String(r.model).replace("bedrock:", ""))} + Kev</span>` : ""}</p>
+            <span>${when(r.created_at)}</span>${r.latency ? `<span>${secs(r.latency)}</span>` : ""}${r.model ? `<span>${esc(String(r.model).replace("bedrock:", ""))} + ${r.judge === "claude" ? "Claude judge" : "Kev"}</span>` : ""}</p>
           ${r.source === "imported" ? `<p class="notice">This run comes from the benchmark: the pipeline reviewed a cached clone of the public project, scored against the advisory${r.outcome ? ` (<b>${esc(outcomeText(r.outcome))}</b>)` : ""}. LGTM was never installed on that repository and posted nothing to it.</p>` : ""}
           ${r.error && r.verdict === "error" || r.status === "failed" ? `<p class="notice warn">${esc(r.error || "The review failed.")}</p>` : ""}
         </div>
@@ -521,7 +522,7 @@
       <p>${rich(f.explanation)}</p>
       ${ev.length ? `<details ${opts.open ? "open" : ""}><summary>Evidence the agents cited (${ev.length})</summary>${ev.map((e) => `<div class="evidence"><div class="ev-head"><code>${esc(e.file || "")}${e.lines ? ":" + esc(e.lines) : ""}</code><span class="muted">${esc(e.type || "")}${e.grounded_in_pr ? ", in this change" : ""}</span></div><pre><code>${esc(e.content.trim())}</code></pre></div>`).join("")}</details>` : ""}
       ${f.suggested_fix ? `<details><summary>Suggested fix</summary><p>${rich(f.suggested_fix)}</p></details>` : ""}
-      <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? "Confirmed by the Kev judge" : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
+      <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? `Confirmed by the ${S.judgeName || "Kev judge"}` : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
         <span class="muted">${esc(AGENTS[f.agent] || f.agent || "")}, ${plural(f.tool_calls || 0, "tool call")}</span>
         ${f.key && f.flagged ? triageButtons(f.key, f.triage) : ""}</footer>
     </article>`;
@@ -682,7 +683,9 @@
             <dt>API reviewer</dt><dd><span class="dot ${h.bedrock ? "ok" : "off"}">${h.bedrock ? "Bedrock key found (capped spend)" : "No Bedrock key in .env"}</span></dd>
             <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${esc(h.gpu ? h.gpu.judge.detail : h.judge ? "Reachable" : "Not reachable")}</span></dd></dl>
           <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>GPU: Qwen 3.8 27B on our GPU job</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>API: Claude on Amazon Bedrock (capped spend)</option></select></label>
-          <p class="note">Also switchable from the GPU / API toggle in the header. The Kev judge always runs on the GPU job.</p>
+          <p class="note">Also switchable from the GPU / API toggle in the header.</p>
+          <label class="field"><span>Evidence judge</span><select data-set="judge"><option value="kev" ${st.judge !== "claude" ? "selected" : ""}>Kev-4B: on this Mac or the GPU job (port 8008)</option><option value="claude" ${st.judge === "claude" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>Claude via the API: a stand-in, not the evaluated judge</option></select></label>
+          <p class="note">Kev is the judge LGTM was evaluated with. The Claude judge answers the same questions when Kev is not running; reviews it decides are labelled “Claude judge”.</p>
         </section>
         <section class="panel"><h2>GitHub App</h2>
           ${app ? `<dl class="kv"><dt>App</dt><dd><a href="${esc(app.html_url)}" target="_blank" rel="noopener">${esc(app.name)}</a></dd><dt>Owner</dt><dd>${esc(app.owner)}</dd>

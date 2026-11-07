@@ -58,7 +58,8 @@ DEFAULT_SETTINGS = {
     "block_on": "high",
     "request_changes": True,     # post the review as "Request changes" when the check fails
     "inline_comments": True,
-    "backend": "gpu",            # gpu (Qwen + Kev on the cluster) or bedrock (Claude + Kev)
+    "backend": "gpu",            # reviewer: gpu (Qwen on the cluster) or bedrock (Claude)
+    "judge": "kev",              # evidence judge: kev (Kev-4B on :8008, this Mac or the GPU job) or claude (stand-in on :8009)
     "poll_seconds": 30,
     "auto_review": True,
 }
@@ -79,6 +80,10 @@ class Store:
         with self.lock:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.executescript(SCHEMA)
+            try:   # which judge decided a run (added after the first demos)
+                self.db.execute("ALTER TABLE runs ADD COLUMN judge TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # -- generic helpers ---------------------------------------------------
     def q(self, sql: str, args: tuple | list = ()) -> list[dict]:
