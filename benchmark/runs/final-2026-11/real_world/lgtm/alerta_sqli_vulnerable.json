@@ -1,0 +1,1224 @@
+{
+  "id": "alerta_sqli_vulnerable",
+  "category": "sqli",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 140.27,
+  "case_seconds": 142.93,
+  "est_tokens": 2155,
+  "findings": [
+    {
+      "finding_id": "sqli:queryparser-sql-removal:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR removes the parameterized to_sql() path and makes QueryParser.parse() return a single SQL string built from repr() of the parsed query. SearchTerm.__repr__ inlines attacker-controlled values (singleterm, phrase, regex, range bounds, fieldname) directly into the SQL text using f-strings with single-quote literals (e.g. f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''), with no escaping of embedded single quotes. This string is then concatenated into the WHERE clause in utils.py (query = [parser.parse(query=params['q'], ...)] then Query(where='\\n'.join(query), vars=qvars)) and executed, so a value containing a single quote (e.g. a phrase or regex token) breaks out of the literal and injects arbitrary SQL. The old code bound these values as %(...)s parameters; the new code does not.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            182,
+            184
+          ],
+          "source": null,
+          "content": "    def parse(self, query, default_field=None):\n        default_field = default_field or QueryParser.DEFAULT_FIELD\n        return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            60,
+            80
+          ],
+          "source": null,
+          "content": "            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n                return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n            elif self.tokens.attr:\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n            else:\n                return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n        if 'phrase' in self.tokens:\n            if self.tokens.field[0] == '__default_field__':\n                return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n                return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n            elif self.tokens.attr:\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n            else:\n                return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n        if 'wildcard' in self.tokens:\n            return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.wildcard}\\\\y\\''\n        if 'regex' in self.tokens:\n            return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            145,
+            157
+          ],
+          "source": null,
+          "content": "        if params.get('q', None):\n            try:\n                parser = QueryParser()\n                query = [parser.parse(\n                    query=params['q'],\n                    default_field=params.get('q.df')\n                )]\n                qvars = dict()  # type: Dict[str, Any]\n            except ParseException as e:\n                raise ApiError('Failed to parse query string.', 400, [e])\n        else:\n            query = ['1=1']\n            qvars = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            197,
+            197
+          ],
+          "source": null,
+          "content": "        return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Restore parameterized SQL generation: keep the to_sql(params) approach that binds user-supplied values (singleterm, phrase, regex, range bounds, fieldname) as named %(...)s parameters, and have parse() return (sql, params) so callers pass the params dict to the query executor. If inlining is required, escape single quotes (double them) and validate identifiers against an allowlist, but binding is preferred.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7639,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/postgres/queryparser.py",
+      "line": 184,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1421
+    },
+    {
+      "finding_id": "sqli:utils-consumers:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR changes Alerts.from_params and Blackouts.from_params to discard the bound-parameter dict returned by QueryParser.parse (previously `parsed_query, parsed_vars = parser.parse(...)` with `qvars = dict(parsed_vars)`), now calling `parser.parse(...)` for its single return value and setting `qvars = dict()`. The postgres QueryParser.parse (alerta/database/backends/postgres/queryparser.py:182-184) returns only a SQL string built by inlining user-controlled tokens via f-strings (e.g. `f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''` at line 66, `f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''` at line 80, and range bounds via `'\"{}\" {} \\'{}\\''.format(...)` at lines 85-98). These tokens originate from the user-controlled `q` request parameter (search_alerts passes request.args into Alerts.from_params). Because the PR removes the only mechanism that would have supplied bound values (qvars) and the parser inlines the attacker-controlled term/field/regex directly into the SQL text, the resulting WHERE clause is executed with attacker-controlled, unbound SQL fragments \u2014 a SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            145,
+            153
+          ],
+          "source": null,
+          "content": "if params.get('q', None):\n    try:\n        parser = QueryParser()\n        query = [parser.parse(\n            query=params['q'],\n            default_field=params.get('q.df')\n        )]\n        qvars = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            182,
+            184
+          ],
+          "source": null,
+          "content": "def parse(self, query, default_field=None):\n    default_field = default_field or QueryParser.DEFAULT_FIELD\n    return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            64,
+            80
+          ],
+          "source": null,
+          "content": "return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\nelse:\n    return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n...\nif 'regex' in self.tokens:\n    return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            85,
+            98
+          ],
+          "source": null,
+          "content": "lower_term = '\"{}\" {} \\'{}\\''.format(\n    self.tokens.field[0],\n    '>=' if 'inclusive' in self.tokens.range[0] else '>',\n    self.tokens.range[0].lowerbound\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Restore bound-parameter handling: have QueryParser.parse return both the SQL text and a dict of named parameters, and pass those parameters through qvars so the query is executed with bound values (e.g. `parsed_query, parsed_vars = parser.parse(...)`; `qvars = dict(parsed_vars)`), or rewrite the parser to emit placeholders (%(name)s) and supply the user tokens as bound parameters rather than inlining them into the SQL string.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7838,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/postgres/utils.py",
+      "line": 148,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1511
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/utils.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/utils.py",
+            "start_line": 167,
+            "end_line": 300,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 175,
+            "end_line": 289,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\\.parse\\(",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "to_sql",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def find_alerts|def find_blackouts|def find_heartbeats",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "Alerts\\.from_params|Blackouts\\.from_params",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from_params",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/views/alerts.py",
+            "start_line": 290,
+            "end_line": 370,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def find_alerts|def find_blackouts",
+            "file_glob": "alerta/database/backends/postgres/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def find_all|def get_counts_by_severity",
+            "file_glob": "alerta/models/alert.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "query\\.vars|\\.vars",
+            "file_glob": "alerta/models/alert.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/models/alert.py",
+            "start_line": 489,
+            "end_line": 560,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def get_alerts",
+            "file_glob": "alerta/database/backends/postgres/*.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"queryparser-sql-removal\",\n      \"title\": \"Remove parameterized to_sql() generation from the Lucene query parser\",\n      \"rationale\": \"These hunks delete the _next_param helper and every to_sql() method (SearchModifier, SearchAnd, SearchOr, SearchNot, SearchTerm) and change QueryParser.parse to return a repr()-based string with no bound parameters, so the parser no longer emits parameterized SQL.\",\n      \"hunks\": [\n        \"alerta/database/backends/postgres/queryparser.py#0\",\n        \"alerta/database/backends/postgres/queryparser.py#1\",\n        \"alerta/database/backends/postgres/queryparser.py#2\",\n        \"alerta/database/backends/postgres/queryparser.py#3\",\n        \"alerta/database/backends/postgres/queryparser.py#4\"\n      ],\n      \"context\": [\n        {\"path\": \"alerta/database/backends/postgres/queryparser.py\", \"symbol\": \"SearchTerm.__repr__\", \"start_line\": 74, \"end_line\": 133, \"snapshot\": \"base\", \"why\": \"The new parse() relies on repr() to build the SQL string, so the repr() output (which inlines user values) is the new source of the WHERE clause.\"},\n        {\"path\": \"alerta/database/backends/postgres/queryparser.py\", \"symbol\": \"QueryParser.parse\", \"start_line\": 284, \"end_line\": 289, \"snapshot\": \"base\", \"why\": \"Base signature returns (sql, params); the PR changes it to return a single string, which callers must adapt.\"}\n      ]\n    },\n    {\n      \"id\": \"utils-consumers\",\n      \"title\": \"Adapt Alerts and Blackouts query builders to the new single-string parser return\",\n      \"rationale\": \"Both from_params() call sites unpack the old (query, vars) tuple and now discard the bound-parameter dict (qvars = dict()), so the WHERE clause built from the user's q= string is no longer parameterized.\",\n      \"hunks\": [\n        \"alerta/database/backends/postgres/utils.py#0\",\n        \"alerta/database/backends/postgres/utils.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"alerta/database/backends/postgres/utils.py\", \"symbol\": \"Alerts.from_params\", \"start_line\": 142, \"end_line\": 198, \"snapshot\": \"base\", \"why\": \"Consumes parser.parse() and feeds the resulting where/vars into the Query namedtuple used by Alert.find_all.\"},\n        {\"path\": \"alerta/database/backends/postgres/utils.py\", \"symbol\": \"Blackouts.from_params\", \"start_line\": 226, \"end_line\": 268, \"snapshot\": \"base\", \"why\": \"Second consumer of parser.parse() for the blackouts query builder.\"},\n        {\"path\": \"alerta/views/alerts.py\", \"symbol\": \"search_alerts\", \"start_line\": 303, \"end_line\": 319, \"snapshot\": \"base\", \"why\": \"Upstream caller that passes request.args (user-controlled q=) into Alerts.from_params, the authorization-relevant entry point for the query string.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "queryparser-sql-removal",
+      "tool_calls": [
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "query parameter SQL injection authorization access control"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\\.parse\\(",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/utils.py",
+            "start_line": 130,
+            "end_line": 250,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 1,
+            "end_line": 135,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 135,
+            "end_line": 185,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "The section under review is a SQL query-string builder. The PR removes the parameterized `to_sql(params)` path (which used `%(...)s` placeholders) and replaces `QueryParser.parse` with a version that returns a single SQL string built from `repr()` of the parsed expression. The `SearchTerm.__repr__` methods inline user-controlled values (singleterm, phrase, regex, range bounds, field names) directly into the SQL string with single quotes, and the caller (`utils.py`) concatenates this string into the WHERE clause with no parameterization.\n\nHowever, this is a SQL injection concern (CWE-89), not an authorization flaw (CWE-639/862/863). The task scope is strictly authorization: IDOR, missing authorization, or incorrect authorization. There is no evidence in this section of a missing/incorrect ownership or role check, and the retrieved policy excerpts contain no authorization rule that this code violates. The change does not remove any authentication/role check.\n\nTherefore, no authorization candidate flaw is established for this section.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "utils-consumers",
+      "tool_calls": [
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "QueryParser parse method return value signature"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "customer isolation authorization multi-tenant access control alerts"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 170,
+            "end_line": 230,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/views/alerts.py",
+            "start_line": 290,
+            "end_line": 330,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def permission|def require|g.customers",
+            "file_glob": "alerta/auth/*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "Based on my analysis, the PR change is a refactoring that removes the `parsed_vars` return value from `parser.parse()` (which in the Postgres backend returns only a single string, not a tuple) and sets `qvars = dict()`. This is a correctness fix, not an authorization change.\n\nThe customer isolation mechanism (`if customers: query.append('AND customer=ANY(%(customers)s)')`) is unchanged and still applied after the query parsing. The `permission(Scope.read_alerts)` decorator and `g.customers` enforcement remain intact. The change does not remove or weaken any authorization check, nor does it expose a new user-controlled identifier path.\n\nNo authorization flaw is introduced by this section.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:queryparser-sql-removal",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 60,
+            "end_line": 135,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "\\.parse\\(",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/utils.py",
+            "start_line": 130,
+            "end_line": 250,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 135,
+            "end_line": 190,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR removes the parameterized to_sql() path and makes QueryParser.parse() return a single SQL string built from repr() of the parsed query. SearchTerm.__repr__ inlines attacker-controlled values (singleterm, phrase, regex, range bounds, fieldname) directly into the SQL text using f-strings with single-quote literals (e.g. f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''), with no escaping of embedded single quotes. This string is then concatenated into the WHERE clause in utils.py (query = [parser.parse(query=params['q'], ...)] then Query(where='\\\\n'.join(query), vars=qvars)) and executed, so a value containing a single quote (e.g. a phrase or regex token) breaks out of the literal and injects arbitrary SQL. The old code bound these values as %(...)s parameters; the new code does not.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [182, 184], \"content\": \"    def parse(self, query, default_field=None):\\n        default_field = default_field or QueryParser.DEFAULT_FIELD\\n        return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [60, 80], \"content\": \"            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\\n                return f'\\\\'{self.tokens.singleterm}\\\\'=ANY(\\\"{self.tokens.field[0]}\\\")'\\n            elif self.tokens.attr:\\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\\n                return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n            else:\\n                return f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n        if 'phrase' in self.tokens:\\n            if self.tokens.field[0] == '__default_field__':\\n                return f\\\"\\\\\\\"__default_field__\\\\\\\" ~* '\\\\\\\\y{self.tokens.phrase}\\\\\\\\y'\\\"\\n            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\\n                return f'\\\\'{self.tokens.phrase}\\\\'=ANY(\\\"{self.tokens.field[0]}\\\")'\\n            elif self.tokens.attr:\\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\\n                return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ~* \\\\'\\\\\\\\y{self.tokens.phrase}\\\\\\\\y\\\\''\\n            else:\\n                return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'\\\\\\\\y{self.tokens.phrase}\\\\\\\\y\\\\''\\n        if 'wildcard' in self.tokens:\\n            return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'\\\\\\\\y{self.tokens.wildcard}\\\\\\\\y\\\\''\\n        if 'regex' in self.tokens:\\n            return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [145, 157], \"content\": \"        if params.get('q', None):\\n            try:\\n                parser = QueryParser()\\n                query = [parser.parse(\\n                    query=params['q'],\\n                    default_field=params.get('q.df')\\n                )]\\n                qvars = dict()  # type: Dict[str, Any]\\n            except ParseException as e:\\n                raise ApiError('Failed to parse query string.', 400, [e])\\n        else:\\n            query = ['1=1']\\n            qvars = dict()\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [197, 197], \"content\": \"        return Query(where='\\\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\"}\n      ],\n      \"suggested_fix\": \"Restore parameterized SQL generation: keep the to_sql(params) approach that binds user-supplied values (singleterm, phrase, regex, range bounds, fieldname) as named %(...)s parameters, and have parse() return (sql, params) so callers pass the params dict to the query executor. If inlining is required, escape single quotes (double them) and validate identifiers against an allowlist, but binding is preferred.\",\n      \"file\": \"alerta/database/backends/postgres/queryparser.py\",\n      \"line\": 184\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:utils-consumers",
+      "tool_calls": [
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "QueryParser parse method in alerta/database/utils.py how it builds SQL and returns vars"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def parse",
+            "file_glob": "alerta/database/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 178,
+            "end_line": 200,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/queryparser.py",
+            "start_line": 79,
+            "end_line": 130,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "alerta/database/backends/postgres/utils.py",
+            "start_line": 141,
+            "end_line": 160,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def find_all|def execute|where",
+            "file_glob": "alerta/database/backends/postgres/*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR changes Alerts.from_params and Blackouts.from_params to discard the bound-parameter dict returned by QueryParser.parse (previously `parsed_query, parsed_vars = parser.parse(...)` with `qvars = dict(parsed_vars)`), now calling `parser.parse(...)` for its single return value and setting `qvars = dict()`. The postgres QueryParser.parse (alerta/database/backends/postgres/queryparser.py:182-184) returns only a SQL string built by inlining user-controlled tokens via f-strings (e.g. `f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''` at line 66, `f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''` at line 80, and range bounds via `'\\\"{}\\\" {} \\\\'{}\\\\''.format(...)` at lines 85-98). These tokens originate from the user-controlled `q` request parameter (search_alerts passes request.args into Alerts.from_params). Because the PR removes the only mechanism that would have supplied bound values (qvars) and the parser inlines the attacker-controlled term/field/regex directly into the SQL text, the resulting WHERE clause is executed with attacker-controlled, unbound SQL fragments \u2014 a SQL injection.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [145, 153], \"content\": \"if params.get('q', None):\\n    try:\\n        parser = QueryParser()\\n        query = [parser.parse(\\n            query=params['q'],\\n            default_field=params.get('q.df')\\n        )]\\n        qvars = dict()\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [182, 184], \"content\": \"def parse(self, query, default_field=None):\\n    default_field = default_field or QueryParser.DEFAULT_FIELD\\n    return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [64, 80], \"content\": \"return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\nelse:\\n    return f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n...\\nif 'regex' in self.tokens:\\n    return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [85, 98], \"content\": \"lower_term = '\\\"{}\\\" {} \\\\'{}\\\\''.format(\\n    self.tokens.field[0],\\n    '>=' if 'inclusive' in self.tokens.range[0] else '>',\\n    self.tokens.range[0].lowerbound\\n)\"}\n      ],\n      \"suggested_fix\": \"Restore bound-parameter handling: have QueryParser.parse return both the SQL text and a dict of named parameters, and pass those parameters through qvars so the query is executed with bound values (e.g. `parsed_query, parsed_vars = parser.parse(...)`; `qvars = dict(parsed_vars)`), or rewrite the parser to emit placeholders (%(name)s) and supply the user tokens as bound parameters rather than inlining them into the SQL string.\",\n      \"file\": \"alerta/database/backends/postgres/utils.py\",\n      \"line\": 148\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/database/backends/postgres/queryparser.py lines=1-289]\n1: from pyparsing import (Forward, Group, Keyword, Literal, Optional,\n2:                        ParseException, ParserElement, QuotedString, Regex,\n3:                        Suppress, Word, infixNotation, opAssoc, printables)\n4: \n5: ParserElement.enablePackrat()\n6: \n7: \n8: def _next_param(params):\n9:     name = f'_qp_{len(params)}'\n10:     return name\n11: \n12: \n13: class UnaryOperation:\n14:     \"\"\"takes one operand,e.g. not\"\"\"\n15: \n16:     def __init__(self, tokens):\n17:         self.op, self.operands = tokens[0]\n18: \n19: \n20: class BinaryOperation:\n21:     \"\"\"takes two or more operands, e.g. and, or\"\"\"\n22: \n23:     def __init__(self, tokens):\n24:         self.op = tokens[0][1]\n25:         self.lhs = tokens[0][0]\n26:         self.rhs = tokens[0][2]\n27: \n28: \n29: class SearchModifier(UnaryOperation):\n30: \n31:     def __repr__(self):\n32:         return f'{self.op} {self.operands}'\n33: \n34:     def to_sql(self, params):\n35:         return f'{self.op} {self.operands.to_sql(params)}'\n36: \n37: \n38: class SearchAnd(BinaryOperation):\n39: \n40:     def __repr__(self):\n41:         return f'({self.lhs} AND {self.rhs})'\n42: \n43:     def to_sql(self, params):\n44:         return f'({self.lhs.to_sql(params)} AND {self.rhs.to_sql(params)})'\n45: \n46: \n47: class SearchOr(BinaryOperation):\n48: \n49:     def __repr__(self):\n50:         if getattr(self.rhs, 'op', None) == 'NOT':\n51:             return f'({self.lhs} AND {self.rhs})'\n52:         return f'({self.lhs} OR {self.rhs})'\n53: \n54:     def to_sql(self, params):\n55:         if getattr(self.rhs, 'op', None) == 'NOT':\n56:             return f'({self.lhs.to_sql(params)} AND {self.rhs.to_sql(params)})'\n57:         return f'({self.lhs.to_sql(params)} OR {self.rhs.to_sql(params)})'\n58: \n59: \n60: class SearchNot(UnaryOperation):\n61: \n62:     def __repr__(self):\n63:         return f'NOT ({self.operands})'\n64: \n65:     def to_sql(self, params):\n66:         return f'NOT ({self.operands.to_sql(params)})'\n67: \n68: \n69: class SearchTerm:\n70: \n71:     def __init__(self, tokens):\n72:         self.tokens = tokens\n73: \n74:     def __repr__(self):\n75:         # print([t for t in self.tokens.items()])\n76:         if 'singleterm' in self.tokens:\n77:             if self.tokens.fieldname == '_exists_':\n78:                 return f'\"attributes\"::jsonb ? \\'{self.tokens.singleterm}\\''\n79:             elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n80:                 return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n81:             elif self.tokens.attr:\n82:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n83:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n84:             else:\n85:                 return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n86:         if 'phrase' in self.tokens:\n87:             if self.tokens.field[0] == '__default_field__':\n88:                 return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n89:             elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n90:                 return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n91:             elif self.tokens.attr:\n92:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n93:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n94:             else:\n95:                 return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n96:         if 'wildcard' in self.tokens:\n97:             return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.wildcard}\\\\y\\''\n98:         if 'regex' in self.tokens:\n99:             return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''\n100:         if 'range' in self.tokens:\n101:             if self.tokens.range[0].lowerbound == '*':\n102:                 lower_term = '1=1'\n103:             else:\n104:                 lower_term = '\"{}\" {} \\'{}\\''.format(\n105:                     self.tokens.field[0],\n106:                     '>=' if 'inclusive' in self.tokens.range[0] else '>',\n107:                     self.tokens.range[0].lowerbound\n108:                 )\n109: \n110:             if self.tokens.range[2].upperbound == '*':\n111:                 upper_term = '1=1'\n112:             else:\n113:                 upper_term = '\"{}\" {} \\'{}\\''.format(\n114:                     self.tokens.field[0],\n115:                     '<=' if 'inclusive' in self.tokens.range[2] else '<',\n116:                     self.tokens.range[2].upperbound\n117:                 )\n118:             return f'({lower_term} AND {upper_term})'\n119:         if 'onesidedrange' in self.tokens:\n120:             return '(\"{}\" {} \\'{}\\')'.format(\n121:                 self.tokens.field[0],\n122:                 self.tokens.onesidedrange.op,\n123:                 self.tokens.onesidedrange.bound\n124:             )\n125:         if 'subquery' in self.tokens:\n126:             if self.tokens.attr:\n127:                 tokens_attr = 'attributes' if self.tokens.attr == '_' else self.tokens.attr\n128:                 tokens_fieldname = f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\''\n129:             else:\n130:                 tokens_fieldname = f'\"{self.tokens.fieldname or self.tokens.field[0]}\"'\n131:             return f'{self.tokens.subquery[0]}'.replace('\"__default_field__\"', tokens_fieldname)\n132: \n133:         raise ParseException(f'Search term did not match query syntax: {self.tokens}')\n134: \n135:     def to_sql(self, params):\n136:         if 'singleterm' in self.tokens:\n137:             if self.tokens.fieldname == '_exists_':\n138:                 p = _next_param(params)\n139:                 params[p] = self.tokens.singleterm\n140:                 return f'\"attributes\"::jsonb ? %({p})s'\n141:             elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n142:                 p = _next_param(params)\n143:                 params[p] = self.tokens.singleterm\n144:                 return f'%({p})s=ANY(\"{self.tokens.field[0]}\")'\n145:             elif self.tokens.attr:\n146:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n147:                 p_key = _next_param(params)\n148:                 params[p_key] = self.tokens.fieldname\n149:                 p_val = _next_param(params)\n150:                 params[p_val] = f'%{self.tokens.singleterm}%'\n151:                 return f'\"{tokens_attr}\"::jsonb ->>%({p_key})s ILIKE %({p_val})s'\n152:             else:\n153:                 p = _next_param(params)\n154:                 params[p] = f'%{self.tokens.singleterm}%'\n155:                 return f'\"{self.tokens.field[0]}\" ILIKE %({p})s'\n156:         if 'phrase' in self.tokens:\n157:             if self.tokens.field[0] == '__default_field__':\n158:                 p = _next_param(params)\n159:                 params[p] = f'\\\\y{self.tokens.phrase}\\\\y'\n160:                 return f'\"__default_field__\" ~* %({p})s'\n161:             elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n162:                 p = _next_param(params)\n163:                 params[p] = self.tokens.phrase\n164:                 return f'%({p})s=ANY(\"{self.tokens.field[0]}\")'\n165:             elif self.tokens.attr:\n166:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n167:                 p_key = _next_param(params)\n168:                 params[p_key] = self.tokens.fieldname\n169:                 p_val = _next_param(params)\n170:                 params[p_val] = f'\\\\y{self.tokens.phrase}\\\\y'\n171:                 return f'\"{tokens_attr}\"::jsonb ->>%({p_key})s ~* %({p_val})s'\n172:             else:\n173:                 p = _next_param(params)\n174:                 params[p] = f'\\\\y{self.tokens.phrase}\\\\y'\n175:                 return f'\"{self.tokens.fiel\n[TRUNCATED]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/database/backends/postgres/utils.py lines=1-462]\n1: from collections import namedtuple\n2: from typing import Any, Dict  # noqa\n3: \n4: import pytz\n5: from pyparsing import ParseException\n6: from werkzeug.datastructures import MultiDict\n7: \n8: from alerta.exceptions import ApiError\n9: from alerta.models.blackout import BlackoutStatus\n10: from alerta.models.key import ApiKeyStatus\n11: from alerta.utils.format import DateTime\n12: \n13: from .queryparser import QueryParser\n14: \n15: Query = namedtuple('Query', ['where', 'vars', 'sort', 'group'])\n16: Query.__new__.__defaults__ = ('1=1', {}, '(select 1)', 'status')  # type: ignore\n17: \n18: \n19: EXCLUDE_FROM_QUERY = [\n20:     '_', 'callback', 'token', 'api-key', 'q', 'q.df', 'id', 'from-date', 'to-date',\n21:     'sort-by', 'group-by', 'page', 'page-size', 'limit', 'show-raw-data', 'show-history'\n22: ]\n23: \n24: \n25: class QueryBuilder:\n26: \n27:     @staticmethod\n28:     def sort_by_columns(params, valid_params):\n29: \n30:         sort = list()\n31:         if params.get('sort-by', None):\n32:             for sort_by in params.getlist('sort-by'):\n33:                 reverse = 1\n34:                 attribute = None\n35:                 if sort_by.startswith('-'):\n36:                     reverse = -1\n37:                     sort_by = sort_by[1:]\n38:                 if sort_by.startswith('attributes.'):\n39:                     attribute = sort_by.split('.')[1]\n40:                     sort_by = 'attributes'\n41:                 valid_sort_params = [k for k, v in valid_params.items() if v[1]]\n42:                 if sort_by not in valid_sort_params:\n43:                     raise ApiError(f\"Sorting by '{sort_by}' field not supported.\", 400)\n44:                 _, column, direction = valid_params[sort_by]\n45:                 direction = 'ASC' if direction * reverse == 1 else 'DESC'\n46:                 if attribute:\n47:                     sort.append(f\"attributes->'{attribute}' {direction}\")\n48:                 else:\n49:                     sort.append(f'{column} {direction}')\n50:         else:\n51:             sort.append('(select 1)')\n52:         return sort\n53: \n54:     @staticmethod\n55:     def filter_query(params, valid_params, query, qvars):\n56: \n57:         for field in params.keys():\n58:             if field.replace('!', '').split('.')[0] in EXCLUDE_FROM_QUERY:  # eg. \"attributes.foo!=bar\" => 'attributes'\n59:                 continue\n60:             valid_filter_params = [k for k, v in valid_params.items() if v[0]]\n61:             if field.replace('!', '').split('.')[0] not in valid_filter_params:\n62:                 raise ApiError(f'Invalid filter parameter: {field}', 400)\n63:             column, _, _ = valid_params[field.replace('!', '').split('.')[0]]\n64:             value = params.getlist(field)\n65: \n66:             if field in ['service', 'tags', 'roles', 'scopes']:\n67:                 query.append('AND {0} && %({0})s'.format(column))\n68:                 qvars[column] = value\n69:             elif field.startswith('attributes.'):\n70:                 column = field.replace('attributes.', '')\n71:                 query.append(f'AND attributes @> %(attr_{column})s')\n72:                 qvars['attr_' + column] = {column: value[0]}\n73:             elif len(value) == 1:\n74:                 value = value[0]\n75:                 if field.endswith('!'):\n76:                     if value.startswith('~'):\n77:                         query.append('AND NOT \"{0}\" ILIKE %(not_{0})s'.format(column))\n78:                         qvars['not_' + column] = '%' + value[1:] + '%'\n79:                     else:\n80:                         query.append('AND \"{0}\"!=%(not_{0})s'.format(column))\n81:                         qvars['not_' + column] = value\n82:                 else:\n83:                     if value.startswith('~'):\n84:                         query.append('AND \"{0}\" ILIKE %({0})s'.format(column))\n85:                         qvars[column] = '%' + value[1:] + '%'\n86:                     else:\n87:                         query.append('AND \"{0}\"=%({0})s'.format(column))\n88:                         qvars[column] = value\n89:             else:\n90:                 if field.endswith('!'):\n91:                     if '~' in [v[0] for v in value]:\n92:                         query.append('AND \"{0}\" !~* (%(not_regex_{0})s)'.format(column))\n93:                         qvars['not_regex_' + column] = '|'.join([v.lstrip('~') for v in value])\n94:                     else:\n95:                         query.append('AND NOT \"{0}\"=ANY(%(not_{0})s)'.format(column))\n96:                         qvars['not_' + column] = value\n97:                 else:\n98:                     if '~' in [v[0] for v in value]:\n99:                         query.append('AND \"{0}\" ~* (%(regex_{0})s)'.format(column))\n100:                         qvars['regex_' + column] = '|'.join([v.lstrip('~') for v in value])\n101:                     else:\n102:                         query.append('AND \"{0}\"=ANY(%({0})s)'.format(column))\n103:                         qvars[column] = value\n104:         return query, qvars\n105: \n106: \n107: class Alerts(QueryBuilder):\n108: \n109:     VALID_PARAMS = {\n110:         # field (column, sort-by, direction)\n111:         'id': ('id', None, 0),\n112:         'resource': ('resource', 'resource', 1),\n113:         'event': ('event', 'event', 1),\n114:         'environment': ('environment', 'environment', 1),\n115:         'severity': ('severity', 's.code', 1),\n116:         'correlate': ('correlate', 'correlate', 1),\n117:         'status': ('status', 'st.state', 1),\n118:         'service': ('service', 'service', 1),\n119:         'group': ('group', '\"group\"', 1),\n120:         'value': ('value', 'value', 1),\n121:         'text': ('text', 'text', 1),\n122:         'tag': ('tags', None, 0),  # filter\n123:         'tags': (None, 'tags', 1),  # sort-by\n124:         'attributes': ('attributes', 'attributes', 1),\n125:         'origin': ('origin', 'origin', 1),\n126:         'type': ('event_type', 'event_type', 1),\n127:         'createTime': ('create_time', 'create_time', -1),\n128:         'timeout': ('timeout', 'timeout', 1),\n129:         'rawData': ('raw_data', 'raw_data', 1),\n130:         'customer': ('customer', 'customer', 1),\n131:         'duplicateCount': ('duplicate_count', 'duplicate_count', 1),\n132:         'repeat': ('repeat', 'repeat', 1),\n133:         'previousSeverity': ('previous_severity', 'previous_severity', 1),\n134:         'trendIndication': ('trend_indication', 'trend_indication', 1),\n135:         'receiveTime': ('receive_time', 'receive_time', -1),\n136:         'lastReceiveId': ('last_receive_id', 'last_receive_id', 1),\n137:         'lastReceiveTime': ('last_receive_time', 'last_receive_time', -1),\n138:         'updateTime': ('update_time', 'update_time', -1),\n139:     }\n140: \n141:     @staticmethod\n142:     def from_params(params: MultiDict, customers=None, query_time=None):\n143: \n144:         # ?q=\n145:         if params.get('q', None):\n146:             try:\n147:                 parser = QueryParser()\n148:                 parsed_query, parsed_vars = parser.parse(\n149:                     query=params['q'],\n150:                     default_field=params.get('q.df')\n151:                 )\n152:                 query = [parsed_query]\n153:                 qvars = dict(parsed_vars)  # type: Dict[str, Any]\n154:             except ParseException as e:\n155:                 raise ApiError('Failed to parse query string.', 400, [e])\n156:         else:\n157:             query = ['1=1']\n158:             qvars = dict()\n159: \n160:         # customer\n161:         if customers:\n162:             query.append('AND customer=ANY(%(customers)s)')\n163:             qvars['customers'] = customers\n164: \n165:         # from-date, to-date\n166:         from_date = params.get('from-date', default=None, type=DateTime.parse)\n167:         to_date = params.get('to-date', default=query_time, type=DateT\n[TRUNCATED]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "snapshot": "base",
+                  "start_line": 167,
+                  "end_line": 300
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/database/backends/postgres/utils.py lines=167-300]\n167:         to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n168: \n169:         if from_date:\n170:             query.append('AND last_receive_time > %(from_date)s')\n171:             qvars['from_date'] = from_date.replace(tzinfo=pytz.utc)\n172:         if to_date:\n173:             query.append('AND last_receive_time <= %(to_date)s')\n174:             qvars['to_date'] = to_date.replace(tzinfo=pytz.utc)\n175: \n176:         # duplicateCount, repeat\n177:         if params.get('duplicateCount', None):\n178:             query.append('AND duplicate_count=%(duplicate_count)s')\n179:             qvars['duplicate_count'] = params.get('duplicateCount', int)\n180:         if params.get('repeat', None):\n181:             query.append('AND repeat=%(repeat)s')\n182:             qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n183:                                          in ['true', 't', '1', 'yes', 'y', 'on'])\n184:         # id\n185:         ids = params.getlist('id')\n186:         if len(ids) == 1:\n187:             query.append('AND (alerts.id LIKE %(id)s OR last_receive_id LIKE %(id)s)')\n188:             qvars['id'] = ids[0] + '%'\n189:         elif ids:\n190:             query.append('AND (id ~* (%(regex_id)s) OR last_receive_id ~* (%(regex_id)s))')\n191:             qvars['regex_id'] = '|'.join(['^' + i for i in ids])\n192: \n193:         # filter, sort-by, group-by\n194:         query, qvars = QueryBuilder.filter_query(params, Alerts.VALID_PARAMS, query, qvars)\n195:         sort = QueryBuilder.sort_by_columns(params, Alerts.VALID_PARAMS)\n196:         group = params.getlist('group-by')\n197: \n198:         return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n199: \n200: \n201: class Blackouts(QueryBuilder):\n202: \n203:     VALID_PARAMS = {\n204:         # field (column, sort-by, direction)\n205:         'id': ('id', None, 0),\n206:         'priority': ('priority', 'priority', 1),\n207:         'environment': ('environment', 'environment', 1),\n208:         'service': ('service', 'service', 1),\n209:         'resource': ('resource', 'resource', 1),\n210:         'event': ('event', 'event', 1),\n211:         'group': ('group', '\"group\"', 1),\n212:         'tag': ('tags', None, 0),  # filter\n213:         'tags': (None, 'tags', 1),  # sort-by\n214:         'customer': ('customer', 'customer', 1),\n215:         'startTime': ('start_time', 'start_time', -1),\n216:         'endTime': ('end_time', 'end_time', -1),\n217:         'duration': ('duration', 'duration', 1),\n218:         'status': ('status', 'status', 1),\n219:         'remaining': ('remaining', 'remaining', -1),\n220:         'user': ('user', 'user', 1),\n221:         'createTime': ('create_time', 'create_time', -1),\n222:         'text': ('text', 'text', 1),\n223:     }\n224: \n225:     @staticmethod\n226:     def from_params(params: MultiDict, customers=None, query_time=None):\n227: \n228:         params = MultiDict(params)\n229: \n230:         # ?q=\n231:         if params.get('q', None):\n232:             try:\n233:                 parser = QueryParser()\n234:                 parsed_query, parsed_vars = parser.parse(\n235:                     query=params['q'],\n236:                     default_field=params.get('q.df')\n237:                 )\n238:                 query = [parsed_query]\n239:                 qvars = dict(parsed_vars)  # type: Dict[str, Any]\n240:             except ParseException as e:\n241:                 raise ApiError('Failed to parse query string.', 400, [e])\n242:         else:\n243:             query = ['1=1']\n244:             qvars = dict()\n245: \n246:         # customer\n247:         if customers:\n248:             query.append('AND customer=ANY(%(customers)s)')\n249:             qvars['customers'] = customers\n250: \n251:         # status\n252:         status = params.poplist('status')\n253:         if status:\n254:             squery = list()\n255:             if BlackoutStatus.Active in status:\n256:                 squery.append(\"(start_time <= NOW() at time zone 'utc' AND end_time > NOW())\")\n257:             if BlackoutStatus.Pending in status:\n258:                 squery.append(\"start_time > NOW() at time zone 'utc'\")\n259:             if BlackoutStatus.Expired in status:\n260:                 squery.append(\"end_time <= NOW() at time zone 'utc'\")\n261:             if squery:\n262:                 query.append('AND (' + ' OR '.join(squery) + ')')\n263: \n264:         # filter, sort-by\n265:         query, qvars = QueryBuilder.filter_query(params, Blackouts.VALID_PARAMS, query, qvars)\n266:         sort = QueryBuilder.sort_by_columns(params, Blackouts.VALID_PARAMS)\n267: \n268:         return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group='')\n269: \n270: \n271: class Heartbeats(QueryBuilder):\n272: \n273:     VALID_PARAMS = {\n274:         # field (column, sort-by, direction)\n275:         'id': ('id', None, 0),\n276:         'origin': ('origin', 'origin', 1),\n277:         'tag': ('tags', None, 0),  # filter\n278:         'tags': (None, 'tags', 1),  # sort-by\n279:         'attributes': ('attributes', 'attributes', 1),\n280:         'type': ('event_type', 'event_type', 1),\n281:         'createTime': ('create_time', 'create_time', -1),\n282:         'timeout': ('timeout', 'timeout', 1),\n283:         'receiveTime': ('receive_time', 'receive_time', -1),\n284:         'customer': ('customer', 'customer', 1),\n285:         'latency': ('latency', 'latency', 1),\n286:         'since': ('since', 'since', -1),\n287:         'status': ('status', None, 0),\n288:     }\n289: \n290:     @staticmethod\n291:     def from_params(params: MultiDict, customers=None, query_time=None):\n292: \n293:         query = ['1=1']\n294:         qvars = dict()\n295:         params = MultiDict(params)\n296: \n297:         # customer\n298:         if customers:\n299:             query.append('AND customer=ANY(%(customers)s)')\n300:             qvars['customers'] = customers\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "snapshot": "base",
+                  "start_line": 175,
+                  "end_line": 289
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/database/backends/postgres/queryparser.py lines=175-289]\n175:                 return f'\"{self.tokens.field[0]}\" ~* %({p})s'\n176:         if 'wildcard' in self.tokens:\n177:             p = _next_param(params)\n178:             params[p] = f'\\\\y{self.tokens.wildcard}\\\\y'\n179:             return f'\"{self.tokens.field[0]}\" ~* %({p})s'\n180:         if 'regex' in self.tokens:\n181:             p = _next_param(params)\n182:             params[p] = self.tokens.regex\n183:             return f'\"{self.tokens.field[0]}\" ~* %({p})s'\n184:         if 'range' in self.tokens:\n185:             if self.tokens.range[0].lowerbound == '*':\n186:                 lower_term = '1=1'\n187:             else:\n188:                 p = _next_param(params)\n189:                 params[p] = self.tokens.range[0].lowerbound\n190:                 op = '>=' if 'inclusive' in self.tokens.range[0] else '>'\n191:                 lower_term = f'\"{self.tokens.field[0]}\" {op} %({p})s'\n192: \n193:             if self.tokens.range[2].upperbound == '*':\n194:                 upper_term = '1=1'\n195:             else:\n196:                 p = _next_param(params)\n197:                 params[p] = self.tokens.range[2].upperbound\n198:                 op = '<=' if 'inclusive' in self.tokens.range[2] else '<'\n199:                 upper_term = f'\"{self.tokens.field[0]}\" {op} %({p})s'\n200:             return f'({lower_term} AND {upper_term})'\n201:         if 'onesidedrange' in self.tokens:\n202:             p = _next_param(params)\n203:             params[p] = self.tokens.onesidedrange.bound\n204:             return f'(\"{self.tokens.field[0]}\" {self.tokens.onesidedrange.op} %({p})s)'\n205:         if 'subquery' in self.tokens:\n206:             subquery_sql = self.tokens.subquery[0].to_sql(params)\n207:             if self.tokens.attr:\n208:                 tokens_attr = 'attributes' if self.tokens.attr == '_' else self.tokens.attr\n209:                 p = _next_param(params)\n210:                 params[p] = self.tokens.fieldname\n211:                 tokens_fieldname = f'\"{tokens_attr}\"::jsonb ->>%({p})s'\n212:             else:\n213:                 tokens_fieldname = f'\"{self.tokens.fieldname or self.tokens.field[0]}\"'\n214:             return subquery_sql.replace('\"__default_field__\"', tokens_fieldname)\n215: \n216:         raise ParseException(f'Search term did not match query syntax: {self.tokens}')\n217: \n218: \n219: # BNF for Lucene query syntax\n220: #\n221: # Query ::= ( Clause )*\n222: # Clause ::= [\"+\", \"-\"] [<TERM> \":\"] (<TERM> | \"(\" Query \")\" )\n223: \n224: \n225: LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, '[]{}~^')\n226: LPAR, RPAR, COLON, DOT = map(Suppress, '():.')\n227: \n228: AND = Keyword('AND') | Literal('&&')\n229: OR = Keyword('OR') | Literal('||')\n230: NOT = Keyword('NOT') | Literal('!')\n231: TO = Keyword('TO')\n232: \n233: query_expr = Forward()\n234: \n235: required_modifier = Literal('+')('required')\n236: prohibit_modifier = Literal('-')('prohibit')\n237: special_characters = '=><(){}[]^\"~*?:\\\\/.&|'\n238: valid_word = Word(printables, excludeChars=special_characters).setName('word')\n239: valid_word.setParseAction(\n240:     lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n241: )\n242: \n243: clause = Forward()\n244: field_name = (Optional(valid_word()('attr') + DOT)) + valid_word()('fieldname')\n245: single_term = valid_word()('singleterm')\n246: phrase = QuotedString('\"', unquoteResults=True)('phrase')\n247: wildcard = Regex(r'[a-z0-9]*[\\?\\*][a-z0-9]*')('wildcard')\n248: wildcard.setParseAction(\n249:     lambda t: t[0].replace('?', '.?').replace('*', '.*')\n250: )\n251: regex = QuotedString('/', unquoteResults=True)('regex')\n252: \n253: _all = Literal('*')\n254: lower_range = Group((LBRACK('inclusive') | LBRACE('exclusive')) + (valid_word | _all)('lowerbound'))\n255: upper_range = Group((valid_word | _all)('upperbound') + (RBRACK('inclusive') | RBRACE('esclusive')))\n256: _range = (lower_range + TO + upper_range)('range')\n257: \n258: GT = Literal('>')\n259: GTE = Literal('>=')\n260: LT = Literal('<')\n261: LTE = Literal('<=')\n262: one_sided_range = Group((GTE | GT | LTE | LT)('op') + valid_word('bound'))('onesidedrange')\n263: \n264: term = (_range | one_sided_range | regex | wildcard | phrase | single_term)\n265: \n266: clause << (Optional(field_name + COLON, default='__default_field__')('field')\n267:            + (term('term') | Group(LPAR + query_expr + RPAR)('subquery')))\n268: \n269: clause.addParseAction(SearchTerm)\n270: \n271: query_expr << infixNotation(clause,\n272:                             [\n273:                                 (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT, SearchModifier),\n274:                                 (NOT.setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),\n275:                                 (AND.setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),\n276:                                 (Optional(OR).setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),\n277:                             ])\n278: \n279: \n280: class QueryParser:\n281: \n282:     DEFAULT_FIELD = 'text'\n283: \n284:     def parse(self, query, default_field=None):\n285:         default_field = default_field or QueryParser.DEFAULT_FIELD\n286:         params = {}\n287:         parsed = query_expr.parseString(query)[0]\n288:         sql = parsed.to_sql(params)\n289:         return sql.replace('__default_field__', default_field), params\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.parse\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"\\.parse\\(\"]\nalerta/auth/basic.py:22:        user = User.parse(request.json)\nalerta/auth/decorators.py:76:                    jwt = Jwt.parse(token)\nalerta/auth/userinfo.py:23:        return jsonify(Jwt.parse(token).serialize)\nalerta/database/backends/mongodb/utils.py:145:                query = json.loads(parser.parse(\nalerta/database/backends/mongodb/utils.py:229:                query = json.loads(parser.parse(\nalerta/database/backends/postgres/utils.py:148:                parsed_query, parsed_vars = parser.parse(\nalerta/database/backends/postgres/utils.py:234:                parsed_query, parsed_vars = parser.parse(\nalerta/models/alert.py:112:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/blackout.py:109:            start_time=DateTime.parse(json['startTime']) if 'startTime' in json else None,\nalerta/models/blackout.py:110:            end_time=DateTime.parse(json['endTime']) if 'endTime' in json else None,\nalerta/models/blackout.py:238:            kwargs['startTime'] = DateTime.parse(kwargs['startTime'])\nalerta/models/blackout.py:240:            kwargs['endTime'] = DateTime.parse(kwargs['endTime'])\nalerta/models/heartbeat.py:88:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/key.py:54:            expire_time=DateTime.parse(json['expireTime']) if 'expireTime' in json else None,\nalerta/models/key.py:152:        kwargs['expireTime'] = DateTime.parse(kwargs['expireTime']) if 'expireTime' in kwargs else None\nalerta/models/note.py:38:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/note.py:39:            update_time=DateTime.parse(json['updateTime']) if 'updateTime' in json else None,\nalerta/views/alerts.py:42:        alert = Alert.parse(request.json)\nalerta/views/blackouts.py:23:        blackout = Blackout.parse(request.json)\nalerta/views/customers.py:22:        customer = Customer.parse(request.json)\nalerta/views/groups.py:23:        group = Group.parse(request.json)\nalerta/views/heartbeats.py:23:        heartbeat = Heartbeat.parse(request.json)\nalerta/views/keys.py:24:        key = ApiKey.parse(request.json)\nalerta/views/permissions.py:22:        perm = Permission.parse(request.json)\nalerta/views/users.py:28:        user = User.parse(request.json)\ntests/integration/test_auth_ldap.py:83:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:110:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:137:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:250:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:491:            jwt = Jwt.parse(data['token'])\n... (truncated at 30 matches)\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "to_sql",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"to_sql\"]\nalerta/database/backends/postgres/queryparser.py:34:    def to_sql(self, params):\nalerta/database/backends/postgres/queryparser.py:35:        return f'{self.op} {self.operands.to_sql(params)}'\nalerta/database/backends/postgres/queryparser.py:43:    def to_sql(self, params):\nalerta/database/backends/postgres/queryparser.py:44:        return f'({self.lhs.to_sql(params)} AND {self.rhs.to_sql(params)})'\nalerta/database/backends/postgres/queryparser.py:54:    def to_sql(self, params):\nalerta/database/backends/postgres/queryparser.py:56:            return f'({self.lhs.to_sql(params)} AND {self.rhs.to_sql(params)})'\nalerta/database/backends/postgres/queryparser.py:57:        return f'({self.lhs.to_sql(params)} OR {self.rhs.to_sql(params)})'\nalerta/database/backends/postgres/queryparser.py:65:    def to_sql(self, params):\nalerta/database/backends/postgres/queryparser.py:66:        return f'NOT ({self.operands.to_sql(params)})'\nalerta/database/backends/postgres/queryparser.py:135:    def to_sql(self, params):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def find_alerts|def find_blackouts|def find_heartbeats",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"def find_alerts|def find_blackouts|def find_heartbeats\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Alerts\\.from_params|Blackouts\\.from_params",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"Alerts\\.from_params|Blackouts\\.from_params\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "from_params",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"from_params\"]\nalerta/database/backends/mongodb/utils.py:139:    def from_params(params: ImmutableMultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:221:    def from_params(params: ImmutableMultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:286:    def from_params(params: ImmutableMultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:329:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:380:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:403:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:426:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/mongodb/utils.py:448:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:142:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:226:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:291:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:331:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:381:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:405:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:429:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/backends/postgres/utils.py:452:    def from_params(params: MultiDict, customers=None, query_time=None):\nalerta/database/base.py:486:        def from_params(params, customers=None, query_time=None):\nalerta/database/base.py:487:            raise NotImplementedError('AlertsQueryBuilder has no from_params() method for alerts')\nalerta/database/base.py:492:        def from_params(params, customers=None, query_time=None):\nalerta/database/base.py:493:            raise NotImplementedError('BlackoutsQueryBuilder has no from_params() method')\nalerta/database/base.py:498:        def from_params(params, customers=None, query_time=None):\nalerta/database/base.py:499:            raise NotImplementedError('HeartbeatsQueryBuilder has no from_params() method')\nalerta/database/base.py:504:        def from_params(params, customers=None, query_time=None):\nalerta/database/base.py:505:            raise NotImplementedError('ApiKeysQueryBuilder has no from_params() method')\nalerta/database/base.py:510:        def from_params(params, customers=None, query_time=None):\nalerta/database/base.py:511:            raise NotImplementedError('UsersQueryBuilder has no from_params() method')\nalerta/utils/paging.py:19:    def from_params(params: MultiDict, items: int) -> 'Page':\nalerta/views/alerts.py:310:    query = qb.alerts.from_params(request.args, customers=g.customers, query_time=query_time)\nalerta/views/alerts.py:317:    paging = Page.from_params(request.args, total)\nalerta/views/alerts.py:358:    query = qb.alerts.from_params(request.args, customers=g.customers)\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/views/alerts.py",
+                  "snapshot": "base",
+                  "start_line": 290,
+                  "end_line": 370
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/views/alerts.py lines=290-370]\n290:         raise ApiError(e.message, code=e.code, errors=e.errors)\n291:     except Exception as e:\n292:         raise ApiError(str(e), 500)\n293: \n294:     write_audit_trail.send(current_app._get_current_object(), event='alert-deleted', message='', user=g.login,\n295:                            customers=g.customers, scopes=g.scopes, resource_id=alert.id, type='alert', request=request)\n296: \n297:     if deleted:\n298:         return jsonify(status='ok')\n299:     else:\n300:         raise ApiError('failed to delete alert', 500)\n301: \n302: \n303: @api.route('/alerts', methods=['OPTIONS', 'GET'])\n304: @cross_origin()\n305: @permission(Scope.read_alerts)\n306: @timer(gets_timer)\n307: @jsonp\n308: def search_alerts():\n309:     query_time = datetime.utcnow()\n310:     query = qb.alerts.from_params(request.args, customers=g.customers, query_time=query_time)\n311:     show_raw_data = request.args.get('show-raw-data', default=False, type=lambda x: x.lower() in ['true', 't', '1', 'yes', 'y', 'on'])\n312:     show_history = request.args.get('show-history', default=False, type=lambda x: x.lower() in ['true', 't', '1', 'yes', 'y', 'on'])\n313:     severity_count = Alert.get_counts_by_severity(query)\n314:     status_count = Alert.get_counts_by_status(query)\n315: \n316:     total = sum(severity_count.values())\n317:     paging = Page.from_params(request.args, total)\n318: \n319:     alerts = Alert.find_all(query, raw_data=show_raw_data, history=show_history, page=paging.page, page_size=paging.page_size)\n320: \n321:     if alerts:\n322:         return jsonify(\n323:             status='ok',\n324:             page=paging.page,\n325:             pageSize=paging.page_size,\n326:             pages=paging.pages,\n327:             more=paging.has_more,\n328:             alerts=[alert.serialize for alert in alerts],\n329:             total=total,\n330:             statusCounts=status_count,\n331:             severityCounts=severity_count,\n332:             lastTime=max([alert.last_receive_time for alert in alerts]),\n333:             autoRefresh=Switch.find_by_name('auto-refresh-allow').is_on\n334:         )\n335:     else:\n336:         return jsonify(\n337:             status='ok',\n338:             message='not found',\n339:             page=paging.page,\n340:             pageSize=paging.page_size,\n341:             pages=0,\n342:             more=False,\n343:             alerts=[],\n344:             total=0,\n345:             severityCounts=severity_count,\n346:             statusCounts=status_count,\n347:             lastTime=query_time,\n348:             autoRefresh=Switch.find_by_name('auto-refresh-allow').is_on\n349:         )\n350: \n351: \n352: @api.route('/alerts/history', methods=['OPTIONS', 'GET'])\n353: @cross_origin()\n354: @permission(Scope.read_alerts)\n355: @timer(gets_timer)\n356: @jsonp\n357: def history():\n358:     query = qb.alerts.from_params(request.args, customers=g.customers)\n359:     paging = Page.from_params(request.args, items=0)\n360:     history = Alert.get_history(query, paging.page, paging.page_size)\n361: \n362:     if history:\n363:         return jsonify(\n364:             status='ok',\n365:             history=[h.serialize for h in history],\n366:             total=len(history)\n367:         )\n368:     else:\n369:         return jsonify(\n370:             status='ok',\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def find_alerts|def find_blackouts",
+                  "file_glob": "alerta/database/backends/postgres/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"def find_alerts|def find_blackouts\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def find_all|def get_counts_by_severity",
+                  "file_glob": "alerta/models/alert.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"def find_all|def get_counts_by_severity\"]\nalerta/models/alert.py:489:    def find_all(query: Query = None, raw_data: bool = False, history: bool = False, page: int = 1, page_size: int = 1000) -> List['Alert']:\nalerta/models/alert.py:508:    def get_counts_by_severity(query: Query = None) -> Dict[str, Any]:\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "query\\.vars|\\.vars",
+                  "file_glob": "alerta/models/alert.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 pattern=\"query\\.vars|\\.vars\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/models/alert.py",
+                  "snapshot": "base",
+                  "start_line": 489,
+                  "end_line": 560
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/models/alert.py lines=489-560]\n489:     def find_all(query: Query = None, raw_data: bool = False, history: bool = False, page: int = 1, page_size: int = 1000) -> List['Alert']:\n490:         return [Alert.from_db(alert) for alert in db.get_alerts(query, raw_data, history, page, page_size)]\n491: \n492:     @staticmethod\n493:     def get_alert_history(alert, page=1, page_size=100):\n494:         return [RichHistory.from_db(hist) for hist in db.get_alert_history(alert, page, page_size)]\n495: \n496:     # list alert history\n497:     @staticmethod\n498:     def get_history(query: Query = None, page=1, page_size=1000) -> List[RichHistory]:\n499:         return [RichHistory.from_db(hist) for hist in db.get_history(query, page, page_size)]\n500: \n501:     # get total count\n502:     @staticmethod\n503:     def get_count(query: Query = None) -> Dict[str, Any]:\n504:         return db.get_count(query)\n505: \n506:     # get severity counts\n507:     @staticmethod\n508:     def get_counts_by_severity(query: Query = None) -> Dict[str, Any]:\n509:         return db.get_counts_by_severity(query)\n510: \n511:     # get status counts\n512:     @staticmethod\n513:     def get_counts_by_status(query: Query = None) -> Dict[str, Any]:\n514:         return db.get_counts_by_status(query)\n515: \n516:     # top 10 alerts\n517:     @staticmethod\n518:     def get_top10_count(query: Query = None) -> List[Dict[str, Any]]:\n519:         return Alert.get_topn_count(query, topn=10)\n520: \n521:     @staticmethod\n522:     def get_topn_count(query: Query = None, topn: int = 10) -> List[Dict[str, Any]]:\n523:         return db.get_topn_count(query, topn=topn)\n524: \n525:     # top 10 flapping\n526:     @staticmethod\n527:     def get_top10_flapping(query: Query = None) -> List[Dict[str, Any]]:\n528:         return Alert.get_topn_flapping(topn=10)\n529: \n530:     @staticmethod\n531:     def get_topn_flapping(query: Query = None, topn: int = 10) -> List[Dict[str, Any]]:\n532:         return db.get_topn_flapping(query, topn=topn)\n533: \n534:     # top 10 standing\n535:     @staticmethod\n536:     def get_top10_standing(query: Query = None) -> List[Dict[str, Any]]:\n537:         return Alert.get_topn_standing(topn=10)\n538: \n539:     @staticmethod\n540:     def get_topn_standing(query: Query = None, topn: int = 10) -> List[Dict[str, Any]]:\n541:         return db.get_topn_standing(query, topn=topn)\n542: \n543:     # get environments\n544:     @staticmethod\n545:     def get_environments(query: Query = None) -> List[str]:\n546:         return db.get_environments(query)\n547: \n548:     # get services\n549:     @staticmethod\n550:     def get_services(query: Query = None) -> List[str]:\n551:         return db.get_services(query)\n552: \n553:     # get groups\n554:     @staticmethod\n555:     def get_groups(query: Query = None) -> List[str]:\n556:         return db.get_alert_groups(query)\n557: \n558:     # get tags\n559:     @staticmethod\n560:     def get_tags(query: Query = None) -> List[str]:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_alerts",
+                  "file_glob": "alerta/database/backends/postgres/*.py",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"queryparser-sql-removal\",\n      \"title\": \"Remove parameterized to_sql() generation from the Lucene query parser\",\n      \"rationale\": \"These hunks delete the _next_param helper and every to_sql() method (SearchModifier, SearchAnd, SearchOr, SearchNot, SearchTerm) and change QueryParser.parse to return a repr()-based string with no bound parameters, so the parser no longer emits parameterized SQL.\",\n      \"hunks\": [\n        \"alerta/database/backends/postgres/queryparser.py#0\",\n        \"alerta/database/backends/postgres/queryparser.py#1\",\n        \"alerta/database/backends/postgres/queryparser.py#2\",\n        \"alerta/database/backends/postgres/queryparser.py#3\",\n        \"alerta/database/backends/postgres/queryparser.py#4\"\n      ],\n      \"context\": [\n        {\"path\": \"alerta/database/backends/postgres/queryparser.py\", \"symbol\": \"SearchTerm.__repr__\", \"start_line\": 74, \"end_line\": 133, \"snapshot\": \"base\", \"why\": \"The new parse() relies on repr() to build the SQL string, so the repr() output (which inlines user values) is the new source of the WHERE clause.\"},\n        {\"path\": \"alerta/database/backends/postgres/queryparser.py\", \"symbol\": \"QueryParser.parse\", \"start_line\": 284, \"end_line\": 289, \"snapshot\": \"base\", \"why\": \"Base signature returns (sql, params); the PR changes it to return a single string, which callers must adapt.\"}\n      ]\n    },\n    {\n      \"id\": \"utils-consumers\",\n      \"title\": \"Adapt Alerts and Blackouts query builders to the new single-string parser return\",\n      \"rationale\": \"Both from_params() call sites unpack the old (query, vars) tuple and now discard the bound-parameter dict (qvars = dict()), so the WHERE clause built from the user's q= string is no longer parameterized.\",\n      \"hunks\": [\n        \"alerta/database/backends/postgres/utils.py#0\",\n        \"alerta/database/backends/postgres/utils.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"alerta/database/backends/postgres/utils.py\", \"symbol\": \"Alerts.from_params\", \"start_line\": 142, \"end_line\": 198, \"snapshot\": \"base\", \"why\": \"Consumes parser.parse() and feeds the resulting where/vars into the Query namedtuple used by Alert.find_all.\"},\n        {\"path\": \"alerta/database/backends/postgres/utils.py\", \"symbol\": \"Blackouts.from_params\", \"start_line\": 226, \"end_line\": 268, \"snapshot\": \"base\", \"why\": \"Second consumer of parser.parse() for the blackouts query builder.\"},\n        {\"path\": \"alerta/views/alerts.py\", \"symbol\": \"search_alerts\", \"start_line\": 303, \"end_line\": 319, \"snapshot\": \"base\", \"why\": \"Upstream caller that passes request.args (user-controlled q=) into Alerts.from_params, the authorization-relevant entry point for the query string.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "queryparser-sql-removal",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "query parameter SQL injection authorization access control"
+                },
+                "result": "[CHANGELOG.md:1-85] (relevance 0.19)\n## v9.0.1 (2023-06-22)\n\n### Feat\n\n- Add support for ACTION_UNACK to ISA 18.2 alarm model (#1715)\n- add db schema (#1839)\n\n### Fix\n\n- `token_endpoint_auth_methods_supported` is optional (#1856)\n\n## v9.0.0 (2023-03-17)\n\n### Feat\n\n- Add support for AuthProxy auth (#1657)\n- show/hide API server version info (#1821)\n- **plugin**: add alertname in labels when annotations.alertname (#1801)\n- Add userAgent to audit log (#1656)\n\n### Fix\n\n- Bulk operations did not work properly (#1825)\n- Replace FLASK_ENV with FLASK_DEBUG (#1824)\n- Change ORDER BY no-op for Postgres 15 (#1820)\n- **security**: do not expose exception errors to end users (#1811)\n- **auth**: auth bypass via registering when AUTH_PROVIDER != basic (#1782)\n- **plugin**: fixes an issue if the last plugin in the order (#1798)\n- Do not 400 error if content type not application/json (#1756)\n- Keycloak url base (#1683)\n- Audit log should handle empty body on http delete (#1655)\n\n### Refactor\n\n- **db**: Use Psql 9.6 syntax for ADD COLUMN (#1653)\n\n### Perf\n\n- Add load test workflow\n\n## v8.7.0 (2021-12-06)\n\n## v8.6.5 (2021-12-05)\n\n### Feat\n\n- Support all OpenID client_secret_* token endpoint auth methods (#1641)\n\n### Fix\n\n- Switch docker build from alpine to debian buster\n- Empty blackout values should be null (#1643)\n- Allow unack when status set to ack in plugin (#1642)\n- Do not hardcode inform severity (#1640)\n- Housekeeping config variable precedence (#1639)\n- **deps**: PyMongo 4.0 is currently not supported (#1636)\n\n## v8.6.4 (2021-12-01)\n\n### Feat\n\n- Optionally print warnings if db create fails (#1627)\n- Use GitHub teams for role lookup (#1625)\n\n### Fix\n\n- Customer lookup failed when no user email (#1629)\n- special handling of sorting by custom attributes (#1628)\n\n## v8.6.3 (2021-11-25)\n\n## v8.6.2 (2021-11-21)\n\n## v8.6.1 (2021-11-20)\n\n### Feat\n\n- add uptime stat to prometheus metrics (#1546)\n\n## v8.6.0 (2021-05-20)\n\n### Refactor\n\n- convert formatted strings to f-strings (more) (#1522)\n- convert tests to use f-strings (#1521)\n\n---\n\n[examples/backends/custom/README.md:1-29] (relevance 0.13)\nCustom backends example\n=======================\n\nProvided example consists of a database backend based on standard PostgreSQL backend.\n\nIt has a very basic functionality, adding an attribute to the alert before storing it\nin the database. This functionality can be achieved using plugins, it is just an example.\n\nCustom backends must provide a class named 'Backend' that implements `alerta.database.base.Backend`.\n\nThe module providing that class must be referenced as an 'alerta.database.backends' entry-point in\npython package setup.\n\n```\n   ...\n    entry_points={\n        'alerta.database.backends': [\n            'custom = package'\n        ]\n    }\n    ...\n```\n\nTo use the custom database backend, the name used for the entry-point has to be used as schema in\n`DATABASE_URL` configuration setting:\n\n```\nDATABASE_URL = \"custom://user@db_server/monitoring?connect_timeout=10&application_name=alerta\"\n```\n\n---\n\n[docs/HOWTO.md:1-11] (relevance 0.10)\nSQL Tips\n--------\n\n```\nalerta5=# select h.* from alerts, unnest(history) as h;\n                  id                  | event  | severity | status | value | text |   type   |       update_time\n--------------------------------------+--------+----------+--------+-------+------+----------+-------------------------\n 4e487d08-74ff-448b-a054-eb080c814a60 | event1 | major    | None   | n/a   | test | severity | 2017-09-05 23:01:21.053\n 9eeeb5da-0045-48bb-a3ee-a265b648393a | e2     | major    | None   | n/a   | test | severity | 2017-09-05 23:31:58.816\n```\n\n---\n\n[requirements-ci.txt:1-3] (relevance 0.08)\nlxml==5.2.1\npysaml2==7.5.0\npython-ldap==3.4.4\n\n---\n\n[docs/README.md:1-1] (relevance 0.08)\nSee http://docs.alerta.io"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.parse\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 pattern=\"\\.parse\\(\"]\nalerta/auth/basic.py:22:        user = User.parse(request.json)\nalerta/auth/decorators.py:76:                    jwt = Jwt.parse(token)\nalerta/auth/userinfo.py:23:        return jsonify(Jwt.parse(token).serialize)\nalerta/database/backends/mongodb/utils.py:145:                query = json.loads(parser.parse(\nalerta/database/backends/mongodb/utils.py:229:                query = json.loads(parser.parse(\nalerta/database/backends/postgres/utils.py:148:                query = [parser.parse(\nalerta/database/backends/postgres/utils.py:233:                query = [parser.parse(\nalerta/models/alert.py:112:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/blackout.py:109:            start_time=DateTime.parse(json['startTime']) if 'startTime' in json else None,\nalerta/models/blackout.py:110:            end_time=DateTime.parse(json['endTime']) if 'endTime' in json else None,\nalerta/models/blackout.py:238:            kwargs['startTime'] = DateTime.parse(kwargs['startTime'])\nalerta/models/blackout.py:240:            kwargs['endTime'] = DateTime.parse(kwargs['endTime'])\nalerta/models/heartbeat.py:88:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/key.py:54:            expire_time=DateTime.parse(json['expireTime']) if 'expireTime' in json else None,\nalerta/models/key.py:152:        kwargs['expireTime'] = DateTime.parse(kwargs['expireTime']) if 'expireTime' in kwargs else None\nalerta/models/note.py:38:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/note.py:39:            update_time=DateTime.parse(json['updateTime']) if 'updateTime' in json else None,\nalerta/views/alerts.py:42:        alert = Alert.parse(request.json)\nalerta/views/blackouts.py:23:        blackout = Blackout.parse(request.json)\nalerta/views/customers.py:22:        customer = Customer.parse(request.json)\nalerta/views/groups.py:23:        group = Group.parse(request.json)\nalerta/views/heartbeats.py:23:        heartbeat = Heartbeat.parse(request.json)\nalerta/views/keys.py:24:        key = ApiKey.parse(request.json)\nalerta/views/permissions.py:22:        perm = Permission.parse(request.json)\nalerta/views/users.py:28:        user = User.parse(request.json)\ntests/integration/test_auth_ldap.py:83:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:110:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:137:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:250:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:491:            jwt = Jwt.parse(data['token'])\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "start_line": 130,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/utils.py lines=130-250]\n130:         'customer': ('customer', 'customer', 1),\n131:         'duplicateCount': ('duplicate_count', 'duplicate_count', 1),\n132:         'repeat': ('repeat', 'repeat', 1),\n133:         'previousSeverity': ('previous_severity', 'previous_severity', 1),\n134:         'trendIndication': ('trend_indication', 'trend_indication', 1),\n135:         'receiveTime': ('receive_time', 'receive_time', -1),\n136:         'lastReceiveId': ('last_receive_id', 'last_receive_id', 1),\n137:         'lastReceiveTime': ('last_receive_time', 'last_receive_time', -1),\n138:         'updateTime': ('update_time', 'update_time', -1),\n139:     }\n140: \n141:     @staticmethod\n142:     def from_params(params: MultiDict, customers=None, query_time=None):\n143: \n144:         # ?q=\n145:         if params.get('q', None):\n146:             try:\n147:                 parser = QueryParser()\n148:                 query = [parser.parse(\n149:                     query=params['q'],\n150:                     default_field=params.get('q.df')\n151:                 )]\n152:                 qvars = dict()  # type: Dict[str, Any]\n153:             except ParseException as e:\n154:                 raise ApiError('Failed to parse query string.', 400, [e])\n155:         else:\n156:             query = ['1=1']\n157:             qvars = dict()\n158: \n159:         # customer\n160:         if customers:\n161:             query.append('AND customer=ANY(%(customers)s)')\n162:             qvars['customers'] = customers\n163: \n164:         # from-date, to-date\n165:         from_date = params.get('from-date', default=None, type=DateTime.parse)\n166:         to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n167: \n168:         if from_date:\n169:             query.append('AND last_receive_time > %(from_date)s')\n170:             qvars['from_date'] = from_date.replace(tzinfo=pytz.utc)\n171:         if to_date:\n172:             query.append('AND last_receive_time <= %(to_date)s')\n173:             qvars['to_date'] = to_date.replace(tzinfo=pytz.utc)\n174: \n175:         # duplicateCount, repeat\n176:         if params.get('duplicateCount', None):\n177:             query.append('AND duplicate_count=%(duplicate_count)s')\n178:             qvars['duplicate_count'] = params.get('duplicateCount', int)\n179:         if params.get('repeat', None):\n180:             query.append('AND repeat=%(repeat)s')\n181:             qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n182:                                          in ['true', 't', '1', 'yes', 'y', 'on'])\n183:         # id\n184:         ids = params.getlist('id')\n185:         if len(ids) == 1:\n186:             query.append('AND (alerts.id LIKE %(id)s OR last_receive_id LIKE %(id)s)')\n187:             qvars['id'] = ids[0] + '%'\n188:         elif ids:\n189:             query.append('AND (id ~* (%(regex_id)s) OR last_receive_id ~* (%(regex_id)s))')\n190:             qvars['regex_id'] = '|'.join(['^' + i for i in ids])\n191: \n192:         # filter, sort-by, group-by\n193:         query, qvars = QueryBuilder.filter_query(params, Alerts.VALID_PARAMS, query, qvars)\n194:         sort = QueryBuilder.sort_by_columns(params, Alerts.VALID_PARAMS)\n195:         group = params.getlist('group-by')\n196: \n197:         return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n198: \n199: \n200: class Blackouts(QueryBuilder):\n201: \n202:     VALID_PARAMS = {\n203:         # field (column, sort-by, direction)\n204:         'id': ('id', None, 0),\n205:         'priority': ('priority', 'priority', 1),\n206:         'environment': ('environment', 'environment', 1),\n207:         'service': ('service', 'service', 1),\n208:         'resource': ('resource', 'resource', 1),\n209:         'event': ('event', 'event', 1),\n210:         'group': ('group', '\"group\"', 1),\n211:         'tag': ('tags', None, 0),  # filter\n212:         'tags': (None, 'tags', 1),  # sort-by\n213:         'customer': ('customer', 'customer', 1),\n214:         'startTime': ('start_time', 'start_time', -1),\n215:         'endTime': ('end_time', 'end_time', -1),\n216:         'duration': ('duration', 'duration', 1),\n217:         'status': ('status', 'status', 1),\n218:         'remaining': ('remaining', 'remaining', -1),\n219:         'user': ('user', 'user', 1),\n220:         'createTime': ('create_time', 'create_time', -1),\n221:         'text': ('text', 'text', 1),\n222:     }\n223: \n224:     @staticmethod\n225:     def from_params(params: MultiDict, customers=None, query_time=None):\n226: \n227:         params = MultiDict(params)\n228: \n229:         # ?q=\n230:         if params.get('q', None):\n231:             try:\n232:                 parser = QueryParser()\n233:                 query = [parser.parse(\n234:                     query=params['q'],\n235:                     default_field=params.get('q.df')\n236:                 )]\n237:                 qvars = dict()  # type: Dict[str, Any]\n238:             except ParseException as e:\n239:                 raise ApiError('Failed to parse query string.', 400, [e])\n240:         else:\n241:             query = ['1=1']\n242:             qvars = dict()\n243: \n244:         # customer\n245:         if customers:\n246:             query.append('AND customer=ANY(%(customers)s)')\n247:             qvars['customers'] = customers\n248: \n249:         # status\n250:         status = params.poplist('status')\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 1,
+                  "end_line": 135,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=1-135]\n1: from pyparsing import (Forward, Group, Keyword, Literal, Optional,\n2:                        ParseException, ParserElement, QuotedString, Regex,\n3:                        Suppress, Word, infixNotation, opAssoc, printables)\n4: \n5: ParserElement.enablePackrat()\n6: \n7: \n8: class UnaryOperation:\n9:     \"\"\"takes one operand,e.g. not\"\"\"\n10: \n11:     def __init__(self, tokens):\n12:         self.op, self.operands = tokens[0]\n13: \n14: \n15: class BinaryOperation:\n16:     \"\"\"takes two or more operands, e.g. and, or\"\"\"\n17: \n18:     def __init__(self, tokens):\n19:         self.op = tokens[0][1]\n20:         self.lhs = tokens[0][0]\n21:         self.rhs = tokens[0][2]\n22: \n23: \n24: class SearchModifier(UnaryOperation):\n25: \n26:     def __repr__(self):\n27:         return f'{self.op} {self.operands}'\n28: \n29: \n30: class SearchAnd(BinaryOperation):\n31: \n32:     def __repr__(self):\n33:         return f'({self.lhs} AND {self.rhs})'\n34: \n35: \n36: class SearchOr(BinaryOperation):\n37: \n38:     def __repr__(self):\n39:         if getattr(self.rhs, 'op', None) == 'NOT':\n40:             return f'({self.lhs} AND {self.rhs})'\n41:         return f'({self.lhs} OR {self.rhs})'\n42: \n43: \n44: class SearchNot(UnaryOperation):\n45: \n46:     def __repr__(self):\n47:         return f'NOT ({self.operands})'\n48: \n49: \n50: class SearchTerm:\n51: \n52:     def __init__(self, tokens):\n53:         self.tokens = tokens\n54: \n55:     def __repr__(self):\n56:         # print([t for t in self.tokens.items()])\n57:         if 'singleterm' in self.tokens:\n58:             if self.tokens.fieldname == '_exists_':\n59:                 return f'\"attributes\"::jsonb ? \\'{self.tokens.singleterm}\\''\n60:             elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n61:                 return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n62:             elif self.tokens.attr:\n63:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n64:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n65:             else:\n66:                 return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n67:         if 'phrase' in self.tokens:\n68:             if self.tokens.field[0] == '__default_field__':\n69:                 return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n70:             elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n71:                 return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n72:             elif self.tokens.attr:\n73:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n74:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n75:             else:\n76:                 return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n77:         if 'wildcard' in self.tokens:\n78:             return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.wildcard}\\\\y\\''\n79:         if 'regex' in self.tokens:\n80:             return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''\n81:         if 'range' in self.tokens:\n82:             if self.tokens.range[0].lowerbound == '*':\n83:                 lower_term = '1=1'\n84:             else:\n85:                 lower_term = '\"{}\" {} \\'{}\\''.format(\n86:                     self.tokens.field[0],\n87:                     '>=' if 'inclusive' in self.tokens.range[0] else '>',\n88:                     self.tokens.range[0].lowerbound\n89:                 )\n90: \n91:             if self.tokens.range[2].upperbound == '*':\n92:                 upper_term = '1=1'\n93:             else:\n94:                 upper_term = '\"{}\" {} \\'{}\\''.format(\n95:                     self.tokens.field[0],\n96:                     '<=' if 'inclusive' in self.tokens.range[2] else '<',\n97:                     self.tokens.range[2].upperbound\n98:                 )\n99:             return f'({lower_term} AND {upper_term})'\n100:         if 'onesidedrange' in self.tokens:\n101:             return '(\"{}\" {} \\'{}\\')'.format(\n102:                 self.tokens.field[0],\n103:                 self.tokens.onesidedrange.op,\n104:                 self.tokens.onesidedrange.bound\n105:             )\n106:         if 'subquery' in self.tokens:\n107:             if self.tokens.attr:\n108:                 tokens_attr = 'attributes' if self.tokens.attr == '_' else self.tokens.attr\n109:                 tokens_fieldname = f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\''\n110:             else:\n111:                 tokens_fieldname = f'\"{self.tokens.fieldname or self.tokens.field[0]}\"'\n112:             return f'{self.tokens.subquery[0]}'.replace('\"__default_field__\"', tokens_fieldname)\n113: \n114:         raise ParseException(f'Search term did not match query syntax: {self.tokens}')\n115: \n116: \n117: # BNF for Lucene query syntax\n118: #\n119: # Query ::= ( Clause )*\n120: # Clause ::= [\"+\", \"-\"] [<TERM> \":\"] (<TERM> | \"(\" Query \")\" )\n121: \n122: \n123: LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, '[]{}~^')\n124: LPAR, RPAR, COLON, DOT = map(Suppress, '():.')\n125: \n126: AND = Keyword('AND') | Literal('&&')\n127: OR = Keyword('OR') | Literal('||')\n128: NOT = Keyword('NOT') | Literal('!')\n129: TO = Keyword('TO')\n130: \n131: query_expr = Forward()\n132: \n133: required_modifier = Literal('+')('required')\n134: prohibit_modifier = Literal('-')('prohibit')\n135: special_characters = '=><(){}[]^\"~*?:\\\\/.&|'\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 135,
+                  "end_line": 185,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=135-184]\n135: special_characters = '=><(){}[]^\"~*?:\\\\/.&|'\n136: valid_word = Word(printables, excludeChars=special_characters).setName('word')\n137: valid_word.setParseAction(\n138:     lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n139: )\n140: \n141: clause = Forward()\n142: field_name = (Optional(valid_word()('attr') + DOT)) + valid_word()('fieldname')\n143: single_term = valid_word()('singleterm')\n144: phrase = QuotedString('\"', unquoteResults=True)('phrase')\n145: wildcard = Regex(r'[a-z0-9]*[\\?\\*][a-z0-9]*')('wildcard')\n146: wildcard.setParseAction(\n147:     lambda t: t[0].replace('?', '.?').replace('*', '.*')\n148: )\n149: regex = QuotedString('/', unquoteResults=True)('regex')\n150: \n151: _all = Literal('*')\n152: lower_range = Group((LBRACK('inclusive') | LBRACE('exclusive')) + (valid_word | _all)('lowerbound'))\n153: upper_range = Group((valid_word | _all)('upperbound') + (RBRACK('inclusive') | RBRACE('esclusive')))\n154: _range = (lower_range + TO + upper_range)('range')\n155: \n156: GT = Literal('>')\n157: GTE = Literal('>=')\n158: LT = Literal('<')\n159: LTE = Literal('<=')\n160: one_sided_range = Group((GTE | GT | LTE | LT)('op') + valid_word('bound'))('onesidedrange')\n161: \n162: term = (_range | one_sided_range | regex | wildcard | phrase | single_term)\n163: \n164: clause << (Optional(field_name + COLON, default='__default_field__')('field')\n165:            + (term('term') | Group(LPAR + query_expr + RPAR)('subquery')))\n166: \n167: clause.addParseAction(SearchTerm)\n168: \n169: query_expr << infixNotation(clause,\n170:                             [\n171:                                 (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT, SearchModifier),\n172:                                 (NOT.setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),\n173:                                 (AND.setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),\n174:                                 (Optional(OR).setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),\n175:                             ])\n176: \n177: \n178: class QueryParser:\n179: \n180:     DEFAULT_FIELD = 'text'\n181: \n182:     def parse(self, query, default_field=None):\n183:         default_field = default_field or QueryParser.DEFAULT_FIELD\n184:         return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review is a SQL query-string builder. The PR removes the parameterized `to_sql(params)` path (which used `%(...)s` placeholders) and replaces `QueryParser.parse` with a version that returns a single SQL string built from `repr()` of the parsed expression. The `SearchTerm.__repr__` methods inline user-controlled values (singleterm, phrase, regex, range bounds, field names) directly into the SQL string with single quotes, and the caller (`utils.py`) concatenates this string into the WHERE clause with no parameterization.\n\nHowever, this is a SQL injection concern (CWE-89), not an authorization flaw (CWE-639/862/863). The task scope is strictly authorization: IDOR, missing authorization, or incorrect authorization. There is no evidence in this section of a missing/incorrect ownership or role check, and the retrieved policy excerpts contain no authorization rule that this code violates. The change does not remove any authentication/role check.\n\nTherefore, no authorization candidate flaw is established for this section.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "utils-consumers",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "QueryParser parse method return value signature"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 status=ok truncated=true incomplete=true query=\"QueryParser parse method return value signature\"]\n**Exploration: QueryParser parse method return value signature**\n\nFound 58 symbols across 7 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `QueryParser` (alerta/database/backends/mongodb/queryparser.py:192) \u2014 3 callers in `alerta/database/backends/mongodb/utils.py`; tested via callers: `tests/test_search.py`\n- `QueryParser` (alerta/database/backends/postgres/queryparser.py:178) \u2014 3 callers in `alerta/database/backends/postgres/utils.py`; no tests found within 3 caller hops\n- `parse` (alerta/models/user.py:62) \u2014 2 callers in `alerta/auth/basic.py`, `alerta/views/users.py`; no tests found within 3 caller hops\n- `parse` (alerta/utils/format.py:55) \u2014 10 callers in `alerta/models/blackout.py`, `alerta/models/note.py`, `alerta/models/key.py`, `alerta/models/alert.py` +3 more; tests: `tests/test_blackouts.py`\n- `parse` (alerta/models/token.py:43) \u2014 17 callers in `alerta/auth/userinfo.py`, `alerta/auth/decorators.py`; tests: `tests/integration/test_auth_ldap.py`, `tests/test_providers.py`, `tests/test_auth.py`\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`alerta/database/backends/mongodb/queryparser.py`** \u2014 parse(method), query_expr(variable), QueryParser(class)\n\n```python\n137\tNOT = Keyword('NOT') | Literal('!')\n138\tTO = Keyword('TO')\n139\t\n140\tquery_expr = Forward()\n141\t\n142\trequired_modifier = Literal('+')('required')\n143\tprohibit_modifier = Literal('-')('prohibit')\n\n... (gap: special_characters (alerta/database/backends/mongodb/queryparser.py:144), valid_word (alerta/database/backends/mongodb/queryparser.py:145), clause (alerta/database/backends/mongodb/queryparser.py:150), field_name (alerta/database/backends/mongodb/queryparser.py:151), single_term (alerta/database/backends/mongodb/queryparser.py:152), phrase (alerta/database/backends/mongodb/queryparser.py:153), +13 more) ...\n\n189\t                            ])\n190\t\n191\t\n192\tclass QueryParser:\n193\t\n194\t    DEFAULT_FIELD = 'text'\n195\t    DEFAULT_OPERATOR = '$regex'\n196\t\n197\t    def parse(self, query, default_field=None, default_operator=None):\n198\t        default_field = default_field or QueryParser.DEFAULT_FIELD\n199\t        default_operator = default_operator or QueryParser.DEFAULT_OPERATOR\n200\t\n201\t        return repr(query_expr.parseString(query)[0])\\\n202\t            .replace('__default_field__', default_field)\\\n203\t            .replace('__default_operator__', default_operator)\n204\t\n```\n\n**`alerta/database/backends/postgres/queryparser.py`** \u2014 QueryParser(class), parse(method), query_expr(variable)\n\n```python\n1\tfrom pyparsing import (Forward, Group, Keyword, Literal, Optional,\n2\t                       ParseException, ParserElement, QuotedString, Regex,\n3\t                       Suppress, Word, infixNotation, opAssoc, printables)\n4\t\n5\tParserElement.enablePackrat()\n6\t\n7\t\n8\tclass UnaryOperation:\n9\t    \"\"\"takes one operand,e.g. not\"\"\"\n10\t\n11\t    def __init__(self, tokens):\n12\t        self.op, self.operands = tokens[0]\n13\t\n14\t\n15\tclass BinaryOperation:\n16\t    \"\"\"takes two or more operands, e.g. and, or\"\"\"\n17\t\n18\t    def __init__(self, tokens):\n19\t        self.op = tokens[0][1]\n20\t        self.lhs = tokens[0][0]\n21\t        self.rhs = tokens[0][2]\n22\t\n23\t\n24\tclass SearchModifier(UnaryOperation):\n25\t\n26\t    def __repr__(self):\n27\t        return f'{self.op} {self.operands}'\n28\t\n29\t\n30\tclass SearchAnd(BinaryOperation):\n31\t\n32\t    def __repr__(self):\n33\t        return f'({self.lhs} AND {self.rhs})'\n34\t\n35\t\n36\tclass SearchOr(BinaryOperation):\n37\t\n38\t    def __repr__(self):\n39\t        if getattr(self.rhs, 'op', None) == 'NOT':\n40\t            return f'({self.lhs} AND {self.rhs})'\n41\t        return f'({self.lhs} OR {self.rhs})'\n42\t\n43\t\n44\tclass SearchNot(UnaryOperation):\n45\t\n46\t    def __repr__(self):\n47\t        return f'NOT ({self.operands})'\n48\t\n49\t\n50\tclass SearchTerm:\n51\t\n52\t    def __init__(self, tokens):\n53\t        self.tokens = tokens\n54\t\n55\t    def __repr__(self):\n56\t        # print([t for t in self.tokens.items()])\n57\t        if 'singleterm' in self.tokens:\n58\t            if self.tokens.fieldname == '_exists_':\n59\t                return f'\"attributes\"::jsonb ? \\'{self.tokens.singleterm}\\''\n60\t            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n61\t                return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n62\t            elif self.tokens.attr:\n63\t                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n64\t                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n65\t            else:\n66\t                return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n67\t        if 'phrase' in self.tokens:\n68\t            if self.tokens.field[0] == '__default_field__':\n69\t                return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n70\t            elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n71\t                return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n72\t            elif self.tokens.attr:\n73\t                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n74\t                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n75\t            else:\n76\t                return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n77\t        if 'wildc\n[TRUNCATED omitted_chars=14958]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "customer isolation authorization multi-tenant access control alerts"
+                },
+                "result": "[examples/plugins/README.md:1-14] (relevance 0.48)\nPlugin Examples\n===============\n\nSome example plugins that can be used as a starting point for custom development:\n\n  * routing rules plugin that uses different notification paths for different customers.\n    ie. PagerDuty for Tier 1 customers, Slack for Tier 2 and nothing for Tier 3 customers.\n\n  * transient alert plugin based on the `is_flapping()` helper method\n    will reject alerts that have repeatedly changed from an alert severity\n    to `normal` within a short period of time. eg. more than twice in 2 minutes\n\nSee the [alerta contrib repo](https://github.com/alerta/alerta-contrib/tree/master/plugins) for\na comprehensive list of plugins that can be used as-is or as examples for your own environment.\n\n---\n\n[docs/README.md:1-1] (relevance 0.45)\nSee http://docs.alerta.io\n\n---\n\n[README.md:128-150] (relevance 0.33)\n----------------\n\nAlerta can be deployed to the cloud easily using Heroku <https://github.com/alerta/heroku-api-alerta>,\nAWS EC2 <https://github.com/alerta/alerta-cloudformation>, or Google Cloud Platform\n<https://github.com/alerta/gcloud-api-alerta>\n\nLicense\n-------\n\n    Alerta monitoring system and console\n    Copyright 2012-2023 Nick Satterly\n\n    Licensed under the Apache License, Version 2.0 (the \"License\");\n    you may not use this file except in compliance with the License.\n    You may obtain a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n    Unless required by applicable law or agreed to in writing, software\n    distributed under the License is distributed on an \"AS IS\" BASIS,\n    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n    See the License for the specific language governing permissions and\n    limitations under the License.\n\n---\n\n[README.md:1-65] (relevance 0.32)\nAlerta Release 9.1\n==================\n\n[![Actions Status](https://github.com/alerta/alerta/workflows/CI%20Tests/badge.svg)](https://github.com/alerta/alerta/actions)\n[![Slack chat](https://img.shields.io/badge/chat-on%20slack-blue?logo=slack)](https://slack.alerta.dev)\n[![Coverage Status](https://coveralls.io/repos/github/alerta/alerta/badge.svg?branch=master)](https://coveralls.io/github/alerta/alerta?branch=master)\n[![Docker Pulls](https://img.shields.io/docker/pulls/alerta/alerta-web.svg)](https://hub.docker.com/r/alerta/alerta-web)\n\nThe Alerta monitoring tool was developed with the following aims in mind:\n\n*   distributed and de-coupled so that it is **SCALABLE**\n*   minimal **CONFIGURATION** that easily accepts alerts from any source\n*   quick at-a-glance **VISUALISATION** with drill-down to detail\n\n![webui](/docs/images/alerta-webui-v7.jpg?raw=true)\n\n----\n\nRequirements\n------------\n\nRelease 9 only supports Python 3.9 or higher.\n\nThe only mandatory dependency is MongoDB or PostgreSQL. Everything else is optional.\n\n- Postgres version 13 or better\n- MongoDB version 6.0 or better\n\nInstallation\n------------\n\nTo install MongoDB on Debian/Ubuntu run:\n\n    $ sudo apt-get install -y mongodb-org\n    $ mongod\n\nTo install MongoDB on CentOS/RHEL run:\n\n    $ sudo yum install -y mongodb\n    $ mongod\n\nTo install the Alerta server and client run:\n\n    $ pip install alerta-server alerta\n    $ alertad run\n\nTo install the web console run:\n\n    $ wget https://github.com/alerta/alerta-webui/releases/latest/download/alerta-webui.tar.gz\n    $ tar zxvf alerta-webui.tar.gz\n    $ cd dist\n    $ python3 -m http.server 8000\n\n    >> browse to http://localhost:8000\n\n### Docker\nAlerta and MongoDB can also run using Docker containers, see [alerta/docker-alerta](https://github.com/alerta/docker-alerta).\n\nConfiguration\n-------------\n\nTo configure the ``alertad`` server override the default settings in ``/etc/alertad.conf``\nor using ``ALERTA_SVR_CONF_FILE`` environment variable::\n\n    $ ALERTA_SVR_CONF_FILE=~/.alertad.conf\n\n---\n\n[CHANGELOG.md:1-85] (relevance 0.29)\n## v9.0.1 (2023-06-22)\n\n### Feat\n\n- Add support for ACTION_UNACK to ISA 18.2 alarm model (#1715)\n- add db schema (#1839)\n\n### Fix\n\n- `token_endpoint_auth_methods_supported` is optional (#1856)\n\n## v9.0.0 (2023-03-17)\n\n### Feat\n\n- Add support for AuthProxy auth (#1657)\n- show/hide API server version info (#1821)\n- **plugin**: add alertname in labels when annotations.alertname (#1801)\n- Add userAgent to audit log (#1656)\n\n### Fix\n\n- Bulk operations did not work properly (#1825)\n- Replace FLASK_ENV with FLASK_DEBUG (#1824)\n- Change ORDER BY no-op for Postgres 15 (#1820)\n- **security**: do not expose exception errors to end users (#1811)\n- **auth**: auth bypass via registering when AUTH_PROVIDER != basic (#1782)\n- **plugin**: fixes an issue if the last plugin in the order (#1798)\n- Do not 400 error if content type not application/json (#1756)\n- Keycloak url base (#1683)\n- Audit log should handle empty body on http delete (#1655)\n\n### Refactor\n\n- **db**: Use Psql 9.6 syntax for ADD COLUMN (#1653)\n\n### Perf\n\n- Add load test workflow\n\n## v8.7.0 (2021-12-06)\n\n## v8.6.5 (2021-12-05)\n\n### Feat\n\n- Support all OpenID client_secret_* token endpoint auth methods (#1641)\n\n### Fix\n\n- Switch docker build from alpine to debian buster\n- Empty blackout values should be null (#1643)\n- Allow unack when status set to ack in plugin (#1642)\n- Do not hardcode inform severity (#1640)\n- Housekeeping config variable precedence (#1639)\n- **deps**: PyMongo 4.0 is currently not supported (#1636)\n\n## v8.6.4 (2021-12-01)\n\n### Feat\n\n- Optionally print warnings if db create fails (#1627)\n- Use GitHub teams for role lookup (#1625)\n\n### Fix\n\n- Customer lookup failed when no user email (#1629)\n- special handling of sorting by custom attributes (#1628)\n\n## v8.6.3 (2021-11-25)\n\n## v8.6.2 (2021-11-21)\n\n## v8.6.1 (2021-11-20)\n\n### Feat\n\n- add uptime stat to prometheus metrics (#1546)\n\n## v8.6.0 (2021-05-20)\n\n### Refactor\n\n- convert formatted strings to f-strings (more) (#1522)\n- convert tests to use f-strings (#1521)"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 170,
+                  "end_line": 230,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=170-184]\n170:                             [\n171:                                 (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT, SearchModifier),\n172:                                 (NOT.setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),\n173:                                 (AND.setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),\n174:                                 (Optional(OR).setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),\n175:                             ])\n176: \n177: \n178: class QueryParser:\n179: \n180:     DEFAULT_FIELD = 'text'\n181: \n182:     def parse(self, query, default_field=None):\n183:         default_field = default_field or QueryParser.DEFAULT_FIELD\n184:         return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/views/alerts.py",
+                  "start_line": 290,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/views/alerts.py lines=290-330]\n290:         raise ApiError(e.message, code=e.code, errors=e.errors)\n291:     except Exception as e:\n292:         raise ApiError(str(e), 500)\n293: \n294:     write_audit_trail.send(current_app._get_current_object(), event='alert-deleted', message='', user=g.login,\n295:                            customers=g.customers, scopes=g.scopes, resource_id=alert.id, type='alert', request=request)\n296: \n297:     if deleted:\n298:         return jsonify(status='ok')\n299:     else:\n300:         raise ApiError('failed to delete alert', 500)\n301: \n302: \n303: @api.route('/alerts', methods=['OPTIONS', 'GET'])\n304: @cross_origin()\n305: @permission(Scope.read_alerts)\n306: @timer(gets_timer)\n307: @jsonp\n308: def search_alerts():\n309:     query_time = datetime.utcnow()\n310:     query = qb.alerts.from_params(request.args, customers=g.customers, query_time=query_time)\n311:     show_raw_data = request.args.get('show-raw-data', default=False, type=lambda x: x.lower() in ['true', 't', '1', 'yes', 'y', 'on'])\n312:     show_history = request.args.get('show-history', default=False, type=lambda x: x.lower() in ['true', 't', '1', 'yes', 'y', 'on'])\n313:     severity_count = Alert.get_counts_by_severity(query)\n314:     status_count = Alert.get_counts_by_status(query)\n315: \n316:     total = sum(severity_count.values())\n317:     paging = Page.from_params(request.args, total)\n318: \n319:     alerts = Alert.find_all(query, raw_data=show_raw_data, history=show_history, page=paging.page, page_size=paging.page_size)\n320: \n321:     if alerts:\n322:         return jsonify(\n323:             status='ok',\n324:             page=paging.page,\n325:             pageSize=paging.page_size,\n326:             pages=paging.pages,\n327:             more=paging.has_more,\n328:             alerts=[alert.serialize for alert in alerts],\n329:             total=total,\n330:             statusCounts=status_count,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def permission|def require|g.customers",
+                  "file_glob": "alerta/auth/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 pattern=\"def permission|def require|g.customers\"]\nalerta/auth/decorators.py:25:def permission(scope=None):\nalerta/auth/decorators.py:48:                g.customers = [key_info.customer] if key_info.customer else []\nalerta/auth/decorators.py:65:                g.customers = []\nalerta/auth/decorators.py:85:                g.customers = jwt.customers\nalerta/auth/decorators.py:116:                g.customers = get_customers(user.login, groups=user.get_groups())\nalerta/auth/decorators.py:147:                g.customers = get_customers(user.email, groups=[user.domain])\nalerta/auth/decorators.py:159:                g.customers = []\nalerta/auth/decorators.py:167:                g.customers = []\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis, the PR change is a refactoring that removes the `parsed_vars` return value from `parser.parse()` (which in the Postgres backend returns only a single string, not a tuple) and sets `qvars = dict()`. This is a correctness fix, not an authorization change.\n\nThe customer isolation mechanism (`if customers: query.append('AND customer=ANY(%(customers)s)')`) is unchanged and still applied after the query parsing. The `permission(Scope.read_alerts)` decorator and `g.customers` enforcement remain intact. The change does not remove or weaken any authorization check, nor does it expose a new user-controlled identifier path.\n\nNo authorization flaw is introduced by this section.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:queryparser-sql-removal",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 60,
+                  "end_line": 135,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=60-135]\n60:             elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n61:                 return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n62:             elif self.tokens.attr:\n63:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n64:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n65:             else:\n66:                 return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n67:         if 'phrase' in self.tokens:\n68:             if self.tokens.field[0] == '__default_field__':\n69:                 return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n70:             elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n71:                 return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n72:             elif self.tokens.attr:\n73:                 tokens_attr = self.tokens.attr.replace('_', 'attributes')\n74:                 return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n75:             else:\n76:                 return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n77:         if 'wildcard' in self.tokens:\n78:             return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.wildcard}\\\\y\\''\n79:         if 'regex' in self.tokens:\n80:             return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''\n81:         if 'range' in self.tokens:\n82:             if self.tokens.range[0].lowerbound == '*':\n83:                 lower_term = '1=1'\n84:             else:\n85:                 lower_term = '\"{}\" {} \\'{}\\''.format(\n86:                     self.tokens.field[0],\n87:                     '>=' if 'inclusive' in self.tokens.range[0] else '>',\n88:                     self.tokens.range[0].lowerbound\n89:                 )\n90: \n91:             if self.tokens.range[2].upperbound == '*':\n92:                 upper_term = '1=1'\n93:             else:\n94:                 upper_term = '\"{}\" {} \\'{}\\''.format(\n95:                     self.tokens.field[0],\n96:                     '<=' if 'inclusive' in self.tokens.range[2] else '<',\n97:                     self.tokens.range[2].upperbound\n98:                 )\n99:             return f'({lower_term} AND {upper_term})'\n100:         if 'onesidedrange' in self.tokens:\n101:             return '(\"{}\" {} \\'{}\\')'.format(\n102:                 self.tokens.field[0],\n103:                 self.tokens.onesidedrange.op,\n104:                 self.tokens.onesidedrange.bound\n105:             )\n106:         if 'subquery' in self.tokens:\n107:             if self.tokens.attr:\n108:                 tokens_attr = 'attributes' if self.tokens.attr == '_' else self.tokens.attr\n109:                 tokens_fieldname = f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\''\n110:             else:\n111:                 tokens_fieldname = f'\"{self.tokens.fieldname or self.tokens.field[0]}\"'\n112:             return f'{self.tokens.subquery[0]}'.replace('\"__default_field__\"', tokens_fieldname)\n113: \n114:         raise ParseException(f'Search term did not match query syntax: {self.tokens}')\n115: \n116: \n117: # BNF for Lucene query syntax\n118: #\n119: # Query ::= ( Clause )*\n120: # Clause ::= [\"+\", \"-\"] [<TERM> \":\"] (<TERM> | \"(\" Query \")\" )\n121: \n122: \n123: LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, '[]{}~^')\n124: LPAR, RPAR, COLON, DOT = map(Suppress, '():.')\n125: \n126: AND = Keyword('AND') | Literal('&&')\n127: OR = Keyword('OR') | Literal('||')\n128: NOT = Keyword('NOT') | Literal('!')\n129: TO = Keyword('TO')\n130: \n131: query_expr = Forward()\n132: \n133: required_modifier = Literal('+')('required')\n134: prohibit_modifier = Literal('-')('prohibit')\n135: special_characters = '=><(){}[]^\"~*?:\\\\/.&|'\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "\\.parse\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 pattern=\"\\.parse\\(\"]\nalerta/auth/basic.py:22:        user = User.parse(request.json)\nalerta/auth/decorators.py:76:                    jwt = Jwt.parse(token)\nalerta/auth/userinfo.py:23:        return jsonify(Jwt.parse(token).serialize)\nalerta/database/backends/mongodb/utils.py:145:                query = json.loads(parser.parse(\nalerta/database/backends/mongodb/utils.py:229:                query = json.loads(parser.parse(\nalerta/database/backends/postgres/utils.py:148:                query = [parser.parse(\nalerta/database/backends/postgres/utils.py:233:                query = [parser.parse(\nalerta/models/alert.py:112:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/blackout.py:109:            start_time=DateTime.parse(json['startTime']) if 'startTime' in json else None,\nalerta/models/blackout.py:110:            end_time=DateTime.parse(json['endTime']) if 'endTime' in json else None,\nalerta/models/blackout.py:238:            kwargs['startTime'] = DateTime.parse(kwargs['startTime'])\nalerta/models/blackout.py:240:            kwargs['endTime'] = DateTime.parse(kwargs['endTime'])\nalerta/models/heartbeat.py:88:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/key.py:54:            expire_time=DateTime.parse(json['expireTime']) if 'expireTime' in json else None,\nalerta/models/key.py:152:        kwargs['expireTime'] = DateTime.parse(kwargs['expireTime']) if 'expireTime' in kwargs else None\nalerta/models/note.py:38:            create_time=DateTime.parse(json['createTime']) if 'createTime' in json else None,\nalerta/models/note.py:39:            update_time=DateTime.parse(json['updateTime']) if 'updateTime' in json else None,\nalerta/views/alerts.py:42:        alert = Alert.parse(request.json)\nalerta/views/blackouts.py:23:        blackout = Blackout.parse(request.json)\nalerta/views/customers.py:22:        customer = Customer.parse(request.json)\nalerta/views/groups.py:23:        group = Group.parse(request.json)\nalerta/views/heartbeats.py:23:        heartbeat = Heartbeat.parse(request.json)\nalerta/views/keys.py:24:        key = ApiKey.parse(request.json)\nalerta/views/permissions.py:22:        perm = Permission.parse(request.json)\nalerta/views/users.py:28:        user = User.parse(request.json)\ntests/integration/test_auth_ldap.py:83:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:110:            jwt = Jwt.parse(data['token'])\ntests/integration/test_auth_ldap.py:137:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:250:            jwt = Jwt.parse(data['token'])\ntests/test_auth.py:491:            jwt = Jwt.parse(data['token'])\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "start_line": 130,
+                  "end_line": 250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/utils.py lines=130-250]\n130:         'customer': ('customer', 'customer', 1),\n131:         'duplicateCount': ('duplicate_count', 'duplicate_count', 1),\n132:         'repeat': ('repeat', 'repeat', 1),\n133:         'previousSeverity': ('previous_severity', 'previous_severity', 1),\n134:         'trendIndication': ('trend_indication', 'trend_indication', 1),\n135:         'receiveTime': ('receive_time', 'receive_time', -1),\n136:         'lastReceiveId': ('last_receive_id', 'last_receive_id', 1),\n137:         'lastReceiveTime': ('last_receive_time', 'last_receive_time', -1),\n138:         'updateTime': ('update_time', 'update_time', -1),\n139:     }\n140: \n141:     @staticmethod\n142:     def from_params(params: MultiDict, customers=None, query_time=None):\n143: \n144:         # ?q=\n145:         if params.get('q', None):\n146:             try:\n147:                 parser = QueryParser()\n148:                 query = [parser.parse(\n149:                     query=params['q'],\n150:                     default_field=params.get('q.df')\n151:                 )]\n152:                 qvars = dict()  # type: Dict[str, Any]\n153:             except ParseException as e:\n154:                 raise ApiError('Failed to parse query string.', 400, [e])\n155:         else:\n156:             query = ['1=1']\n157:             qvars = dict()\n158: \n159:         # customer\n160:         if customers:\n161:             query.append('AND customer=ANY(%(customers)s)')\n162:             qvars['customers'] = customers\n163: \n164:         # from-date, to-date\n165:         from_date = params.get('from-date', default=None, type=DateTime.parse)\n166:         to_date = params.get('to-date', default=query_time, type=DateTime.parse)\n167: \n168:         if from_date:\n169:             query.append('AND last_receive_time > %(from_date)s')\n170:             qvars['from_date'] = from_date.replace(tzinfo=pytz.utc)\n171:         if to_date:\n172:             query.append('AND last_receive_time <= %(to_date)s')\n173:             qvars['to_date'] = to_date.replace(tzinfo=pytz.utc)\n174: \n175:         # duplicateCount, repeat\n176:         if params.get('duplicateCount', None):\n177:             query.append('AND duplicate_count=%(duplicate_count)s')\n178:             qvars['duplicate_count'] = params.get('duplicateCount', int)\n179:         if params.get('repeat', None):\n180:             query.append('AND repeat=%(repeat)s')\n181:             qvars['repeat'] = params.get('repeat', default=True, type=lambda x: x.lower()\n182:                                          in ['true', 't', '1', 'yes', 'y', 'on'])\n183:         # id\n184:         ids = params.getlist('id')\n185:         if len(ids) == 1:\n186:             query.append('AND (alerts.id LIKE %(id)s OR last_receive_id LIKE %(id)s)')\n187:             qvars['id'] = ids[0] + '%'\n188:         elif ids:\n189:             query.append('AND (id ~* (%(regex_id)s) OR last_receive_id ~* (%(regex_id)s))')\n190:             qvars['regex_id'] = '|'.join(['^' + i for i in ids])\n191: \n192:         # filter, sort-by, group-by\n193:         query, qvars = QueryBuilder.filter_query(params, Alerts.VALID_PARAMS, query, qvars)\n194:         sort = QueryBuilder.sort_by_columns(params, Alerts.VALID_PARAMS)\n195:         group = params.getlist('group-by')\n196: \n197:         return Query(where='\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\n198: \n199: \n200: class Blackouts(QueryBuilder):\n201: \n202:     VALID_PARAMS = {\n203:         # field (column, sort-by, direction)\n204:         'id': ('id', None, 0),\n205:         'priority': ('priority', 'priority', 1),\n206:         'environment': ('environment', 'environment', 1),\n207:         'service': ('service', 'service', 1),\n208:         'resource': ('resource', 'resource', 1),\n209:         'event': ('event', 'event', 1),\n210:         'group': ('group', '\"group\"', 1),\n211:         'tag': ('tags', None, 0),  # filter\n212:         'tags': (None, 'tags', 1),  # sort-by\n213:         'customer': ('customer', 'customer', 1),\n214:         'startTime': ('start_time', 'start_time', -1),\n215:         'endTime': ('end_time', 'end_time', -1),\n216:         'duration': ('duration', 'duration', 1),\n217:         'status': ('status', 'status', 1),\n218:         'remaining': ('remaining', 'remaining', -1),\n219:         'user': ('user', 'user', 1),\n220:         'createTime': ('create_time', 'create_time', -1),\n221:         'text': ('text', 'text', 1),\n222:     }\n223: \n224:     @staticmethod\n225:     def from_params(params: MultiDict, customers=None, query_time=None):\n226: \n227:         params = MultiDict(params)\n228: \n229:         # ?q=\n230:         if params.get('q', None):\n231:             try:\n232:                 parser = QueryParser()\n233:                 query = [parser.parse(\n234:                     query=params['q'],\n235:                     default_field=params.get('q.df')\n236:                 )]\n237:                 qvars = dict()  # type: Dict[str, Any]\n238:             except ParseException as e:\n239:                 raise ApiError('Failed to parse query string.', 400, [e])\n240:         else:\n241:             query = ['1=1']\n242:             qvars = dict()\n243: \n244:         # customer\n245:         if customers:\n246:             query.append('AND customer=ANY(%(customers)s)')\n247:             qvars['customers'] = customers\n248: \n249:         # status\n250:         status = params.poplist('status')\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=1-60]\n1: from pyparsing import (Forward, Group, Keyword, Literal, Optional,\n2:                        ParseException, ParserElement, QuotedString, Regex,\n3:                        Suppress, Word, infixNotation, opAssoc, printables)\n4: \n5: ParserElement.enablePackrat()\n6: \n7: \n8: class UnaryOperation:\n9:     \"\"\"takes one operand,e.g. not\"\"\"\n10: \n11:     def __init__(self, tokens):\n12:         self.op, self.operands = tokens[0]\n13: \n14: \n15: class BinaryOperation:\n16:     \"\"\"takes two or more operands, e.g. and, or\"\"\"\n17: \n18:     def __init__(self, tokens):\n19:         self.op = tokens[0][1]\n20:         self.lhs = tokens[0][0]\n21:         self.rhs = tokens[0][2]\n22: \n23: \n24: class SearchModifier(UnaryOperation):\n25: \n26:     def __repr__(self):\n27:         return f'{self.op} {self.operands}'\n28: \n29: \n30: class SearchAnd(BinaryOperation):\n31: \n32:     def __repr__(self):\n33:         return f'({self.lhs} AND {self.rhs})'\n34: \n35: \n36: class SearchOr(BinaryOperation):\n37: \n38:     def __repr__(self):\n39:         if getattr(self.rhs, 'op', None) == 'NOT':\n40:             return f'({self.lhs} AND {self.rhs})'\n41:         return f'({self.lhs} OR {self.rhs})'\n42: \n43: \n44: class SearchNot(UnaryOperation):\n45: \n46:     def __repr__(self):\n47:         return f'NOT ({self.operands})'\n48: \n49: \n50: class SearchTerm:\n51: \n52:     def __init__(self, tokens):\n53:         self.tokens = tokens\n54: \n55:     def __repr__(self):\n56:         # print([t for t in self.tokens.items()])\n57:         if 'singleterm' in self.tokens:\n58:             if self.tokens.fieldname == '_exists_':\n59:                 return f'\"attributes\"::jsonb ? \\'{self.tokens.singleterm}\\''\n60:             elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 135,
+                  "end_line": 190,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=135-184]\n135: special_characters = '=><(){}[]^\"~*?:\\\\/.&|'\n136: valid_word = Word(printables, excludeChars=special_characters).setName('word')\n137: valid_word.setParseAction(\n138:     lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n139: )\n140: \n141: clause = Forward()\n142: field_name = (Optional(valid_word()('attr') + DOT)) + valid_word()('fieldname')\n143: single_term = valid_word()('singleterm')\n144: phrase = QuotedString('\"', unquoteResults=True)('phrase')\n145: wildcard = Regex(r'[a-z0-9]*[\\?\\*][a-z0-9]*')('wildcard')\n146: wildcard.setParseAction(\n147:     lambda t: t[0].replace('?', '.?').replace('*', '.*')\n148: )\n149: regex = QuotedString('/', unquoteResults=True)('regex')\n150: \n151: _all = Literal('*')\n152: lower_range = Group((LBRACK('inclusive') | LBRACE('exclusive')) + (valid_word | _all)('lowerbound'))\n153: upper_range = Group((valid_word | _all)('upperbound') + (RBRACK('inclusive') | RBRACE('esclusive')))\n154: _range = (lower_range + TO + upper_range)('range')\n155: \n156: GT = Literal('>')\n157: GTE = Literal('>=')\n158: LT = Literal('<')\n159: LTE = Literal('<=')\n160: one_sided_range = Group((GTE | GT | LTE | LT)('op') + valid_word('bound'))('onesidedrange')\n161: \n162: term = (_range | one_sided_range | regex | wildcard | phrase | single_term)\n163: \n164: clause << (Optional(field_name + COLON, default='__default_field__')('field')\n165:            + (term('term') | Group(LPAR + query_expr + RPAR)('subquery')))\n166: \n167: clause.addParseAction(SearchTerm)\n168: \n169: query_expr << infixNotation(clause,\n170:                             [\n171:                                 (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT, SearchModifier),\n172:                                 (NOT.setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),\n173:                                 (AND.setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),\n174:                                 (Optional(OR).setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),\n175:                             ])\n176: \n177: \n178: class QueryParser:\n179: \n180:     DEFAULT_FIELD = 'text'\n181: \n182:     def parse(self, query, default_field=None):\n183:         default_field = default_field or QueryParser.DEFAULT_FIELD\n184:         return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR removes the parameterized to_sql() path and makes QueryParser.parse() return a single SQL string built from repr() of the parsed query. SearchTerm.__repr__ inlines attacker-controlled values (singleterm, phrase, regex, range bounds, fieldname) directly into the SQL text using f-strings with single-quote literals (e.g. f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''), with no escaping of embedded single quotes. This string is then concatenated into the WHERE clause in utils.py (query = [parser.parse(query=params['q'], ...)] then Query(where='\\\\n'.join(query), vars=qvars)) and executed, so a value containing a single quote (e.g. a phrase or regex token) breaks out of the literal and injects arbitrary SQL. The old code bound these values as %(...)s parameters; the new code does not.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [182, 184], \"content\": \"    def parse(self, query, default_field=None):\\n        default_field = default_field or QueryParser.DEFAULT_FIELD\\n        return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [60, 80], \"content\": \"            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\\n                return f'\\\\'{self.tokens.singleterm}\\\\'=ANY(\\\"{self.tokens.field[0]}\\\")'\\n            elif self.tokens.attr:\\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\\n                return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n            else:\\n                return f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n        if 'phrase' in self.tokens:\\n            if self.tokens.field[0] == '__default_field__':\\n                return f\\\"\\\\\\\"__default_field__\\\\\\\" ~* '\\\\\\\\y{self.tokens.phrase}\\\\\\\\y'\\\"\\n            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\\n                return f'\\\\'{self.tokens.phrase}\\\\'=ANY(\\\"{self.tokens.field[0]}\\\")'\\n            elif self.tokens.attr:\\n                tokens_attr = self.tokens.attr.replace('_', 'attributes')\\n                return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ~* \\\\'\\\\\\\\y{self.tokens.phrase}\\\\\\\\y\\\\''\\n            else:\\n                return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'\\\\\\\\y{self.tokens.phrase}\\\\\\\\y\\\\''\\n        if 'wildcard' in self.tokens:\\n            return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'\\\\\\\\y{self.tokens.wildcard}\\\\\\\\y\\\\''\\n        if 'regex' in self.tokens:\\n            return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [145, 157], \"content\": \"        if params.get('q', None):\\n            try:\\n                parser = QueryParser()\\n                query = [parser.parse(\\n                    query=params['q'],\\n                    default_field=params.get('q.df')\\n                )]\\n                qvars = dict()  # type: Dict[str, Any]\\n            except ParseException as e:\\n                raise ApiError('Failed to parse query string.', 400, [e])\\n        else:\\n            query = ['1=1']\\n            qvars = dict()\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [197, 197], \"content\": \"        return Query(where='\\\\n'.join(query), vars=qvars, sort=','.join(sort), group=group)\"}\n      ],\n      \"suggested_fix\": \"Restore parameterized SQL generation: keep the to_sql(params) approach that binds user-supplied values (singleterm, phrase, regex, range bounds, fieldname) as named %(...)s parameters, and have parse() return (sql, params) so callers pass the params dict to the query executor. If inlining is required, escape single quotes (double them) and validate identifiers against an allowlist, but binding is preferred.\",\n      \"file\": \"alerta/database/backends/postgres/queryparser.py\",\n      \"line\": 184\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:utils-consumers",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "QueryParser parse method in alerta/database/utils.py how it builds SQL and returns vars"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 status=ok truncated=true incomplete=true query=\"QueryParser parse method in alerta/database/utils.py how it builds SQL and retur\"]\n**Exploration: QueryParser parse method in alerta/database/utils.py how it builds SQL and returns vars**\n\nFound 87 symbols across 8 files. No indexed file uniquely matches `alerta/database/utils.py`.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `QueryParser` (alerta/database/backends/mongodb/queryparser.py:192) \u2014 3 callers in `alerta/database/backends/mongodb/utils.py`; tested via callers: `tests/test_search.py`\n- `QueryParser` (alerta/database/backends/postgres/queryparser.py:178) \u2014 3 callers in `alerta/database/backends/postgres/utils.py`; no tests found within 3 caller hops\n- `parse` (alerta/models/permission.py:23) \u2014 1 caller in `alerta/views/permissions.py`; no tests found within 3 caller hops\n- `parse` (alerta/models/user.py:62) \u2014 2 callers in `alerta/auth/basic.py`, `alerta/views/users.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`alerta/database/backends/mongodb/queryparser.py`** \u2014 parse(method), query_expr(variable), QueryParser(class)\n\n```python\n137\tNOT = Keyword('NOT') | Literal('!')\n138\tTO = Keyword('TO')\n139\t\n140\tquery_expr = Forward()\n141\t\n142\trequired_modifier = Literal('+')('required')\n143\tprohibit_modifier = Literal('-')('prohibit')\n\n... (gap: special_characters (alerta/database/backends/mongodb/queryparser.py:144), valid_word (alerta/database/backends/mongodb/queryparser.py:145), clause (alerta/database/backends/mongodb/queryparser.py:150), field_name (alerta/database/backends/mongodb/queryparser.py:151), single_term (alerta/database/backends/mongodb/queryparser.py:152), phrase (alerta/database/backends/mongodb/queryparser.py:153), +13 more) ...\n\n189\t                            ])\n190\t\n191\t\n192\tclass QueryParser:\n193\t\n194\t    DEFAULT_FIELD = 'text'\n195\t    DEFAULT_OPERATOR = '$regex'\n196\t\n197\t    def parse(self, query, default_field=None, default_operator=None):\n198\t        default_field = default_field or QueryParser.DEFAULT_FIELD\n199\t        default_operator = default_operator or QueryParser.DEFAULT_OPERATOR\n200\t\n201\t        return repr(query_expr.parseString(query)[0])\\\n202\t            .replace('__default_field__', default_field)\\\n203\t            .replace('__default_operator__', default_operator)\n204\t\n```\n\n**`alerta/database/backends/postgres/queryparser.py`** \u2014 QueryParser(class), parse(method), query_expr(variable)\n\n```python\n1\tfrom pyparsing import (Forward, Group, Keyword, Literal, Optional,\n2\t                       ParseException, ParserElement, QuotedString, Regex,\n3\t                       Suppress, Word, infixNotation, opAssoc, printables)\n4\t\n5\tParserElement.enablePackrat()\n6\t\n7\t\n8\tclass UnaryOperation:\n9\t    \"\"\"takes one operand,e.g. not\"\"\"\n10\t\n11\t    def __init__(self, tokens):\n12\t        self.op, self.operands = tokens[0]\n13\t\n14\t\n15\tclass BinaryOperation:\n16\t    \"\"\"takes two or more operands, e.g. and, or\"\"\"\n17\t\n18\t    def __init__(self, tokens):\n19\t        self.op = tokens[0][1]\n20\t        self.lhs = tokens[0][0]\n21\t        self.rhs = tokens[0][2]\n22\t\n23\t\n24\tclass SearchModifier(UnaryOperation):\n25\t\n26\t    def __repr__(self):\n27\t        return f'{self.op} {self.operands}'\n28\t\n29\t\n30\tclass SearchAnd(BinaryOperation):\n31\t\n32\t    def __repr__(self):\n33\t        return f'({self.lhs} AND {self.rhs})'\n34\t\n35\t\n36\tclass SearchOr(BinaryOperation):\n37\t\n38\t    def __repr__(self):\n39\t        if getattr(self.rhs, 'op', None) == 'NOT':\n40\t            return f'({self.lhs} AND {self.rhs})'\n41\t        return f'({self.lhs} OR {self.rhs})'\n42\t\n43\t\n44\tclass SearchNot(UnaryOperation):\n45\t\n46\t    def __repr__(self):\n47\t        return f'NOT ({self.operands})'\n48\t\n49\t\n50\tclass SearchTerm:\n51\t\n52\t    def __init__(self, tokens):\n53\t        self.tokens = tokens\n54\t\n55\t    def __repr__(self):\n56\t        # print([t for t in self.tokens.items()])\n57\t        if 'singleterm' in self.tokens:\n58\t            if self.tokens.fieldname == '_exists_':\n59\t                return f'\"attributes\"::jsonb ? \\'{self.tokens.singleterm}\\''\n60\t            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n61\t                return f'\\'{self.tokens.singleterm}\\'=ANY(\"{self.tokens.field[0]}\")'\n62\t            elif self.tokens.attr:\n63\t                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n64\t                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ILIKE \\'%%{self.tokens.singleterm}%%\\''\n65\t            else:\n66\t                return f'\"{self.tokens.field[0]}\" ILIKE \\'%%{self.tokens.singleterm}%%\\''\n67\t        if 'phrase' in self.tokens:\n68\t            if self.tokens.field[0] == '__default_field__':\n69\t                return f\"\\\"__default_field__\\\" ~* '\\\\y{self.tokens.phrase}\\\\y'\"\n70\t            elif self.tokens.field[0] in ['correlate', 'service', 'tags']:\n71\t                return f'\\'{self.tokens.phrase}\\'=ANY(\"{self.tokens.field[0]}\")'\n72\t            elif self.tokens.attr:\n73\t                tokens_attr = self.tokens.attr.replace('_', 'attributes')\n74\t                return f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\' ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n75\t            else:\n76\t                return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.phrase}\\\\y\\''\n77\t        if 'wildcard' in self.tokens:\n78\t            return f'\"{self.tokens.field[0]}\" ~* \\'\\\\y{self.tokens.wildcard}\\\\y\\''\n79\t        if 'regex' in self.tokens:\n\n[TRUNCATED omitted_chars=16078]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def parse",
+                  "file_glob": "alerta/database/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 pattern=\"def parse\"]\nalerta/database/backends/mongodb/queryparser.py:197:    def parse(self, query, default_field=None, default_operator=None):\nalerta/database/backends/postgres/queryparser.py:182:    def parse(self, query, default_field=None):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 178,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=178-184]\n178: class QueryParser:\n179: \n180:     DEFAULT_FIELD = 'text'\n181: \n182:     def parse(self, query, default_field=None):\n183:         default_field = default_field or QueryParser.DEFAULT_FIELD\n184:         return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/queryparser.py",
+                  "start_line": 79,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=48e68b200dbbcc2bfb3e266194d49e5debd704f2 path=alerta/database/backends/postgres/queryparser.py lines=79-130]\n79:         if 'regex' in self.tokens:\n80:             return f'\"{self.tokens.field[0]}\" ~* \\'{self.tokens.regex}\\''\n81:         if 'range' in self.tokens:\n82:             if self.tokens.range[0].lowerbound == '*':\n83:                 lower_term = '1=1'\n84:             else:\n85:                 lower_term = '\"{}\" {} \\'{}\\''.format(\n86:                     self.tokens.field[0],\n87:                     '>=' if 'inclusive' in self.tokens.range[0] else '>',\n88:                     self.tokens.range[0].lowerbound\n89:                 )\n90: \n91:             if self.tokens.range[2].upperbound == '*':\n92:                 upper_term = '1=1'\n93:             else:\n94:                 upper_term = '\"{}\" {} \\'{}\\''.format(\n95:                     self.tokens.field[0],\n96:                     '<=' if 'inclusive' in self.tokens.range[2] else '<',\n97:                     self.tokens.range[2].upperbound\n98:                 )\n99:             return f'({lower_term} AND {upper_term})'\n100:         if 'onesidedrange' in self.tokens:\n101:             return '(\"{}\" {} \\'{}\\')'.format(\n102:                 self.tokens.field[0],\n103:                 self.tokens.onesidedrange.op,\n104:                 self.tokens.onesidedrange.bound\n105:             )\n106:         if 'subquery' in self.tokens:\n107:             if self.tokens.attr:\n108:                 tokens_attr = 'attributes' if self.tokens.attr == '_' else self.tokens.attr\n109:                 tokens_fieldname = f'\"{tokens_attr}\"::jsonb ->>\\'{self.tokens.fieldname}\\''\n110:             else:\n111:                 tokens_fieldname = f'\"{self.tokens.fieldname or self.tokens.field[0]}\"'\n112:             return f'{self.tokens.subquery[0]}'.replace('\"__default_field__\"', tokens_fieldname)\n113: \n114:         raise ParseException(f'Search term did not match query syntax: {self.tokens}')\n115: \n116: \n117: # BNF for Lucene query syntax\n118: #\n119: # Query ::= ( Clause )*\n120: # Clause ::= [\"+\", \"-\"] [<TERM> \":\"] (<TERM> | \"(\" Query \")\" )\n121: \n122: \n123: LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, '[]{}~^')\n124: LPAR, RPAR, COLON, DOT = map(Suppress, '():.')\n125: \n126: AND = Keyword('AND') | Literal('&&')\n127: OR = Keyword('OR') | Literal('||')\n128: NOT = Keyword('NOT') | Literal('!')\n129: TO = Keyword('TO')\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "alerta/database/backends/postgres/utils.py",
+                  "start_line": 141,
+                  "end_line": 160,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=5d760dde5461406a62ea7479b58120c4a57f6440 path=alerta/database/backends/postgres/utils.py lines=141-160]\n141:     @staticmethod\n142:     def from_params(params: MultiDict, customers=None, query_time=None):\n143: \n144:         # ?q=\n145:         if params.get('q', None):\n146:             try:\n147:                 parser = QueryParser()\n148:                 parsed_query, parsed_vars = parser.parse(\n149:                     query=params['q'],\n150:                     default_field=params.get('q.df')\n151:                 )\n152:                 query = [parsed_query]\n153:                 qvars = dict(parsed_vars)  # type: Dict[str, Any]\n154:             except ParseException as e:\n155:                 raise ApiError('Failed to parse query string.', 400, [e])\n156:         else:\n157:             query = ['1=1']\n158:             qvars = dict()\n159: \n160:         # customer\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def find_all|def execute|where",
+                  "file_glob": "alerta/database/backends/postgres/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR changes Alerts.from_params and Blackouts.from_params to discard the bound-parameter dict returned by QueryParser.parse (previously `parsed_query, parsed_vars = parser.parse(...)` with `qvars = dict(parsed_vars)`), now calling `parser.parse(...)` for its single return value and setting `qvars = dict()`. The postgres QueryParser.parse (alerta/database/backends/postgres/queryparser.py:182-184) returns only a SQL string built by inlining user-controlled tokens via f-strings (e.g. `f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''` at line 66, `f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''` at line 80, and range bounds via `'\\\"{}\\\" {} \\\\'{}\\\\''.format(...)` at lines 85-98). These tokens originate from the user-controlled `q` request parameter (search_alerts passes request.args into Alerts.from_params). Because the PR removes the only mechanism that would have supplied bound values (qvars) and the parser inlines the attacker-controlled term/field/regex directly into the SQL text, the resulting WHERE clause is executed with attacker-controlled, unbound SQL fragments \u2014 a SQL injection.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/utils.py\", \"lines\": [145, 153], \"content\": \"if params.get('q', None):\\n    try:\\n        parser = QueryParser()\\n        query = [parser.parse(\\n            query=params['q'],\\n            default_field=params.get('q.df')\\n        )]\\n        qvars = dict()\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [182, 184], \"content\": \"def parse(self, query, default_field=None):\\n    default_field = default_field or QueryParser.DEFAULT_FIELD\\n    return repr(query_expr.parseString(query)[0]).replace('__default_field__', default_field)\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [64, 80], \"content\": \"return f'\\\"{tokens_attr}\\\"::jsonb ->>\\\\'{self.tokens.fieldname}\\\\' ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\nelse:\\n    return f'\\\"{self.tokens.field[0]}\\\" ILIKE \\\\'%%{self.tokens.singleterm}%%\\\\''\\n...\\nif 'regex' in self.tokens:\\n    return f'\\\"{self.tokens.field[0]}\\\" ~* \\\\'{self.tokens.regex}\\\\''\"},\n        {\"type\": \"code\", \"file\": \"alerta/database/backends/postgres/queryparser.py\", \"lines\": [85, 98], \"content\": \"lower_term = '\\\"{}\\\" {} \\\\'{}\\\\''.format(\\n    self.tokens.field[0],\\n    '>=' if 'inclusive' in self.tokens.range[0] else '>',\\n    self.tokens.range[0].lowerbound\\n)\"}\n      ],\n      \"suggested_fix\": \"Restore bound-parameter handling: have QueryParser.parse return both the SQL text and a dict of named parameters, and pass those parameters through qvars so the query is executed with bound values (e.g. `parsed_query, parsed_vars = parser.parse(...)`; `qvars = dict(parsed_vars)`), or rewrite the parser to emit placeholders (%(name)s) and supply the user tokens as bound parameters rather than inlining them into the SQL string.\",\n      \"file\": \"alerta/database/backends/postgres/utils.py\",\n      \"line\": 148\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "sqli:queryparser-sql-removal:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.7639,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "sqli:utils-consumers:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.7838,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "project": "alerta",
+  "mode": "lgtm",
+  "case_scope": "out",
+  "file": "alerta/database/backends/postgres/queryparser.py",
+  "diff_files": 2,
+  "diff_added": 7,
+  "diff_deleted": 114,
+  "diff_py_chars": 7759,
+  "diff_max_file_chars": 6321,
+  "index_seconds": 1.42,
+  "index_chunks": 17,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "5d760dde5461406a62ea7479b58120c4a57f6440",
+    "pr_sha": "48e68b200dbbcc2bfb3e266194d49e5debd704f2",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "semgrep_findings_in_diff": 0,
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 15,
+    "files_total": 2,
+    "files_in_scope": 2,
+    "hunks_total": 7,
+    "hunks_assigned": 7,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 7,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "queryparser-sql-removal",
+        "origin": "investigator",
+        "title": "Remove parameterized to_sql() generation from the Lucene query parser",
+        "files": [
+          "alerta/database/backends/postgres/queryparser.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "alerta/database/backends/postgres/queryparser.py#0",
+            "file": "alerta/database/backends/postgres/queryparser.py",
+            "old_start": 5,
+            "old_count": 11,
+            "new_start": 5,
+            "new_count": 6,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "alerta/database/backends/postgres/queryparser.py#1",
+            "file": "alerta/database/backends/postgres/queryparser.py",
+            "old_start": 31,
+            "old_count": 18,
+            "new_start": 26,
+            "new_count": 12,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "alerta/database/backends/postgres/queryparser.py#2",
+            "file": "alerta/database/backends/postgres/queryparser.py",
+            "old_start": 51,
+            "old_count": 20,
+            "new_start": 40,
+            "new_count": 12,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "alerta/database/backends/postgres/queryparser.py#3",
+            "file": "alerta/database/backends/postgres/queryparser.py",
+            "old_start": 132,
+            "old_count": 89,
+            "new_start": 113,
+            "new_count": 6,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "alerta/database/backends/postgres/queryparser.py#4",
+            "file": "alerta/database/backends/postgres/queryparser.py",
+            "old_start": 283,
+            "old_count": 7,
+            "new_start": 181,
+            "new_count": 4,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "utils-consumers",
+        "origin": "investigator",
+        "title": "Adapt Alerts and Blackouts query builders to the new single-string parser return",
+        "files": [
+          "alerta/database/backends/postgres/utils.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "alerta/database/backends/postgres/utils.py#0",
+            "file": "alerta/database/backends/postgres/utils.py",
+            "old_start": 145,
+            "old_count": 12,
+            "new_start": 145,
+            "new_count": 11,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "alerta/database/backends/postgres/utils.py#1",
+            "file": "alerta/database/backends/postgres/utils.py",
+            "old_start": 231,
+            "old_count": 12,
+            "new_start": 230,
+            "new_count": 11,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      }
+    ]
+  },
+  "coverage_summary": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 15,
+    "files_total": 2,
+    "files_in_scope": 2,
+    "hunks_total": 7,
+    "hunks_assigned": 7,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 7,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions_total": 0
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 3.73,
+  "base_sha": "5d760dde5461406a62ea7479b58120c4a57f6440",
+  "pr_sha": "48e68b200dbbcc2bfb3e266194d49e5debd704f2",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "queryparser-sql-removal"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "out",
+  "off_category": []
+}

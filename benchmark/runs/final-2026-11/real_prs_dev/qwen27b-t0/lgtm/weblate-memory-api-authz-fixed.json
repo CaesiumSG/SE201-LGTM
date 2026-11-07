@@ -1,0 +1,464 @@
+{
+  "id": "weblate-memory-api-authz-fixed",
+  "repo": "WeblateOrg/weblate",
+  "pr": 18513,
+  "title": "The translation-memory API was declared as a full ModelViewSet, exposing unintended write endpoints without access control.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "4e06b12cd05d087db68384e09d5f70fe883f2b70",
+  "pr_sha": "0dd54525b0bcbd83515bc4fc3190f0ed4be96abe",
+  "files_changed": 3,
+  "python_files_changed": 1,
+  "added_lines": 1,
+  "diff_chars": 396,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 46.7,
+  "index_seconds": 7.9,
+  "index_reused": false,
+  "index_chunks": 1006,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 1,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 5,
+  "reviewer_units": 1,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/views.py",
+                  "start_line": 1820,
+                  "end_line": 1920,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=0dd54525b0bcbd83515bc4fc3190f0ed4be96abe path=weblate/api/views.py lines=1820-1920]\n1820:             self.permission_denied(request, \"Can not edit component\")\n1821: \n1822:         try:\n1823:             project = instance.links.get(slug=project_slug)\n1824:         except Project.DoesNotExist as error:\n1825:             msg = \"Project not found\"\n1826:             raise Http404(msg) from error\n1827:         instance.links.remove(project)\n1828:         return Response(status=HTTP_204_NO_CONTENT)\n1829: \n1830:     @action(detail=True, methods=[\"get\"])\n1831:     def file(self, request: Request, **kwargs):\n1832:         # Implementation is analogous to files#download_component, but we can't reuse\n1833:         #  that here because the lookup for the component is different\n1834:         instance = self.get_object()\n1835:         if not request.user.has_perm(\"translation.download\", instance):\n1836:             self.permission_denied(\n1837:                 request, \"Can not download all translations for the component\"\n1838:             )\n1839: \n1840:         requested_format = request.query_params.get(\"format\", \"zip\")\n1841:         return download_multi(\n1842:             cast(\"AuthenticatedHttpRequest\", request),\n1843:             instance.translation_set.prefetch_meta(),\n1844:             [instance],\n1845:             requested_format,\n1846:             name=instance.full_slug.replace(\"/\", \"-\"),\n1847:         )\n1848: \n1849: \n1850: @extend_schema_view(\n1851:     list=extend_schema(description=\"Return a list of memory results.\"),\n1852: )\n1853: class MemoryViewSet(viewsets.ReadOnlyModelViewSet, DestroyModelMixin):\n1854:     \"\"\"Memory API.\"\"\"\n1855: \n1856:     queryset = Memory.objects.none()\n1857:     serializer_class = MemorySerializer\n1858: \n1859:     def get_queryset(self):\n1860:         if not self.request.user.has_perm(\"memory.manage\"):\n1861:             self.permission_denied(self.request, \"Access not allowed\")\n1862:         # Use default database connection and not memory_db one (in case\n1863:         # a custom router is used).\n1864:         return Memory.objects.using(\"default\").order_by(\"id\")\n1865: \n1866:     def perm_check(self, request: Request, instance) -> None:\n1867:         if not request.user.has_perm(\"memory.delete\", instance):\n1868:             self.permission_denied(request, \"Can not delete memory entry\")\n1869: \n1870:     def destroy(self, request: Request, *args, **kwargs):\n1871:         \"\"\"Delete a memory object.\"\"\"\n1872:         instance = self.get_object()\n1873:         self.perm_check(request, instance)\n1874:         return super().destroy(request, *args, **kwargs)\n1875: \n1876: \n1877: @extend_schema_view(\n1878:     list=extend_schema(description=\"Return a list of translations.\"),\n1879:     retrieve=extend_schema(description=\"Return information about a translation.\"),\n1880: )\n1881: class TranslationViewSet(MultipleFieldViewSet, DestroyModelMixin):\n1882:     \"\"\"Translation components API.\"\"\"\n1883: \n1884:     queryset = Translation.objects.none()\n1885:     serializer_class = TranslationSerializer\n1886:     lookup_fields = (\"component__project__slug\", \"component__slug\", \"language__code\")\n1887:     raw_urls = (\"translation-file\",)\n1888: \n1889:     def get_queryset(self):\n1890:         return (\n1891:             Translation.objects.filter_access(self.request.user)\n1892:             .prefetch(defer_huge=False)\n1893:             .prefetch_related(\"component__source_language\")\n1894:             .prefetch_related(\"component__addon_set\")\n1895:             .prefetch_plurals()\n1896:             .order_by(\"id\")\n1897:         )\n1898: \n1899:     def paginate_queryset(self, queryset):\n1900:         result = super().paginate_queryset(queryset)\n1901:         if isinstance(queryset, TranslationQuerySet):\n1902:             result = prefetch_stats(result)\n1903:             processed: set[int] = set()\n1904:             for translation in result:\n1905:                 project = translation.component.project\n1906:                 if project.id in processed:\n1907:                     continue\n1908:                 # Prefetch workflow settings\n1909:                 project.project_languages.preload_workflow_settings()\n1910:                 processed.add(project.id)\n1911:         return result\n1912: \n1913:     @extend_schema(description=\"Upload new file with translations.\", methods=[\"post\"])\n1914:     @action(\n1915:         detail=True,\n1916:         methods=[\"get\", \"put\", \"post\"],\n1917:         parser_classes=(\n1918:             parsers.MultiPartParser,\n1919:             parsers.FormParser,\n1920:             parsers.FileUploadParser,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/views.py",
+                  "start_line": 1820,
+                  "end_line": 1920,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/api/views.py lines=1820-1920]\n1820:             self.permission_denied(request, \"Can not edit component\")\n1821: \n1822:         try:\n1823:             project = instance.links.get(slug=project_slug)\n1824:         except Project.DoesNotExist as error:\n1825:             msg = \"Project not found\"\n1826:             raise Http404(msg) from error\n1827:         instance.links.remove(project)\n1828:         return Response(status=HTTP_204_NO_CONTENT)\n1829: \n1830:     @action(detail=True, methods=[\"get\"])\n1831:     def file(self, request: Request, **kwargs):\n1832:         # Implementation is analogous to files#download_component, but we can't reuse\n1833:         #  that here because the lookup for the component is different\n1834:         instance = self.get_object()\n1835:         if not request.user.has_perm(\"translation.download\", instance):\n1836:             self.permission_denied(\n1837:                 request, \"Can not download all translations for the component\"\n1838:             )\n1839: \n1840:         requested_format = request.query_params.get(\"format\", \"zip\")\n1841:         return download_multi(\n1842:             cast(\"AuthenticatedHttpRequest\", request),\n1843:             instance.translation_set.prefetch_meta(),\n1844:             [instance],\n1845:             requested_format,\n1846:             name=instance.full_slug.replace(\"/\", \"-\"),\n1847:         )\n1848: \n1849: \n1850: @extend_schema_view(\n1851:     list=extend_schema(description=\"Return a list of memory results.\"),\n1852: )\n1853: class MemoryViewSet(viewsets.ModelViewSet, DestroyModelMixin):\n1854:     \"\"\"Memory API.\"\"\"\n1855: \n1856:     queryset = Memory.objects.none()\n1857:     serializer_class = MemorySerializer\n1858: \n1859:     def get_queryset(self):\n1860:         if not self.request.user.has_perm(\"memory.manage\"):\n1861:             self.permission_denied(self.request, \"Access not allowed\")\n1862:         # Use default database connection and not memory_db one (in case\n1863:         # a custom router is used).\n1864:         return Memory.objects.using(\"default\").order_by(\"id\")\n1865: \n1866:     def perm_check(self, request: Request, instance) -> None:\n1867:         if not request.user.has_perm(\"memory.delete\", instance):\n1868:             self.permission_denied(request, \"Can not delete memory entry\")\n1869: \n1870:     def destroy(self, request: Request, *args, **kwargs):\n1871:         \"\"\"Delete a memory object.\"\"\"\n1872:         instance = self.get_object()\n1873:         self.perm_check(request, instance)\n1874:         return super().destroy(request, *args, **kwargs)\n1875: \n1876: \n1877: @extend_schema_view(\n1878:     list=extend_schema(description=\"Return a list of translations.\"),\n1879:     retrieve=extend_schema(description=\"Return information about a translation.\"),\n1880: )\n1881: class TranslationViewSet(MultipleFieldViewSet, DestroyModelMixin):\n1882:     \"\"\"Translation components API.\"\"\"\n1883: \n1884:     queryset = Translation.objects.none()\n1885:     serializer_class = TranslationSerializer\n1886:     lookup_fields = (\"component__project__slug\", \"component__slug\", \"language__code\")\n1887:     raw_urls = (\"translation-file\",)\n1888: \n1889:     def get_queryset(self):\n1890:         return (\n1891:             Translation.objects.filter_access(self.request.user)\n1892:             .prefetch(defer_huge=False)\n1893:             .prefetch_related(\"component__source_language\")\n1894:             .prefetch_related(\"component__addon_set\")\n1895:             .prefetch_plurals()\n1896:             .order_by(\"id\")\n1897:         )\n1898: \n1899:     def paginate_queryset(self, queryset):\n1900:         result = super().paginate_queryset(queryset)\n1901:         if isinstance(queryset, TranslationQuerySet):\n1902:             result = prefetch_stats(result)\n1903:             processed: set[int] = set()\n1904:             for translation in result:\n1905:                 project = translation.component.project\n1906:                 if project.id in processed:\n1907:                     continue\n1908:                 # Prefetch workflow settings\n1909:                 project.project_languages.preload_workflow_settings()\n1910:                 processed.add(project.id)\n1911:         return result\n1912: \n1913:     @extend_schema(description=\"Upload new file with translations.\", methods=[\"post\"])\n1914:     @action(\n1915:         detail=True,\n1916:         methods=[\"get\", \"put\", \"post\"],\n1917:         parser_classes=(\n1918:             parsers.MultiPartParser,\n1919:             parsers.FormParser,\n1920:             parsers.FileUploadParser,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory\\.(manage|delete|add|change)",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\\.(manage|delete|add|change)\"]\nweblate/api/views.py:1860:        if not self.request.user.has_perm(\"memory.manage\"):\nweblate/api/views.py:1867:        if not request.user.has_perm(\"memory.delete\", instance):\nweblate/auth/data.py:47:    (\"memory.delete\", gettext_noop(\"Delete translation memory\")),\nweblate/auth/data.py:147:    (\"memory.manage\", gettext_noop(\"Manage translation memory\")),\nweblate/auth/permissions.py:653:@register_perm(\"memory.edit\", \"memory.delete\")\nweblate/auth/permissions.py:666:        return check_global_permission(user, \"memory.manage\")\nweblate/memory/machine.py:63:                if user is not None and user.has_perm(\"memory.delete\", result)\nweblate/memory/views.py:77:        if not check_perm(self.request.user, \"memory.delete\", self.objects):\nweblate/memory/views.py:93:            not check_perm(self.request.user, \"memory.delete\", self.objects)\nweblate/memory/views.py:250:        if check_perm(user, \"memory.delete\", self.objects):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "MemoryViewSet|memory",
+                  "file_glob": "weblate/api/urls.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"MemoryViewSet|memory\"]\nweblate/api/urls.py:16:    MemoryViewSet,\nweblate/api/urls.py:36:router.register(\"memory\", MemoryViewSet)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/auth/permissions.py",
+                  "start_line": 640,
+                  "end_line": 680,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/auth/permissions.py lines=640-667]\n640: # This does not exist for real\n641: @register_perm(\"meta:unit.flag\")\n642: def check_unit_flag(\n643:     user: User, permission: str, obj: Unit | Translation\n644: ) -> bool | PermissionResult:\n645:     if isinstance(obj, Unit):\n646:         obj = obj.translation\n647:     if not obj.component.is_glossary:\n648:         return user.has_perm(\"source.edit\", obj)\n649: \n650:     return check_can_edit(user, \"glossary.edit\", obj)\n651: \n652: \n653: @register_perm(\"memory.edit\", \"memory.delete\")\n654: def check_memory_perms(\n655:     user: User, permission: str, memory: Memory | Project\n656: ) -> bool | PermissionResult:\n657:     from weblate.memory.models import Memory\n658: \n659:     if isinstance(memory, Memory):\n660:         if memory.user_id == user.id:\n661:             return True\n662:         project = memory.project\n663:     else:\n664:         project = memory\n665:     if project is None:\n666:         return check_global_permission(user, \"memory.manage\")\n667:     return check_permission(user, permission, project)\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class MemorySerializer",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"class MemorySerializer\"]\nweblate/api/serializers.py:1297:class MemorySerializer(serializers.ModelSerializer[Memory]):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/serializers.py",
+                  "start_line": 1297,
+                  "end_line": 1330,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/api/serializers.py lines=1297-1330]\n1297: class MemorySerializer(serializers.ModelSerializer[Memory]):\n1298:     class Meta:\n1299:         model = Memory\n1300:         fields = (\n1301:             \"id\",\n1302:             \"source\",\n1303:             \"target\",\n1304:             \"source_language\",\n1305:             \"target_language\",\n1306:             \"origin\",\n1307:             \"project\",\n1308:             \"from_file\",\n1309:             \"shared\",\n1310:         )\n1311: \n1312: \n1313: class LabelSerializer(serializers.ModelSerializer[Label]):\n1314:     class Meta:\n1315:         model = Label\n1316:         fields = (\"id\", \"name\", \"description\", \"color\")\n1317:         read_only_fields = (\"project\",)\n1318: \n1319: \n1320: class UnitLabelsSerializer(serializers.RelatedField, LabelSerializer):\n1321:     def get_queryset(self):\n1322:         \"\"\"\n1323:         List of available labels for an unit.\n1324: \n1325:         The queryset argument is only ever required for writable relationship field,\n1326:         in which case it is used for performing the model instance lookup, that maps\n1327:         from the primitive user input, into a model instance.\n1328:         \"\"\"\n1329:         unit = self.parent.parent.instance\n1330:         if unit is None:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "docs/api.rst",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\ndocs/api.rst:2150:    :<json string component: Turn on contribution to shared translation memory for the project to get access to additional components.\ndocs/api.rst:2254:.. http:get:: /api/memory/\ndocs/api.rst:2256:    Returns a list of memory results.\ndocs/api.rst:2258:.. http:delete:: /api/memory/(int:memory_object_id)/\ndocs/api.rst:2260:    Deletes a memory object\ndocs/api.rst:2262:    :param memory_object_id: Memory Object ID\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "docs/api.rst",
+                  "start_line": 2240,
+                  "end_line": 2275,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=docs/api.rst lines=2240-2275]\n2240:     :type component: string\n2241:     :param language: Translation language code\n2242:     :type language: string\n2243: \n2244:     .. seealso::\n2245: \n2246:        Returned attributes are described in :ref:`api-statistics`.\n2247: \n2248: \n2249: Memory\n2250: ++++++\n2251: \n2252: .. versionadded:: 4.14\n2253: \n2254: .. http:get:: /api/memory/\n2255: \n2256:     Returns a list of memory results.\n2257: \n2258: .. http:delete:: /api/memory/(int:memory_object_id)/\n2259: \n2260:     Deletes a memory object\n2261: \n2262:     :param memory_object_id: Memory Object ID\n2263:     :type project: int\n2264: \n2265: \n2266: Units\n2267: +++++\n2268: \n2269: A `unit` is a single piece of a translation which pairs a source string with a\n2270: corresponding translated string and also contains some related metadata. The\n2271: term is derived from the :py:class:`tt:translate.storage.base.TranslationUnit` in Translate Toolkit\n2272: and XLIFF.\n2273: \n2274: .. http:get:: /api/units/\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/tests.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\nweblate/api/tests.py:32:from weblate.memory.models import Memory\nweblate/api/tests.py:4088:            \"api:memory-list\",\nweblate/api/tests.py:4095:            \"api:memory-list\",\nweblate/api/tests.py:4103:            \"api:memory-detail\",\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/tests.py",
+                  "start_line": 4060,
+                  "end_line": 4130,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/api/tests.py lines=4060-4130]\n4060:                 \"api:task-detail\",\n4061:                 kwargs={\"pk\": self.task_id},\n4062:                 method=\"get\",\n4063:                 code=403,\n4064:             )\n4065: \n4066:     def test_retrieve_requires_cached_metadata(self) -> None:\n4067:         class DummyAsyncResult:\n4068:             def __init__(self, task_id):\n4069:                 self.id = task_id\n4070:                 self.result = None\n4071:                 self.state = \"PENDING\"\n4072: \n4073:             def ready(self):\n4074:                 return False\n4075: \n4076:         with patch(\"weblate.api.views.AsyncResult\", DummyAsyncResult):\n4077:             self.do_request(\n4078:                 \"api:task-detail\",\n4079:                 kwargs={\"pk\": self.task_id},\n4080:                 method=\"get\",\n4081:                 code=404,\n4082:             )\n4083: \n4084: \n4085: class MemoryAPITest(APIBaseTest):\n4086:     def test_get(self) -> None:\n4087:         self.do_request(\n4088:             \"api:memory-list\",\n4089:             method=\"get\",\n4090:             superuser=True,\n4091:             code=200,\n4092:         )\n4093: \n4094:         self.do_request(\n4095:             \"api:memory-list\",\n4096:             method=\"get\",\n4097:             superuser=False,\n4098:             code=403,\n4099:         )\n4100: \n4101:     def test_delete(self) -> None:\n4102:         self.do_request(\n4103:             \"api:memory-detail\",\n4104:             kwargs={\"pk\": Memory.objects.all()[0].pk},\n4105:             method=\"delete\",\n4106:             superuser=True,\n4107:             code=204,\n4108:         )\n4109: \n4110: \n4111: class TranslationAPITest(APIBaseTest):\n4112:     def test_list_translations(self) -> None:\n4113:         response = self.client.get(reverse(\"api:translation-list\"))\n4114:         self.assertEqual(response.data[\"count\"], 8)\n4115: \n4116:     def test_list_translations_acl(self) -> None:\n4117:         self.create_acl()\n4118:         response = self.client.get(reverse(\"api:translation-list\"))\n4119:         self.assertEqual(response.data[\"count\"], 8)\n4120:         self.authenticate(True)\n4121:         response = self.client.get(reverse(\"api:translation-list\"))\n4122:         self.assertEqual(response.data[\"count\"], 16)\n4123: \n4124:     def test_get_translation(self) -> None:\n4125:         response = self.client.get(\n4126:             reverse(\"api:translation-detail\", kwargs=self.translation_kwargs)\n4127:         )\n4128:         self.assertEqual(response.data[\"language_code\"], \"cs\")\n4129: \n4130:     def test_download(self) -> None:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/migrations/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\nweblate/api/serializers.py:32:from weblate.memory.models import Memory\nweblate/api/spectacular.py:136:                \"name\": \"memory\",\nweblate/api/tests.py:32:from weblate.memory.models import Memory\nweblate/api/tests.py:4088:            \"api:memory-list\",\nweblate/api/tests.py:4095:            \"api:memory-list\",\nweblate/api/tests.py:4103:            \"api:memory-detail\",\nweblate/api/urls.py:36:router.register(\"memory\", MemoryViewSet)\nweblate/api/views.py:98:from weblate.memory.models import Memory\nweblate/api/views.py:1851:    list=extend_schema(description=\"Return a list of memory results.\"),\nweblate/api/views.py:1860:        if not self.request.user.has_perm(\"memory.manage\"):\nweblate/api/views.py:1862:        # Use default database connection and not memory_db one (in case\nweblate/api/views.py:1867:        if not request.user.has_perm(\"memory.delete\", instance):\nweblate/api/views.py:1868:            self.permission_denied(request, \"Can not delete memory entry\")\nweblate/api/views.py:1871:        \"\"\"Delete a memory object.\"\"\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/spectacular.py",
+                  "start_line": 120,
+                  "end_line": 160,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/api/spectacular.py lines=120-160]\n120:             {\n121:                 \"name\": \"roles\",\n122:             },\n123:             {\n124:                 \"name\": \"languages\",\n125:             },\n126:             {\n127:                 \"name\": \"projects\",\n128:             },\n129:             {\n130:                 \"name\": \"components\",\n131:             },\n132:             {\n133:                 \"name\": \"translations\",\n134:             },\n135:             {\n136:                 \"name\": \"memory\",\n137:                 \"description\": \"Added in version 4.14.\",\n138:             },\n139:             {\n140:                 \"name\": \"units\",\n141:                 \"description\": \"A unit is a single piece of a translation which pairs a source string with a corresponding translated string and also contains some related metadata. The term is derived from the Translate Toolkit and XLIFF.\",\n142:             },\n143:             {\n144:                 \"name\": \"changes\",\n145:             },\n146:             {\n147:                 \"name\": \"screenshots\",\n148:             },\n149:             {\n150:                 \"name\": \"addons\",\n151:                 \"description\": \"Added in version 4.4.1.\",\n152:             },\n153:             {\n154:                 \"name\": \"component-lists\",\n155:                 \"description\": \"Added in version 4.0.\",\n156:             },\n157:             {\n158:                 \"name\": \"glossary\",\n159:                 \"description\": \"**Changed in version 4.5:** Glossaries are now stored as regular components, translations and strings, please use respective API instead.\",\n160:             },\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/client.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/apps.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 pattern=\"memory\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=0dd54525b0bcbd83515bc4fc3190f0ed4be96abe pattern=\"memory\"]\nweblate/api/serializers.py:32:from weblate.memory.models import Memory\nweblate/api/spectacular.py:136:                \"name\": \"memory\",\nweblate/api/tests.py:32:from weblate.memory.models import Memory\nweblate/api/tests.py:4088:            \"api:memory-list\",\nweblate/api/tests.py:4095:            \"api:memory-list\",\nweblate/api/tests.py:4103:            \"api:memory-detail\",\nweblate/api/urls.py:36:router.register(\"memory\", MemoryViewSet)\nweblate/api/views.py:98:from weblate.memory.models import Memory\nweblate/api/views.py:1851:    list=extend_schema(description=\"Return a list of memory results.\"),\nweblate/api/views.py:1860:        if not self.request.user.has_perm(\"memory.manage\"):\nweblate/api/views.py:1862:        # Use default database connection and not memory_db one (in case\nweblate/api/views.py:1867:        if not request.user.has_perm(\"memory.delete\", instance):\nweblate/api/views.py:1868:            self.permission_denied(request, \"Can not delete memory entry\")\nweblate/api/views.py:1871:        \"\"\"Delete a memory object.\"\"\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/migrations/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=0dd54525b0bcbd83515bc4fc3190f0ed4be96abe pattern=\"memory\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/migrations/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/migrations/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/migrations/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/migrations/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory",
+                  "file_glob": "weblate/api/migrations/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"memory\", \"file_glob\": \"weblate/api/migrations/*.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"memory-viewset-readonly\",\n      \"title\": \"Restrict MemoryViewSet to read-only + delete by switching base class from ModelViewSet to ReadOnlyModelViewSet\",\n      \"rationale\": \"The single hunk changes the ViewSet base class, which removes the create/update (POST/PUT/PATCH) endpoints from the memory API while preserving the existing list (GET) and destroy (DELETE) actions and their permission checks.\",\n      \"hunks\": [\"weblate/api/views.py#0\"],\n      \"context\": [\n        {\"path\": \"weblate/api/views.py\", \"symbol\": \"MemoryViewSet.get_queryset\", \"start_line\": 1859, \"end_line\": 1864, \"snapshot\": \"pr\", \"why\": \"Enforces memory.manage permission for list access; unaffected by base-class change but defines the read path that remains\"},\n        {\"path\": \"weblate/api/views.py\", \"symbol\": \"MemoryViewSet.perm_check\", \"start_line\": 1866, \"end_line\": 1868, \"snapshot\": \"pr\", \"why\": \"Enforces memory.delete permission for the destroy action that is retained via DestroyModelMixin\"},\n        {\"path\": \"weblate/api/views.py\", \"symbol\": \"MemoryViewSet.destroy\", \"start_line\": 1870, \"end_line\": 1874, \"snapshot\": \"pr\", \"why\": \"Custom DELETE handler that must continue to work after the base-class swap\"},\n        {\"path\": \"weblate/auth/permissions.py\", \"symbol\": \"check_memory_perms\", \"start_line\": 653, \"end_line\": 667, \"snapshot\": \"base\", \"why\": \"Defines the memory.edit/memory.delete permission semantics that the removed create/update endpoints would have relied on\"},\n        {\"path\": \"weblate/api/urls.py\", \"symbol\": \"router.register\", \"start_line\": 36, \"end_line\": 36, \"snapshot\": \"base\", \"why\": \"Registers MemoryViewSet under /api/memory/, so the base-class change directly alters the exposed HTTP methods\"},\n        {\"path\": \"weblate/api/serializers.py\", \"symbol\": \"MemorySerializer\", \"start_line\": 1297, \"end_line\": 1310, \"snapshot\": \"base\", \"why\": \"Serializer used by the removed create/update actions; confirms no write-specific fields remain needed\"},\n        {\"path\": \"docs/api.rst\", \"symbol\": \"Memory API section\", \"start_line\": 2249, \"end_line\": 2263, \"snapshot\": \"base\", \"why\": \"Documents only GET list and DELETE detail for /api/memory/, consistent with the read-only intent of the change\"},\n        {\"path\": \"weblate/api/tests.py\", \"symbol\": \"MemoryAPITest\", \"start_line\": 4085, \"end_line\": 4108, \"snapshot\": \"base\", \"why\": \"Existing tests only exercise GET list and DELETE detail, so no create/update tests are broken by removing those endpoints\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "memory-viewset-readonly",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/views.py",
+                  "start_line": 1840,
+                  "end_line": 1900,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=0dd54525b0bcbd83515bc4fc3190f0ed4be96abe path=weblate/api/views.py lines=1840-1900]\n1840:         requested_format = request.query_params.get(\"format\", \"zip\")\n1841:         return download_multi(\n1842:             cast(\"AuthenticatedHttpRequest\", request),\n1843:             instance.translation_set.prefetch_meta(),\n1844:             [instance],\n1845:             requested_format,\n1846:             name=instance.full_slug.replace(\"/\", \"-\"),\n1847:         )\n1848: \n1849: \n1850: @extend_schema_view(\n1851:     list=extend_schema(description=\"Return a list of memory results.\"),\n1852: )\n1853: class MemoryViewSet(viewsets.ReadOnlyModelViewSet, DestroyModelMixin):\n1854:     \"\"\"Memory API.\"\"\"\n1855: \n1856:     queryset = Memory.objects.none()\n1857:     serializer_class = MemorySerializer\n1858: \n1859:     def get_queryset(self):\n1860:         if not self.request.user.has_perm(\"memory.manage\"):\n1861:             self.permission_denied(self.request, \"Access not allowed\")\n1862:         # Use default database connection and not memory_db one (in case\n1863:         # a custom router is used).\n1864:         return Memory.objects.using(\"default\").order_by(\"id\")\n1865: \n1866:     def perm_check(self, request: Request, instance) -> None:\n1867:         if not request.user.has_perm(\"memory.delete\", instance):\n1868:             self.permission_denied(request, \"Can not delete memory entry\")\n1869: \n1870:     def destroy(self, request: Request, *args, **kwargs):\n1871:         \"\"\"Delete a memory object.\"\"\"\n1872:         instance = self.get_object()\n1873:         self.perm_check(request, instance)\n1874:         return super().destroy(request, *args, **kwargs)\n1875: \n1876: \n1877: @extend_schema_view(\n1878:     list=extend_schema(description=\"Return a list of translations.\"),\n1879:     retrieve=extend_schema(description=\"Return information about a translation.\"),\n1880: )\n1881: class TranslationViewSet(MultipleFieldViewSet, DestroyModelMixin):\n1882:     \"\"\"Translation components API.\"\"\"\n1883: \n1884:     queryset = Translation.objects.none()\n1885:     serializer_class = TranslationSerializer\n1886:     lookup_fields = (\"component__project__slug\", \"component__slug\", \"language__code\")\n1887:     raw_urls = (\"translation-file\",)\n1888: \n1889:     def get_queryset(self):\n1890:         return (\n1891:             Translation.objects.filter_access(self.request.user)\n1892:             .prefetch(defer_huge=False)\n1893:             .prefetch_related(\"component__source_language\")\n1894:             .prefetch_related(\"component__addon_set\")\n1895:             .prefetch_plurals()\n1896:             .order_by(\"id\")\n1897:         )\n1898: \n1899:     def paginate_queryset(self, queryset):\n1900:         result = super().paginate_queryset(queryset)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/api/views.py",
+                  "start_line": 1840,
+                  "end_line": 1900,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/api/views.py lines=1840-1900]\n1840:         requested_format = request.query_params.get(\"format\", \"zip\")\n1841:         return download_multi(\n1842:             cast(\"AuthenticatedHttpRequest\", request),\n1843:             instance.translation_set.prefetch_meta(),\n1844:             [instance],\n1845:             requested_format,\n1846:             name=instance.full_slug.replace(\"/\", \"-\"),\n1847:         )\n1848: \n1849: \n1850: @extend_schema_view(\n1851:     list=extend_schema(description=\"Return a list of memory results.\"),\n1852: )\n1853: class MemoryViewSet(viewsets.ModelViewSet, DestroyModelMixin):\n1854:     \"\"\"Memory API.\"\"\"\n1855: \n1856:     queryset = Memory.objects.none()\n1857:     serializer_class = MemorySerializer\n1858: \n1859:     def get_queryset(self):\n1860:         if not self.request.user.has_perm(\"memory.manage\"):\n1861:             self.permission_denied(self.request, \"Access not allowed\")\n1862:         # Use default database connection and not memory_db one (in case\n1863:         # a custom router is used).\n1864:         return Memory.objects.using(\"default\").order_by(\"id\")\n1865: \n1866:     def perm_check(self, request: Request, instance) -> None:\n1867:         if not request.user.has_perm(\"memory.delete\", instance):\n1868:             self.permission_denied(request, \"Can not delete memory entry\")\n1869: \n1870:     def destroy(self, request: Request, *args, **kwargs):\n1871:         \"\"\"Delete a memory object.\"\"\"\n1872:         instance = self.get_object()\n1873:         self.perm_check(request, instance)\n1874:         return super().destroy(request, *args, **kwargs)\n1875: \n1876: \n1877: @extend_schema_view(\n1878:     list=extend_schema(description=\"Return a list of translations.\"),\n1879:     retrieve=extend_schema(description=\"Return information about a translation.\"),\n1880: )\n1881: class TranslationViewSet(MultipleFieldViewSet, DestroyModelMixin):\n1882:     \"\"\"Translation components API.\"\"\"\n1883: \n1884:     queryset = Translation.objects.none()\n1885:     serializer_class = TranslationSerializer\n1886:     lookup_fields = (\"component__project__slug\", \"component__slug\", \"language__code\")\n1887:     raw_urls = (\"translation-file\",)\n1888: \n1889:     def get_queryset(self):\n1890:         return (\n1891:             Translation.objects.filter_access(self.request.user)\n1892:             .prefetch(defer_huge=False)\n1893:             .prefetch_related(\"component__source_language\")\n1894:             .prefetch_related(\"component__addon_set\")\n1895:             .prefetch_plurals()\n1896:             .order_by(\"id\")\n1897:         )\n1898: \n1899:     def paginate_queryset(self, queryset):\n1900:         result = super().paginate_queryset(queryset)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "weblate/auth/permissions.py",
+                  "start_line": 640,
+                  "end_line": 680,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=weblate/auth/permissions.py lines=640-667]\n640: # This does not exist for real\n641: @register_perm(\"meta:unit.flag\")\n642: def check_unit_flag(\n643:     user: User, permission: str, obj: Unit | Translation\n644: ) -> bool | PermissionResult:\n645:     if isinstance(obj, Unit):\n646:         obj = obj.translation\n647:     if not obj.component.is_glossary:\n648:         return user.has_perm(\"source.edit\", obj)\n649: \n650:     return check_can_edit(user, \"glossary.edit\", obj)\n651: \n652: \n653: @register_perm(\"memory.edit\", \"memory.delete\")\n654: def check_memory_perms(\n655:     user: User, permission: str, memory: Memory | Project\n656: ) -> bool | PermissionResult:\n657:     from weblate.memory.models import Memory\n658: \n659:     if isinstance(memory, Memory):\n660:         if memory.user_id == user.id:\n661:             return True\n662:         project = memory.project\n663:     else:\n664:         project = memory\n665:     if project is None:\n666:         return check_global_permission(user, \"memory.manage\")\n667:     return check_permission(user, permission, project)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "docs/api.rst",
+                  "start_line": 2240,
+                  "end_line": 2270,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e06b12cd05d087db68384e09d5f70fe883f2b70 path=docs/api.rst lines=2240-2270]\n2240:     :type component: string\n2241:     :param language: Translation language code\n2242:     :type language: string\n2243: \n2244:     .. seealso::\n2245: \n2246:        Returned attributes are described in :ref:`api-statistics`.\n2247: \n2248: \n2249: Memory\n2250: ++++++\n2251: \n2252: .. versionadded:: 4.14\n2253: \n2254: .. http:get:: /api/memory/\n2255: \n2256:     Returns a list of memory results.\n2257: \n2258: .. http:delete:: /api/memory/(int:memory_object_id)/\n2259: \n2260:     Deletes a memory object\n2261: \n2262:     :param memory_object_id: Memory Object ID\n2263:     :type project: int\n2264: \n2265: \n2266: Units\n2267: +++++\n2268: \n2269: A `unit` is a single piece of a translation which pairs a source string with a\n2270: corresponding translated string and also contains some related metadata. The\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "memory\\.(manage|edit|delete)",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=0dd54525b0bcbd83515bc4fc3190f0ed4be96abe pattern=\"memory\\.(manage|edit|delete)\"]\nweblate/api/views.py:1860:        if not self.request.user.has_perm(\"memory.manage\"):\nweblate/api/views.py:1867:        if not request.user.has_perm(\"memory.delete\", instance):\nweblate/auth/data.py:45:    (\"memory.edit\", gettext_noop(\"Edit translation memory\")),\nweblate/auth/data.py:47:    (\"memory.delete\", gettext_noop(\"Delete translation memory\")),\nweblate/auth/data.py:147:    (\"memory.manage\", gettext_noop(\"Manage translation memory\")),\nweblate/auth/permissions.py:653:@register_perm(\"memory.edit\", \"memory.delete\")\nweblate/auth/permissions.py:666:        return check_global_permission(user, \"memory.manage\")\nweblate/memory/machine.py:63:                if user is not None and user.has_perm(\"memory.delete\", result)\nweblate/memory/views.py:77:        if not check_perm(self.request.user, \"memory.delete\", self.objects):\nweblate/memory/views.py:93:            not check_perm(self.request.user, \"memory.delete\", self.objects)\nweblate/memory/views.py:135:        if not check_perm(self.request.user, \"memory.edit\", self.objects):\nweblate/memory/views.py:250:        if check_perm(user, \"memory.delete\", self.objects):\nweblate/memory/views.py:254:        if check_perm(user, \"memory.edit\", self.objects):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "The change swaps `viewsets.ModelViewSet` for `viewsets.ReadOnlyModelViewSet` on `MemoryViewSet`, which removes the create/update/partial-update endpoints. This is a reduction of exposed write operations, not an addition. The retained read path (`get_queryset`) enforces `memory.manage`, and the retained `destroy` enforces `memory.delete` via `perm_check`. The change does not introduce or newly expose any authorization weakness; the only pre-existing oddity (a non-raising `permission_denied` in `get_queryset`) is in unchanged code and is not newly exposed by this PR.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "weblate-memory-api-authz",
+  "url": "https://github.com/WeblateOrg/weblate/commit/0dd54525b0bcbd83515bc4fc3190f0ed4be96abe",
+  "category": "authz",
+  "cwe": "CWE-862",
+  "ghsa": "GHSA-mpf5-3vph-q75r",
+  "expected": "safe",
+  "vulnerable_files": [
+    "weblate/api/views.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

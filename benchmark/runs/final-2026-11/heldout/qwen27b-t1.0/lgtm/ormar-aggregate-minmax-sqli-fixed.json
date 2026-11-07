@@ -1,0 +1,494 @@
+{
+  "id": "ormar-aggregate-minmax-sqli-fixed",
+  "repo": "collerek/ormar",
+  "pr": 1557,
+  "title": "Adding min()/max()/sum()/avg() aggregates wrapped the caller-supplied column name in sqlalchemy.text() with no check that it is a real model field, so a crafted column string injects SQL into the aggregate query.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633",
+  "pr_sha": "a03bae14fe01358d3eaf7e319fcd5db2e4956b16",
+  "files_changed": 5,
+  "python_files_changed": 3,
+  "added_lines": 75,
+  "diff_chars": 3851,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 63.0,
+  "index_seconds": 1.8,
+  "index_reused": false,
+  "index_chunks": 256,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 2,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 11,
+  "reviewer_units": 2,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "How are aggregated functions like min/max/sum/avg applied via apply_func in ormar/queryset/queryset.py?"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 status=ok truncated=true query=\"How are aggregated functions like min/max/sum/avg applied via apply_func in orma\"]\n**Exploration: How are aggregated functions like min/max/sum/avg applied via apply_func in ormar/queryset/queryset.py**\n\nFound 98 symbols across 8 files. 1 file pinned from the query.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_min_or_max` (ormar/queryset/actions/order_action.py:57) \u2014 1 caller in `ormar/queryset/queries/query.py`; no tests found within 3 caller hops\n- `apply_func` (ormar/queryset/actions/select_action.py:45) \u2014 1 caller in `ormar/queryset/queryset.py`; tested via callers: `tests/test_ordering/test_default_through_relation_order.py`\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`ormar/queryset/queryset.py`** \u2014 calls(calls), replace_if_none(calls), build_select_expression(calls), rebuild_self(calls), QueryDefinitionError(instantiates), filter(calls), +66 more\n\n```python\n69\t        self._prefetch_related = [] if prefetch_related is None else prefetch_related\n70\t        self.limit_count = limit_count\n71\t        self.query_offset = offset\n72\t        self._excludable = excludable or ormar.ExcludableItems()\n73\t        self.order_bys = order_bys or []\n74\t        self.limit_sql_raw = limit_raw_sql\n75\t\n\n... (gap: model_config (ormar/queryset/queryset.py:77), model (ormar/queryset/queryset.py:89), rebuild_self (ormar/queryset/queryset.py:100), replace_if_none (ormar/queryset/queryset.py:126)) ...\n\n130\t\n131\t        return self.__class__(\n132\t            model_cls=self.model_cls,\n133\t            filter_clauses=replace_if_none(\"filter_clauses\"),\n134\t            exclude_clauses=replace_if_none(\"exclude_clauses\"),\n135\t            select_related=replace_if_none(\"select_related\"),\n136\t            limit_count=replace_if_none(\"limit_count\"),\n137\t            offset=replace_if_none(\"offset\"),\n138\t            excludable=replace_if_none(\"excludable\"),\n139\t            order_bys=replace_if_none(\"order_bys\"),\n140\t            prefetch_related=replace_if_none(\"prefetch_related\"),\n141\t            limit_raw_sql=replace_if_none(\"limit_raw_sql\"),\n142\t            proxy_source_model=replace_if_none(\"proxy_source_model\"),\n143\t        )\n144\t\n\n... (gap) ...\n\n696\t            result = await executor.fetch_val(expr)  # type: ignore\n697\t            return int(result) if result is not None else 0\n698\t\n699\t    async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n700\t        func = getattr(sqlalchemy.func, func_name)\n701\t        select_actions = [\n702\t            SelectAction(select_str=column, model_cls=self.model) for column in columns\n703\t        ]\n704\t        if func_name in [\"sum\", \"avg\"]:\n705\t            if any(not x.is_numeric for x in select_actions):\n706\t                raise QueryDefinitionError(\n707\t                    \"You can use sum and svg only with numeric types of columns\"\n708\t                )\n709\t        if any(x.field_name not in x.target_model.model_fields for x in select_actions):\n710\t            raise QueryDefinitionError(\n711\t                \"You can use aggregate functions only on \"\n712\t                \"existing columns of the target model\"\n713\t            )\n714\t        select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n715\t        expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n716\t        expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore\n717\t        # print(\"\\n\", expr.compile(compile_kwargs={\"literal_binds\": True}))\n718\t        async with self.model_config.database.get_query_executor() as executor:\n719\t            result = await executor.fetch_one(expr)  # type: ignore\n720\t        return dict(result) if len(result) > 1 else result[columns[0]]  # type: ignore\n721\t\n722\t    async def max(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n723\t        \"\"\"\n\n... (gap: min (ormar/queryset/queryset.py:734)) ...\n\n743\t            columns = [columns]\n744\t        return await self._query_aggr_function(func_name=\"min\", columns=columns)\n745\t\n746\t    async def sum(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n747\t        \"\"\"\n748\t        Returns sum value of columns for rows matching the given criteria\n749\t        (applied with `filter` and `exclude` if set before).\n750\t\n751\t        :return: sum value of columns\n752\t        :rtype: int\n753\t        \"\"\"\n754\t        if not isinstance(columns, list):\n755\t            columns = [columns]\n756\t        return await self._query_aggr_function(func_name=\"sum\", columns=columns)\n757\t\n758\t    async def avg(self, columns: Union[str, List[str]]) -> Any:\n759\t        \"\"\"\n```\n\n**`ormar/queryset/actions/select_action.py`** \u2014 apply_func(method), SelectAction(class), get_text_clause(method), __init__(method), get_target_field_type(method), _split_value_into_parts(method), +1 more\n\n```python\n1\timport decimal\n2\tfrom typing import TYPE_CHECKING, Any, Callable, Optional, Type\n3\t\n4\timport sqlalchemy\n5\t\n6\tfrom ormar.queryset.actions.query_action import QueryAction  # noqa: I202\n7\t\n8\tif TYPE_CHECKING:  # pragma: no cover\n9\t    from ormar import Model\n10\t\n11\t\n12\tclass SelectAction(QueryAction):\n13\t    \"\"\"\n14\t    Order Actions is populated by queryset when order_by() is called.\n15\t\n16\t    All required params are extracted but kept raw until actual filter clause value\n17\t    is required -> then the action is converted into text() clause.\n18\t\n19\t    Extracted in order to easily change table prefixes on complex relations.\n20\t    \"\"\"\n21\t\n\n[TRUNCATED omitted_chars=13643]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/queryset.py",
+                  "start_line": 640,
+                  "end_line": 760,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/queryset.py lines=640-760]\n640:         To filter for given row use filter/exclude methods before values,\n641:         to limit number of rows use limit/offset or paginate before values.\n642: \n643:         Note that it always return a list even for one row from database.\n644: \n645:         :param exclude_through: flag if through models should be excluded\n646:         :type exclude_through: bool\n647:         :param fields: field name or list of field names to extract from db\n648:         :type fields: Union[str, List[str]]\n649:         :param flatten: when one field is passed you can flatten the list of tuples\n650:         :type flatten: bool\n651:         \"\"\"\n652:         return await self.values(\n653:             fields=fields,\n654:             exclude_through=exclude_through,\n655:             _as_dict=False,\n656:             _flatten=flatten,\n657:         )\n658: \n659:     async def exists(self) -> bool:\n660:         \"\"\"\n661:         Returns a bool value to confirm if there are rows matching the given criteria\n662:         (applied with `filter` and `exclude` if set).\n663: \n664:         :return: result of the check\n665:         :rtype: bool\n666:         \"\"\"\n667:         expr = self.build_select_expression()\n668:         expr = sqlalchemy.exists(expr).select()\n669:         async with self.model_config.database.get_query_executor() as executor:\n670:             result = await executor.fetch_val(expr)\n671:             return bool(result)\n672: \n673:     async def count(self, distinct: bool = True) -> int:\n674:         \"\"\"\n675:         Returns number of rows matching the given criteria\n676:         (applied with `filter` and `exclude` if set before).\n677:         If `distinct` is `True` (the default), this will return\n678:         the number of primary rows selected. If `False`,\n679:         the count will be the total number of rows returned\n680:         (including extra rows for `one-to-many` or `many-to-many`\n681:         left `select_related` table joins).\n682:         `False` is the legacy (buggy) behavior for workflows that depend on it.\n683: \n684:         :param distinct: flag if the primary table rows should be distinct or not\n685: \n686:         :return: number of rows\n687:         :rtype: int\n688:         \"\"\"\n689:         expr = self.build_select_expression().alias(\"subquery_for_count\")\n690:         expr = sqlalchemy.func.count().select().select_from(expr)  # type: ignore\n691:         if distinct:\n692:             pk_column_name = self.model.get_column_alias(self.model_config.pkname)\n693:             expr_distinct = expr.group_by(pk_column_name).alias(\"subquery_for_group\")  # type: ignore\n694:             expr = sqlalchemy.func.count().select().select_from(expr_distinct)  # type: ignore\n695:         async with self.model_config.database.get_query_executor() as executor:\n696:             result = await executor.fetch_val(expr)  # type: ignore\n697:             return int(result) if result is not None else 0\n698: \n699:     async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n700:         func = getattr(sqlalchemy.func, func_name)\n701:         select_actions = [\n702:             SelectAction(select_str=column, model_cls=self.model) for column in columns\n703:         ]\n704:         if func_name in [\"sum\", \"avg\"]:\n705:             if any(not x.is_numeric for x in select_actions):\n706:                 raise QueryDefinitionError(\n707:                     \"You can use sum and svg only with numeric types of columns\"\n708:                 )\n709:         if any(x.field_name not in x.target_model.model_fields for x in select_actions):\n710:             raise QueryDefinitionError(\n711:                 \"You can use aggregate functions only on \"\n712:                 \"existing columns of the target model\"\n713:             )\n714:         select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n715:         expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n716:         expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore\n717:         # print(\"\\n\", expr.compile(compile_kwargs={\"literal_binds\": True}))\n718:         async with self.model_config.database.get_query_executor() as executor:\n719:             result = await executor.fetch_one(expr)  # type: ignore\n720:         return dict(result) if len(result) > 1 else result[columns[0]]  # type: ignore\n721: \n722:     async def max(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n723:         \"\"\"\n724:         Returns max value of columns for rows matching the given criteria\n725:         (applied with `filter` and `exclude` if set before).\n726: \n727:         :return: max value of column(s)\n728:         :rtype: Any\n729:         \"\"\"\n730:         if not isinstance(columns, list):\n731:             columns = [columns]\n732:         return await self._query_aggr_function(func_name=\"max\", columns=columns)\n733: \n734:     async def min(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n735:         \"\"\"\n736:         Returns min value of columns for rows matching the given criteria\n737:         (applied with `filter` and `exclude` if set before).\n738: \n739:         :return: min value of column(s)\n740:         :rtype: Any\n741:         \"\"\"\n742:         if not isinstance(columns, list):\n743:             columns = [columns]\n744:         return await self._query_aggr_function(func_name=\"min\", columns=columns)\n745: \n746:     async def sum(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n747:         \"\"\"\n748:         Returns sum value of columns for rows matching the given criteria\n749:         (applied with `filter` and `exclude` if set before).\n750: \n751:         :return: sum value of columns\n752:         :rtype: int\n753:         \"\"\"\n754:         if not isinstance(columns, list):\n755:             columns = [columns]\n756:         return await self._query_aggr_function(func_name=\"sum\", columns=columns)\n757: \n758:     async def avg(self, columns: Union[str, List[str]]) -> Any:\n759:         \"\"\"\n760:         Returns avg value of columns for rows matching the given criteria\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/select_action.py"
+                },
+                "result": "[READ snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 path=ormar/queryset/actions/select_action.py lines=1-52]\n1: import decimal\n2: from typing import TYPE_CHECKING, Any, Callable, Optional, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.actions.query_action import QueryAction  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: no cover\n9:     from ormar import Model\n10: \n11: \n12: class SelectAction(QueryAction):\n13:     \"\"\"\n14:     Order Actions is populated by queryset when order_by() is called.\n15: \n16:     All required params are extracted but kept raw until actual filter clause value\n17:     is required -> then the action is converted into text() clause.\n18: \n19:     Extracted in order to easily change table prefixes on complex relations.\n20:     \"\"\"\n21: \n22:     def __init__(\n23:         self, select_str: str, model_cls: Type[\"Model\"], alias: Optional[str] = None\n24:     ) -> None:\n25:         super().__init__(query_str=select_str, model_cls=model_cls)\n26:         if alias:  # pragma: no cover\n27:             self.table_prefix = alias\n28: \n29:     def _split_value_into_parts(self, order_str: str) -> None:\n30:         parts = order_str.split(\"__\")\n31:         self.field_name = parts[-1]\n32:         self.related_parts = parts[:-1]\n33: \n34:     @property\n35:     def is_numeric(self) -> bool:\n36:         return self.get_target_field_type() in [int, float, decimal.Decimal]\n37: \n38:     def get_target_field_type(self) -> Any:\n39:         return self.target_model.ormar_config.model_fields[self.field_name].__type__\n40: \n41:     def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n42:         alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n43:         return sqlalchemy.text(f\"{alias}{self.field_name}\")\n44: \n45:     def apply_func(\n46:         self, func: Callable, use_label: bool = True\n47:     ) -> sqlalchemy.sql.expression.TextClause:\n48:         result = func(self.get_text_clause())\n49:         if use_label:\n50:             rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n51:             result = result.label(f\"{rel_prefix}{self.field_name}\")\n52:         return result\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py"
+                },
+                "result": "[READ snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 path=ormar/queryset/actions/query_action.py lines=1-93]\n1: import abc\n2: from typing import TYPE_CHECKING, Any, List, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.utils import get_relationship_alias_model_and_str  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: nocover\n9:     from ormar import Model\n10: \n11: \n12: class QueryAction(abc.ABC):\n13:     \"\"\"\n14:     Base QueryAction class with common params for Filter and Order actions.\n15:     \"\"\"\n16: \n17:     def __init__(self, query_str: str, model_cls: Type[\"Model\"]) -> None:\n18:         self.query_str = query_str\n19:         self.field_name: str = \"\"\n20:         self.related_parts: List[str] = []\n21:         self.related_str: str = \"\"\n22: \n23:         self.table_prefix = \"\"\n24:         self.source_model = model_cls\n25:         self.target_model = model_cls\n26:         self.is_through = False\n27: \n28:         self._split_value_into_parts(query_str)\n29:         self._determine_filter_target_table()\n30: \n31:     def __eq__(self, other: object) -> bool:  # pragma: no cover\n32:         if not isinstance(other, QueryAction):\n33:             return False\n34:         return self.query_str == other.query_str\n35: \n36:     def __hash__(self) -> Any:\n37:         return hash((self.table_prefix, self.query_str))\n38: \n39:     @abc.abstractmethod\n40:     def _split_value_into_parts(self, query_str: str) -> None:  # pragma: no cover\n41:         \"\"\"\n42:         Splits string into related parts and field_name\n43:         :param query_str: query action string to split (i..e filter or order by)\n44:         :type query_str: str\n45:         \"\"\"\n46:         pass\n47: \n48:     @abc.abstractmethod\n49:     def get_text_clause(\n50:         self,\n51:     ) -> sqlalchemy.sql.expression.TextClause:  # pragma: no cover\n52:         pass\n53: \n54:     @property\n55:     def table(self) -> sqlalchemy.Table:\n56:         \"\"\"Shortcut to sqlalchemy Table of filtered target model\"\"\"\n57:         return self.target_model.ormar_config.table\n58: \n59:     @property\n60:     def column(self) -> sqlalchemy.Column:\n61:         \"\"\"Shortcut to sqlalchemy column of filtered target model\"\"\"\n62:         aliased_name = self.target_model.get_column_alias(self.field_name)\n63:         return self.target_model.ormar_config.table.columns[aliased_name]\n64: \n65:     def update_select_related(self, select_related: List[str]) -> List[str]:\n66:         \"\"\"\n67:         Updates list of select related with related part included in the filter key.\n68:         That way If you want to just filter by relation you do not have to provide\n69:         select_related separately.\n70: \n71:         :param select_related: list of relation join strings\n72:         :type select_related: List[str]\n73:         :return: list of relation joins with implied joins from filter added\n74:         :rtype: List[str]\n75:         \"\"\"\n76:         select_related = select_related[:]\n77:         if self.related_str and not any(\n78:             rel.startswith(self.related_str) for rel in select_related\n79:         ):\n80:             select_related.append(self.related_str)\n81:         return select_related\n82: \n83:     def _determine_filter_target_table(self) -> None:\n84:         \"\"\"\n85:         Walks the relation to retrieve the actual model on which the clause should be\n86:         constructed, extracts alias based on last relation leading to target model.\n87:         \"\"\"\n88:         (\n89:             self.table_prefix,\n90:             self.target_model,\n91:             self.related_str,\n92:             self.is_through,\n93:         ) = get_relationship_alias_model_and_str(self.source_model, self.related_parts)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def model_fields"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"def model_fields\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "query_aggr_function",
+                  "file_glob": "ormar/**/*.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"query_aggr_function\"]\normar/queryset/queryset.py:699:    async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\normar/queryset/queryset.py:727:        return await self._query_aggr_function(func_name=\"max\", columns=columns)\normar/queryset/queryset.py:739:        return await self._query_aggr_function(func_name=\"min\", columns=columns)\normar/queryset/queryset.py:751:        return await self._query_aggr_function(func_name=\"sum\", columns=columns)\normar/queryset/queryset.py:763:        return await self._query_aggr_function(func_name=\"avg\", columns=columns)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields",
+                  "file_glob": "ormar/models.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields",
+                  "file_glob": "ormar/meta.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields",
+                  "file_glob": "ormar/**/*.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields\"]\normar/fields/__init__.py:12:from ormar.fields.model_fields import (\normar/fields/foreign_key.py:55:            for k, v in fk.ormar_config.model_fields.items()\normar/fields/foreign_key.py:116:    to_field = to.ormar_config.model_fields[to.ormar_config.pkname]\normar/fields/foreign_key.py:321:    Actual class returned from ForeignKey function call and stored in model_fields.\normar/fields/foreign_key.py:394:            return self.owner.ormar_config.model_fields[\normar/fields/foreign_key.py:409:            field = self.to.ormar_config.model_fields[field_name]\normar/fields/many_to_many.py:37:    if any(field.is_relation for field in through.ormar_config.model_fields.values()):\normar/fields/many_to_many.py:59:    to_field = to.ormar_config.model_fields[to.ormar_config.pkname]\normar/fields/many_to_many.py:188:    Actual class returned from ManyToMany function call and stored in model_fields.\normar/fields/many_to_many.py:207:            self.through.ormar_config.model_fields[\normar/fields/many_to_many.py:284:        pk_field = self.owner.ormar_config.model_fields[self.owner.ormar_config.pkname]\normar/fields/many_to_many.py:300:        sub_field = self.through.ormar_config.model_fields[field_name]\normar/models/descriptors/descriptors.py:56:        field = instance.ormar_config.model_fields[self.name]\normar/models/descriptors/descriptors.py:66:        field = instance.ormar_config.model_fields[self.name]\normar/models/descriptors/descriptors.py:109:        instance.ormar_config.model_fields[self.name].expand_relationship(\normar/models/helpers/__init__.py:20:    sqlalchemy_columns_from_model_fields,\normar/models/helpers/__init__.py:36:    \"sqlalchemy_columns_from_model_fields\",\normar/models/helpers/models.py:30:    new_model: Type[\"Model\"], model_fields: Dict\normar/models/helpers/models.py:34:    and set model_fields that were already previously extracted.\normar/models/helpers/models.py:44:    :param model_fields: dict of model fields\normar/models/helpers/models.py:45:    :type model_fields: Union[Dict[str, type], Dict]\normar/models/helpers/models.py:47:    new_model.ormar_config.model_fields.update(model_fields)\normar/models/helpers/models.py:48:    if any(is_field_an_forward_ref(field) for field in model_fields.values()):\normar/models/helpers/models.py:52:        name for name, field in model_fields.items() if field.__type__ == pydantic.Json\normar/models/helpers/models.py:55:        name for name, field in model_fields.items() if field.__type__ is bytes\normar/models/helpers/models.py:85:    extraction of ormar model_fields.\normar/models/helpers/models.py:89:    :return: namespace of the class updated, dict of extracted model_fields\normar/models/helpers/pydantic.py:32:    model_field.through.model_fields[field_name] = FieldInfo.from_annotated_attribute(\normar/models/helpers/pydantic.py:55:    :return: namespace of the class updated, dict of extracted model_fields\normar/models/helpers/pydantic.py:58:    model_fields = {}\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "How are model_fields defined as class property on ormar Model, and does it include ForeignKey/relation fields?"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 status=ok truncated=true query=\"How are model_fields defined as class property on ormar Model, and does it inclu\"]\n**Exploration: How are model_fields defined as class property on ormar Model, and does it include ForeignKey/relation fields**\n\nFound 47 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `ForeignKey` (ormar/fields/foreign_key.py:198) \u2014 177 callers in `docs_src/models/docs013.py`, `docs_src/relations/docs001.py`, `docs_src/aggregations/docs001.py`, `docs_src/relations/docs003.py` +16 more; tests: `tests/test_queries/test_values_and_values_list.py`, `tests/test_model_definition/pks_and_fks/test_uuid_fks.py`, `tests/test_inheritance_and_pydantic_generation/test_reverse_relation_in_getting_pydantic.py`, `tests/test_fastapi/test_m2m_forwardref.py` +90\n- `_get_model_relation_fields_name` (ormar/fields/foreign_key.py:387) \u2014 1 caller in `ormar/fields/foreign_key.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`ormar/queryset/queryset.py`** \u2014 calls(calls), fields(method)\n\n```python\n438\t        related = list(set(list(self._prefetch_related) + related))\n439\t        return self.rebuild_self(prefetch_related=related)\n440\t\n441\t    def fields(\n442\t        self, columns: Union[List, str, Set, Dict], _is_exclude: bool = False\n443\t    ) -> \"QuerySet[T]\":\n444\t        \"\"\"\n445\t        With `fields()` you can select subset of model columns to limit the data load.\n446\t\n447\t        Note that `fields()` and `exclude_fields()` works both for main models\n448\t        (on normal queries like `get`, `all` etc.)\n449\t        as well as `select_related` and `prefetch_related`\n450\t        models (with nested notation).\n451\t\n452\t        You can select specified fields by passing a `str, List[str], Set[str] or\n453\t        dict` with nested definition.\n454\t\n455\t        To include related models use notation\n456\t        `{related_name}__{column}[__{optional_next} etc.]`.\n457\t\n458\t        `fields()` can be called several times, building up the columns to select.\n459\t\n460\t        If you include related models into `select_related()` call but you won't specify\n461\t        columns for those models in fields - implies a list of all fields for\n462\t        those nested models.\n463\t\n464\t        Mandatory fields cannot be excluded as it will raise `ValidationError`,\n465\t        to exclude a field it has to be nullable.\n466\t\n467\t        Pk column cannot be excluded - it's always auto added even if\n468\t        not explicitly included.\n469\t\n470\t        You can also pass fields to include as dictionary or set.\n471\t\n472\t        To mark a field as included in a dictionary use it's name as key\n473\t        and ellipsis as value.\n474\t\n475\t        To traverse nested models use nested dictionaries.\n476\t\n477\t        To include fields at last level instead of nested dictionary a set can be used.\n478\t\n479\t        To include whole nested model specify model related field name and ellipsis.\n480\t\n481\t        :param _is_exclude: flag if it's exclude or include operation\n482\t        :type _is_exclude: bool\n483\t        :param columns: columns to include\n484\t        :type columns: Union[List, str, Set, Dict]\n485\t        :return: QuerySet\n486\t        :rtype: QuerySet\n487\t        \"\"\"\n488\t        excludable = ormar.ExcludableItems.from_excludable(self._excludable)\n489\t        excludable.build(\n490\t            items=columns,\n491\t            model_cls=self.model_cls,  # type: ignore\n492\t            is_exclude=_is_exclude,\n493\t        )\n494\t\n495\t        return self.rebuild_self(excludable=excludable)\n496\t\n497\t    def exclude_fields(self, columns: Union[List, str, Set, Dict]) -> \"QuerySet[T]\":\n498\t        \"\"\"\n```\n\n**`ormar/fields/foreign_key.py`** \u2014 register_relation(calls), populate_fk_params_based_on_to_model(calls), ModelDefinitionError(instantiates), validate_referential_action(calls), create_dummy_model(calls), create_dummy_model(function), +46 more\n\n```python\n80\t    fields = {f\"{pk_field.name}\": (pk_field.__type__, None)}\n81\t\n82\t    dummy_model = create_model(  # type: ignore\n83\t        f\"PkOnly{base_model.get_name(lower=False)}{alias}\",\n84\t        __module__=base_model.__module__,\n85\t        **fields,  # type: ignore\n86\t    )\n\n... (gap) ...\n\n111\t    :rtype: Tuple[Any, List, Any]\n112\t    \"\"\"\n113\t    fk_string = (\n114\t        to.ormar_config.tablename + \".\" + to.get_column_alias(to.ormar_config.pkname)\n115\t    )\n116\t    to_field = to.ormar_config.model_fields[to.ormar_config.pkname]\n117\t    pk_only_model = create_dummy_model(to, to_field)\n\n... (gap) ...\n\n195\t\n196\t\n197\t@overload\n198\tdef ForeignKey(to: Type[\"T\"], **kwargs: Any) -> \"T\":  # pragma: no cover\n199\t    ...\n200\t\n201\t\n202\t@overload\n203\tdef ForeignKey(to: ForwardRef, **kwargs: Any) -> \"Model\":  # pragma: no cover\n204\t    ...\n205\t\n206\t\n207\tdef ForeignKey(  # type: ignore # noqa CFQ002\n208\t    to: Union[Type[\"T\"], \"ForwardRef\"],\n209\t    *,\n210\t    name: Optional[str] = None,\n211\t    unique: bool = False,\n212\t    nullable: bool = True,\n213\t    related_name: Optional[str] = None,\n214\t    virtual: bool = False,\n215\t    onupdate: Union[ReferentialAction, str, None] = None,\n216\t    ondelete: Union[ReferentialAction, str, None] = None,\n217\t    **kwargs: Any,\n218\t) -> \"T\":\n219\t    \"\"\"\n220\t    Despite a name it's a function that returns constructed ForeignKeyField.\n221\t    This function is actually used in model declaration (as ormar.ForeignKey(ToModel)).\n222\t\n223\t    Accepts number of relation setting parameters as well as al\n[TRUNCATED omitted_chars=14277]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/test_vulnerabilities/test_aggregated_functions.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields",
+                  "file_glob": "ormar/models/model.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields\"]\normar/models/model.py:26:            for k, v in self.ormar_config.model_fields.items()\normar/models/model.py:92:            and self.ormar_config.model_fields[self.ormar_config.pkname].autoincrement\normar/models/model.py:116:            for name, field in self.ormar_config.model_fields.items()\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields",
+                  "file_glob": "ormar/models/mixins/**/*.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def model_fields",
+                  "file_glob": "ormar/**/*.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"def model_fields\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/test_vulnerabilities/test_aggregated_functions.py",
+                  "start_line": 36,
+                  "end_line": 69,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=tests/test_vulnerabilities/test_aggregated_functions.py lines=36-69]\n36:                 cat = await Category.objects.create(name=\"Electronics\")\n37:                 await Item.objects.create(name=\"Tablet\", price=449.99, category=cat)\n38:                 await Item.objects.create(name=\"Monitor\", price=329.99, category=cat)\n39: \n40:             column = \"1 + 1\"\n41:             with pytest.raises(ormar.exceptions.QueryDefinitionError):\n42:                 await Item.objects.min(column)\n43: \n44: \n45: @pytest.mark.asyncio\n46: async def test_arbitrary_sql_execution_on_related_model():\n47:     async with base_ormar_config.database:\n48:         async with base_ormar_config.database.transaction(force_rollback=True):\n49:             if not await Item.objects.count():\n50:                 cat = await Category.objects.create(name=\"Electronics\")\n51:                 await Item.objects.create(name=\"Tablet\", price=449.99, category=cat)\n52:                 await Item.objects.create(name=\"Monitor\", price=329.99, category=cat)\n53: \n54:             column = \"category__1 + 1\"\n55:             with pytest.raises(ormar.exceptions.QueryDefinitionError):\n56:                 await Item.objects.min(column)\n57: \n58: \n59: @pytest.mark.asyncio\n60: async def test_schema_extraction():\n61:     async with base_ormar_config.database:\n62:         async with base_ormar_config.database.transaction(force_rollback=True):\n63:             if not await Item.objects.count():\n64:                 cat = await Category.objects.create(name=\"Electronics\")\n65:                 await Item.objects.create(name=\"Laptop\", price=999.99, category=cat)\n66: \n67:             column = \"(SELECT GROUP_CONCAT(name) FROM sqlite_master WHERE type='table')\"\n68:             with pytest.raises(ormar.exceptions.QueryDefinitionError):\n69:                 await Item.objects.min(column)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "model_fields ="
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"model_fields =\"]\normar/models/helpers/models.py:94:    attrs, model_fields = populate_pydantic_default_values(attrs)\normar/models/helpers/pydantic.py:58:    model_fields = {}\normar/models/helpers/relations.py:92:    model_fields = list(model.ormar_config.model_fields.values())\normar/models/helpers/relations.py:115:    related_model_fields = model_field.to.ormar_config.model_fields\normar/models/helpers/sqlalchemy.py:31:    model_fields = model_field.through.ormar_config.model_fields\normar/models/metaclass.py:307:    new_config.model_fields = copy.deepcopy(through_class.ormar_config.model_fields)\normar/models/metaclass.py:320:    new_config.model_fields = {\normar/models/metaclass.py:412:        model_fields = parent_fields\normar/models/metaclass.py:459:        new_attrs, new_model_fields = getattr(base_class, PARSED_FIELDS_KEY)\normar/models/metaclass.py:462:        model_fields = update_attrs_and_fields(\normar/models/metaclass.py:481:        new_attrs, new_model_fields = extract_annotations_and_default_vals(new_attrs)\normar/models/metaclass.py:483:        model_fields = update_attrs_and_fields(\normar/models/metaclass.py:518:    updated_model_fields = {k: v for k, v in new_model_fields.items()}\normar/models/metaclass.py:617:        attrs, model_fields = extract_annotations_and_default_vals(attrs)\normar/models/metaclass.py:622:            attrs, model_fields = extract_from_parents_definition(\normar/models/newbasemodel.py:149:        model_fields = object.__getattribute__(self, \"ormar_config\").model_fields\normar/models/newbasemodel.py:289:        model_fields = self.ormar_config.model_fields\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "@property\\s*\\n\\s*def model_fields|model_fields.*property",
+                  "file_glob": "ormar/models/model.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"@property\\s*\\n\\s*def model_fields|model_fields.*property\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/models/newbasemodel.py",
+                  "start_line": 140,
+                  "end_line": 160
+                },
+                "result": "[READ snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 path=ormar/models/newbasemodel.py lines=140-160]\n140:                 new_kwargs, self_instance=self  # type: ignore\n141:             )\n142:         else:\n143:             fields_set = {self.ormar_config.pkname}\n144:             values = new_kwargs\n145:             object.__setattr__(self, \"__dict__\", values)\n146:             object.__setattr__(self, \"__pydantic_fields_set__\", fields_set)\n147:         # add back through fields\n148:         new_kwargs.update(through_tmp_dict)\n149:         model_fields = object.__getattribute__(self, \"ormar_config\").model_fields\n150:         # register the columns models after initialization\n151:         for related in self.extract_related_names().union(self.extract_through_names()):\n152:             model_fields[related].expand_relationship(\n153:                 new_kwargs.get(related), self, to_register=True\n154:             )\n155: \n156:     def __setattr__(self, name: str, value: Any) -> None:  # noqa CCR001\n157:         \"\"\"\n158:         Overwrites setattr in pydantic parent as otherwise descriptors are not called.\n159: \n160:         :param name: name of the attribute to set\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class QueryDefinitionError"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"class QueryDefinitionError\"]\normar/exceptions.py:51:class QueryDefinitionError(AsyncOrmException):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "async def (min|max|sum|avg)\\(",
+                  "file_glob": "ormar/queryset/queryset.py"
+                },
+                "result": "[GREP snapshot=base sha=ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633 pattern=\"async def (min|max|sum|avg)\\(\"]\normar/queryset/queryset.py:717:    async def max(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\normar/queryset/queryset.py:729:    async def min(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\normar/queryset/queryset.py:741:    async def sum(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\normar/queryset/queryset.py:753:    async def avg(self, columns: Union[str, List[str]]) -> Any:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/select_action.py",
+                  "start_line": 29,
+                  "end_line": 52,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/select_action.py lines=29-52]\n29:     def _split_value_into_parts(self, order_str: str) -> None:\n30:         parts = order_str.split(\"__\")\n31:         self.field_name = parts[-1]\n32:         self.related_parts = parts[:-1]\n33: \n34:     @property\n35:     def is_numeric(self) -> bool:\n36:         return self.get_target_field_type() in [int, float, decimal.Decimal]\n37: \n38:     def get_target_field_type(self) -> Any:\n39:         return self.target_model.ormar_config.model_fields[self.field_name].__type__\n40: \n41:     def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n42:         alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n43:         return sqlalchemy.text(f\"{alias}{self.field_name}\")\n44: \n45:     def apply_func(\n46:         self, func: Callable, use_label: bool = True\n47:     ) -> sqlalchemy.sql.expression.TextClause:\n48:         result = func(self.get_text_clause())\n49:         if use_label:\n50:             rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n51:             result = result.label(f\"{rel_prefix}{self.field_name}\")\n52:         return result\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py",
+                  "start_line": 83,
+                  "end_line": 93,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/query_action.py lines=83-93]\n83:     def _determine_filter_target_table(self) -> None:\n84:         \"\"\"\n85:         Walks the relation to retrieve the actual model on which the clause should be\n86:         constructed, extracts alias based on last relation leading to target model.\n87:         \"\"\"\n88:         (\n89:             self.table_prefix,\n90:             self.target_model,\n91:             self.related_str,\n92:             self.is_through,\n93:         ) = get_relationship_alias_model_and_str(self.source_model, self.related_parts)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/test_vulnerabilities/test_aggregated_functions.py",
+                  "start_line": 1,
+                  "end_line": 35,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=tests/test_vulnerabilities/test_aggregated_functions.py lines=1-35]\n1: from typing import Optional\n2: \n3: import ormar\n4: import pytest\n5: \n6: from tests.lifespan import init_tests\n7: from tests.settings import create_config\n8: \n9: base_ormar_config = create_config()\n10: \n11: \n12: class Category(ormar.Model):\n13:     ormar_config = base_ormar_config.copy(tablename=\"categories\")\n14: \n15:     id: int = ormar.Integer(primary_key=True)\n16:     name: str = ormar.String(max_length=100)\n17: \n18: \n19: class Item(ormar.Model):\n20:     ormar_config = base_ormar_config.copy(tablename=\"items\")\n21: \n22:     id: int = ormar.Integer(primary_key=True)\n23:     name: str = ormar.String(max_length=100)\n24:     price: float = ormar.Float(default=0)\n25:     category: Optional[Category] = ormar.ForeignKey(Category, nullable=True)\n26: \n27: \n28: create_test_database = init_tests(base_ormar_config)\n29: \n30: \n31: @pytest.mark.asyncio\n32: async def test_arbitrary_sql_execution():\n33:     async with base_ormar_config.database:\n34:         async with base_ormar_config.database.transaction(force_rollback=True):\n35:             if not await Item.objects.count():\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "aggregate functions min max sum avg column validation arbitrary SQL injection security policy"
+                },
+                "result": "[docs/queries/aggregations.md:1-71] (relevance 0.46)\n# Aggregation functions\n\nCurrently 6 aggregation functions are supported.\n\n\n* `count(distinct: bool = True) -> int`\n* `exists() -> bool`\n* `sum(columns) -> Any`\n* `avg(columns) -> Any`\n* `min(columns) -> Any`\n* `max(columns) -> Any`\n\n\n* `QuerysetProxy`\n    * `QuerysetProxy.count(distinct=True)` method\n    * `QuerysetProxy.exists()` method\n    * `QuerysetProxy.sum(columns)` method\n    * `QuerysetProxy.avg(columns)` method\n    * `QuerysetProxy.min(column)` method\n    * `QuerysetProxy.max(columns)` method\n\n\n## count\n\n`count(distinct: bool = True) -> int`\n\nReturns number of rows matching the given criteria (i.e. applied with `filter` and `exclude`).\nIf `distinct` is `True` (the default), this will return the number of primary rows selected. If `False`,\nthe count will be the total number of rows returned\n(including extra rows for `one-to-many` or `many-to-many` left `select_related` table joins).\n`False` is the legacy (buggy) behavior for workflows that depend on it.\n\n```python\nclass Book(ormar.Model):\n    ormar_config = ormar.OrmarConfig(\n        database=DatabaseConnection(DATABASE_URL),\n        metadata=sqlalchemy.MetaData(),\n        tablename=\"book\"\n    )\n\n    id: int = ormar.Integer(primary_key=True)\n    title: str = ormar.String(max_length=200)\n    author: str = ormar.String(max_length=100)\n    genre: str = ormar.String(\n        max_length=100,\n        default=\"Fiction\",\n        choices=[\"Fiction\", \"Adventure\", \"Historic\", \"Fantasy\"],\n    )\n```\n\n```python\n# returns count of rows in db for Books model\nno_of_books = await Book.objects.count()\n```\n\n## exists\n\n`exists() -> bool`\n\nReturns a bool value to confirm if there are rows matching the given criteria (applied with `filter` and `exclude`)\n\n```python\nclass Book(ormar.Model):\n    ormar_config = ormar.OrmarConfig(\n        database=DatabaseConnection(DATABASE_URL),\n        metadata=sqlalchemy.MetaData(),\n        tablename=\"book\"\n    )\n\n    id: int = ormar.Integer(primary_key=True)\n    title: str = ormar.String(max_length=200)\n\n---\n\n[docs/queries/aggregations.md:244-299] (relevance 0.42)\nReturns max value of columns for rows matching the given criteria (applied with `filter` and `exclude` if set before).\n\nReturns min value of columns for rows matching the given criteria (applied with `filter` and `exclude` if set before).\n\nYou can pass one or many column names including related columns.\n\nAs of now each column passed is aggregated separately (so `sum(col1+col2)` is not possible,\nyou can have `sum(col1, col2)` and later add 2 returned sums in python)\n\nIf you aggregate on one column, the single value is directly returned as a result\nIf you aggregate on multiple columns a dictionary with column: result pairs is returned\n\n```Python\n--8<-- \"../docs_src/aggregations/docs001.py\"\n```\n\nA sample usage might look like following\n\n```python\nauthor = await Author(name=\"Author 1\").save()\nawait Book(title=\"Book 1\", year=1920, ranking=3, author=author).save()\nawait Book(title=\"Book 2\", year=1930, ranking=1, author=author).save()\nawait Book(title=\"Book 3\", year=1923, ranking=5, author=author).save()\n\nassert await Book.objects.max(\"year\") == 1930\nresult = await Book.objects.max([\"year\", \"ranking\"])\nassert result == dict(year=1930, ranking=5)\n\nassert await Book.objects.max(\"title\") == \"Book 3\"\n\nassert await Author.objects.select_related(\"books\").max(\"books__year\") == 1930\nresult = await Author.objects.select_related(\"books\").max(\n    [\"books__year\", \"books__ranking\"]\n)\nassert result == dict(books__year=1930, books__ranking=5)\n\nassert (\n    await Author.objects.select_related(\"books\")\n    .filter(books__year__lt=1925)\n    .max(\"books__year\")\n    == 1923\n)\n```\n\n## QuerysetProxy methods\n\nWhen access directly the related `ManyToMany` field as well as `ReverseForeignKey`\nreturns the list of related models.\n\nBut at the same time it exposes a subset of QuerySet API, so you can filter, create,\nselect related etc related models directly from parent model.\n\n### count\n\nWorks exactly the same as [count](./#count) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n---\n\n[docs/queries/aggregations.md:294-332] (relevance 0.39)\nselect related etc related models directly from parent model.\n\n### count\n\nWorks exactly the same as [count](./#count) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n!!!tip\n    To read more about `QuerysetProxy` visit [querysetproxy][querysetproxy] section\n\n### exists\n\nWorks exactly the same as [exists](./#exists) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n### sum\n\nWorks exactly the same as [sum](./#sum) function above but allows you to sum columns from related\nobjects from other side of the relation.\n\n### avg\n\nWorks exactly the same as [avg](./#avg) function above but allows you to average columns from related\nobjects from other side of the relation.\n\n### min\n\nWorks exactly the same as [min](./#min) function above but allows you to select minimum of columns from related\nobjects from other side of the relation.\n\n### max\n\nWorks exactly the same as [max](./#max) function above but allows you to select maximum of columns from related\nobjects from other side of the relation.\n\n!!!tip\n    To read more about `QuerysetProxy` visit [querysetproxy][querysetproxy] section\n\n[querysetproxy]: ../relations/queryset-proxy.md\n\n---\n\n[docs/index.md:616-678] (relevance 0.38)\n*  `filter(*args, **kwargs) -> QuerySet`\n*  `exclude(*args, **kwargs) -> QuerySet`\n*  `select_related(related: Union[List, str]) -> QuerySet`\n*  `prefetch_related(related: Union[List, str]) -> QuerySet`\n*  `limit(limit_count: int) -> QuerySet`\n*  `offset(offset: int) -> QuerySet`\n*  `count(distinct: bool = True) -> int`\n*  `exists() -> bool`\n*  `max(columns: List[str]) -> Any`\n*  `min(columns: List[str]) -> Any`\n*  `avg(columns: List[str]) -> Any`\n*  `sum(columns: List[str]) -> Any`\n*  `fields(columns: Union[List, str, set, dict]) -> QuerySet`\n*  `exclude_fields(columns: Union[List, str, set, dict]) -> QuerySet`\n*  `order_by(columns:Union[List, str]) -> QuerySet`\n*  `values(fields: Union[List, str, Set, Dict])`\n*  `values_list(fields: Union[List, str, Set, Dict])`\n\n\n#### Relation types\n\n*  One to many  - with `ForeignKey(to: Model)`\n*  Many to many - with `ManyToMany(to: Model, Optional[through]: Model)`\n\n#### Model fields types\n\nAvailable Model Fields (with required args - optional ones in docs):\n\n* `String(max_length)`\n* `Text()`\n* `Boolean()`\n* `Integer()`\n* `Float()`\n* `Date()`\n* `Time()`\n* `DateTime()`\n* `JSON()`\n* `BigInteger()`\n* `SmallInteger()`\n* `Decimal(scale, precision)`\n* `UUID()`\n* `LargeBinary(max_length)`\n* `Enum(enum_class)`\n* `Enum` like Field - by passing `choices` to any other Field type\n* `EncryptedString` - by passing `encrypt_secret` and `encrypt_backend`\n* `ForeignKey(to)`\n* `ManyToMany(to)`\n\n### Available fields options\nThe following keyword arguments are supported on all field types.\n\n  * `primary_key: bool`\n  * `nullable: bool`\n  * `default: Any`\n  * `server_default: Any`\n  * `index: bool`\n  * `unique: bool`\n  * `name: str`\n\nAll fields are required unless one of the following is set:\n\n  * `nullable` - Creates a nullable column. Sets the default to `False`. Read the fields common parameters for details.\n  * `sql_nullable` - Used to set different setting for pydantic and the database. Sets the default to `nullable` value. Read the fields common parameters for details.\n\n---\n\n[docs/queries/aggregations.md:181-246] (relevance 0.35)\n[\"books__year\", \"books__ranking\"]\n)\nassert round(float(result.get(\"books__year\")), 2) == 1924.33\nassert result.get(\"books__ranking\") == 3.0\n\nassert (\n    await Author.objects.select_related(\"books\")\n    .filter(books__year__lt=1925)\n    .avg(\"books__year\")\n    == 1921.5\n)\n```\n\n## min\n\n`min(columns) -> Any`\n\nReturns min value of columns for rows matching the given criteria (applied with `filter` and "
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"agg-sql-injection-guard\",\n      \"title\": \"Reject SQL-injectable column expressions in min/max/sum/avg aggregate queries\",\n      \"rationale\": \"Both hunks implement and verify the same authorization concern: validating that aggregate-function column arguments map to real model fields before the user-controlled string is spliced into a SQLAlchemy TextClause, closing arbitrary-SQL/schema-extraction via ormar's aggregate query methods.\",\n      \"hunks\": [\n        \"ormar/queryset/queryset.py#0\",\n        \"tests/test_vulnerabilities/test_aggregated_functions.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"ormar/queryset/actions/select_action.py\", \"symbol\": \"SelectAction.get_text_clause / apply_func\", \"start_line\": 41, \"end_line\": 52, \"sink\": \"pr\", \"why\": \"get_text_clause builds a raw sqlalchemy.text(f\\\"{alias}{self.field_name}\\\") and apply_func wraps it with the aggregate func \u2014 the injection sink that the new validation guards.\"},\n        {\"path\": \"ormar/queryset/actions/select_action.py\", \"symbol\": \"SelectAction._split_value_into_parts\", \"start_line\": 29, \"end_line\": 32, \"snapshot\": \"pr\", \"why\": \"Splits the user column string on '__' to derive field_name/related_parts that the new field_name check inspects.\"},\n        {\"path\": \"ormar/queryset/actions/query_action.py\", \"symbol\": \"QueryAction._determine_filter_target_table\", \"start_line\": 83, \"end_line\": 93, \"snapshot\": \"pr\", \"why\": \"Populates target_model from related_parts; the new check validates field_name against this target_model.model_fields.\"},\n        {\"path\": \"ormar/queryset/queryset.py\", \"symbol\": \"QuerySet.min/max/sum/avg\", \"start_line\": 722, \"end_line\": 763, \"snapshot\": \"pr\", \"why\": \"Public entry points that all funnel into _query_aggr_function, so the added guard applies to every aggregate function.\"},\n        {\"path\": \"tests/test_vulnerabilities/test_aggregated_functions.py\", \"symbol\": \"test_arbitrary_sql_execution / _on_related_model / test_schema_extraction\", \"start_line\": 31, \"end_line\": 69, \"snapshot\": \"pr\", \"why\": \"Regression tests asserting QueryDefinitionError is raised for raw-expression, related raw-expression, and schema-extraction column inputs.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "agg-sql-injection-guard",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/select_action.py",
+                  "start_line": 1,
+                  "end_line": 80,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/select_action.py lines=1-52]\n1: import decimal\n2: from typing import TYPE_CHECKING, Any, Callable, Optional, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.actions.query_action import QueryAction  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: no cover\n9:     from ormar import Model\n10: \n11: \n12: class SelectAction(QueryAction):\n13:     \"\"\"\n14:     Order Actions is populated by queryset when order_by() is called.\n15: \n16:     All required params are extracted but kept raw until actual filter clause value\n17:     is required -> then the action is converted into text() clause.\n18: \n19:     Extracted in order to easily change table prefixes on complex relations.\n20:     \"\"\"\n21: \n22:     def __init__(\n23:         self, select_str: str, model_cls: Type[\"Model\"], alias: Optional[str] = None\n24:     ) -> None:\n25:         super().__init__(query_str=select_str, model_cls=model_cls)\n26:         if alias:  # pragma: no cover\n27:             self.table_prefix = alias\n28: \n29:     def _split_value_into_parts(self, order_str: str) -> None:\n30:         parts = order_str.split(\"__\")\n31:         self.field_name = parts[-1]\n32:         self.related_parts = parts[:-1]\n33: \n34:     @property\n35:     def is_numeric(self) -> bool:\n36:         return self.get_target_field_type() in [int, float, decimal.Decimal]\n37: \n38:     def get_target_field_type(self) -> Any:\n39:         return self.target_model.ormar_config.model_fields[self.field_name].__type__\n40: \n41:     def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n42:         alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n43:         return sqlalchemy.text(f\"{alias}{self.field_name}\")\n44: \n45:     def apply_func(\n46:         self, func: Callable, use_label: bool = True\n47:     ) -> sqlalchemy.sql.expression.TextClause:\n48:         result = func(self.get_text_clause())\n49:         if use_label:\n50:             rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n51:             result = result.label(f\"{rel_prefix}{self.field_name}\")\n52:         return result\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/queryset.py",
+                  "start_line": 690,
+                  "end_line": 770,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/queryset.py lines=690-770]\n690:         expr = sqlalchemy.func.count().select().select_from(expr)  # type: ignore\n691:         if distinct:\n692:             pk_column_name = self.model.get_column_alias(self.model_config.pkname)\n693:             expr_distinct = expr.group_by(pk_column_name).alias(\"subquery_for_group\")  # type: ignore\n694:             expr = sqlalchemy.func.count().select().select_from(expr_distinct)  # type: ignore\n695:         async with self.model_config.database.get_query_executor() as executor:\n696:             result = await executor.fetch_val(expr)  # type: ignore\n697:             return int(result) if result is not None else 0\n698: \n699:     async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n700:         func = getattr(sqlalchemy.func, func_name)\n701:         select_actions = [\n702:             SelectAction(select_str=column, model_cls=self.model) for column in columns\n703:         ]\n704:         if func_name in [\"sum\", \"avg\"]:\n705:             if any(not x.is_numeric for x in select_actions):\n706:                 raise QueryDefinitionError(\n707:                     \"You can use sum and svg only with numeric types of columns\"\n708:                 )\n709:         if any(x.field_name not in x.target_model.model_fields for x in select_actions):\n710:             raise QueryDefinitionError(\n711:                 \"You can use aggregate functions only on \"\n712:                 \"existing columns of the target model\"\n713:             )\n714:         select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n715:         expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n716:         expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore\n717:         # print(\"\\n\", expr.compile(compile_kwargs={\"literal_binds\": True}))\n718:         async with self.model_config.database.get_query_executor() as executor:\n719:             result = await executor.fetch_one(expr)  # type: ignore\n720:         return dict(result) if len(result) > 1 else result[columns[0]]  # type: ignore\n721: \n722:     async def max(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n723:         \"\"\"\n724:         Returns max value of columns for rows matching the given criteria\n725:         (applied with `filter` and `exclude` if set before).\n726: \n727:         :return: max value of column(s)\n728:         :rtype: Any\n729:         \"\"\"\n730:         if not isinstance(columns, list):\n731:             columns = [columns]\n732:         return await self._query_aggr_function(func_name=\"max\", columns=columns)\n733: \n734:     async def min(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n735:         \"\"\"\n736:         Returns min value of columns for rows matching the given criteria\n737:         (applied with `filter` and `exclude` if set before).\n738: \n739:         :return: min value of column(s)\n740:         :rtype: Any\n741:         \"\"\"\n742:         if not isinstance(columns, list):\n743:             columns = [columns]\n744:         return await self._query_aggr_function(func_name=\"min\", columns=columns)\n745: \n746:     async def sum(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n747:         \"\"\"\n748:         Returns sum value of columns for rows matching the given criteria\n749:         (applied with `filter` and `exclude` if set before).\n750: \n751:         :return: sum value of columns\n752:         :rtype: int\n753:         \"\"\"\n754:         if not isinstance(columns, list):\n755:             columns = [columns]\n756:         return await self._query_aggr_function(func_name=\"sum\", columns=columns)\n757: \n758:     async def avg(self, columns: Union[str, List[str]]) -> Any:\n759:         \"\"\"\n760:         Returns avg value of columns for rows matching the given criteria\n761:         (applied with `filter` and `exclude` if set before).\n762: \n763:         :return: avg value of columns\n764:         :rtype: Union[int, float, List]\n765:         \"\"\"\n766:         if not isinstance(columns, list):\n767:             columns = [columns]\n768:         return await self._query_aggr_function(func_name=\"avg\", columns=columns)\n769: \n770:     async def update(self, each: bool = False, **kwargs: Any) -> int:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py",
+                  "start_line": 60,
+                  "end_line": 110,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/query_action.py lines=60-93]\n60:     def column(self) -> sqlalchemy.Column:\n61:         \"\"\"Shortcut to sqlalchemy column of filtered target model\"\"\"\n62:         aliased_name = self.target_model.get_column_alias(self.field_name)\n63:         return self.target_model.ormar_config.table.columns[aliased_name]\n64: \n65:     def update_select_related(self, select_related: List[str]) -> List[str]:\n66:         \"\"\"\n67:         Updates list of select related with related part included in the filter key.\n68:         That way If you want to just filter by relation you do not have to provide\n69:         select_related separately.\n70: \n71:         :param select_related: list of relation join strings\n72:         :type select_related: List[str]\n73:         :return: list of relation joins with implied joins from filter added\n74:         :rtype: List[str]\n75:         \"\"\"\n76:         select_related = select_related[:]\n77:         if self.related_str and not any(\n78:             rel.startswith(self.related_str) for rel in select_related\n79:         ):\n80:             select_related.append(self.related_str)\n81:         return select_related\n82: \n83:     def _determine_filter_target_table(self) -> None:\n84:         \"\"\"\n85:         Walks the relation to retrieve the actual model on which the clause should be\n86:         constructed, extracts alias based on last relation leading to target model.\n87:         \"\"\"\n88:         (\n89:             self.table_prefix,\n90:             self.target_model,\n91:             self.related_str,\n92:             self.is_through,\n93:         ) = get_relationship_alias_model_and_str(self.source_model, self.related_parts)\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization access control policy who can query aggregate functions max min sum avg"
+                },
+                "result": "[docs/queries/aggregations.md:294-332] (relevance 0.43)\nselect related etc related models directly from parent model.\n\n### count\n\nWorks exactly the same as [count](./#count) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n!!!tip\n    To read more about `QuerysetProxy` visit [querysetproxy][querysetproxy] section\n\n### exists\n\nWorks exactly the same as [exists](./#exists) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n### sum\n\nWorks exactly the same as [sum](./#sum) function above but allows you to sum columns from related\nobjects from other side of the relation.\n\n### avg\n\nWorks exactly the same as [avg](./#avg) function above but allows you to average columns from related\nobjects from other side of the relation.\n\n### min\n\nWorks exactly the same as [min](./#min) function above but allows you to select minimum of columns from related\nobjects from other side of the relation.\n\n### max\n\nWorks exactly the same as [max](./#max) function above but allows you to select maximum of columns from related\nobjects from other side of the relation.\n\n!!!tip\n    To read more about `QuerysetProxy` visit [querysetproxy][querysetproxy] section\n\n[querysetproxy]: ../relations/queryset-proxy.md\n\n---\n\n[docs/queries/aggregations.md:1-71] (relevance 0.40)\n# Aggregation functions\n\nCurrently 6 aggregation functions are supported.\n\n\n* `count(distinct: bool = True) -> int`\n* `exists() -> bool`\n* `sum(columns) -> Any`\n* `avg(columns) -> Any`\n* `min(columns) -> Any`\n* `max(columns) -> Any`\n\n\n* `QuerysetProxy`\n    * `QuerysetProxy.count(distinct=True)` method\n    * `QuerysetProxy.exists()` method\n    * `QuerysetProxy.sum(columns)` method\n    * `QuerysetProxy.avg(columns)` method\n    * `QuerysetProxy.min(column)` method\n    * `QuerysetProxy.max(columns)` method\n\n\n## count\n\n`count(distinct: bool = True) -> int`\n\nReturns number of rows matching the given criteria (i.e. applied with `filter` and `exclude`).\nIf `distinct` is `True` (the default), this will return the number of primary rows selected. If `False`,\nthe count will be the total number of rows returned\n(including extra rows for `one-to-many` or `many-to-many` left `select_related` table joins).\n`False` is the legacy (buggy) behavior for workflows that depend on it.\n\n```python\nclass Book(ormar.Model):\n    ormar_config = ormar.OrmarConfig(\n        database=DatabaseConnection(DATABASE_URL),\n        metadata=sqlalchemy.MetaData(),\n        tablename=\"book\"\n    )\n\n    id: int = ormar.Integer(primary_key=True)\n    title: str = ormar.String(max_length=200)\n    author: str = ormar.String(max_length=100)\n    genre: str = ormar.String(\n        max_length=100,\n        default=\"Fiction\",\n        choices=[\"Fiction\", \"Adventure\", \"Historic\", \"Fantasy\"],\n    )\n```\n\n```python\n# returns count of rows in db for Books model\nno_of_books = await Book.objects.count()\n```\n\n## exists\n\n`exists() -> bool`\n\nReturns a bool value to confirm if there are rows matching the given criteria (applied with `filter` and `exclude`)\n\n```python\nclass Book(ormar.Model):\n    ormar_config = ormar.OrmarConfig(\n        database=DatabaseConnection(DATABASE_URL),\n        metadata=sqlalchemy.MetaData(),\n        tablename=\"book\"\n    )\n\n    id: int = ormar.Integer(primary_key=True)\n    title: str = ormar.String(max_length=200)\n\n---\n\n[docs/queries/aggregations.md:244-299] (relevance 0.37)\nReturns max value of columns for rows matching the given criteria (applied with `filter` and `exclude` if set before).\n\nReturns min value of columns for rows matching the given criteria (applied with `filter` and `exclude` if set before).\n\nYou can pass one or many column names including related columns.\n\nAs of now each column passed is aggregated separately (so `sum(col1+col2)` is not possible,\nyou can have `sum(col1, col2)` and later add 2 returned sums in python)\n\nIf you aggregate on one column, the single value is directly returned as a result\nIf you aggregate on multiple columns a dictionary with column: result pairs is returned\n\n```Python\n--8<-- \"../docs_src/aggregations/docs001.py\"\n```\n\nA sample usage might look like following\n\n```python\nauthor = await Author(name=\"Author 1\").save()\nawait Book(title=\"Book 1\", year=1920, ranking=3, author=author).save()\nawait Book(title=\"Book 2\", year=1930, ranking=1, author=author).save()\nawait Book(title=\"Book 3\", year=1923, ranking=5, author=author).save()\n\nassert await Book.objects.max(\"year\") == 1930\nresult = await Book.objects.max([\"year\", \"ranking\"])\nassert result == dict(year=1930, ranking=5)\n\nassert await Book.objects.max(\"title\") == \"Book 3\"\n\nassert await Author.objects.select_related(\"books\").max(\"books__year\") == 1930\nresult = await Author.objects.select_related(\"books\").max(\n    [\"books__year\", \"books__ranking\"]\n)\nassert result == dict(books__year=1930, books__ranking=5)\n\nassert (\n    await Author.objects.select_related(\"books\")\n    .filter(books__year__lt=1925)\n    .max(\"books__year\")\n    == 1923\n)\n```\n\n## QuerysetProxy methods\n\nWhen access directly the related `ManyToMany` field as well as `ReverseForeignKey`\nreturns the list of related models.\n\nBut at the same time it exposes a subset of QuerySet API, so you can filter, create,\nselect related etc related models directly from parent model.\n\n### count\n\nWorks exactly the same as [count](./#count) function above but allows you to select columns from related\nobjects from other side of the relation.\n\n---\n\n[docs/index.md:616-678] (relevance 0.34)\n*  `filter(*args, **kwargs) -> QuerySet`\n*  `exclude(*args, **kwargs) -> QuerySet`\n*  `select_related(related: Union[List, str]) -> QuerySet`\n*  `prefetch_related(related: Union[List, str]) -> QuerySet`\n*  `limit(limit_count: int) -> QuerySet`\n*  `offset(offset: int) -> QuerySet`\n*  `count(distinct: bool = True) -> int`\n*  `exists() -> bool`\n*  `max(columns: List[str]) -> Any`\n*  `min(columns: List[str]) -> Any`\n*  `avg(columns: List[str]) -> Any`\n*  `sum(columns: List[str]) -> Any`\n*  `fields(columns: Union[List, str, set, dict]) -> QuerySet`\n*  `exclude_fields(columns: Union[List, str, set, dict]) -> QuerySet`\n*  `order_by(columns:Union[List, str]) -> QuerySet`\n*  `values(fields: Union[List, str, Set, Dict])`\n*  `values_list(fields: Union[List, str, Set, Dict])`\n\n\n#### Relation types\n\n*  One to many  - with `ForeignKey(to: Model)`\n*  Many to many - with `ManyToMany(to: Model, Optional[through]: Model)`\n\n#### Model fields types\n\nAvailable Model Fields (with required args - optional ones in docs):\n\n* `String(max_length)`\n* `Text()`\n* `Boolean()`\n* `Integer()`\n* `Float()`\n* `Date()`\n* `Time()`\n* `DateTime()`\n* `JSON()`\n* `BigInteger()`\n* `SmallInteger()`\n* `Decimal(scale, precision)`\n* `UUID()`\n* `LargeBinary(max_length)`\n* `Enum(enum_class)`\n* `Enum` like Field - by passing `choices` to any other Field type\n* `EncryptedString` - by passing `encrypt_secret` and `encrypt_backend`\n* `ForeignKey(to)`\n* `ManyToMany(to)`\n\n### Available fields options\nThe following keyword arguments are supported on all field types.\n\n  * `primary_key: bool`\n  * `nullable: bool`\n  * `default: Any`\n  * `server_default: Any`\n  * `index: bool`\n  * `unique: bool`\n  * `name: str`\n\nAll fields are required unless one of the following is set:\n\n  * `nullable` - Creates a nullable column. Sets the default to `False`. Read the fields common parameters for details.\n  * `sql_nullable` - Used to set different setting for pydantic and the database. Sets the default to `nullable` value. Read the fields common parameters for details.\n\n---\n\n[docs/queries/index.md:170-203] (relevance 0.31)\nTo read more about any or all of those functions visit [selecting columns](./select-columns.md) section.\n\n### [Pagination and rows number](./pagination-and-rows-number.md)\n\n* `paginate(page: int) -> QuerySet`\n* `limit(limit_count: int) -> QuerySet`\n* `offset(offset: int) -> QuerySet`\n* `get() -> Model`\n* `first() -> Model`\n\n\n* `QuerysetProxy`\n    * `QuerysetProxy.paginate(page: int)` method\n    * `Queryset"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/query_action.py lines=1-60]\n1: import abc\n2: from typing import TYPE_CHECKING, Any, List, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.utils import get_relationship_alias_model_and_str  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: nocover\n9:     from ormar import Model\n10: \n11: \n12: class QueryAction(abc.ABC):\n13:     \"\"\"\n14:     Base QueryAction class with common params for Filter and Order actions.\n15:     \"\"\"\n16: \n17:     def __init__(self, query_str: str, model_cls: Type[\"Model\"]) -> None:\n18:         self.query_str = query_str\n19:         self.field_name: str = \"\"\n20:         self.related_parts: List[str] = []\n21:         self.related_str: str = \"\"\n22: \n23:         self.table_prefix = \"\"\n24:         self.source_model = model_cls\n25:         self.target_model = model_cls\n26:         self.is_through = False\n27: \n28:         self._split_value_into_parts(query_str)\n29:         self._determine_filter_target_table()\n30: \n31:     def __eq__(self, other: object) -> bool:  # pragma: no cover\n32:         if not isinstance(other, QueryAction):\n33:             return False\n34:         return self.query_str == other.query_str\n35: \n36:     def __hash__(self) -> Any:\n37:         return hash((self.table_prefix, self.query_str))\n38: \n39:     @abc.abstractmethod\n40:     def _split_value_into_parts(self, query_str: str) -> None:  # pragma: no cover\n41:         \"\"\"\n42:         Splits string into related parts and field_name\n43:         :param query_str: query action string to split (i..e filter or order by)\n44:         :type query_str: str\n45:         \"\"\"\n46:         pass\n47: \n48:     @abc.abstractmethod\n49:     def get_text_clause(\n50:         self,\n51:     ) -> sqlalchemy.sql.expression.TextClause:  # pragma: no cover\n52:         pass\n53: \n54:     @property\n55:     def table(self) -> sqlalchemy.Table:\n56:         \"\"\"Shortcut to sqlalchemy Table of filtered target model\"\"\"\n57:         return self.target_model.ormar_config.table\n58: \n59:     @property\n60:     def column(self) -> sqlalchemy.Column:\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "get_relationship_alias_model_and_str",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:agg-sql-injection-guard",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/select_action.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/select_action.py lines=1-52]\n1: import decimal\n2: from typing import TYPE_CHECKING, Any, Callable, Optional, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.actions.query_action import QueryAction  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: no cover\n9:     from ormar import Model\n10: \n11: \n12: class SelectAction(QueryAction):\n13:     \"\"\"\n14:     Order Actions is populated by queryset when order_by() is called.\n15: \n16:     All required params are extracted but kept raw until actual filter clause value\n17:     is required -> then the action is converted into text() clause.\n18: \n19:     Extracted in order to easily change table prefixes on complex relations.\n20:     \"\"\"\n21: \n22:     def __init__(\n23:         self, select_str: str, model_cls: Type[\"Model\"], alias: Optional[str] = None\n24:     ) -> None:\n25:         super().__init__(query_str=select_str, model_cls=model_cls)\n26:         if alias:  # pragma: no cover\n27:             self.table_prefix = alias\n28: \n29:     def _split_value_into_parts(self, order_str: str) -> None:\n30:         parts = order_str.split(\"__\")\n31:         self.field_name = parts[-1]\n32:         self.related_parts = parts[:-1]\n33: \n34:     @property\n35:     def is_numeric(self) -> bool:\n36:         return self.get_target_field_type() in [int, float, decimal.Decimal]\n37: \n38:     def get_target_field_type(self) -> Any:\n39:         return self.target_model.ormar_config.model_fields[self.field_name].__type__\n40: \n41:     def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n42:         alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n43:         return sqlalchemy.text(f\"{alias}{self.field_name}\")\n44: \n45:     def apply_func(\n46:         self, func: Callable, use_label: bool = True\n47:     ) -> sqlalchemy.sql.expression.TextClause:\n48:         result = func(self.get_text_clause())\n49:         if use_label:\n50:             rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n51:             result = result.label(f\"{rel_prefix}{self.field_name}\")\n52:         return result\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py",
+                  "start_line": 60,
+                  "end_line": 120,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/query_action.py lines=60-93]\n60:     def column(self) -> sqlalchemy.Column:\n61:         \"\"\"Shortcut to sqlalchemy column of filtered target model\"\"\"\n62:         aliased_name = self.target_model.get_column_alias(self.field_name)\n63:         return self.target_model.ormar_config.table.columns[aliased_name]\n64: \n65:     def update_select_related(self, select_related: List[str]) -> List[str]:\n66:         \"\"\"\n67:         Updates list of select related with related part included in the filter key.\n68:         That way If you want to just filter by relation you do not have to provide\n69:         select_related separately.\n70: \n71:         :param select_related: list of relation join strings\n72:         :type select_related: List[str]\n73:         :return: list of relation joins with implied joins from filter added\n74:         :rtype: List[str]\n75:         \"\"\"\n76:         select_related = select_related[:]\n77:         if self.related_str and not any(\n78:             rel.startswith(self.related_str) for rel in select_related\n79:         ):\n80:             select_related.append(self.related_str)\n81:         return select_related\n82: \n83:     def _determine_filter_target_table(self) -> None:\n84:         \"\"\"\n85:         Walks the relation to retrieve the actual model on which the clause should be\n86:         constructed, extracts alias based on last relation leading to target model.\n87:         \"\"\"\n88:         (\n89:             self.table_prefix,\n90:             self.target_model,\n91:             self.related_str,\n92:             self.is_through,\n93:         ) = get_relationship_alias_model_and_str(self.source_model, self.related_parts)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/actions/query_action.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/actions/query_action.py lines=1-60]\n1: import abc\n2: from typing import TYPE_CHECKING, Any, List, Type\n3: \n4: import sqlalchemy\n5: \n6: from ormar.queryset.utils import get_relationship_alias_model_and_str  # noqa: I202\n7: \n8: if TYPE_CHECKING:  # pragma: nocover\n9:     from ormar import Model\n10: \n11: \n12: class QueryAction(abc.ABC):\n13:     \"\"\"\n14:     Base QueryAction class with common params for Filter and Order actions.\n15:     \"\"\"\n16: \n17:     def __init__(self, query_str: str, model_cls: Type[\"Model\"]) -> None:\n18:         self.query_str = query_str\n19:         self.field_name: str = \"\"\n20:         self.related_parts: List[str] = []\n21:         self.related_str: str = \"\"\n22: \n23:         self.table_prefix = \"\"\n24:         self.source_model = model_cls\n25:         self.target_model = model_cls\n26:         self.is_through = False\n27: \n28:         self._split_value_into_parts(query_str)\n29:         self._determine_filter_target_table()\n30: \n31:     def __eq__(self, other: object) -> bool:  # pragma: no cover\n32:         if not isinstance(other, QueryAction):\n33:             return False\n34:         return self.query_str == other.query_str\n35: \n36:     def __hash__(self) -> Any:\n37:         return hash((self.table_prefix, self.query_str))\n38: \n39:     @abc.abstractmethod\n40:     def _split_value_into_parts(self, query_str: str) -> None:  # pragma: no cover\n41:         \"\"\"\n42:         Splits string into related parts and field_name\n43:         :param query_str: query action string to split (i..e filter or order by)\n44:         :type query_str: str\n45:         \"\"\"\n46:         pass\n47: \n48:     @abc.abstractmethod\n49:     def get_text_clause(\n50:         self,\n51:     ) -> sqlalchemy.sql.expression.TextClause:  # pragma: no cover\n52:         pass\n53: \n54:     @property\n55:     def table(self) -> sqlalchemy.Table:\n56:         \"\"\"Shortcut to sqlalchemy Table of filtered target model\"\"\"\n57:         return self.target_model.ormar_config.table\n58: \n59:     @property\n60:     def column(self) -> sqlalchemy.Column:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_relationship_alias_model_and_str",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 pattern=\"def get_relationship_alias_model_and_str\"]\normar/queryset/utils.py:186:def get_relationship_alias_model_and_str(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "ormar/queryset/utils.py",
+                  "start_line": 186,
+                  "end_line": 235,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a03bae14fe01358d3eaf7e319fcd5db2e4956b16 path=ormar/queryset/utils.py lines=186-235]\n186: def get_relationship_alias_model_and_str(\n187:     source_model: Type[\"Model\"], related_parts: List\n188: ) -> Tuple[str, Type[\"Model\"], str, bool]:\n189:     \"\"\"\n190:     Walks the relation to retrieve the actual model on which the clause should be\n191:     constructed, extracts alias based on last relation leading to target model.\n192:     :param related_parts: list of related names extracted from string\n193:     :type related_parts: Union[List, List[str]]\n194:     :param source_model: model from which relation starts\n195:     :type source_model: Type[Model]\n196:     :return: table prefix, target model and relation string\n197:     :rtype: Tuple[str, Type[\"Model\"], str]\n198:     \"\"\"\n199:     table_prefix = \"\"\n200:     is_through = False\n201:     target_model = source_model\n202:     previous_model = target_model\n203:     previous_models = [target_model]\n204:     manager = target_model.ormar_config.alias_manager\n205:     for relation in related_parts[:]:\n206:         related_field = target_model.ormar_config.model_fields[relation]\n207: \n208:         if related_field.is_through:\n209:             previous_model, relation, is_through = _process_through_field(\n210:                 related_parts=related_parts,\n211:                 relation=relation,\n212:                 related_field=related_field,\n213:                 previous_model=previous_model,\n214:                 previous_models=previous_models,\n215:             )\n216:         if related_field.is_multi:\n217:             previous_model = related_field.through\n218:             relation = related_field.default_target_field_name()  # type: ignore\n219:         table_prefix = manager.resolve_relation_alias(\n220:             from_model=previous_model, relation_name=relation\n221:         )\n222:         target_model = related_field.to\n223:         previous_model = target_model\n224:         if not is_through:\n225:             previous_models.append(previous_model)\n226:     relation_str = \"__\".join(related_parts)\n227: \n228:     return table_prefix, target_model, relation_str, is_through\n229: \n230: \n231: def _process_through_field(\n232:     related_parts: List,\n233:     relation: Optional[str],\n234:     related_field: \"BaseField\",\n235:     previous_model: Type[\"Model\"],\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis, the PR **adds** a guard in `_query_aggr_function` that validates the final `field_name` against `target_model.model_fields`, and the related (relation) parts are validated by `get_relationship_alias_model_and_str` which raises when a relation is not in `model_fields`. The tests confirm that raw-expression, related raw-expression, and schema-extraction inputs now raise `QueryDefinitionError`. I found no path where attacker-controlled SQL text reaches an executed SQL statement through this changed code; the only changed SQL-building behavior is the added allowlist check, which is a defense.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "ormar-aggregate-minmax-sqli",
+  "url": "https://github.com/collerek/ormar/pull/1557",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xxh2-68g9-8jqr",
+  "expected": "safe",
+  "vulnerable_files": [
+    "ormar/queryset/actions/select_action.py",
+    "ormar/queryset/queryset.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

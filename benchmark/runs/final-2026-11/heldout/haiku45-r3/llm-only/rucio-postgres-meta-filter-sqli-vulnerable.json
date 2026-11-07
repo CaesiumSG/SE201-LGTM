@@ -1,0 +1,158 @@
+{
+  "id": "rucio-postgres-meta-filter-sqli-vulnerable",
+  "repo": "rucio/rucio",
+  "pr": 5649,
+  "title": "Adding the external Postgres metadata plugin introduced FilterEngine.create_postgres_query(), which str.format()s DID-search filter keys and values from the REST API straight into raw SQL.",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "base": "fdcaebc23d6d96cdfee617187b647381e5bd2a7c",
+  "pr_sha": "4313fdfa67b57600951716e79459e114d48ac515",
+  "files_changed": 7,
+  "python_files_changed": 5,
+  "added_lines": 510,
+  "diff_chars": 26708,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 13.6,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 2
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1,
+    "insufficient_evidence": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "agent": "plain_llm",
+      "category": "sqli",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 355,
+      "cwe_id": "CWE-89",
+      "supported": null,
+      "kev_verdict": null,
+      "explanation": "The create_postgres_query method constructs SQL queries by string concatenation with user-controlled input (key, value from filters). While some values are cast with type-specific syntax, the key parameter is directly interpolated into the LIKE and comparison expressions without parameterization or sanitization. An attacker controlling filter keys could inject arbitrary SQL syntax."
+    }
+  ],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "The create_postgres_query method constructs SQL queries by string concatenation with user-controlled input (key, value from filters). While some values are cast with type-specific syntax, the key parameter is directly interpolated into the LIKE and comparison expressions without parameterization or sanitization. An attacker controlling filter keys could inject arbitrary SQL syntax.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            330,
+            395
+          ],
+          "source": null,
+          "content": "for and_group in or_group:\n                key, oper, value = and_group\n                if key in fixed_table_columns:\n                    is_in_json_column = False\n                else:\n                    is_in_json_column = True\n                if isinstance(value, str) and any([char in value for char in ['*', '%']]):\n                    if value in ('*', '%', u'*', u'%'):\n                        continue\n                    else:\n                        if oper == operator.eq:\n                            if is_in_json_column:\n                                expression = \"{}->>'{}' LIKE '{}' \".format(jsonb_column, key, value.replace('*', '%').replace('_', '\\_'))\n                            else:\n                                expression = \"{} LIKE '{}' \".format(key, value.replace('*', '%').replace('_', '\\_'))\n                        elif oper == operator.ne:\n                            if is_in_json_column:\n                                expression = \"{}->>'{}' NOT LIKE '{}' \".format(jsonb_column, key, value.replace('*', '%').replace('_', '\\_'))\n                            else:\n                                expression = \"{} NOT LIKE '{}' \".format(key, value.replace('*', '%').replace('_', '\\_'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            356,
+            380
+          ],
+          "source": null,
+          "content": "if is_in_json_column:\n                                    expression = \"({}->>'{}')::boolean {} {}\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], str(value).lower())\n                                else:\n                                    expression = \"{}::boolean {} {}\".format(key, POSTGRES_OP_MAP[oper], str(value).lower())\n                            else:\n                                if is_in_json_column:\n                                    expression = \"({}->>'{}')::float {} {}\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)\n                                else:\n                                    expression = \"{}::float {} {}\".format(key, POSTGRES_OP_MAP[oper], value)\n                        elif isinstance(value, float):\n                            if is_in_json_column:\n                                expression = \"({}->>'{}')::float {} {}\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)\n                            else:\n                                expression = \"{}::float {} {}\".format(key, POSTGRES_OP_MAP[oper], value)\n                        elif isinstance(value, datetime):\n                            if is_in_json_column:\n                                expression = \"({}->>'{}')::timestamp {} '{}'\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)\n                            else:\n                                expression = \"{}::timestamp {} '{}'\".format(key, POSTGRES_OP_MAP[oper], value)\n                        else:\n                            if is_in_json_column:\n                                expression = \"{}->>'{}' {} '{}'\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)\n                            else:\n                                expression = \"{} {} '{}'\".format(key, POSTGRES_OP_MAP[oper], value)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use parameterized queries with psycopg2 parameter placeholders (%s) instead of string formatting. Construct query with parameters separately and pass both to cursor.execute(). For JSONB access, ensure keys are validated against a whitelist or use proper escaping mechanisms provided by the database driver.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "vulnerable",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 355,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new ExternalPostgresJSONDidMeta plugin allows querying external PostgreSQL tables for DID metadata. The diff is incomplete (truncated at line 94), so the full implementation of get_metadata, set_metadata, and query operations cannot be fully reviewed. However, the class accepts user-controlled filter parameters through the FilterEngine which constructs queries - there is no visible authorization check verifying the requester owns or has access to the DID before returning metadata. This is a potential IDOR vulnerability (CWE-639) if the plugin is used to fetch DIDs without ownership verification.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+          "lines": [
+            1,
+            100
+          ],
+          "source": null,
+          "content": "class ExternalPostgresJSONDidMeta(DidMetaPlugin):\n    def __init__(self, host=None, port=None, db=None, user=None, password=None, db_schema=None, table=None,\n                 table_is_managed=None, table_column_vo=None, table_column_scope=None, table_column_name=None,\n                 table_column_data=None):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "The diff is incomplete. Ensure all query methods in ExternalPostgresJSONDidMeta implement proper authorization checks verifying the requester's ownership of or explicit access to the DID before returning metadata. The DidMetaPlugin interface should enforce such checks at the base level or require explicit checks in all implementations.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "insufficient_evidence",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+      "line": 1,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "rucio-postgres-meta-filter-sqli",
+  "url": "https://github.com/rucio/rucio/pull/5649",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-6j7p-qjhg-9947",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "lib/rucio/core/did_meta_plugins/filter_engine.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

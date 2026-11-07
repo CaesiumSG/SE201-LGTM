@@ -1,0 +1,170 @@
+{
+  "id": "sentry-notification-option-delete-idor-vulnerable",
+  "repo": "getsentry/sentry",
+  "pr": 54871,
+  "title": "PR #54871 added a user notification-option DELETE endpoint that looks up the NotificationSettingOption by id without restricting it to the URL's user, so any user can delete other users' alert notification settings.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "215fad6461b81e062499b8edac2138f65ab184b1",
+  "pr_sha": "0f2371e1651668d1fc4e453c88e4e3354333f059",
+  "files_changed": 7,
+  "python_files_changed": 7,
+  "added_lines": 339,
+  "diff_chars": 16067,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 100.8,
+  "index_seconds": 3.3,
+  "index_reused": false,
+  "index_chunks": 427,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:options-detail-delete:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/sentry/api/endpoints/user_notification_options_detail.py",
+      "line": 18,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new DELETE handler fetches a NotificationSettingOption by the user-controlled `notification_option_id` and deletes it without verifying the row belongs to the resolved `user`. The base `UserEndpoint.convert_args` only enforces `UserPermission` on the user object (request.user.id == user.id) and never ties the option row to that user. The sibling endpoint `user_notification_options.py` scopes i"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 23,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 10,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "authz:options-detail-delete:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new DELETE handler fetches a NotificationSettingOption by the user-controlled `notification_option_id` and deletes it without verifying the row belongs to the resolved `user`. The base `UserEndpoint.convert_args` only enforces `UserPermission` on the user object (request.user.id == user.id) and never ties the option row to that user. The sibling endpoint `user_notification_options.py` scopes its queries with `user_id=user.id`, confirming the option row carries a `user_id` that must be checked. As written, any authenticated user (or superuser/system auth acting on another user) can delete another user's notification option by supplying its id.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/user_notification_options_detail.py",
+          "lines": [
+            16,
+            25
+          ],
+          "source": null,
+          "content": "    def delete(self, request: Request, user: User, notification_option_id: str) -> Response:\n        try:\n            option = NotificationSettingOption.objects.get(\n                id=notification_option_id,\n            )\n        except NotificationSettingOption.DoesNotExist:\n            return Response(status=status.HTTP_404_NOT_FOUND)\n\n        option.delete()\n        return Response(status=status.HTTP_204_NO_CONTENT)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/bases/user.py",
+          "lines": [
+            14,
+            26
+          ],
+          "source": null,
+          "content": "class UserPermission(SentryPermission):\n    def has_object_permission(self, request: Request, view, user: User | RpcUser | None = None):\n        if user is None:\n            user = request.user\n        if request.user.id == user.id:\n            return True\n        if is_system_auth(request.auth):\n            return True\n        if request.auth:\n            return False\n        if is_active_superuser(request):\n            return True\n        return False",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/bases/user.py",
+          "lines": [
+            65,
+            79
+          ],
+          "source": null,
+          "content": "    def convert_args(self, request: Request, user_id, *args, **kwargs):\n        if user_id == \"me\":\n            if not request.user.is_authenticated:\n                raise ResourceDoesNotExist\n            user_id = request.user.id\n\n        try:\n            user = User.objects.get(id=user_id)\n        except (User.DoesNotExist, ValueError):\n            raise ResourceDoesNotExist\n\n        self.check_object_permissions(request, user)\n\n        kwargs[\"user\"] = user\n        return args, kwargs",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/models/notificationsettingbase.py",
+          "lines": [
+            15,
+            17
+          ],
+          "source": null,
+          "content": "    user = FlexibleForeignKey(\n        settings.AUTH_USER_MODEL, null=True, db_index=True, on_delete=models.CASCADE\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/user_notification_options.py",
+          "lines": [
+            27,
+            27
+          ],
+          "source": null,
+          "content": "        notifications_settings = NotificationSettingOption.objects.filter(user_id=user.id)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Scope the lookup to the resolved user, e.g. `NotificationSettingOption.objects.get(id=notification_option_id, user_id=user.id)`, so the option row is ownership-checked against the authenticated user before deletion.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8207,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/sentry/api/endpoints/user_notification_options_detail.py",
+      "line": 18,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "sentry-notification-option-delete-idor",
+  "url": "https://github.com/getsentry/sentry/pull/54871",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-54m3-95j9-v89j",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/sentry/api/endpoints/user_notification_options_detail.py",
+    "src/sentry/api/endpoints/user_notification_settings_options_detail.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

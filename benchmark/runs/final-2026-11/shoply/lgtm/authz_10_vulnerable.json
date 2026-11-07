@@ -1,0 +1,1084 @@
+{
+  "id": "authz_10_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 73.68,
+  "est_tokens": 1283,
+  "findings": [
+    {
+      "finding_id": "authz:api-key-scope-removal:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The PR replaces app/auth.py with a new app/auth/api_keys.py where require_api_key_scope no longer verifies the key's scope. The base implementation (app/auth.py:88-104) enforced `if key.scope != required_scope: return 403`, but the new implementation (app/auth/api_keys.py:21-35) only checks that a key exists and then sets `g.api_key = key` and calls the handler, ignoring the `required_scope` argument entirely. This directly violates security-policy.md \u00a76: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' As a result, any valid API key (e.g. one with `orders:write` scope) can now access endpoints that require `reports:read` (e.g. GET /orders/report), granting unauthorized access to report data.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/auth/api_keys.py",
+          "lines": [
+            21,
+            35
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            g.api_key = key\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            88,
+            104
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            if key.scope != required_scope:\n                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n            g.api_key = key\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "app/auth/api_keys.py",
+          "lines": [
+            21,
+            35
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            g.api_key = key\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            88,
+            104
+          ],
+          "source": null,
+          "content": "def require_api_key_scope(required_scope: str):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            key = get_api_key()\n            if key is None:\n                return jsonify({\"error\": \"valid API key required\"}), 401\n            if key.scope != required_scope:\n                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n            g.api_key = key\n            return fn(*args, **kwargs)\n        return wrapper\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the scope comparison in the wrapper: after confirming the key is not None, add `if key.scope != required_scope: return jsonify({\"error\": \"API key lacks required scope\"}), 403` before setting `g.api_key = key` and invoking the handler.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9357,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/auth/api_keys.py",
+      "line": 30,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1475
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used?"
+          }
+        },
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used?"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key scope requirement for protected endpoints"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from app.auth import|from app import auth|app\\.auth",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope|reports:read",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "report",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "report",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 60,
+            "end_line": 90,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 1,
+            "end_line": 30,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 1,
+            "end_line": 30,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/main.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 1,
+            "end_line": 35,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 20,
+            "end_line": 35,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/roles.py",
+            "start_line": 1,
+            "end_line": 36,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/roles.py",
+            "start_line": 14,
+            "end_line": 36,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/tokens.py",
+            "start_line": 1,
+            "end_line": 50,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/tokens.py",
+            "start_line": 13,
+            "end_line": 50,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/__init__.py",
+            "start_line": 1,
+            "end_line": 27,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/__init__.py",
+            "start_line": 1,
+            "end_line": 20,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 28,
+            "end_line": 120,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"api-key-scope-removal\",\n      \"title\": \"require_api_key_scope no longer enforces the key's scope\",\n      \"rationale\": \"The refactor drops the `key.scope != required_scope` check (base app/auth.py:97-98), so any valid API key now passes regardless of scope, violating security-policy.md \u00a76 which requires scope verification.\",\n      \"hunks\": [\n        \"app/auth/api_keys.py#0\",\n        \"app/auth.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 88, \"end_line\": 104, \"snapshot\": \"base\", \"why\": \"Original implementation that enforced key.scope == required_scope before the refactor\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"ApiKey\", \"start_line\": 65, \"end_line\": 75, \"snapshot\": \"pr\", \"why\": \"ApiKey.scope field (reports:read/orders:read/orders:write) that the removed check compared against\"},\n        {\"path\": \"app/auth/__init__.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 8, \"end_line\": 8, \"snapshot\": \"pr\", \"why\": \"Re-export of the now-scope-less decorator, keeping the public API surface unchanged\"}\n      ]\n    },\n    {\n      \"id\": \"auth-module-split\",\n      \"title\": \"Split app/auth.py into app/auth package (tokens, roles, api_keys)\",\n      \"rationale\": \"The remaining auth helpers (bearer-token auth, role gates, ownership checks) are moved verbatim into a package with an __init__ re-export, preserving the `from app.auth import ...` imports used by the route modules.\",\n      \"hunks\": [\n        \"app/auth/__init__.py#0\",\n        \"app/auth/roles.py#0\",\n        \"app/auth/tokens.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"create_order\", \"start_line\": 19, \"end_line\": 33, \"snapshot\": \"pr\", \"why\": \"Caller of require_auth/is_owner_or_admin via `from app.auth import ...` that the package re-export must satisfy\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"pr\", \"why\": \"Caller of require_auth and is_owner_or_admin relying on the unchanged public names\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"stats\", \"start_line\": 18, \"end_line\": 29, \"snapshot\": \"pr\", \"why\": \"Caller of require_role(\\\"admin\\\") that the roles module must continue to provide\"},\n        {\"path\": \"app/main.py\", \"symbol\": \"login\", \"start_line\": 19, \"end_line\": 28, \"snapshot\": \"pr\", \"why\": \"Caller of hash_password/issue_token from the tokens module\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "api-key-scope-removal",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key scope verification required for endpoints accepting API keys"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "require_api_key_scope|reports:read|orders/report",
+            "file_glob": "app/routes*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "@require_api_key_scope",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR replaces app/auth.py with a new app/auth/api_keys.py where require_api_key_scope no longer verifies the key's scope. The base implementation (app/auth.py:88-104) enforced `if key.scope != required_scope: return 403`, but the new implementation (app/auth/api_keys.py:21-35) only checks that a key exists and then sets `g.api_key = key` and calls the handler, ignoring the `required_scope` argument entirely. This directly violates security-policy.md \u00a76: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' As a result, any valid API key (e.g. one with `orders:write` scope) can now access endpoints that require `reports:read` (e.g. GET /orders/report), granting unauthorized access to report data.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 6. API keys\\n\\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or `orders:write`.\\n- An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\\n- Report exports are readable only with the `reports:read` scope.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope comparison in the wrapper: after confirming the key is not None, add `if key.scope != required_scope: return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403` before setting `g.api_key = key` and invoking the handler.\",\n      \"file\": \"app/auth/api_keys.py\",\n      \"line\": 30\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "auth-module-split",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "password hashing requirement bcrypt salted hash"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from app.auth",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "from app.auth import|from app import auth|app\\.auth\\.",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth/api_keys.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR's new app/auth/api_keys.py re-implements require_api_key_scope but drops the scope comparison that the base app/auth.py had. The base version (app/auth.py:97-98) enforced `if key.scope != required_scope: return 403`. The new version (app/auth/api_keys.py:26-31) only checks that a key exists and then sets g.api_key, ignoring the required_scope argument entirely. This violates security-policy.md \u00a76: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' As a result, any valid API key (e.g. one scoped only to orders:read) would be accepted on a reports:read endpoint, granting unauthorized access.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope check in require_api_key_scope: after resolving the key, compare key.scope to required_scope and return 403 on mismatch before setting g.api_key.\",\n      \"file\": \"app/auth/api_keys.py\",\n      \"line\": 30\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used?"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=e9dad343a62d5d37926356d19cbbe069141ec1bd status=ok truncated=true query=\"Where are require_auth, require_role, require_api_key_scope, get_current_user, g\"]\n**Exploration: Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used**\n\nFound 31 symbols across 3 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_api_key` (app/auth.py:46) \u2014 1 caller in `app/auth.py`; no tests found within 3 caller hops\n- `require_auth` (app/auth.py:55) \u2014 2 callers in `app/routes/orders.py`, `app/routes/users.py`; no tests found within 3 caller hops\n- `require_role` (app/auth.py:69) \u2014 3 callers in `app/routes/admin.py`, `app/routes/orders.py`, `app/routes/users.py`; no tests found within 3 caller hops\n- `get_current_user` (app/auth.py:34) \u2014 2 callers in `app/auth.py`; no tests found within 3 caller hops\n- `is_owner_or_admin` (app/auth.py:107) \u2014 4 callers in `app/routes/users.py`, `app/routes/orders.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`app/auth.py`** \u2014 get_api_key(function), require_auth(function), require_role(function), get_current_user(function), is_owner_or_admin(function), +7 more\n\n```python\n1\t\"\"\"Authentication and authorization helpers for Shoply.\n2\t\n3\tEvery protected endpoint MUST use these decorators (see\n4\tsecurity-policy.md). Token auth uses an opaque bearer token stored against\n5\tthe user; API-key auth is for machine integrations and is scope-checked.\n6\t\"\"\"\n7\t\n8\tfrom __future__ import annotations\n9\t\n10\timport functools\n11\timport hashlib\n12\timport secrets\n13\t\n14\tfrom flask import g, jsonify, request\n15\t\n16\tfrom app.models import ApiKey, User, get_session\n17\t\n18\t# In-memory token store: token -> user_id (reset on restart; fine for demo)\n19\t_TOKENS: dict[str, int] = {}\n20\t\n21\tROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n22\t\n23\t\n24\tdef hash_password(password: str) -> str:\n25\t    return hashlib.sha256(password.encode()).hexdigest()\n26\t\n27\t\n28\tdef issue_token(user: User) -> str:\n29\t    token = secrets.token_hex(32)\n30\t    _TOKENS[token] = user.id\n31\t    return token\n32\t\n33\t\n34\tdef get_current_user() -> User | None:\n35\t    \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36\t    header = request.headers.get(\"Authorization\", \"\")\n37\t    if not header.startswith(\"Bearer \"):\n38\t        return None\n39\t    token = header[len(\"Bearer \"):].strip()\n40\t    user_id = _TOKENS.get(token)\n41\t    if user_id is None:\n42\t        return None\n43\t    return get_session().get(User, user_id)\n44\t\n45\t\n46\tdef get_api_key() -> ApiKey | None:\n47\t    \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n48\t    raw = request.headers.get(\"X-Api-Key\", \"\")\n49\t    if not raw:\n50\t        return None\n51\t    session = get_session()\n52\t    return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53\t\n54\t\n55\tdef require_auth(fn):\n56\t    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57\t\n58\t    @functools.wraps(fn)\n59\t    def wrapper(*args, **kwargs):\n60\t        user = get_current_user()\n61\t        if user is None:\n62\t            return jsonify({\"error\": \"authentication required\"}), 401\n63\t        g.current_user = user\n64\t        return fn(*args, **kwargs)\n65\t\n66\t    return wrapper\n67\t\n68\t\n69\tdef require_role(minimum_role: str):\n70\t    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71\t\n72\t    def decorator(fn):\n73\t        @functools.wraps(fn)\n74\t        def wrapper(*args, **kwargs):\n75\t            user = get_current_user()\n76\t            if user is None:\n77\t                return jsonify({\"error\": \"authentication required\"}), 401\n78\t            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79\t                return jsonify({\"error\": \"insufficient role\"}), 403\n80\t            g.current_user = user\n81\t            return fn(*args, **kwargs)\n82\t\n83\t        return wrapper\n84\t\n85\t    return decorator\n86\t\n87\t\n88\tdef require_api_key_scope(required_scope: str):\n89\t    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90\t\n91\t    def decorator(fn):\n92\t        @functools.wraps(fn)\n93\t        def wrapper(*args, **kwargs):\n94\t            key = get_api_key()\n95\t            if key is None:\n96\t                return jsonify({\"error\": \"valid API key required\"}), 401\n97\t            if key.scope != required_scope:\n98\t                return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99\t            g.api_key = key\n100\t            return fn(*args, **kwargs)\n101\t\n102\t        return wrapper\n103\t\n104\t    return decorator\n105\t\n106\t\n107\tdef is_owner_or_admin(user: User, owner_id: int) -> bool:\n108\t    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109\t    return user.id == owner_id or user.role == \"admin\"\n```\n\n**`app/models.py`** \u2014 User(class), get_session(function), ApiKey(class), SessionLocal(variable), init_db(function), +3 more\n\n```python\n1\t\"\"\"Database models and session management for Shoply.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\timport datetime\n6\t\n7\tfrom sqlalchemy import (\n8\t    Column,\n9\t    DateTime,\n10\t    Float,\n11\t    ForeignKey,\n12\t    Integer,\n13\t    String,\n14\t    create_engine,\n15\t)\n16\tfrom sqlalchemy.orm import declarative_base, relationship, scoped_session, sessionmaker\n17\t\n18\tBase = declarative_base()\n19\tSessionLocal = scoped_session(sessionmaker())\n20\t_engine = None\n21\t\n22\t\n23\tclass User(Base):\n24\t    __tablename__ = \"users\"\n25\t\n26\t    id = Column(Integer, primary_key=True)\n27\t    username = Column(String(80), unique=True,\n[TRUNCATED omitted_chars=4887]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used?"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f status=ok truncated=true query=\"Where are require_auth, require_role, require_api_key_scope, get_current_user, g\"]\n**Exploration: Where are require_auth, require_role, require_api_key_scope, get_current_user, get_api_key, is_owner_or_admin imported and used**\n\nFound 32 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_api_key` (app/auth/api_keys.py:12) \u2014 2 callers in `app/auth/api_keys.py`, `app/auth/__init__.py`; no tests found within 3 caller hops\n- `require_role` (app/auth/roles.py:15) \u2014 4 callers in `app/routes/admin.py`, `app/routes/orders.py`, `app/routes/users.py`, `app/auth/__init__.py`; no tests found within 3 caller hops\n- `require_api_key_scope` (app/auth/api_keys.py:21) \u2014 1 caller in `app/auth/__init__.py`; no tests found within 3 caller hops\n- `get_current_user` (app/auth/tokens.py:27) \u2014 4 callers in `app/auth/roles.py`, `app/auth/tokens.py`, `app/auth/__init__.py`; no tests found within 3 caller hops\n- `is_owner_or_admin` (app/auth/roles.py:34) \u2014 5 callers in `app/routes/users.py`, `app/auth/__init__.py`, `app/routes/orders.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`app/auth/roles.py`** \u2014 require_role(function), is_owner_or_admin(function), ROLE_RANK(variable), decorator(function), wrapper(function), +1 more\n\n```python\n1\t\"\"\"Role gates and per-object ownership checks.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\timport functools\n6\t\n7\tfrom flask import g, jsonify\n8\t\n9\tfrom app.auth.tokens import get_current_user\n10\tfrom app.models import User\n11\t\n12\tROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n13\t\n14\t\n15\tdef require_role(minimum_role: str):\n16\t    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n17\t\n18\t    def decorator(fn):\n19\t        @functools.wraps(fn)\n20\t        def wrapper(*args, **kwargs):\n21\t            user = get_current_user()\n22\t            if user is None:\n23\t                return jsonify({\"error\": \"authentication required\"}), 401\n24\t            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n25\t                return jsonify({\"error\": \"insufficient role\"}), 403\n26\t            g.current_user = user\n27\t            return fn(*args, **kwargs)\n28\t\n29\t        return wrapper\n30\t\n31\t    return decorator\n32\t\n33\t\n34\tdef is_owner_or_admin(user: User, owner_id: int) -> bool:\n35\t    \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n36\t    return user.id == owner_id or user.role == \"admin\"\n```\n\n**`app/auth/api_keys.py`** \u2014 get_api_key(function), require_api_key_scope(function), wrapper(function), decorator(function)\n\n```python\n1\t\"\"\"API-key authentication for machine integrations.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\timport functools\n6\t\n7\tfrom flask import g, jsonify, request\n8\t\n9\tfrom app.models import ApiKey, get_session\n10\t\n11\t\n12\tdef get_api_key() -> ApiKey | None:\n13\t    \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n14\t    raw = request.headers.get(\"X-Api-Key\", \"\")\n15\t    if not raw:\n16\t        return None\n17\t    session = get_session()\n18\t    return session.query(ApiKey).filter(ApiKey.key == raw).first()\n19\t\n20\t\n21\tdef require_api_key_scope(required_scope: str):\n22\t    \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n23\t\n24\t    def decorator(fn):\n25\t        @functools.wraps(fn)\n26\t        def wrapper(*args, **kwargs):\n27\t            key = get_api_key()\n28\t            if key is None:\n29\t                return jsonify({\"error\": \"valid API key required\"}), 401\n30\t            g.api_key = key\n31\t            return fn(*args, **kwargs)\n32\t\n33\t        return wrapper\n34\t\n35\t    return decorator\n```\n\n**`app/auth/tokens.py`** \u2014 get_current_user(function), require_auth(function), wrapper(function), hash_password(function), issue_token(function), +1 more\n\n```python\n1\t\"\"\"Bearer-token sessions and password hashing.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\timport functools\n6\timport hashlib\n7\timport secrets\n8\t\n9\tfrom flask import g, jsonify, request\n10\t\n11\tfrom app.models import User, get_session\n12\t\n13\t# In-memory token store: token -> user_id (reset on restart; fine for demo)\n14\t_TOKENS: dict[str, int] = {}\n15\t\n16\t\n17\tdef hash_password(password: str) -> str:\n18\t    return hashlib.sha256(password.encode()).hexdigest()\n19\t\n20\t\n21\tdef issue_token(user: User) -> str:\n22\t    token = secrets.token_hex(32)\n23\t    _TOKENS[token] = user.id\n24\t    return token\n25\t\n26\t\n27\tdef get_current_user() -> User | None:\n28\t    \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n29\t    header = request.headers.get(\"Authorization\", \"\")\n30\t    if not header.startswith(\"Bearer \"):\n31\t        return None\n32\t    token = header[len(\"Bearer \"):].strip()\n33\t    user_id = _TOKENS.get(token)\n34\t    if user_id is None:\n35\t        return None\n36\t    return get_session().get(User, user_id)\n37\t\n38\t\n39\tdef require_auth(fn):\n40\t    \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n41\t\n42\t    @functools.wraps(fn)\n43\t    def wrapper(*args, **kwargs):\n44\t        user = get_current_user()\n45\t        if user is None:\n46\t            return jsonify({\"error\": \"authentication required\"}), 401\n47\t        g.current_user = user\n48\t        return fn(*args, **kwargs)\n49\t\n50\t    return wrapper\n```\n\n**`app/models.py`** \u2014 User(class), get_session(function), ApiKey(class), SessionLocal(variable), init_db(function), +3 more\n\n```python\n1\t\"\"\"Database models and session management for Shoply.\"\"\"\n2\t\n3\tfrom __future__ import annotations\n4\t\n5\t\n[TRUNCATED omitted_chars=5404]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "require_api_key_scope",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e9dad343a62d5d37926356d19cbbe069141ec1bd pattern=\"require_api_key_scope\"]\napp/auth.py:88:def require_api_key_scope(required_scope: str):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "require_api_key_scope",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"require_api_key_scope\"]\napp/auth/__init__.py:8:from app.auth.api_keys import get_api_key, require_api_key_scope\napp/auth/__init__.py:24:    \"require_api_key_scope\",\napp/auth/api_keys.py:21:def require_api_key_scope(required_scope: str):\n[END GREP]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "API key scope requirement for protected endpoints"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.50)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[security-policy.md:1-48] (relevance 0.48)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.47)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "from app.auth import|from app import auth|app\\.auth",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"from app.auth import|from app import auth|app\\.auth\"]\napp/auth/__init__.py:8:from app.auth.api_keys import get_api_key, require_api_key_scope\napp/auth/__init__.py:9:from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role\napp/auth/__init__.py:10:from app.auth.tokens import (\napp/auth/roles.py:9:from app.auth.tokens import get_current_user\napp/main.py:8:from app.auth import hash_password, issue_token\napp/routes/admin.py:12:from app.auth import require_role\napp/routes/orders.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\napp/routes/users.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "require_api_key_scope|reports:read",
+                  "file_glob": "app/routes/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"require_api_key_scope|reports:read\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "report",
+                  "file_glob": "app/routes/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"report\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "report",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e9dad343a62d5d37926356d19cbbe069141ec1bd pattern=\"report\"]\napp/models.py:71:    # Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/orders.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/routes/orders.py lines=1-40]\n1: \"\"\"Order endpoints.\n2: \n3: Access rules (see security-policy.md \u00a73 and api-spec.md):\n4: - A user may create orders for themselves and view ONLY their own orders.\n5: - Managers and admins may list all orders; only admins may delete orders.\n6: - All database queries MUST use bound parameters (security-policy.md \u00a75).\n7: \"\"\"\n8: \n9: from __future__ import annotations\n10: \n11: from flask import Blueprint, g, jsonify, request\n12: \n13: from app.auth import is_owner_or_admin, require_auth, require_role\n14: from app.models import Order, get_session\n15: \n16: orders_bp = Blueprint(\"orders\", __name__)\n17: \n18: \n19: @orders_bp.route(\"\", methods=[\"POST\"])\n20: @require_auth\n21: def create_order():\n22:     \"\"\"Create an order for the authenticated user.\"\"\"\n23:     payload = request.get_json(silent=True) or {}\n24:     session = get_session()\n25:     order = Order(\n26:         user_id=g.current_user.id,\n27:         status=\"pending\",\n28:         total=float(payload.get(\"total\", 0.0)),\n29:         shipping_address=payload.get(\"shipping_address\", \"\"),\n30:     )\n31:     session.add(order)\n32:     session.commit()\n33:     return jsonify(order.to_dict()), 201\n34: \n35: \n36: @orders_bp.route(\"/mine\", methods=[\"GET\"])\n37: @require_auth\n38: def my_orders():\n39:     \"\"\"List the authenticated user's own orders.\"\"\"\n40:     session = get_session()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/models.py",
+                  "start_line": 60,
+                  "end_line": 90,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/models.py lines=60-90]\n60:             \"total\": self.total,\n61:             \"shipping_address\": self.shipping_address,\n62:         }\n63: \n64: \n65: class ApiKey(Base):\n66:     __tablename__ = \"api_keys\"\n67: \n68:     id = Column(Integer, primary_key=True)\n69:     key = Column(String(64), unique=True, nullable=False)\n70:     user_id = Column(Integer, ForeignKey(\"users.id\"), nullable=False)\n71:     # Scopes: \"reports:read\", \"orders:read\", \"orders:write\"\n72:     scope = Column(String(50), nullable=False, default=\"orders:read\")\n73:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n74: \n75:     user = relationship(\"User\", back_populates=\"api_keys\")\n76: \n77: \n78: class AuditLog(Base):\n79:     __tablename__ = \"audit_log\"\n80: \n81:     id = Column(Integer, primary_key=True)\n82:     user_id = Column(Integer, ForeignKey(\"users.id\"))\n83:     action = Column(String(255), nullable=False)\n84:     created_at = Column(DateTime, default=datetime.datetime.utcnow)\n85: \n86: \n87: def init_db(database_url: str = \"sqlite:///shoply.db\"):\n88:     \"\"\"Create the engine, bind the session factory, create tables.\"\"\"\n89:     global _engine\n90:     _engine = create_engine(database_url, future=True)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/users.py",
+                  "start_line": 1,
+                  "end_line": 30,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/routes/users.py lines=1-30]\n1: \"\"\"User management endpoints.\n2: \n3: Access rules (see security-policy.md \u00a72 and api-spec.md):\n4: - Users may read and update ONLY their own profile; admins may access any.\n5: - Listing all users requires the manager role or above.\n6: - Deleting users and changing roles requires the admin role.\n7: \"\"\"\n8: \n9: from __future__ import annotations\n10: \n11: from flask import Blueprint, g, jsonify, request\n12: \n13: from app.auth import is_owner_or_admin, require_auth, require_role\n14: from app.models import User, get_session\n15: \n16: users_bp = Blueprint(\"users\", __name__)\n17: \n18: \n19: @users_bp.route(\"\", methods=[\"GET\"])\n20: @require_role(\"manager\")\n21: def list_users():\n22:     \"\"\"List all users. Managers and admins only.\"\"\"\n23:     session = get_session()\n24:     users = session.query(User).order_by(User.id).all()\n25:     return jsonify([u.to_dict() for u in users])\n26: \n27: \n28: @users_bp.route(\"/<int:user_id>\", methods=[\"GET\"])\n29: @require_auth\n30: def get_user(user_id: int):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/admin.py",
+                  "start_line": 1,
+                  "end_line": 30,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/routes/admin.py lines=1-30]\n1: \"\"\"Admin panel endpoints.\n2: \n3: Access rules (see security-policy.md \u00a74 and api-spec.md):\n4: - EVERY endpoint under /admin requires the admin role via\n5:   @require_role(\"admin\"). No exceptions, no alternative shortcuts.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: from flask import Blueprint, jsonify\n11: \n12: from app.auth import require_role\n13: from app.models import AuditLog, Order, User, get_session\n14: \n15: admin_bp = Blueprint(\"admin\", __name__)\n16: \n17: \n18: @admin_bp.route(\"/stats\", methods=[\"GET\"])\n19: @require_role(\"admin\")\n20: def stats():\n21:     \"\"\"Aggregate platform statistics.\"\"\"\n22:     session = get_session()\n23:     return jsonify(\n24:         {\n25:             \"users\": session.query(User).count(),\n26:             \"orders\": session.query(Order).count(),\n27:             \"audit_events\": session.query(AuditLog).count(),\n28:         }\n29:     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/main.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/main.py lines=1-32]\n1: \"\"\"Shoply entry point: `python -m app.main` starts the dev server.\"\"\"\n2: \n3: from __future__ import annotations\n4: \n5: from flask import jsonify, request\n6: \n7: from app import create_app\n8: from app.auth import hash_password, issue_token\n9: from app.models import User, get_session\n10: \n11: app = create_app()\n12: \n13: \n14: @app.route(\"/health\")\n15: def health():\n16:     return jsonify({\"status\": \"ok\"})\n17: \n18: \n19: @app.route(\"/login\", methods=[\"POST\"])\n20: def login():\n21:     payload = request.get_json(silent=True) or {}\n22:     username = payload.get(\"username\", \"\")\n23:     password = payload.get(\"password\", \"\")\n24:     session = get_session()\n25:     user = session.query(User).filter(User.username == username).first()\n26:     if user is None or user.password_hash != hash_password(password):\n27:         return jsonify({\"error\": \"invalid credentials\"}), 401\n28:     return jsonify({\"token\": issue_token(user), \"user\": user.to_dict()})\n29: \n30: \n31: if __name__ == \"__main__\":\n32:     app.run(debug=False, port=5001)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/api_keys.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/api_keys.py",
+                  "start_line": 1,
+                  "end_line": 35,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/api_keys.py",
+                  "start_line": 20,
+                  "end_line": 35,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/api_keys.py lines=20-35]\n20: \n21: def require_api_key_scope(required_scope: str):\n22:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n23: \n24:     def decorator(fn):\n25:         @functools.wraps(fn)\n26:         def wrapper(*args, **kwargs):\n27:             key = get_api_key()\n28:             if key is None:\n29:                 return jsonify({\"error\": \"valid API key required\"}), 401\n30:             g.api_key = key\n31:             return fn(*args, **kwargs)\n32: \n33:         return wrapper\n34: \n35:     return decorator\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/roles.py",
+                  "start_line": 1,
+                  "end_line": 36,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/roles.py",
+                  "start_line": 14,
+                  "end_line": 36,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/roles.py lines=14-36]\n14: \n15: def require_role(minimum_role: str):\n16:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n17: \n18:     def decorator(fn):\n19:         @functools.wraps(fn)\n20:         def wrapper(*args, **kwargs):\n21:             user = get_current_user()\n22:             if user is None:\n23:                 return jsonify({\"error\": \"authentication required\"}), 401\n24:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n25:                 return jsonify({\"error\": \"insufficient role\"}), 403\n26:             g.current_user = user\n27:             return fn(*args, **kwargs)\n28: \n29:         return wrapper\n30: \n31:     return decorator\n32: \n33: \n34: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n35:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n36:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/tokens.py",
+                  "start_line": 1,
+                  "end_line": 50,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/tokens.py",
+                  "start_line": 13,
+                  "end_line": 50,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/tokens.py lines=13-50]\n13: # In-memory token store: token -> user_id (reset on restart; fine for demo)\n14: _TOKENS: dict[str, int] = {}\n15: \n16: \n17: def hash_password(password: str) -> str:\n18:     return hashlib.sha256(password.encode()).hexdigest()\n19: \n20: \n21: def issue_token(user: User) -> str:\n22:     token = secrets.token_hex(32)\n23:     _TOKENS[token] = user.id\n24:     return token\n25: \n26: \n27: def get_current_user() -> User | None:\n28:     \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n29:     header = request.headers.get(\"Authorization\", \"\")\n30:     if not header.startswith(\"Bearer \"):\n31:         return None\n32:     token = header[len(\"Bearer \"):].strip()\n33:     user_id = _TOKENS.get(token)\n34:     if user_id is None:\n35:         return None\n36:     return get_session().get(User, user_id)\n37: \n38: \n39: def require_auth(fn):\n40:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n41: \n42:     @functools.wraps(fn)\n43:     def wrapper(*args, **kwargs):\n44:         user = get_current_user()\n45:         if user is None:\n46:             return jsonify({\"error\": \"authentication required\"}), 401\n47:         g.current_user = user\n48:         return fn(*args, **kwargs)\n49: \n50:     return wrapper\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/__init__.py",
+                  "start_line": 1,
+                  "end_line": 27,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/__init__.py",
+                  "start_line": 1,
+                  "end_line": 20,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/__init__.py lines=1-20]\n1: \"\"\"Authentication and authorization helpers for Shoply.\n2: \n3: Every protected endpoint MUST use these decorators (see\n4: security-policy.md). Token auth uses an opaque bearer token stored against\n5: the user; API-key auth is for machine integrations and is scope-checked.\n6: \"\"\"\n7: \n8: from app.auth.api_keys import get_api_key, require_api_key_scope\n9: from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role\n10: from app.auth.tokens import (\n11:     get_current_user,\n12:     hash_password,\n13:     issue_token,\n14:     require_auth,\n15: )\n16: \n17: __all__ = [\n18:     \"ROLE_RANK\",\n19:     \"get_api_key\",\n20:     \"get_current_user\",\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/routes/users.py",
+                  "start_line": 28,
+                  "end_line": 120,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/routes/users.py lines=28-55]\n28: @users_bp.route(\"/<int:user_id>\", methods=[\"GET\"])\n29: @require_auth\n30: def get_user(user_id: int):\n31:     \"\"\"Fetch a user profile. Owner or admin only.\"\"\"\n32:     if not is_owner_or_admin(g.current_user, user_id):\n33:         return jsonify({\"error\": \"forbidden\"}), 403\n34:     session = get_session()\n35:     user = session.get(User, user_id)\n36:     if user is None:\n37:         return jsonify({\"error\": \"not found\"}), 404\n38:     return jsonify(user.to_dict(include_email=True))\n39: \n40: \n41: @users_bp.route(\"/<int:user_id>\", methods=[\"PUT\"])\n42: @require_auth\n43: def update_user(user_id: int):\n44:     \"\"\"Update profile fields (email, shipping preferences). Owner or admin.\"\"\"\n45:     if not is_owner_or_admin(g.current_user, user_id):\n46:         return jsonify({\"error\": \"forbidden\"}), 403\n47:     session = get_session()\n48:     user = session.get(User, user_id)\n49:     if user is None:\n50:         return jsonify({\"error\": \"not found\"}), 404\n51:     payload = request.get_json(silent=True) or {}\n52:     if \"email\" in payload:\n53:         user.email = payload[\"email\"]\n54:     session.commit()\n55:     return jsonify(user.to_dict(include_email=True))\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"api-key-scope-removal\",\n      \"title\": \"require_api_key_scope no longer enforces the key's scope\",\n      \"rationale\": \"The refactor drops the `key.scope != required_scope` check (base app/auth.py:97-98), so any valid API key now passes regardless of scope, violating security-policy.md \u00a76 which requires scope verification.\",\n      \"hunks\": [\n        \"app/auth/api_keys.py#0\",\n        \"app/auth.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 88, \"end_line\": 104, \"snapshot\": \"base\", \"why\": \"Original implementation that enforced key.scope == required_scope before the refactor\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"ApiKey\", \"start_line\": 65, \"end_line\": 75, \"snapshot\": \"pr\", \"why\": \"ApiKey.scope field (reports:read/orders:read/orders:write) that the removed check compared against\"},\n        {\"path\": \"app/auth/__init__.py\", \"symbol\": \"require_api_key_scope\", \"start_line\": 8, \"end_line\": 8, \"snapshot\": \"pr\", \"why\": \"Re-export of the now-scope-less decorator, keeping the public API surface unchanged\"}\n      ]\n    },\n    {\n      \"id\": \"auth-module-split\",\n      \"title\": \"Split app/auth.py into app/auth package (tokens, roles, api_keys)\",\n      \"rationale\": \"The remaining auth helpers (bearer-token auth, role gates, ownership checks) are moved verbatim into a package with an __init__ re-export, preserving the `from app.auth import ...` imports used by the route modules.\",\n      \"hunks\": [\n        \"app/auth/__init__.py#0\",\n        \"app/auth/roles.py#0\",\n        \"app/auth/tokens.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"app/routes/orders.py\", \"symbol\": \"create_order\", \"start_line\": 19, \"end_line\": 33, \"snapshot\": \"pr\", \"why\": \"Caller of require_auth/is_owner_or_admin via `from app.auth import ...` that the package re-export must satisfy\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"get_user\", \"start_line\": 28, \"end_line\": 38, \"snapshot\": \"pr\", \"why\": \"Caller of require_auth and is_owner_or_admin relying on the unchanged public names\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"stats\", \"start_line\": 18, \"end_line\": 29, \"snapshot\": \"pr\", \"why\": \"Caller of require_role(\\\"admin\\\") that the roles module must continue to provide\"},\n        {\"path\": \"app/main.py\", \"symbol\": \"login\", \"start_line\": 19, \"end_line\": 28, \"snapshot\": \"pr\", \"why\": \"Caller of hash_password/issue_token from the tokens module\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "api-key-scope-removal",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/api_keys.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/api_keys.py lines=1-35]\n1: \"\"\"API-key authentication for machine integrations.\"\"\"\n2: \n3: from __future__ import annotations\n4: \n5: import functools\n6: \n7: from flask import g, jsonify, request\n8: \n9: from app.models import ApiKey, get_session\n10: \n11: \n12: def get_api_key() -> ApiKey | None:\n13:     \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n14:     raw = request.headers.get(\"X-Api-Key\", \"\")\n15:     if not raw:\n16:         return None\n17:     session = get_session()\n18:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n19: \n20: \n21: def require_api_key_scope(required_scope: str):\n22:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n23: \n24:     def decorator(fn):\n25:         @functools.wraps(fn)\n26:         def wrapper(*args, **kwargs):\n27:             key = get_api_key()\n28:             if key is None:\n29:                 return jsonify({\"error\": \"valid API key required\"}), 401\n30:             g.api_key = key\n31:             return fn(*args, **kwargs)\n32: \n33:         return wrapper\n34: \n35:     return decorator\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "API key scope verification required for endpoints accepting API keys"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.47)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[api-spec.md:1-57] (relevance 0.44)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601.\n\n---\n\n[security-policy.md:1-48] (relevance 0.44)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "require_api_key_scope",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"require_api_key_scope\"]\napp/auth/__init__.py:8:from app.auth.api_keys import get_api_key, require_api_key_scope\napp/auth/__init__.py:24:    \"require_api_key_scope\",\napp/auth/api_keys.py:21:def require_api_key_scope(required_scope: str):\nsecurity-policy.md:13:  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\nsecurity-policy.md:58:  operation with `@require_api_key_scope(...)`. Possession of a valid key\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "require_api_key_scope|reports:read|orders/report",
+                  "file_glob": "app/routes*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"require_api_key_scope|reports:read|orders/report\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "@require_api_key_scope",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"@require_api_key_scope\"]\nsecurity-policy.md:13:  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\nsecurity-policy.md:58:  operation with `@require_api_key_scope(...)`. Possession of a valid key\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR replaces app/auth.py with a new app/auth/api_keys.py where require_api_key_scope no longer verifies the key's scope. The base implementation (app/auth.py:88-104) enforced `if key.scope != required_scope: return 403`, but the new implementation (app/auth/api_keys.py:21-35) only checks that a key exists and then sets `g.api_key = key` and calls the handler, ignoring the `required_scope` argument entirely. This directly violates security-policy.md \u00a76: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' As a result, any valid API key (e.g. one with `orders:write` scope) can now access endpoints that require `reports:read` (e.g. GET /orders/report), granting unauthorized access to report data.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    \\\"\\\"\\\"Require an API key carrying exactly the given scope.\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 6. API keys\\n\\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or `orders:write`.\\n- An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\\n- Report exports are readable only with the `reports:read` scope.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope comparison in the wrapper: after confirming the key is not None, add `if key.scope != required_scope: return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403` before setting `g.api_key = key` and invoking the handler.\",\n      \"file\": \"app/auth/api_keys.py\",\n      \"line\": 30\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "auth-module-split",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=e9dad343a62d5d37926356d19cbbe069141ec1bd path=app/auth.py lines=1-109]\n1: \"\"\"Authentication and authorization helpers for Shoply.\n2: \n3: Every protected endpoint MUST use these decorators (see\n4: security-policy.md). Token auth uses an opaque bearer token stored against\n5: the user; API-key auth is for machine integrations and is scope-checked.\n6: \"\"\"\n7: \n8: from __future__ import annotations\n9: \n10: import functools\n11: import hashlib\n12: import secrets\n13: \n14: from flask import g, jsonify, request\n15: \n16: from app.models import ApiKey, User, get_session\n17: \n18: # In-memory token store: token -> user_id (reset on restart; fine for demo)\n19: _TOKENS: dict[str, int] = {}\n20: \n21: ROLE_RANK = {\"user\": 1, \"manager\": 2, \"admin\": 3}\n22: \n23: \n24: def hash_password(password: str) -> str:\n25:     return hashlib.sha256(password.encode()).hexdigest()\n26: \n27: \n28: def issue_token(user: User) -> str:\n29:     token = secrets.token_hex(32)\n30:     _TOKENS[token] = user.id\n31:     return token\n32: \n33: \n34: def get_current_user() -> User | None:\n35:     \"\"\"Resolve the user from the Authorization: Bearer <token> header.\"\"\"\n36:     header = request.headers.get(\"Authorization\", \"\")\n37:     if not header.startswith(\"Bearer \"):\n38:         return None\n39:     token = header[len(\"Bearer \"):].strip()\n40:     user_id = _TOKENS.get(token)\n41:     if user_id is None:\n42:         return None\n43:     return get_session().get(User, user_id)\n44: \n45: \n46: def get_api_key() -> ApiKey | None:\n47:     \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n48:     raw = request.headers.get(\"X-Api-Key\", \"\")\n49:     if not raw:\n50:         return None\n51:     session = get_session()\n52:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n53: \n54: \n55: def require_auth(fn):\n56:     \"\"\"Reject the request unless a valid user token is presented.\"\"\"\n57: \n58:     @functools.wraps(fn)\n59:     def wrapper(*args, **kwargs):\n60:         user = get_current_user()\n61:         if user is None:\n62:             return jsonify({\"error\": \"authentication required\"}), 401\n63:         g.current_user = user\n64:         return fn(*args, **kwargs)\n65: \n66:     return wrapper\n67: \n68: \n69: def require_role(minimum_role: str):\n70:     \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n71: \n72:     def decorator(fn):\n73:         @functools.wraps(fn)\n74:         def wrapper(*args, **kwargs):\n75:             user = get_current_user()\n76:             if user is None:\n77:                 return jsonify({\"error\": \"authentication required\"}), 401\n78:             if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n79:                 return jsonify({\"error\": \"insufficient role\"}), 403\n80:             g.current_user = user\n81:             return fn(*args, **kwargs)\n82: \n83:         return wrapper\n84: \n85:     return decorator\n86: \n87: \n88: def require_api_key_scope(required_scope: str):\n89:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n90: \n91:     def decorator(fn):\n92:         @functools.wraps(fn)\n93:         def wrapper(*args, **kwargs):\n94:             key = get_api_key()\n95:             if key is None:\n96:                 return jsonify({\"error\": \"valid API key required\"}), 401\n97:             if key.scope != required_scope:\n98:                 return jsonify({\"error\": \"API key lacks required scope\"}), 403\n99:             g.api_key = key\n100:             return fn(*args, **kwargs)\n101: \n102:         return wrapper\n103: \n104:     return decorator\n105: \n106: \n107: def is_owner_or_admin(user: User, owner_id: int) -> bool:\n108:     \"\"\"Ownership check used for per-object access (orders, profiles).\"\"\"\n109:     return user.id == owner_id or user.role == \"admin\"\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "password hashing requirement bcrypt salted hash"
+                },
+                "result": "[security-policy.md:45-65] (relevance 0.11)\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n  concatenation of request-derived values into SQL is forbidden (CWE-89).\n- Dynamic identifiers (table or column names, sort keys) MUST be validated\n  against a hard-coded allowlist before being placed in a query.\n\n## 6. API keys\n\n- API keys carry exactly one scope: `reports:read`, `orders:read`, or\n  `orders:write`.\n- An endpoint accepting API keys MUST verify the key's scope matches the\n  operation with `@require_api_key_scope(...)`. Possession of a valid key\n  alone is NOT sufficient authorization.\n- Report exports are readable only with the `reports:read` scope.\n\n## 7. Review requirements\n\n- Security-relevant changes (auth code, SQL, new endpoints) require review\n  by a security champion before merge.\n\n---\n\n[security-policy.md:1-48] (relevance 0.06)\n# Shoply Security Policy\n\nThis document is the authoritative access-control and secure-coding policy\nfor the Shoply API. Pull requests that violate any rule in this document\nMUST be rejected.\n\n## 1. Authentication\n\n- Every endpoint except `GET /health` and `POST /login` requires\n  authentication: either a user bearer token (`Authorization: Bearer <token>`)\n  or a scoped API key (`X-Api-Key` header).\n- Endpoints MUST use the decorators provided in `app/auth.py`\n  (`@require_auth`, `@require_role`, `@require_api_key_scope`). Hand-rolled\n  header checks, query-string flags, or debug bypasses are forbidden.\n\n## 2. User data access rules\n\n- A user may read or update ONLY their own profile (`/users/<id>`).\n  Administrators may read or update any profile. Use\n  `is_owner_or_admin(current_user, user_id)` for this check.\n- Listing all users (`GET /users`) requires the **manager** role or above.\n- Deleting a user account requires the **admin** role.\n- Changing a user's role requires the **admin** role. A user must NEVER be\n  able to change their own role or grant themselves additional privileges.\n\n## 3. Order data access rules\n\n- A user may view ONLY their own orders. Every endpoint that fetches an\n  order by its identifier MUST verify ownership with\n  `is_owner_or_admin(current_user, order.user_id)` before returning data.\n- Listing another user's orders is restricted to that user themselves and\n  administrators.\n- Managers and admins may list all orders (`GET /orders/all`).\n- Only admins may delete or refund orders.\n\n## 4. Admin panel\n\n- Every endpoint under `/admin` requires the **admin** role, enforced with\n  `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug\n  headers, no secret query parameters, no IP allowlists.\n\n## 5. Database access (SQL)\n\n- All SQL statements MUST use bound parameters (SQLAlchemy `text()` with\n  `:name` parameters, or DB-API placeholders with a separate params\n  argument).\n- String interpolation, f-strings, `%` formatting, `.format()`, or string\n\n---\n\n[api-spec.md:1-57] (relevance 0.01)\n# Shoply API Specification\n\nBase URL: `https://api.shoply.example`\n\nRoles: `user` < `manager` < `admin` (see `security-policy.md` for the\nauthoritative access rules).\n\n## Authentication\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/health` | GET | public |\n| `/login` | POST | public |\n\n`POST /login` returns a bearer token used in the `Authorization` header.\nMachine integrations use scoped API keys in the `X-Api-Key` header.\n\n## Users\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/users` | GET | manager, admin |\n| `/users/<id>` | GET | owner or admin |\n| `/users/<id>` | PUT | owner or admin |\n| `/users/<id>` | DELETE | admin only |\n| `/users/<id>/role` | PUT | admin only; self-promotion forbidden |\n| `/users/<id>/orders` | GET | owner or admin |\n| `/users/search` | GET | manager, admin |\n\n## Orders\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders` | POST | any authenticated user (creates own order) |\n| `/orders/mine` | GET | any authenticated user (own orders only) |\n| `/orders/all` | GET | manager, admin |\n| `/orders/<id>` | GET | owner or admin |\n| `/orders/<id>` | DELETE | admin only |\n| `/orders/search` | GET | authenticated; results scoped to own orders unless admin |\n\n## Admin\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/admin/stats` | GET | admin only |\n| `/admin/audit` | GET | admin only |\n| `/admin/export` | GET | admin only |\n| `/admin/maintenance` | POST | admin only |\n\n## Reports (API-key access)\n\n| Endpoint | Method | Access |\n|---|---|---|\n| `/orders/report` | GET | API key with `reports:read` scope |\n\nAll list endpoints support `limit` and `offset` query parameters. All\ntimestamps are UTC ISO-8601."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "from app.auth",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f pattern=\"from app.auth\"]\napp/auth/__init__.py:8:from app.auth.api_keys import get_api_key, require_api_key_scope\napp/auth/__init__.py:9:from app.auth.roles import ROLE_RANK, is_owner_or_admin, require_role\napp/auth/__init__.py:10:from app.auth.tokens import (\napp/auth/roles.py:9:from app.auth.tokens import get_current_user\napp/main.py:8:from app.auth import hash_password, issue_token\napp/routes/admin.py:12:from app.auth import require_role\napp/routes/orders.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\napp/routes/users.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "from app.auth import|from app import auth|app\\.auth\\.",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=e9dad343a62d5d37926356d19cbbe069141ec1bd pattern=\"from app.auth import|from app import auth|app\\.auth\\.\"]\napp/main.py:8:from app.auth import hash_password, issue_token\napp/routes/admin.py:12:from app.auth import require_role\napp/routes/orders.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\napp/routes/users.py:13:from app.auth import is_owner_or_admin, require_auth, require_role\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "app/auth/api_keys.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e0807bddfe21da86e9063277073d9360a9e8940f path=app/auth/api_keys.py lines=1-35]\n1: \"\"\"API-key authentication for machine integrations.\"\"\"\n2: \n3: from __future__ import annotations\n4: \n5: import functools\n6: \n7: from flask import g, jsonify, request\n8: \n9: from app.models import ApiKey, get_session\n10: \n11: \n12: def get_api_key() -> ApiKey | None:\n13:     \"\"\"Resolve an API key from the X-Api-Key header.\"\"\"\n14:     raw = request.headers.get(\"X-Api-Key\", \"\")\n15:     if not raw:\n16:         return None\n17:     session = get_session()\n18:     return session.query(ApiKey).filter(ApiKey.key == raw).first()\n19: \n20: \n21: def require_api_key_scope(required_scope: str):\n22:     \"\"\"Require an API key carrying exactly the given scope.\"\"\"\n23: \n24:     def decorator(fn):\n25:         @functools.wraps(fn)\n26:         def wrapper(*args, **kwargs):\n27:             key = get_api_key()\n28:             if key is None:\n29:                 return jsonify({\"error\": \"valid API key required\"}), 401\n30:             g.api_key = key\n31:             return fn(*args, **kwargs)\n32: \n33:         return wrapper\n34: \n35:     return decorator\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR's new app/auth/api_keys.py re-implements require_api_key_scope but drops the scope comparison that the base app/auth.py had. The base version (app/auth.py:97-98) enforced `if key.scope != required_scope: return 403`. The new version (app/auth/api_keys.py:26-31) only checks that a key exists and then sets g.api_key, ignoring the required_scope argument entirely. This violates security-policy.md \u00a76: 'An endpoint accepting API keys MUST verify the key's scope matches the operation with @require_api_key_scope(...). Possession of a valid key alone is NOT sufficient authorization.' As a result, any valid API key (e.g. one scoped only to orders:read) would be accepted on a reports:read endpoint, granting unauthorized access.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/auth/api_keys.py\", \"lines\": [21, 35], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [88, 104], \"content\": \"def require_api_key_scope(required_scope: str):\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            key = get_api_key()\\n            if key is None:\\n                return jsonify({\\\"error\\\": \\\"valid API key required\\\"}), 401\\n            if key.scope != required_scope:\\n                return jsonify({\\\"error\\\": \\\"API key lacks required scope\\\"}), 403\\n            g.api_key = key\\n            return fn(*args, **kwargs)\\n        return wrapper\\n    return decorator\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"An endpoint accepting API keys MUST verify the key's scope matches the operation with `@require_api_key_scope(...)`. Possession of a valid key alone is NOT sufficient authorization.\"}\n      ],\n      \"suggested_fix\": \"Restore the scope check in require_api_key_scope: after resolving the key, compare key.scope to required_scope and return 403 on mismatch before setting g.api_key.\",\n      \"file\": \"app/auth/api_keys.py\",\n      \"line\": 30\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:api-key-scope-removal:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.9357,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "e9dad343a62d5d37926356d19cbbe069141ec1bd",
+    "pr_sha": "e0807bddfe21da86e9063277073d9360a9e8940f",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/auth/api_keys.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/auth.py",
+      "old_range": [
+        88,
+        104
+      ],
+      "new_range": null
+    },
+    {
+      "file": "app/auth/api_keys.py",
+      "old_range": null,
+      "new_range": [
+        21,
+        35
+      ]
+    }
+  ],
+  "diff_shape": "deleted_file",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 5,
+    "files_in_scope": 5,
+    "hunks_total": 5,
+    "hunks_assigned": 5,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 5,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "api-key-scope-removal",
+        "origin": "investigator",
+        "title": "require_api_key_scope no longer enforces the key's scope",
+        "files": [
+          "app/auth/api_keys.py",
+          "app/auth.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth/api_keys.py#0",
+            "file": "app/auth/api_keys.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 35,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/auth.py#0",
+            "file": "app/auth.py",
+            "old_start": 1,
+            "old_count": 109,
+            "new_start": 0,
+            "new_count": 0,
+            "change": "delete"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:api-key-scope-removal:1"
+        ],
+        "error": null
+      },
+      {
+        "section_id": "auth-module-split",
+        "origin": "investigator",
+        "title": "Split app/auth.py into app/auth package (tokens, roles, api_keys)",
+        "files": [
+          "app/auth/__init__.py",
+          "app/auth/roles.py",
+          "app/auth/tokens.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/auth/__init__.py#0",
+            "file": "app/auth/__init__.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 27,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/auth/roles.py#0",
+            "file": "app/auth/roles.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 36,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/auth/tokens.py#0",
+            "file": "app/auth/tokens.py",
+            "old_start": 0,
+            "old_count": 0,
+            "new_start": 1,
+            "new_count": 50,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          null
+        ],
+        "finding_ids": [
+          "authz:auth-module-split:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.67,
+  "base_sha": "e9dad343a62d5d37926356d19cbbe069141ec1bd",
+  "pr_sha": "e0807bddfe21da86e9063277073d9360a9e8940f",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "api-key-scope-removal"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

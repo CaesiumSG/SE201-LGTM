@@ -1,0 +1,239 @@
+{
+  "id": "paperless-ngx-global-search-mail-authz-vulnerable",
+  "repo": "paperless-ngx/paperless-ngx",
+  "pr": 6449,
+  "title": "The global search PR queried MailAccount and MailRule with plain .objects.filter() behind only a model-level has_perm check, unlike the owner-aware get_objects_for_user_owner_aware() it used for tags and correspondents, so users see other users' mail accounts and rules.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "40289cd714988d41287f1bd8bd4fd82084621be4",
+  "pr_sha": "c6e7d06bb7049367f015dc3b124bb0a3bcabcc22",
+  "files_changed": 51,
+  "python_files_changed": 4,
+  "added_lines": 337,
+  "diff_chars": 17430,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 86.2,
+  "index_seconds": 3.4,
+  "index_reused": false,
+  "index_chunks": 398,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 11,
+    "hunks_reviewed": 11,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 1,
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:serializer-relocation:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/documents/serialisers.py",
+      "line": 799,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR relocates SearchResultSerializer from src/documents/views.py to src/documents/serialisers.py and, in doing so, drops the PassUserMixin base class. The base version was `class SearchResultSerializer(DocumentSerializer, PassUserMixin)`; the new version is `class SearchResultSerializer(DocumentSerializer)`. PassUserMixin (src/documents/views.py:213-224) is what injects `user=self.request.user`"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 6,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 18,
+  "reviewer_units": 3,
+  "findings": [
+    {
+      "finding_id": "authz:global-search-view:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new GlobalSearchView returns MailRule and MailAccount objects (both subclasses of ModelWithOwner, i.e. owner-scoped objects) using a plain `MailRule.objects.filter(...)` / `MailAccount.objects.filter(...)` queryset, gated only by the global `paperless_mail.view_mailrule` / `paperless_mail.view_mailaccount` permission. Unlike documents, tags, correspondents, document types and storage paths \u2014 which are filtered through `get_objects_for_user_owner_aware` \u2014 these owner-aware objects are not restricted to the requester's owned/unowned/permissioned set. Per the policy, global permissions only determine whether a user can access the area, while individual objects still have object-level permissions. A user with the global view permission can therefore enumerate and view the names of mail rules/accounts owned by other users, an IDOR-style exposure of objects the requester does not own.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            1240,
+            1250
+          ],
+          "source": null,
+          "content": "mail_rules = (\n    MailRule.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n    if request.user.has_perm(\"paperless_mail.view_mailrule\")\n    else []\n)\nmail_accounts = (\n    MailAccount.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n    if request.user.has_perm(\"paperless_mail.view_mailaccount\")\n    else []\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/paperless_mail/models.py",
+          "lines": [
+            8,
+            58
+          ],
+          "source": null,
+          "content": "class MailAccount(document_models.ModelWithOwner):\nclass MailRule(document_models.ModelWithOwner):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/permissions.py",
+          "lines": [
+            126,
+            135
+          ],
+          "source": null,
+          "content": "def get_objects_for_user_owner_aware(user, perms, Model) -> QuerySet:\n    objects_owned = Model.objects.filter(owner=user)\n    objects_unowned = Model.objects.filter(owner__isnull=True)\n    objects_with_perms = get_objects_for_user(user=user, perms=perms, klass=Model, accept_global_perms=False)\n    return objects_owned | objects_unowned | objects_with_perms",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/usage.md",
+          "content": "Global permissions define what areas of the app and API endpoints the user can access. For example, they determine if a user can create, edit, delete or view _any_ documents, but individual documents themselves still have \"object-level\" permissions.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Filter mail_rules and mail_accounts through get_objects_for_user_owner_aware(request.user, \"view_mailrule\"/\"view_mailaccount\", MailRule/MailAccount) so only objects the requester owns, that are unowned, or that they have explicit object-level permission to view are returned.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.328,
+      "kev_verdict": "not_real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/documents/views.py",
+      "line": 1240,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:serializer-relocation:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR relocates SearchResultSerializer from src/documents/views.py to src/documents/serialisers.py and, in doing so, drops the PassUserMixin base class. The base version was `class SearchResultSerializer(DocumentSerializer, PassUserMixin)`; the new version is `class SearchResultSerializer(DocumentSerializer)`. PassUserMixin (src/documents/views.py:213-224) is what injects `user=self.request.user` into the serializer via get_serializer. DocumentSerializer's to_representation (and the permission fields it exposes, e.g. user_can_change / is_shared_by_requester at serialisers.py:790-792) rely on that user to compute object-level permissions. The new to_representation (serialisers.py:800-824) fetches the full Document by user-controlled id (`Document.objects...get(id=instance[\"id\"])`) and serializes it without the user context, so the object-level permission check that the policy requires (docs/api.md: 'the user must be the object owner or a superuser'; docs/usage.md: 'individual documents themselves still have object-level permissions') is no longer applied. This newly exposes the relocated serializer to returning documents the requester is not permitted to view.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/documents/serialisers.py",
+          "lines": [
+            799,
+            824
+          ],
+          "source": null,
+          "content": "class SearchResultSerializer(DocumentSerializer):\n    def to_representation(self, instance):\n        doc = (\n            Document.objects.select_related(\n                \"correspondent\",\n                \"storage_path\",\n                \"document_type\",\n                \"owner\",\n            )\n            .prefetch_related(\"tags\", \"custom_fields\", \"notes\")\n            .get(id=instance[\"id\"])\n        )\n        ...\n        r = super().to_representation(doc)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            213,
+            224
+          ],
+          "source": null,
+          "content": "class PassUserMixin(GenericAPIView):\n    \"\"\"\n    Pass a user object to serializer\n    \"\"\"\n\n    def get_serializer(self, *args, **kwargs):\n        kwargs.setdefault(\"user\", self.request.user)\n        kwargs.setdefault(\n            \"full_perms\",\n            self.request.query_params.get(\"full_perms\", False),\n        )\n        return super().get_serializer(*args, **kwargs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            829,
+            833
+          ],
+          "source": null,
+          "content": "    def get_serializer_class(self):\n        if self._is_search_request():\n            return SearchResultSerializer\n        else:\n            return DocumentSerializer",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/usage.md",
+          "content": "they determine if a user can create, edit, delete or view _any_ documents, but individual documents themselves still have \"object-level\" permissions.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/api.md",
+          "content": "If these parameters are supplied the object's permissions will be overwritten, assuming the authenticated user has permission to do so (the user must be the object owner or a superuser).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the user context for the relocated serializer: either keep `PassUserMixin` in the SearchResultSerializer base classes, or have UnifiedSearchViewSet (which already inherits PassUserMixin via DocumentViewSet) pass `user=self.request.user` when instantiating SearchResultSerializer, and ensure DocumentSerializer's permission logic is invoked with that user so object-level permissions are enforced before returning the document.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8153,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/documents/serialisers.py",
+      "line": 799,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "paperless-ngx-global-search-mail-authz",
+  "url": "https://github.com/paperless-ngx/paperless-ngx/pull/6449",
+  "category": "authz",
+  "cwe": "CWE-863",
+  "ghsa": "GHSA-96jx-fj7m-qh6x",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/documents/views.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": false
+}

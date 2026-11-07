@@ -1,0 +1,1344 @@
+{
+  "id": "piccolo-savepoint-name-sqli-vulnerable",
+  "repo": "piccolo-orm/piccolo",
+  "pr": 778,
+  "title": "Adding transaction savepoints interpolated the caller-supplied savepoint name into SAVEPOINT/ROLLBACK TO/RELEASE statements with f-strings.",
+  "mode": "lgtm",
+  "model": "bedrock:openai.gpt-oss-120b-1:0",
+  "base": "021d782b706ec6ed33b88355477c31b5826d8d26",
+  "pr_sha": "72b85975ef4364cb5609c5c6af5240e4f4782f90",
+  "files_changed": 5,
+  "python_files_changed": 4,
+  "added_lines": 279,
+  "diff_chars": 14554,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 177.1,
+  "index_seconds": 2.6,
+  "index_reused": false,
+  "index_chunks": 198,
+  "semgrep_findings_total": 7,
+  "semgrep_findings_in_diff": 7,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 3,
+    "unsupported": 1,
+    "not_judged": 0
+  },
+  "n_findings": 4,
+  "agent_errors": [
+    {
+      "source": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:312",
+      "stage": "sast_triage",
+      "message": "Agent did not produce parsable structured output."
+    }
+  ],
+  "verdicts": {
+    "vulnerable": 3,
+    "safe": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:132",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "piccolo/engine/postgres.py",
+      "line": 132,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The flagged f\u2011string builds a SQL command using the savepoint name directly: `f\"ROLLBACK TO SAVEPOINT {self.name}\"`. The `name` attribute originates from the caller of `Savepoint.rollback_to`, which receives the name from user\u2011controlled input (e.g., a string passed to `PostgresTransaction.rollback_to(savepoint_name)`). Because the name is interpolated without any validation or parameterisation, a"
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:137",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "piccolo/engine/postgres.py",
+      "line": 137,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The flagged line builds a SQL command using an f\u2011string that interpolates the savepoint name directly into the query (f\"RELEASE SAVEPOINT {self.name}\"). The name originates from the Savepoint class constructor, which receives a string supplied by the caller. No validation or parameterisation is applied before it is concatenated into the SQL statement, allowing a malicious caller to inject arbitrar"
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:317",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 317,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The flagged code builds a SQL statement using an f\u2011string that interpolates the savepoint name directly into the query (e.g. `f\"RELEASE SAVEPOINT {self.name}\"`). The `name` attribute originates from user\u2011controlled input when a savepoint is created via `SQLiteTransaction.savepoint(name)` or `rollback_to(savepoint_name)`. Because the name is inserted without any validation or parameterisation, an a"
+    }
+  ],
+  "tool_calls_total": 19,
+  "investigator_tool_calls": 11,
+  "sast_triage_tool_calls": 34,
+  "sast_triage_units": 7,
+  "reviewer_tool_calls": 8,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:132",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged f\u2011string builds a SQL command using the savepoint name directly: `f\"ROLLBACK TO SAVEPOINT {self.name}\"`. The `name` attribute originates from the caller of `Savepoint.rollback_to`, which receives the name from user\u2011controlled input (e.g., a string passed to `PostgresTransaction.rollback_to(savepoint_name)`). Because the name is interpolated without any validation or parameterisation, an attacker could inject arbitrary SQL via a crafted savepoint name, leading to a possible SQL injection vulnerability.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            124,
+            138
+          ],
+          "source": null,
+          "content": "class Savepoint:\n    def __init__(self, name: str, transaction: PostgresTransaction):\n        self.name = name\n        self.transaction = transaction\n\n    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            166,
+            176
+          ],
+          "source": null,
+          "content": "def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n    ...\n    async def rollback_to(self, savepoint_name: str):\n        await Savepoint(name=savepoint_name, transaction=self).rollback_to()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Validate the savepoint name against a whitelist of allowed identifiers (e.g., alphanumeric with underscores) or, better, avoid interpolating it directly by using parameterised queries if the driver supports it. For example, enforce `re.fullmatch(r\"[A-Za-z_][A-Za-z0-9_]*\", savepoint_name)` before constructing the SQL, or use a safe API that accepts the savepoint name as a separate argument.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.883,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/postgres.py",
+      "line": 132,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:137",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line builds a SQL command using an f\u2011string that interpolates the savepoint name directly into the query (f\"RELEASE SAVEPOINT {self.name}\"). The name originates from the Savepoint class constructor, which receives a string supplied by the caller. No validation or parameterisation is applied before it is concatenated into the SQL statement, allowing a malicious caller to inject arbitrary SQL via the savepoint name.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            124,
+            138
+          ],
+          "source": null,
+          "content": "class Savepoint:\n    def __init__(self, name: str, transaction: PostgresTransaction):\n        self.name = name\n        self.transaction = transaction\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            368,
+            376
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            131,
+            139
+          ],
+          "source": null,
+          "content": "async def rollback_to(self):\n    await self.transaction.connection.execute(\n        f\"ROLLBACK TO SAVEPOINT {self.name}\"\n    )\n\nasync def release(self):\n    await self.transaction.connection.execute(\n        f\"RELEASE SAVEPOINT {self.name}\"\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            225,
+            229
+          ],
+          "source": null,
+          "content": "async def rollback_to(self, savepoint_name: str):\n    \"\"\"\n    Used to rollback to a savepoint just using the name.\n    \"\"\"\n    await Savepoint(name=savepoint_name, transaction=self).rollback_to()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            237,
+            240
+          ],
+          "source": null,
+          "content": "async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n    name = name or f\"savepoint_{self.get_savepoint_id()}\"\n    await self.connection.execute(f\"SAVEPOINT {name}\")\n    return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            311,
+            319
+          ],
+          "source": null,
+          "content": "async def rollback_to(self):\n    await self.transaction.connection.execute(\n        f\"ROLLBACK TO SAVEPOINT {self.name}\"\n    )\n\nasync def release(self):\n    await self.transaction.connection.execute(\n        f\"RELEASE SAVEPOINT {self.name}\"\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            402,
+            406
+          ],
+          "source": null,
+          "content": "async def rollback_to(self, savepoint_name: str):\n    await Savepoint(name=savepoint_name, transaction=self).rollback_to()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            414,
+            417
+          ],
+          "source": null,
+          "content": "async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n    name = name or f\"savepoint_{self.get_savepoint_id()}\"\n    await self.connection.execute(f\"SAVEPOINT {name}\")\n    return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Replace the f\u2011string with a parameterised query, e.g. `await self.transaction.connection.execute('RELEASE SAVEPOINT $1', self.name)` or validate `self.name` against a strict whitelist of allowed savepoint identifiers before interpolating it.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8517,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/postgres.py",
+      "line": 137,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:317",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged code builds a SQL statement using an f\u2011string that interpolates the savepoint name directly into the query (e.g. `f\"RELEASE SAVEPOINT {self.name}\"`). The `name` attribute originates from user\u2011controlled input when a savepoint is created via `SQLiteTransaction.savepoint(name)` or `rollback_to(savepoint_name)`. Because the name is inserted without any validation or parameterisation, an attacker could supply a malicious savepoint name that alters the SQL command, leading to SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            306,
+            319
+          ],
+          "source": null,
+          "content": "class Savepoint:\n    def __init__(self, name: str, transaction: SQLiteTransaction):\n        self.name = name\n        self.transaction = transaction\n\n    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            414,
+            417
+          ],
+          "source": null,
+          "content": "async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n    name = name or f\"savepoint_{self.get_savepoint_id()}\"\n    await self.connection.execute(f\"SAVEPOINT {name}\")\n    return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            416,
+            416
+          ],
+          "source": null,
+          "content": "await self.connection.execute(f\"SAVEPOINT {name}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            398,
+            405
+          ],
+          "source": null,
+          "content": "async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Validate the savepoint name against a strict whitelist (e.g., allow only alphanumeric characters) or generate the name internally without exposing it to callers. Prefer using parameterised queries if the DB driver supports placeholders for identifiers, otherwise ensure the name cannot contain characters that could break the SQL syntax.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8881,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 317,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:392",
+      "cwe_id": "CWE-89",
+      "explanation": "The f\u2011string builds a BEGIN statement using `self.transaction_type.value`. `transaction_type` is an instance of the `TransactionType` enum defined in the same module, whose possible values are the constant strings \"DEFERRED\", \"IMMEDIATE\" and \"EXCLUSIVE\" (see lines 242\u2011251). These values are not derived from user input, so the constructed SQL cannot be influenced by an attacker. Therefore the use of an f\u2011string here does not constitute a SQL injection risk.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            391,
+            393
+          ],
+          "source": null,
+          "content": "    async def begin(self):\n        await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            242,
+            251
+          ],
+          "source": null,
+          "content": "class TransactionType(enum.Enum):\n    \"\"\"\n    See the `SQLite <https://www.sqlite.org/lang_transaction.html>`_ docs for\n    more info.\n    \"\"\"\n\n    deferred = \"DEFERRED\"\n    immediate = \"IMMEDIATE\"\n    exclusive = \"EXCLUSIVE\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection\n------------------------\n\nIf you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Replace the f\u2011string with a static string or a mapping, e.g., `await self.connection.execute(f\"BEGIN {self.transaction_type.name}\")` is already safe because the enum is controlled. No change is required for security, but for consistency you could use a constant template like `await self.connection.execute(\"BEGIN \" + self.transaction_type.value)`.",
+      "semgrep_rule_id": "lgtm-python-sqli-fstring",
+      "semgrep_severity": "ERROR",
+      "semgrep_message": "Possible SQL injection: SQL query built with an f-string. Use parameterized queries (placeholders) instead of string interpolation.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.4308,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 392,
+      "tool_calls_used": 4,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:132",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 11"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 150,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=120-150]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class PostgresTransaction:\n127:     \"\"\"\n128:     Used for wrapping queries in a transaction, using a context manager.\n129:     Currently it's async only.\n130: \n131:     Usage::\n132: \n133:         async with engine.transaction():\n134:             # Run some queries:\n135:             await Band.select().run()\n136: \n137:     \"\"\"\n138: \n139:     __slots__ = (\"engine\", \"transaction\", \"context\", \"connection\")\n140: \n141:     def __init__(self, engine: PostgresEngine):\n142:         self.engine = engine\n143:         if self.engine.current_transaction.get():\n144:             raise TransactionError(\n145:                 \"A transaction is already active - nested transactions aren't \"\n146:                 \"currently supported.\"\n147:             )\n148: \n149:     async def __aenter__(self):\n150:         if self.engine.pool:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 150,
+                  "end_line": 210,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=150-210]\n150:             # Run some queries:\n151:             await Band.select().run()\n152: \n153:     \"\"\"\n154: \n155:     __slots__ = (\n156:         \"engine\",\n157:         \"transaction\",\n158:         \"context\",\n159:         \"connection\",\n160:         \"_savepoint_id\",\n161:         \"_parent\",\n162:         \"_committed\",\n163:         \"_rolled_back\",\n164:     )\n165: \n166:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n167:         \"\"\"\n168:         :param allow_nested:\n169:             If ``True`` then if we try creating a new transaction when another\n170:             is already active, we treat this as a no-op::\n171: \n172:                 async with DB.transaction():\n173:                     async with DB.transaction():\n174:                         pass\n175: \n176:             If we want to disallow this behaviour, then setting\n177:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n178:             raised.\n179: \n180:         \"\"\"\n181:         self.engine = engine\n182:         current_transaction = self.engine.current_transaction.get()\n183: \n184:         self._savepoint_id = 0\n185:         self._parent = None\n186:         self._committed = False\n187:         self._rolled_back = False\n188: \n189:         if current_transaction:\n190:             if allow_nested:\n191:                 self._parent = current_transaction\n192:             else:\n193:                 raise TransactionError(\n194:                     \"A transaction is already active - nested transactions \"\n195:                     \"aren't allowed.\"\n196:                 )\n197: \n198:     async def __aenter__(self) -> PostgresTransaction:\n199:         if self._parent is not None:\n200:             return self._parent\n201: \n202:         self.connection = await self.get_connection()\n203:         self.transaction = self.connection.transaction()\n204:         await self.begin()\n205:         self.context = self.engine.current_transaction.set(self)\n206:         return self\n207: \n208:     async def get_connection(self):\n209:         if self.engine.pool:\n210:             return await self.engine.pool.acquire()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection"
+                },
+                "result": "[docs/src/piccolo/features/security.rst:1-12] (relevance 0.40)\n.. _Security:\n\nSecurity\n========\n\nSQL Injection protection\n------------------------\n\nIf you look under the hood, Piccolo uses a custom class called ``QueryString``\nfor composing queries. It keeps query parameters separate from the query\nstring, so we can pass parameterised queries to the engine. This helps\nprevent SQL Injection attacks.\n\n---\n\n[docs/src/piccolo/query_types/insert.rst:1-35] (relevance 0.31)\n.. _Insert:\n\nInsert\n======\n\nThis is used to insert rows into the table.\n\n.. code-block:: python\n\n    >>> await Band.insert(Band(name=\"Pythonistas\"))\n    [{'id': 3}]\n\nWe can insert multiple rows in one go:\n\n.. code-block:: python\n\n    await Band.insert(\n        Band(name=\"Darts\"),\n        Band(name=\"Gophers\")\n    )\n\n-------------------------------------------------------------------------------\n\nadd\n---\n\nYou can also compose it as follows:\n\n.. code-block:: python\n\n    await Band.insert().add(\n        Band(name=\"Darts\")\n    ).add(\n        Band(name=\"Gophers\")\n    )\n\n---\n\n[docs/src/piccolo/schema/advanced.rst:151-230] (relevance 0.30)\nclass Ticket(Table):\n        class Extras(str, enum.Enum):\n            drink = \"drink\"\n            snack = \"snack\"\n            program = \"program\"\n\n        extras = Array(Varchar(), choices=Extras)\n\nNote how you pass ``choices`` to ``Array``, and not the ``base_column``:\n\n.. code-block:: python\n\n    # CORRECT:\n    Array(Varchar(), choices=Extras)\n\n    # INCORRECT:\n    Array(Varchar(choices=Extras))\n\nWe can then use the ``Enum`` in our queries:\n\n.. code-block:: python\n\n    >>> await Ticket.insert(\n    ...     Ticket(extras=[Extras.drink, Extras.snack]),\n    ...     Ticket(extras=[Extras.program]),\n    ... )\n\n\n-------------------------------------------------------------------------------\n\nReflection\n----------\n\nThis is a very advanced feature, which is only required for specialist use\ncases. Currently, just Postgres is supported.\n\nInstead of writing your ``Table`` definitions in a ``tables.py`` file, Piccolo\ncan dynamically create them at run time, by inspecting the database. These\n``Table`` classes are then stored in memory, using a singleton object called\n``TableStorage``.\n\nSome example use cases:\n\n* You have a very dynamic database, where new tables are being created\n  constantly, so updating a ``tables.py`` is impractical.\n* You use Piccolo on the command line to explore databases.\n\nFull reflection\n~~~~~~~~~~~~~~~\n\nHere's an example, where we reflect the entire schema:\n\n.. code-block:: python\n\n    from piccolo.table_reflection import TableStorage\n\n    storage = TableStorage()\n    await storage.reflect(schema_name=\"music\")\n\n``Table`` objects are accessible from ``TableStorage.tables``:\n\n.. code-block:: python\n\n    >>> storage.tables\n    {\"music.Band\": <class 'Band'>, ... }\n\n    >>> Band = storage.tables[\"music.Band\"]\n\nThen you can use them like your normal ``Table`` classes:\n\n.. code-block:: python\n\n    >>> await Band.select()\n    [{'id': 1, 'name': 'Pythonistas', 'manager': 1}, ...]\n\n\nPartial reflection\n~~~~~~~~~~~~~~~~~~\n\nFull schema reflection can be a heavy process based on the size of your schema.\n\n---\n\n[docs/src/piccolo/features/syntax.rst:1-27] (relevance 0.27)\nSyntax\n======\n\nAs close as possible to SQL\n---------------------------\n\nThe classes / methods / functions in Piccolo mirror their SQL counterparts as\nclosely as possible.\n\nFor example:\n\n* In other ORMs, you define models - in Piccolo you define tables.\n* Rather than using a filter method, you use a `where` method like in SQL.\n\n-------------------------------------------------------------------------------\n\nGet the SQL at any time\n-----------------------\n\nAt any time you can access the ``__str__`` method of a query, to see the\nunderlying SQL - making the ORM feel less magic.\n\n.. code-block:: python\n\n    >>> query = Band.select(Band.name).where(Band.popularity >= 100)\n    >>> print(query)\n    'SELECT name from band where popularity > 100'\n\n---\n\n[CHANGES.rst:419-492] (relevance 0.25)\n-------------------------------------------------------------------------------\n\n0.88.0\n------\n\nFixed a bug with migrations - when using ``db_column_name`` it wasn't being\nused in some alter statements. Thanks to @theelderbeever for reporting this\nissue.\n\n.. code-block:: python\n\n  class Concert(Table):\n      # We use `db_column_name` when the column name is problematic - e.g. if\n      # it clashes with a Python keyword.\n      in_ = Varchar(db_column_name='in')\n\n-------------------------------------------------------------------------------\n\n0.87.0\n------\n\nWhen using ``get_or_create`` with ``prefetch`` the behaviour was inconsistent -\nit worked as expected when the row already existed, but prefetch wasn't working\nif the row was being created. This now works as expected:\n\n.. code-block:: python\n\n  >>> band = Band.objects(Band.manager).get_or_create(\n  ...     (Band.name == \"New Band 2\") & (Band.manager == 1)\n  ... )\n\n  >>> band.manager\n  <Manager: 1>\n  >>> band.manager.name\n  \"Mr Manager\"\n\nThanks to @backwardspy for reporting this issue.\n\n-------------------------------------------------------------------------------\n\n0.86.0\n------\n\nAdded the ``Email`` column type. It's basically identical to ``Varchar``,\nexcept that when we use ``create_pydantic_model`` we add email validation\nto the generated Pydantic model.\n\n.. code-block:: python\n\n  from piccolo.columns.column_types import Email\n  from piccolo.table import Table\n  from piccolo.utils.pydantic import create_pydantic_model\n\n\n  class MyTable(Table):\n      email = Email()\n\n\n  model = create_pydantic_model(MyTable)\n\n  model(email=\"not a valid email\")\n  # ValidationError!\n\nThanks to @sinisaos for implementing this feature.\n\n-------------------------------------------------------------------------------\n\n0.85.1\n------\n\nFixed a bug with migrations - when run backwards, ``raw`` was being called\ninstead of ``raw_backwards``. Thanks to @translunar for the fix.\n\n-------------------------------------------------------------------------------"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:132\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged f\u2011string builds a SQL command using the savepoint name directly: `f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"`. The `name` attribute originates from the caller of `Savepoint.rollback_to`, which receives the name from user\u2011controlled input (e.g., a string passed to `PostgresTransaction.rollback_to(savepoint_name)`). Because the name is interpolated without any validation or parameterisation, an attacker could inject arbitrary SQL via a crafted savepoint name, leading to a possible SQL injection vulnerability.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/postgres.py\",\n      \"lines\": [124, 138],\n      \"content\": \"class Savepoint:\\n    def __init__(self, name: str, transaction: PostgresTransaction):\\n        self.name = name\\n        self.transaction = transaction\\n\\n    async def rollback_to(self):\\n        await self.transaction.connection.execute(\\n            f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n        )\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/postgres.py\",\n      \"lines\": [166, 176],\n      \"content\": \"def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\\n    ...\\n    async def rollback_to(self, savepoint_name: str):\\n        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\"\n    }\n  ],\n  \"suggested_fix\": \"Validate the savepoint name against a whitelist of allowed identifiers (e.g., alphanumeric with underscores) or, better, avoid interpolating it directly by using parameterised queries if the driver supports it. For example, enforce `re.fullmatch(r\\\"[A-Za-z_][A-Za-z0-9_]*\\\", savepoint_name)` before constructing the SQL, or use a safe API that accepts the savepoint name as a separate argument.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:137",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 9"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 150,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=120-150]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class PostgresTransaction:\n127:     \"\"\"\n128:     Used for wrapping queries in a transaction, using a context manager.\n129:     Currently it's async only.\n130: \n131:     Usage::\n132: \n133:         async with engine.transaction():\n134:             # Run some queries:\n135:             await Band.select().run()\n136: \n137:     \"\"\"\n138: \n139:     __slots__ = (\"engine\", \"transaction\", \"context\", \"connection\")\n140: \n141:     def __init__(self, engine: PostgresEngine):\n142:         self.engine = engine\n143:         if self.engine.current_transaction.get():\n144:             raise TransactionError(\n145:                 \"A transaction is already active - nested transactions aren't \"\n146:                 \"currently supported.\"\n147:             )\n148: \n149:     async def __aenter__(self):\n150:         if self.engine.pool:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 9"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 200,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=120-200]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class PostgresTransaction:\n127:     \"\"\"\n128:     Used for wrapping queries in a transaction, using a context manager.\n129:     Currently it's async only.\n130: \n131:     Usage::\n132: \n133:         async with engine.transaction():\n134:             # Run some queries:\n135:             await Band.select().run()\n136: \n137:     \"\"\"\n138: \n139:     __slots__ = (\"engine\", \"transaction\", \"context\", \"connection\")\n140: \n141:     def __init__(self, engine: PostgresEngine):\n142:         self.engine = engine\n143:         if self.engine.current_transaction.get():\n144:             raise TransactionError(\n145:                 \"A transaction is already active - nested transactions aren't \"\n146:                 \"currently supported.\"\n147:             )\n148: \n149:     async def __aenter__(self):\n150:         if self.engine.pool:\n151:             self.connection = await self.engine.pool.acquire()\n152:         else:\n153:             self.connection = await self.engine.get_new_connection()\n154: \n155:         self.transaction = self.connection.transaction()\n156:         await self.transaction.start()\n157:         self.context = self.engine.current_transaction.set(self)\n158: \n159:     async def commit(self):\n160:         await self.transaction.commit()\n161: \n162:     async def rollback(self):\n163:         await self.transaction.rollback()\n164: \n165:     async def __aexit__(self, exception_type, exception, traceback):\n166:         if exception:\n167:             await self.rollback()\n168:         else:\n169:             await self.commit()\n170: \n171:         if self.engine.pool:\n172:             await self.engine.pool.release(self.connection)\n173:         else:\n174:             await self.connection.close()\n175: \n176:         self.engine.current_transaction.reset(self.context)\n177: \n178:         return exception is None\n179: \n180: \n181: ###############################################################################\n182: \n183: \n184: class PostgresEngine(Engine[t.Optional[PostgresTransaction]]):\n185:     \"\"\"\n186:     Used to connect to PostgreSQL.\n187: \n188:     :param config:\n189:         The config dictionary is passed to the underlying database adapter,\n190:         asyncpg. Common arguments you're likely to need are:\n191: \n192:         * host\n193:         * port\n194:         * user\n195:         * password\n196:         * database\n197: \n198:         For example, ``{'host': 'localhost', 'port': 5432}``.\n199: \n200:         See the `asyncpg docs <https://magicstack.github.io/asyncpg/current/api/index.html#connection>`_\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:137\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged line builds a SQL command using an f\u2011string that interpolates the savepoint name directly into the query (f\\\"RELEASE SAVEPOINT {self.name}\\\"). The name originates from the Savepoint class constructor, which receives a string supplied by the caller. No validation or parameterisation is applied before it is concatenated into the SQL statement, allowing a malicious caller to inject arbitrary SQL via the savepoint name.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/postgres.py\",\n      \"lines\": [124, 138],\n      \"content\": \"class Savepoint:\\n    def __init__(self, name: str, transaction: PostgresTransaction):\\n        self.name = name\\n        self.transaction = transaction\\n\\n    async def release(self):\\n        await self.transaction.connection.execute(\\n            f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n        )\"\n    }\n  ],\n  \"suggested_fix\": \"Replace the f\u2011string with a parameterised query, e.g. `await self.transaction.connection.execute('RELEASE SAVEPOINT $1', self.name)` or validate `self.name` against a strict whitelist of allowed savepoint identifiers before interpolating it.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/postgres.py:239",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 9"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 200,
+                  "end_line": 260,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=200-260]\n200:         See the `asyncpg docs <https://magicstack.github.io/asyncpg/current/api/index.html#connection>`_\n201:         for all available options.\n202: \n203:     :param extensions:\n204:         When the engine starts, it will try and create these extensions\n205:         in Postgres. If you're using a read only database, set this value to an\n206:         empty tuple ``()``.\n207: \n208:     :param log_queries:\n209:         If ``True``, all SQL and DDL statements are printed out before being\n210:         run. Useful for debugging.\n211: \n212:     :param log_responses:\n213:         If ``True``, the raw response from each query is printed out. Useful\n214:         for debugging.\n215: \n216:     :param extra_nodes:\n217:         If you have additional database nodes (e.g. read replicas) for the\n218:         server, you can specify them here. It's a mapping of a memorable name\n219:         to a ``PostgresEngine`` instance. For example::\n220: \n221:             DB = PostgresEngine(\n222:                 config={'database': 'main_db'},\n223:                 extra_nodes={\n224:                     'read_replica_1': PostgresEngine(\n225:                         config={\n226:                             'database': 'main_db',\n227:                             host: 'read_replicate.my_db.com'\n228:                         },\n229:                         extensions=()\n230:                     )\n231:                 }\n232:             )\n233: \n234:         Note how we set ``extensions=()``, because it's a read only database.\n235: \n236:         When executing a query, you can specify one of these nodes instead\n237:         of the main database. For example::\n238: \n239:             >>> await MyTable.select().run(node=\"read_replica_1\")\n240: \n241:     \"\"\"  # noqa: E501\n242: \n243:     __slots__ = (\n244:         \"config\",\n245:         \"extensions\",\n246:         \"log_queries\",\n247:         \"log_responses\",\n248:         \"extra_nodes\",\n249:         \"pool\",\n250:         \"current_transaction\",\n251:     )\n252: \n253:     engine_type = \"postgres\"\n254:     min_version_number = 10\n255: \n256:     def __init__(\n257:         self,\n258:         config: t.Dict[str, t.Any],\n259:         extensions: t.Sequence[str] = (\"uuid-ossp\",),\n260:         log_queries: bool = False,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 260,
+                  "end_line": 340,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=260-340]\n260:         log_queries: bool = False,\n261:         log_responses: bool = False,\n262:         extra_nodes: t.Mapping[str, PostgresEngine] = None,\n263:     ) -> None:\n264:         if extra_nodes is None:\n265:             extra_nodes = {}\n266: \n267:         self.config = config\n268:         self.extensions = extensions\n269:         self.log_queries = log_queries\n270:         self.log_responses = log_responses\n271:         self.extra_nodes = extra_nodes\n272:         self.pool: t.Optional[Pool] = None\n273:         database_name = config.get(\"database\", \"Unknown\")\n274:         self.current_transaction = contextvars.ContextVar(\n275:             f\"pg_current_transaction_{database_name}\", default=None\n276:         )\n277:         super().__init__()\n278: \n279:     @staticmethod\n280:     def _parse_raw_version_string(version_string: str) -> float:\n281:         \"\"\"\n282:         The format of the version string isn't always consistent. Sometimes\n283:         it's just the version number e.g. '9.6.18', and sometimes\n284:         it contains specific build information e.g.\n285:         '12.4 (Ubuntu 12.4-0ubuntu0.20.04.1)'. Just extract the major and\n286:         minor version numbers.\n287:         \"\"\"\n288:         version_segment = version_string.split(\" \")[0]\n289:         major, minor = version_segment.split(\".\")[:2]\n290:         return float(f\"{major}.{minor}\")\n291: \n292:     async def get_version(self) -> float:\n293:         \"\"\"\n294:         Returns the version of Postgres being run.\n295:         \"\"\"\n296:         try:\n297:             response: t.Sequence[t.Dict] = await self._run_in_new_connection(\n298:                 \"SHOW server_version\"\n299:             )\n300:         except ConnectionRefusedError as exception:\n301:             # Suppressing the exception, otherwise importing piccolo_conf.py\n302:             # containing an engine will raise an ImportError.\n303:             colored_warning(f\"Unable to connect to database - {exception}\")\n304:             return 0.0\n305:         else:\n306:             version_string = response[0][\"server_version\"]\n307:             return self._parse_raw_version_string(\n308:                 version_string=version_string\n309:             )\n310: \n311:     def get_version_sync(self) -> float:\n312:         return run_sync(self.get_version())\n313: \n314:     async def prep_database(self):\n315:         for extension in self.extensions:\n316:             try:\n317:                 await self._run_in_new_connection(\n318:                     f'CREATE EXTENSION IF NOT EXISTS \"{extension}\"',\n319:                 )\n320:             except asyncpg.exceptions.InsufficientPrivilegeError:\n321:                 colored_warning(\n322:                     f\"=> Unable to create {extension} extension - some \"\n323:                     \"functionality may not behave as expected. Make sure \"\n324:                     \"your database user has permission to create \"\n325:                     \"extensions, or add it manually using \"\n326:                     f'`CREATE EXTENSION \"{extension}\";`',\n327:                     level=Level.medium,\n328:                 )\n329: \n330:     ###########################################################################\n331:     # These typos existed in the codebase for a while, so leaving these proxy\n332:     # methods for now to ensure backwards compatibility.\n333: \n334:     async def start_connnection_pool(self, **kwargs) -> None:\n335:         colored_warning(\n336:             \"`start_connnection_pool` is a typo - please change it to \"\n337:             \"`start_connection_pool`.\",\n338:             category=DeprecationWarning,\n339:         )\n340:         return await self.start_connection_pool()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 340,
+                  "end_line": 420,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/postgres.py lines=340-420]\n340:         return await self.start_connection_pool()\n341: \n342:     async def close_connnection_pool(self, **kwargs) -> None:\n343:         colored_warning(\n344:             \"`close_connnection_pool` is a typo - please change it to \"\n345:             \"`close_connection_pool`.\",\n346:             category=DeprecationWarning,\n347:         )\n348:         return await self.close_connection_pool()\n349: \n350:     ###########################################################################\n351: \n352:     async def start_connection_pool(self, **kwargs) -> None:\n353:         if self.pool:\n354:             colored_warning(\n355:                 \"A pool already exists - close it first if you want to create \"\n356:                 \"a new pool.\",\n357:             )\n358:         else:\n359:             config = dict(self.config)\n360:             config.update(**kwargs)\n361:             self.pool = await asyncpg.create_pool(**config)\n362: \n363:     async def close_connection_pool(self) -> None:\n364:         if self.pool:\n365:             await self.pool.close()\n366:             self.pool = None\n367:         else:\n368:             colored_warning(\"No pool is running.\")\n369: \n370:     ###########################################################################\n371: \n372:     async def get_new_connection(self) -> Connection:\n373:         \"\"\"\n374:         Returns a new connection - doesn't retrieve it from the pool.\n375:         \"\"\"\n376:         return await asyncpg.connect(**self.config)\n377: \n378:     ###########################################################################\n379: \n380:     async def batch(\n381:         self,\n382:         query: Query,\n383:         batch_size: int = 100,\n384:         node: t.Optional[str] = None,\n385:     ) -> AsyncBatch:\n386:         \"\"\"\n387:         :param query:\n388:             The database query to run.\n389:         :param batch_size:\n390:             How many rows to fetch on each iteration.\n391:         :param node:\n392:             Which node to run the query on (see ``extra_nodes``). If not\n393:             specified, it runs on the main Postgres node.\n394:         \"\"\"\n395:         engine: t.Any = self.extra_nodes.get(node) if node else self\n396:         connection = await engine.get_new_connection()\n397:         return AsyncBatch(\n398:             connection=connection, query=query, batch_size=batch_size\n399:         )\n400: \n401:     ###########################################################################\n402: \n403:     async def _run_in_pool(self, query: str, args: t.Sequence[t.Any] = None):\n404:         if args is None:\n405:             args = []\n406:         if not self.pool:\n407:             raise ValueError(\"A pool isn't currently running.\")\n408: \n409:         async with self.pool.acquire() as connection:\n410:             response = await connection.fetch(query, *args)\n411: \n412:         return response\n413: \n414:     async def _run_in_new_connection(\n415:         self, query: str, args: t.Sequence[t.Any] = None\n416:     ):\n417:         if args is None:\n418:             args = []\n419:         connection = await self.get_new_connection()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/postgres.py:239\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged line builds a SAVEPOINT statement using an f\u2011string: `await self.connection.execute(f\\\"SAVEPOINT {name}\\\")`. The `name` variable originates from the caller of `PostgresTransaction.savepoint`, which defaults to an autogenerated identifier (`savepoint_{self.get_savepoint_id()}`) but can be supplied by the caller. Because the name is interpolated directly into the SQL string without any validation or parameterisation, a malicious caller could inject arbitrary SQL via the savepoint name, constituting a potential SQL injection vulnerability.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/postgres.py\",\n      \"lines\": [368, 376],\n      \"content\": \"    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"\n    }\n  ],\n  \"suggested_fix\": \"Validate the `name` against a strict whitelist (e.g., allow only alphanumeric characters and underscores) or, if the database driver supports it, use a parameterised query for the savepoint name. Alternatively, generate the savepoint name internally and disallow external input.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:312",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 11"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 330,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/sqlite.py lines=300-330]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class SQLiteTransaction:\n307:     \"\"\"\n308:     Used for wrapping queries in a transaction, using a context manager.\n309:     Currently it's async only.\n310: \n311:     Usage::\n312: \n313:         async with engine.transaction():\n314:             # Run some queries:\n315:             await Band.select().run()\n316: \n317:     \"\"\"\n318: \n319:     __slots__ = (\"engine\", \"context\", \"connection\", \"transaction_type\")\n320: \n321:     def __init__(\n322:         self,\n323:         engine: SQLiteEngine,\n324:         transaction_type: TransactionType = TransactionType.deferred,\n325:     ):\n326:         \"\"\"\n327:         :param transaction_type:\n328:             If your transaction just contains ``SELECT`` queries, then use\n329:             ``TransactionType.deferred``. This will give you the best\n330:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 11"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 11"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 12"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:317",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 9"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 340,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/sqlite.py lines=300-340]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class SQLiteTransaction:\n307:     \"\"\"\n308:     Used for wrapping queries in a transaction, using a context manager.\n309:     Currently it's async only.\n310: \n311:     Usage::\n312: \n313:         async with engine.transaction():\n314:             # Run some queries:\n315:             await Band.select().run()\n316: \n317:     \"\"\"\n318: \n319:     __slots__ = (\"engine\", \"context\", \"connection\", \"transaction_type\")\n320: \n321:     def __init__(\n322:         self,\n323:         engine: SQLiteEngine,\n324:         transaction_type: TransactionType = TransactionType.deferred,\n325:     ):\n326:         \"\"\"\n327:         :param transaction_type:\n328:             If your transaction just contains ``SELECT`` queries, then use\n329:             ``TransactionType.deferred``. This will give you the best\n330:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n331:             queries, we recommend using ``TransactionType.immediate`` to\n332:             avoid database locks.\n333:         \"\"\"\n334:         self.engine = engine\n335:         self.transaction_type = transaction_type\n336:         if self.engine.current_transaction.get():\n337:             raise TransactionError(\n338:                 \"A transaction is already active - nested transactions aren't \"\n339:                 \"currently supported.\"\n340:             )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 360,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=300-360]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         await self.transaction.connection.execute(\n313:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n314:         )\n315: \n316:     async def release(self):\n317:         await self.transaction.connection.execute(\n318:             f\"RELEASE SAVEPOINT {self.name}\"\n319:         )\n320: \n321: \n322: class SQLiteTransaction:\n323:     \"\"\"\n324:     Used for wrapping queries in a transaction, using a context manager.\n325:     Currently it's async only.\n326: \n327:     Usage::\n328: \n329:         async with engine.transaction():\n330:             # Run some queries:\n331:             await Band.select().run()\n332: \n333:     \"\"\"\n334: \n335:     __slots__ = (\n336:         \"engine\",\n337:         \"context\",\n338:         \"connection\",\n339:         \"transaction_type\",\n340:         \"allow_nested\",\n341:         \"_savepoint_id\",\n342:         \"_parent\",\n343:         \"_committed\",\n344:         \"_rolled_back\",\n345:     )\n346: \n347:     def __init__(\n348:         self,\n349:         engine: SQLiteEngine,\n350:         transaction_type: TransactionType = TransactionType.deferred,\n351:         allow_nested: bool = True,\n352:     ):\n353:         \"\"\"\n354:         :param transaction_type:\n355:             If your transaction just contains ``SELECT`` queries, then use\n356:             ``TransactionType.deferred``. This will give you the best\n357:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n358:             queries, we recommend using ``TransactionType.immediate`` to\n359:             avoid database locks.\n360:         \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 pattern=\".savepoint\"]\npiccolo/engine/postgres.py:160:        \"_savepoint_id\",\npiccolo/engine/postgres.py:184:        self._savepoint_id = 0\npiccolo/engine/postgres.py:225:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/postgres.py:227:        Used to rollback to a savepoint just using the name.\npiccolo/engine/postgres.py:229:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/postgres.py:233:    def get_savepoint_id(self) -> int:\npiccolo/engine/postgres.py:234:        self._savepoint_id += 1\npiccolo/engine/postgres.py:235:        return self._savepoint_id\npiccolo/engine/postgres.py:237:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\npiccolo/engine/postgres.py:238:        name = name or f\"savepoint_{self.get_savepoint_id()}\"\npiccolo/engine/sqlite.py:341:        \"_savepoint_id\",\npiccolo/engine/sqlite.py:365:        self._savepoint_id = 0\npiccolo/engine/sqlite.py:402:    async def rollback_to(self, savepoint_name: str):\npiccolo/engine/sqlite.py:404:        Used to rollback to a savepoint just using the name.\npiccolo/engine/sqlite.py:406:        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\npiccolo/engine/sqlite.py:410:    def get_savepoint_id(self) -> int:\npiccolo/engine/sqlite.py:411:        self._savepoint_id += 1\npiccolo/engine/sqlite.py:412:        return self._savepoint_id\npiccolo/engine/sqlite.py:414:    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\npiccolo/engine/sqlite.py:415:        name = name or f\"savepoint_{self.get_savepoint_id()}\"\ntests/engine/test_transaction.py:272:    def test_savepoint(self):\ntests/engine/test_transaction.py:276:                savepoint = await transaction.savepoint()\ntests/engine/test_transaction.py:278:                await savepoint.rollback_to()\ntests/engine/test_transaction.py:286:    def test_named_savepoint(self):\ntests/engine/test_transaction.py:290:                await transaction.savepoint(\"my_savepoint\")\ntests/engine/test_transaction.py:292:                await transaction.rollback_to(\"my_savepoint\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 410,
+                  "end_line": 420,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=410-420]\n410:     def get_savepoint_id(self) -> int:\n411:         self._savepoint_id += 1\n412:         return self._savepoint_id\n413: \n414:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n415:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n416:         await self.connection.execute(f\"SAVEPOINT {name}\")\n417:         return Savepoint(name=name, transaction=self)\n418: \n419:     ###########################################################################\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:317\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The flagged code builds a SQL statement using an f\u2011string that interpolates the savepoint name directly into the query (e.g. `f\\\"RELEASE SAVEPOINT {self.name}\\\"`). The `name` attribute originates from user\u2011controlled input when a savepoint is created via `SQLiteTransaction.savepoint(name)` or `rollback_to(savepoint_name)`. Because the name is inserted without any validation or parameterisation, an attacker could supply a malicious savepoint name that alters the SQL command, leading to SQL injection.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [306, 319],\n      \"content\": \"class Savepoint:\\n    def __init__(self, name: str, transaction: SQLiteTransaction):\\n        self.name = name\\n        self.transaction = transaction\\n\\n    async def rollback_to(self):\\n        await self.transaction.connection.execute(\\n            f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n        )\\n\\n    async def release(self):\\n        await self.transaction.connection.execute(\\n            f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n        )\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [414, 417],\n      \"content\": \"async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n    name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n    await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n    return Savepoint(name=name, transaction=self)\"\n    }\n  ],\n  \"suggested_fix\": \"Validate the savepoint name against a strict whitelist (e.g., allow only alphanumeric characters) or generate the name internally without exposing it to callers. Prefer using parameterised queries if the DB driver supports placeholders for identifiers, otherwise ensure the name cannot contain characters that could break the SQL syntax.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:392",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class TransactionType",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 pattern=\"class TransactionType\"]\npiccolo/engine/sqlite.py:242:class TransactionType(enum.Enum):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 350,
+                  "end_line": 420,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=350-420]\n350:         transaction_type: TransactionType = TransactionType.deferred,\n351:         allow_nested: bool = True,\n352:     ):\n353:         \"\"\"\n354:         :param transaction_type:\n355:             If your transaction just contains ``SELECT`` queries, then use\n356:             ``TransactionType.deferred``. This will give you the best\n357:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n358:             queries, we recommend using ``TransactionType.immediate`` to\n359:             avoid database locks.\n360:         \"\"\"\n361:         self.engine = engine\n362:         self.transaction_type = transaction_type\n363:         current_transaction = self.engine.current_transaction.get()\n364: \n365:         self._savepoint_id = 0\n366:         self._parent = None\n367:         self._committed = False\n368:         self._rolled_back = False\n369: \n370:         if current_transaction:\n371:             if allow_nested:\n372:                 self._parent = current_transaction\n373:             else:\n374:                 raise TransactionError(\n375:                     \"A transaction is already active - nested transactions \"\n376:                     \"aren't allowed.\"\n377:                 )\n378: \n379:     async def __aenter__(self) -> SQLiteTransaction:\n380:         if self._parent is not None:\n381:             return self._parent\n382: \n383:         self.connection = await self.get_connection()\n384:         await self.begin()\n385:         self.context = self.engine.current_transaction.set(self)\n386:         return self\n387: \n388:     async def get_connection(self):\n389:         return await self.engine.get_connection()\n390: \n391:     async def begin(self):\n392:         await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")\n393: \n394:     async def commit(self):\n395:         await self.connection.execute(\"COMMIT\")\n396:         self._committed = True\n397: \n398:     async def rollback(self):\n399:         await self.connection.execute(\"ROLLBACK\")\n400:         self._rolled_back = True\n401: \n402:     async def rollback_to(self, savepoint_name: str):\n403:         \"\"\"\n404:         Used to rollback to a savepoint just using the name.\n405:         \"\"\"\n406:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n407: \n408:     ###########################################################################\n409: \n410:     def get_savepoint_id(self) -> int:\n411:         self._savepoint_id += 1\n412:         return self._savepoint_id\n413: \n414:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n415:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n416:         await self.connection.execute(f\"SAVEPOINT {name}\")\n417:         return Savepoint(name=name, transaction=self)\n418: \n419:     ###########################################################################\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 230,
+                  "end_line": 260,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/sqlite.py lines=230-260]\n230:         self._cursor = await self.connection.execute(template, *template_args)\n231:         return self\n232: \n233:     async def __aexit__(self, exception_type, exception, traceback):\n234:         await self._cursor.close()\n235:         await self.connection.close()\n236:         return exception is not None\n237: \n238: \n239: ###############################################################################\n240: \n241: \n242: class TransactionType(enum.Enum):\n243:     \"\"\"\n244:     See the `SQLite <https://www.sqlite.org/lang_transaction.html>`_ docs for\n245:     more info.\n246:     \"\"\"\n247: \n248:     deferred = \"DEFERRED\"\n249:     immediate = \"IMMEDIATE\"\n250:     exclusive = \"EXCLUSIVE\"\n251: \n252: \n253: class Atomic:\n254:     \"\"\"\n255:     Usage:\n256: \n257:     transaction = engine.atomic()\n258:     transaction.add(Foo.create_table())\n259: \n260:     # Either:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "SQL injection parameterized queries"
+                },
+                "result": "[docs/src/piccolo/features/security.rst:1-12] (relevance 0.50)\n.. _Security:\n\nSecurity\n========\n\nSQL Injection protection\n------------------------\n\nIf you look under the hood, Piccolo uses a custom class called ``QueryString``\nfor composing queries. It keeps query parameters separate from the query\nstring, so we can pass parameterised queries to the engine. This helps\nprevent SQL Injection attacks.\n\n---\n\n[docs/src/piccolo/features/syntax.rst:1-27] (relevance 0.34)\nSyntax\n======\n\nAs close as possible to SQL\n---------------------------\n\nThe classes / methods / functions in Piccolo mirror their SQL counterparts as\nclosely as possible.\n\nFor example:\n\n* In other ORMs, you define models - in Piccolo you define tables.\n* Rather than using a filter method, you use a `where` method like in SQL.\n\n-------------------------------------------------------------------------------\n\nGet the SQL at any time\n-----------------------\n\nAt any time you can access the ``__str__`` method of a query, to see the\nunderlying SQL - making the ORM feel less magic.\n\n.. code-block:: python\n\n    >>> query = Band.select(Band.name).where(Band.popularity >= 100)\n    >>> print(query)\n    'SELECT name from band where popularity > 100'\n\n---\n\n[docs/src/piccolo/schema/advanced.rst:151-230] (relevance 0.33)\nclass Ticket(Table):\n        class Extras(str, enum.Enum):\n            drink = \"drink\"\n            snack = \"snack\"\n            program = \"program\"\n\n        extras = Array(Varchar(), choices=Extras)\n\nNote how you pass ``choices`` to ``Array``, and not the ``base_column``:\n\n.. code-block:: python\n\n    # CORRECT:\n    Array(Varchar(), choices=Extras)\n\n    # INCORRECT:\n    Array(Varchar(choices=Extras))\n\nWe can then use the ``Enum`` in our queries:\n\n.. code-block:: python\n\n    >>> await Ticket.insert(\n    ...     Ticket(extras=[Extras.drink, Extras.snack]),\n    ...     Ticket(extras=[Extras.program]),\n    ... )\n\n\n-------------------------------------------------------------------------------\n\nReflection\n----------\n\nThis is a very advanced feature, which is only required for specialist use\ncases. Currently, just Postgres is supported.\n\nInstead of writing your ``Table`` definitions in a ``tables.py`` file, Piccolo\ncan dynamically create them at run time, by inspecting the database. These\n``Table`` classes are then stored in memory, using a singleton object called\n``TableStorage``.\n\nSome example use cases:\n\n* You have a very dynamic database, where new tables are being created\n  constantly, so updating a ``tables.py`` is impractical.\n* You use Piccolo on the command line to explore databases.\n\nFull reflection\n~~~~~~~~~~~~~~~\n\nHere's an example, where we reflect the entire schema:\n\n.. code-block:: python\n\n    from piccolo.table_reflection import TableStorage\n\n    storage = TableStorage()\n    await storage.reflect(schema_name=\"music\")\n\n``Table`` objects are accessible from ``TableStorage.tables``:\n\n.. code-block:: python\n\n    >>> storage.tables\n    {\"music.Band\": <class 'Band'>, ... }\n\n    >>> Band = storage.tables[\"music.Band\"]\n\nThen you can use them like your normal ``Table`` classes:\n\n.. code-block:: python\n\n    >>> await Band.select()\n    [{'id': 1, 'name': 'Pythonistas', 'manager': 1}, ...]\n\n\nPartial reflection\n~~~~~~~~~~~~~~~~~~\n\nFull schema reflection can be a heavy process based on the size of your schema.\n\n---\n\n[docs/src/piccolo/query_types/index.rst:1-35] (relevance 0.32)\nQuery Types\n===========\n\nThere are many different queries you can perform using Piccolo.\n\nThe main ways to query data are with :ref:`Select`, which returns data as\ndictionaries, and :ref:`Objects`, which returns data as class instances, like a\ntypical ORM.\n\n.. toctree::\n    :maxdepth: 1\n\n    ./select\n    ./objects\n    ./alter\n    ./create_table\n    ./delete\n    ./exists\n    ./insert\n    ./raw\n    ./update\n    ./transactions\n\n-------------------------------------------------------------------------------\n\nComparisons\n-----------\n\nIf you're familiar with other ORMs, here are some guides which show the Piccolo\nequivalents of common queries.\n\n.. toctree::\n    :maxdepth: 1\n\n    ./django_comparison\n\n---\n\n[docs/src/piccolo/query_clauses/where.rst:156-236] (relevance 0.32)\n.. code-block:: python\n\n    await Band.select().where(\n        (Band.popularity >= 100) & (Band.popularity < 1000)\n    )\n\n    await Band.select().where(\n        (Band.popularity >= 100) | (Band.name ==  'Pythonistas')\n    )\n\nYou can make really complex ``where`` clauses if you so choose - just be\ncareful to include brackets in the correct place.\n\n.. code-block:: python\n\n    ((b.popularity >= 100) & (b.manager.name ==  'Guido')) | (b.popularity > 1000)\n\nUsing multiple ``where`` clauses is equivalent to an AND.\n\n.. code-block:: python\n\n    # These are equivalent:\n    await Band.select().where(\n        (Band.popularity >= 100) & (Band.popularity < 1000)\n    )\n\n    await Band.select().where(\n        Band.popularity >= 100\n    ).where(\n        Band.popularity < 1000\n    )\n\nAlso, multiple arguments inside ``where`` clause is equivalent to an AND.\n\n.. code-block:: python\n\n    # These are equivalent:\n    await Band.select().where(\n        (Band.popularity >= 100) & (Band.popularity < 1000)\n    )\n\n    await Band.select().where(\n        Band.popularity >= 100, Band.popularity < 1000\n    )\n\nUsing And / Or directly\n~~~~~~~~~~~~~~~~~~~~~~~\n\nRather than using the ``|`` and ``&`` characters, you can use the ``And`` and\n``Or`` classes, which are what's used under the hood.\n\n.. code-block:: python\n\n    from piccolo.columns.combination import And, Or\n\n    await Band.select().where(\n        Or(\n            And(Band.popularity >= 100, Band.popularity < 1000),\n            Band.name == 'Pythonistas'\n        )\n    )\n\n-------------------------------------------------------------------------------\n\nWhereRaw\n--------\n\nIn certain situations you may want to have raw SQL in your where clause.\n\n.. code-block:: python\n\n    from piccolo.columns.combination import WhereRaw\n\n    await Band.select().where(\n        WhereRaw(\"name = 'Pythonistas'\")\n    )\n\nIt's important to parameterise your SQL statements if the values come from an\nuntrusted source, otherwise it could lead to a SQL injection attack.\n\n.. code-block:: python"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:392\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The f\u2011string builds a BEGIN statement using `self.transaction_type.value`. `transaction_type` is an instance of the `TransactionType` enum defined in the same module, whose possible values are the constant strings \\\"DEFERRED\\\", \\\"IMMEDIATE\\\" and \\\"EXCLUSIVE\\\" (see lines 242\u2011251). These values are not derived from user input, so the constructed SQL cannot be influenced by an attacker. Therefore the use of an f\u2011string here does not constitute a SQL injection risk.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [391, 393],\n      \"content\": \"    async def begin(self):\\n        await self.connection.execute(f\\\"BEGIN {self.transaction_type.value}\\\")\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [242, 251],\n      \"content\": \"class TransactionType(enum.Enum):\\n    \\\"\\\"\\\"\\n    See the `SQLite <https://www.sqlite.org/lang_transaction.html>`_ docs for\\n    more info.\\n    \\\"\\\"\\\"\\n\\n    deferred = \\\"DEFERRED\\\"\\n    immediate = \\\"IMMEDIATE\\\"\\n    exclusive = \\\"EXCLUSIVE\\\"\"\n    },\n    {\n      \"type\": \"policy\",\n      \"source\": \"docs/src/piccolo/features/security.rst\",\n      \"content\": \"SQL Injection protection\\n------------------------\\n\\nIf you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.\"\n    }\n  ],\n  \"suggested_fix\": \"Replace the f\u2011string with a static string or a mapping, e.g., `await self.connection.execute(f\\\"BEGIN {self.transaction_type.name}\\\")` is already safe because the enum is controlled. No change is required for security, but for consistency you could use a constant template like `await self.connection.execute(\\\"BEGIN \\\" + self.transaction_type.value)`.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sast_triage:lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:416",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 380,
+                  "end_line": 460,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/sqlite.py lines=380-460]\n380:         path: str = \"piccolo.sqlite\",\n381:         log_queries: bool = False,\n382:         log_responses: bool = False,\n383:         **connection_kwargs,\n384:     ) -> None:\n385:         \"\"\"\n386:         :param path:\n387:             A relative or absolute path to the the SQLite database file (it\n388:             will be created if it doesn't already exist).\n389:         :param log_queries:\n390:             If ``True``, all SQL and DDL statements are printed out before\n391:             being run. Useful for debugging.\n392:         :param log_responses:\n393:             If ``True``, the raw response from each query is printed out.\n394:             Useful for debugging.\n395:         :param connection_kwargs:\n396:             These are passed directly to the database adapter. We recommend\n397:             setting ``timeout`` if you expect your application to process a\n398:             large number of concurrent writes, to prevent queries timing out.\n399:             See Python's `sqlite3 docs <https://docs.python.org/3/library/sqlite3.html#sqlite3.connect>`_\n400:             for more info.\n401: \n402:         \"\"\"  # noqa: E501\n403:         default_connection_kwargs = {\n404:             \"database\": path,\n405:             \"detect_types\": sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,\n406:             \"isolation_level\": None,\n407:         }\n408: \n409:         self.log_queries = log_queries\n410:         self.log_responses = log_responses\n411:         self.connection_kwargs = {\n412:             **default_connection_kwargs,\n413:             **connection_kwargs,\n414:         }\n415: \n416:         self.current_transaction = contextvars.ContextVar(\n417:             f\"sqlite_current_transaction_{path}\", default=None\n418:         )\n419: \n420:         super().__init__()\n421: \n422:     @property\n423:     def path(self):\n424:         return self.connection_kwargs[\"database\"]\n425: \n426:     @path.setter\n427:     def path(self, value: str):\n428:         self.connection_kwargs[\"database\"] = value\n429: \n430:     async def get_version(self) -> float:\n431:         return self.get_version_sync()\n432: \n433:     def get_version_sync(self) -> float:\n434:         major, minor, _ = sqlite3.sqlite_version_info\n435:         return float(f\"{major}.{minor}\")\n436: \n437:     async def prep_database(self):\n438:         pass\n439: \n440:     ###########################################################################\n441: \n442:     def remove_db_file(self):\n443:         \"\"\"\n444:         Use with caution - removes the SQLite file. Useful for testing\n445:         purposes.\n446:         \"\"\"\n447:         if os.path.exists(self.path):\n448:             os.unlink(self.path)\n449: \n450:     def create_db_file(self):\n451:         \"\"\"\n452:         Create the database file. Useful for testing purposes.\n453:         \"\"\"\n454:         if os.path.exists(self.path):\n455:             raise Exception(f\"Database at {self.path} already exists\")\n456:         with open(self.path, \"w\"):\n457:             pass\n458: \n459:     ###########################################################################\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 340,
+                  "end_line": 420,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 path=piccolo/engine/sqlite.py lines=340-420]\n340:             )\n341: \n342:     async def __aenter__(self):\n343:         self.connection = await self.engine.get_connection()\n344:         await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")\n345:         self.context = self.engine.current_transaction.set(self)\n346: \n347:     async def __aexit__(self, exception_type, exception, traceback):\n348:         if exception:\n349:             await self.connection.execute(\"ROLLBACK\")\n350:         else:\n351:             await self.connection.execute(\"COMMIT\")\n352: \n353:         await self.connection.close()\n354:         self.engine.current_transaction.reset(self.context)\n355: \n356:         return exception is None\n357: \n358: \n359: ###############################################################################\n360: \n361: \n362: def dict_factory(cursor, row) -> t.Dict:\n363:     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}\n364: \n365: \n366: class SQLiteEngine(Engine[t.Optional[SQLiteTransaction]]):\n367: \n368:     __slots__ = (\n369:         \"connection_kwargs\",\n370:         \"current_transaction\",\n371:         \"log_queries\",\n372:         \"log_responses\",\n373:     )\n374: \n375:     engine_type = \"sqlite\"\n376:     min_version_number = 3.25\n377: \n378:     def __init__(\n379:         self,\n380:         path: str = \"piccolo.sqlite\",\n381:         log_queries: bool = False,\n382:         log_responses: bool = False,\n383:         **connection_kwargs,\n384:     ) -> None:\n385:         \"\"\"\n386:         :param path:\n387:             A relative or absolute path to the the SQLite database file (it\n388:             will be created if it doesn't already exist).\n389:         :param log_queries:\n390:             If ``True``, all SQL and DDL statements are printed out before\n391:             being run. Useful for debugging.\n392:         :param log_responses:\n393:             If ``True``, the raw response from each query is printed out.\n394:             Useful for debugging.\n395:         :param connection_kwargs:\n396:             These are passed directly to the database adapter. We recommend\n397:             setting ``timeout`` if you expect your application to process a\n398:             large number of concurrent writes, to prevent queries timing out.\n399:             See Python's `sqlite3 docs <https://docs.python.org/3/library/sqlite3.html#sqlite3.connect>`_\n400:             for more info.\n401: \n402:         \"\"\"  # noqa: E501\n403:         default_connection_kwargs = {\n404:             \"database\": path,\n405:             \"detect_types\": sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,\n406:             \"isolation_level\": None,\n407:         }\n408: \n409:         self.log_queries = log_queries\n410:         self.log_responses = log_responses\n411:         self.connection_kwargs = {\n412:             **default_connection_kwargs,\n413:             **connection_kwargs,\n414:         }\n415: \n416:         self.current_transaction = contextvars.ContextVar(\n417:             f\"sqlite_current_transaction_{path}\", default=None\n418:         )\n419: \n420:         super().__init__()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": ".savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 10"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"finding_id\": \"lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:416\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The code builds a SAVEPOINT statement using an f-string that directly interpolates the variable `name` (or `savepoint_name`). This variable originates from caller\u2011provided input (e.g., the `savepoint` method argument) and is not passed through a parameterized query interface, making the statement vulnerable to SQL injection if an attacker can control the savepoint name.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [416, 416],\n      \"content\": \"await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\"\n    },\n    {\n      \"type\": \"code\",\n      \"file\": \"piccolo/engine/sqlite.py\",\n      \"lines\": [398, 405],\n      \"content\": \"async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n        name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n        await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n        return Savepoint(name=name, transaction=self)\"\n    }\n  ],\n  \"suggested_fix\": \"Replace the f\u2011string with a parameterized query, e.g., `await self.connection.execute(\\\"SAVEPOINT ?\\\", (name,))`, and ensure the savepoint name is validated against an allowed pattern (e.g., alphanumeric only) before use.\"\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "class PostgresTransaction",
+                  "snapshot": "base"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=021d782b706ec6ed33b88355477c31b5826d8d26 status=ok truncated=true query=\"class PostgresTransaction\"]\n**Exploration: class PostgresTransaction**\n\nFound 91 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `PostgresTransaction` (piccolo/engine/postgres.py:126) \u2014 1 caller in `piccolo/engine/postgres.py`; no tests found within 3 caller hops\n- `transaction` (piccolo/engine/base.py:76) \u2014 8 callers in `piccolo/columns/m2m.py`, `piccolo/engine/sqlite.py`, `piccolo/apps/migrations/auto/migration_manager.py`, `piccolo/engine/postgres.py`; tests: `tests/engine/test_transaction.py`, `piccolo/apps/fixtures/commands/load.py`, `tests/columns/test_m2m.py`\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`piccolo/columns/defaults/date.py`** \u2014 postgres(method), DateOffset(class), __init__(method), cockroach(method), sqlite(method), python(method), +3 more\n\n```python\n1\tfrom __future__ import annotations\n2\t\n3\timport datetime\n4\timport typing as t\n5\tfrom enum import Enum\n6\t\n7\tfrom .base import Default\n8\t\n9\t\n10\tclass DateOffset(Default):\n11\t    \"\"\"\n12\t    This makes the default value for a\n13\t    :class:`Date <piccolo.columns.column_types.Date>` column the current date,\n14\t    but offset by a number of days.\n15\t\n16\t    For example, if you wanted the default to be tomorrow, you can specify\n17\t    ``DateOffset(days=1)``:\n18\t\n19\t    .. code-block:: python\n20\t\n21\t        class DiscountCode(Table):\n22\t            expires = Date(default=DateOffset(days=1))\n23\t\n24\t    \"\"\"\n25\t\n26\t    def __init__(self, days: int):\n27\t        \"\"\"\n28\t        :param days:\n29\t            The number of days to offset.\n30\t        \"\"\"\n31\t        self.days = days\n32\t\n33\t    @property\n34\t    def postgres(self):\n35\t        interval_string = self.get_postgres_interval_string([\"days\"])\n36\t        return f\"CURRENT_DATE + INTERVAL '{interval_string}'\"\n37\t\n38\t    @property\n39\t    def cockroach(self):\n40\t        return self.postgres\n41\t\n42\t    @property\n43\t    def sqlite(self):\n44\t        interval_string = self.get_sqlite_interval_string([\"days\"])\n45\t        return f\"(datetime(CURRENT_TIMESTAMP, {interval_string}))\"\n46\t\n47\t    def python(self):\n48\t        return (\n49\t            datetime.datetime.now() + datetime.timedelta(days=self.days)\n50\t        ).date\n51\t\n52\t\n53\tclass DateNow(Default):\n54\t    @property\n55\t    def postgres(self):\n56\t        return \"CURRENT_DATE\"\n57\t\n58\t    @property\n59\t    def cockroach(self):\n60\t        return self.postgres\n61\t\n62\t    @property\n63\t    def sqlite(self):\n64\t        return \"CURRENT_DATE\"\n65\t\n66\t    def python(self):\n67\t        return datetime.datetime.now().date()\n68\t\n69\t\n70\tclass DateCustom(Default):\n71\t    def __init__(\n72\t        self,\n73\t        year: int,\n74\t        month: int,\n75\t        day: int,\n76\t    ):\n77\t        self.day = day\n78\t        self.month = month\n79\t        self.year = year\n80\t        self.date = datetime.date(year=year, month=month, day=day)\n81\t\n82\t    @property\n83\t    def postgres(self):\n84\t        return f\"'{self.date.isoformat()}'\"\n85\t\n86\t    @property\n87\t    def cockroach(self):\n88\t        return self.postgres\n89\t\n90\t    @property\n91\t    def sqlite(self):\n92\t        return f\"'{self.date.isoformat()}'\"\n93\t\n94\t    def python(self):\n95\t        return self.date\n96\t\n97\t    @classmethod\n98\t    def from_date(cls, instance: datetime.date):\n99\t        return cls(\n100\t            year=instance.year, month=instance.month, day=instance.month\n101\t        )\n102\t\n103\t\n104\t# Might add an enum back which encapsulates all of the options.\n105\tDateArg = t.Union[DateOffset, DateCustom, DateNow, Enum, None, datetime.date]\n106\t\n107\t\n108\t__all__ = [\"DateArg\", \"DateOffset\", \"DateCustom\", \"DateNow\"]\n```\n\n**`piccolo/engine/postgres.py`** \u2014 get_new_connection(calls), instantiates(instantiates), _run_in_pool(calls), print_query(calls), print_response(calls), _parse_raw_version_string(calls), +33 more\n\n```python\n98\t    def add(self, *query: Query):\n99\t        self.queries += list(query)\n100\t\n101\t    async def run(self):\n102\t        from piccolo.query.methods.objects import Create, GetOrCreate\n103\t\n104\t        try:\n105\t            async with self.engine.transaction():\n106\t                for query in self.queries:\n107\t                    if isinstance(query, (Query, DDL, Create, GetOrCreate)):\n108\t                        await query.run()\n109\t                    else:\n110\t                        raise ValueError(\"Unrecognised query\")\n111\t            self.queries = []\n112\t        except Exception as exception:\n113\t            self.queries = []\n114\t            raise exception from exception\n115\t\n116\t    def run_sync(self):\n117\t        return run_sync(self.run())\n\n... (gap: __await__ (piccolo/engine/postgres.py:119)) ...\n\n123\t###############################################################################\n124\t\n125\t\n126\tclass PostgresTransaction:\n127\t    \"\"\"\n128\t    Used for wrapping queries in a transaction, using a context manager.\n129\t    Currently it's async only.\n130\t\n131\t    Usage::\n132\t\n133\t        async with engine.transaction():\n134\t            # Run some queries:\n135\t            await Band.select().run()\n136\t\n137\t    \"\"\"\n138\t\n139\t    __slots__ = (\"engine\", \"transaction\", \"context\", \"connection\")\n140\t\n141\t    def __init__(self, engine: PostgresEngine):\n142\t        self.engine = engine\n143\t        if self.engine.current_transaction.get():\n144\t            raise TransactionError(\n145\t                \"A transaction is already active - nested transactions aren't \"\n146\t                \"currently supported.\"\n147\t            )\n148\t\n\n[TRUNCATED omitted_chars=13588]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 120,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=120-200]\n120:         return self.run().__await__()\n121: \n122: \n123: ###############################################################################\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         await self.transaction.connection.execute(\n133:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n134:         )\n135: \n136:     async def release(self):\n137:         await self.transaction.connection.execute(\n138:             f\"RELEASE SAVEPOINT {self.name}\"\n139:         )\n140: \n141: \n142: class PostgresTransaction:\n143:     \"\"\"\n144:     Used for wrapping queries in a transaction, using a context manager.\n145:     Currently it's async only.\n146: \n147:     Usage::\n148: \n149:         async with engine.transaction():\n150:             # Run some queries:\n151:             await Band.select().run()\n152: \n153:     \"\"\"\n154: \n155:     __slots__ = (\n156:         \"engine\",\n157:         \"transaction\",\n158:         \"context\",\n159:         \"connection\",\n160:         \"_savepoint_id\",\n161:         \"_parent\",\n162:         \"_committed\",\n163:         \"_rolled_back\",\n164:     )\n165: \n166:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n167:         \"\"\"\n168:         :param allow_nested:\n169:             If ``True`` then if we try creating a new transaction when another\n170:             is already active, we treat this as a no-op::\n171: \n172:                 async with DB.transaction():\n173:                     async with DB.transaction():\n174:                         pass\n175: \n176:             If we want to disallow this behaviour, then setting\n177:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n178:             raised.\n179: \n180:         \"\"\"\n181:         self.engine = engine\n182:         current_transaction = self.engine.current_transaction.get()\n183: \n184:         self._savepoint_id = 0\n185:         self._parent = None\n186:         self._committed = False\n187:         self._rolled_back = False\n188: \n189:         if current_transaction:\n190:             if allow_nested:\n191:                 self._parent = current_transaction\n192:             else:\n193:                 raise TransactionError(\n194:                     \"A transaction is already active - nested transactions \"\n195:                     \"aren't allowed.\"\n196:                 )\n197: \n198:     async def __aenter__(self) -> PostgresTransaction:\n199:         if self._parent is not None:\n200:             return self._parent\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 470,
+                  "end_line": 490,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=470-490]\n470:         node: t.Optional[str] = None,\n471:     ) -> AsyncBatch:\n472:         \"\"\"\n473:         :param query:\n474:             The database query to run.\n475:         :param batch_size:\n476:             How many rows to fetch on each iteration.\n477:         :param node:\n478:             Which node to run the query on (see ``extra_nodes``). If not\n479:             specified, it runs on the main Postgres node.\n480:         \"\"\"\n481:         engine: t.Any = self.extra_nodes.get(node) if node else self\n482:         connection = await engine.get_new_connection()\n483:         return AsyncBatch(\n484:             connection=connection, query=query, batch_size=batch_size\n485:         )\n486: \n487:     ###########################################################################\n488: \n489:     async def _run_in_pool(self, query: str, args: t.Sequence[t.Any] = None):\n490:         if args is None:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 200,
+                  "end_line": 260,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=200-260]\n200:             return self._parent\n201: \n202:         self.connection = await self.get_connection()\n203:         self.transaction = self.connection.transaction()\n204:         await self.begin()\n205:         self.context = self.engine.current_transaction.set(self)\n206:         return self\n207: \n208:     async def get_connection(self):\n209:         if self.engine.pool:\n210:             return await self.engine.pool.acquire()\n211:         else:\n212:             return await self.engine.get_new_connection()\n213: \n214:     async def begin(self):\n215:         await self.transaction.start()\n216: \n217:     async def commit(self):\n218:         await self.transaction.commit()\n219:         self._committed = True\n220: \n221:     async def rollback(self):\n222:         await self.transaction.rollback()\n223:         self._rolled_back = True\n224: \n225:     async def rollback_to(self, savepoint_name: str):\n226:         \"\"\"\n227:         Used to rollback to a savepoint just using the name.\n228:         \"\"\"\n229:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n230: \n231:     ###########################################################################\n232: \n233:     def get_savepoint_id(self) -> int:\n234:         self._savepoint_id += 1\n235:         return self._savepoint_id\n236: \n237:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n238:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n239:         await self.connection.execute(f\"SAVEPOINT {name}\")\n240:         return Savepoint(name=name, transaction=self)\n241: \n242:     ###########################################################################\n243: \n244:     async def __aexit__(self, exception_type, exception, traceback):\n245:         if self._parent:\n246:             return exception is None\n247: \n248:         if exception:\n249:             # The user may have manually rolled it back.\n250:             if not self._rolled_back:\n251:                 await self.rollback()\n252:         else:\n253:             # The user may have manually committed it.\n254:             if not self._committed and not self._rolled_back:\n255:                 await self.commit()\n256: \n257:         if self.engine.pool:\n258:             await self.engine.pool.release(self.connection)\n259:         else:\n260:             await self.connection.close()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "TransactionError"
+                },
+                "result": "[docs/src/piccolo/query_types/transactions.rst:1-71] (relevance 0.50)\n.. _Transactions:\n\nTransactions\n============\n\nTransactions allow multiple queries to be committed only once successful.\n\nThis is useful for things like migrations, where you can't have it fail in an\ninbetween state.\n\n.. note::\n    In the examples below we use ``MyTable._meta.db`` to access the ``Engine``,\n    which is used to create transactions.\n\n-------------------------------------------------------------------------------\n\nAtomic\n------\n\nThis is useful when you want to programmatically add some queries to the\ntransaction before running it.\n\n.. code-block:: python\n\n    transaction = Band._meta.db.atomic()\n    transaction.add(Manager.create_table())\n    transaction.add(Concert.create_table())\n    await transaction.run()\n\n    # You're also able to run this synchronously:\n    transaction.run_sync()\n\n-------------------------------------------------------------------------------\n\nTransaction\n-----------\n\nThis is the preferred way to run transactions - it currently only works with\nasync.\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        await Manager.create_table()\n        await Concert.create_table()\n\nIf an exception is raised within the body of the context manager, then the\ntransaction is automatically rolled back. The exception is still propagated\nthough.\n\n``transaction_exists``\n~~~~~~~~~~~~~~~~~~~~~~\n\nYou can check whether your code is currently inside a transaction using the\nfollowing:\n\n.. code-block:: python\n\n    >>> Band._meta.db.transaction_exists()\n    True\n\n-------------------------------------------------------------------------------\n\nTransaction types\n-----------------\n\nSQLite\n~~~~~~\n\nFor SQLite you may want to specify the :ref:`transaction type <SQLiteTransactionTypes>`,\nas it can have an effect on how well the database handles concurrent requests.\n\n---\n\n[docs/src/piccolo/tutorials/using_sqlite_and_asyncio_effectively.rst:62-103] (relevance 0.35)\nfrom piccolo.engine.sqlite import TransactionType\n\n    async with Band._meta.db.transaction(\n        transaction_type=TransactionType.immediate\n    ):\n        # We perform a SELECT first, but as it's an IMMEDIATE transaction,\n        # we can later perform writes without getting a database locked\n        # error.\n        if not await Band.exists().where(Band.name == 'Pythonistas'):\n            await Band.objects().create(name=\"Pythonistas\")\n\nMultiple ``IMMEDIATE`` transactions can exist concurrently - SQLite uses a lock\nto make sure only one of them writes at a time.\n\nIf your transaction will just be performing ``SELECT`` queries, then just use\nthe default ``DEFERRED`` transactions - you will get improved performance, as\nno locking is involved:\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        bands = await Band.select()\n        managers = await Manager.select()\n\n-------------------------------------------------------------------------------\n\ntimeout\n-------\n\nIt's recommended to specify the ``timeout`` argument in :class:`SQLiteEngine <piccolo.engine.sqlite.SQLiteEngine>`.\n\n.. code-block:: python\n\n    DB = SQLiteEngine(timeout=60)\n\nImagine you have a web app, and each endpoint creates a transaction which runs\nmultiple queries. With SQLite, only a single write operation can happen at a\ntime, so if several connections are open, they may be queued for a while.\n\nBy increasing ``timeout`` it means that queries are less likely to timeout.\n\nTo find out more about ``timeout`` see the Python :func:`sqlite3 docs <sqlite3.connect>`.\n\n---\n\n[CHANGES.rst:224-300] (relevance 0.34)\nfrom piccolo.engine.sqlite import TransactionType\n\n  async with Band._meta.db.transaction(\n      transaction_type=TransactionType.immediate\n  ):\n      band = await Band.objects().get_or_create(Band.name == 'Pythonistas')\n      ...\n\nWe've added a `new tutorial <https://piccolo-orm.readthedocs.io/en/latest/piccolo/tutorials/using_sqlite_and_asyncio_effectively.html>`_\nwhich explains this in more detail, as well as other tips for using asyncio and\nSQLite together effectively.\n\nThanks to @powellnorma and @sinisaos for their help with this.\n\nOther changes\n~~~~~~~~~~~~~\n\n* Fixed a bug with camelCase column names (we recommend using snake_case, but\n  sometimes it's unavoidable when using Piccolo with an existing schema).\n  Thanks to @sinisaos for this.\n* Fixed a typo in the docs with ``raw`` queries - thanks to @StitiFatah for\n  this.\n\n-------------------------------------------------------------------------------\n\n0.97.0\n------\n\nSome big improvements to ``order_by`` clauses.\n\nIt's now possible to combine ascending and descending:\n\n.. code-block:: python\n\n  await Band.select(\n      Band.name,\n      Band.popularity\n  ).order_by(\n      Band.name\n  ).order_by(\n      Band.popularity,\n      ascending=False\n  )\n\nYou can also order by anything you want using ``OrderByRaw``:\n\n.. code-block:: python\n\n  from piccolo.query import OrderByRaw\n\n  await Band.select(\n      Band.name\n  ).order_by(\n      OrderByRaw('random()')\n  )\n\n-------------------------------------------------------------------------------\n\n0.96.0\n------\n\nAdded the ``auto_update`` argument to ``Column``. Its main use case is columns\nlike ``modified_on`` where we want the value to be updated automatically each\ntime the row is saved.\n\n.. code-block:: python\n\n  class Band(Table):\n      name = Varchar()\n      popularity = Integer()\n      modified_on = Timestamp(\n        null=True,\n        default=None,\n        auto_update=datetime.datetime.now\n      )\n\n    # The `modified_on` column will automatically be updated to the current\n\n---\n\n[CHANGES.rst:419-492] (relevance 0.30)\n-------------------------------------------------------------------------------\n\n0.88.0\n------\n\nFixed a bug with migrations - when using ``db_column_name`` it wasn't being\nused in some alter statements. Thanks to @theelderbeever for reporting this\nissue.\n\n.. code-block:: python\n\n  class Concert(Table):\n      # We use `db_column_name` when the column name is problematic - e.g. if\n      # it clashes with a Python keyword.\n      in_ = Varchar(db_column_name='in')\n\n-------------------------------------------------------------------------------\n\n0.87.0\n------\n\nWhen using ``get_or_create`` with ``prefetch`` the behaviour was inconsistent -\nit worked as expected when the row already existed, but prefetch wasn't working\nif the row was being created. This now works as expected:\n\n.. code-block:: python\n\n  >>> band = Band.objects(Band.manager).get_or_create(\n  ...     (Band.name == \"New Band 2\") & (Band.manager == 1)\n  ... )\n\n  >>> band.manager\n  <Manager: 1>\n  >>> band.manager.name\n  \"Mr Manager\"\n\nThanks to @backwardspy for reporting this issue.\n\n-------------------------------------------------------------------------------\n\n0.86.0\n------\n\nAdded the ``Email`` column type. It's basically identical to ``Varchar``,\nexcept that when we use ``create_pydantic_model`` we add email validation\nto the generated Pydantic model.\n\n.. code-block:: python\n\n  from piccolo.columns.column_types import Email\n  from piccolo.table import Table\n  from piccolo.utils.pydantic import create_pydantic_model\n\n\n  class MyTable(Table):\n      email = Email()\n\n\n  model = create_pydantic_model(MyTable)\n\n  model(email=\"not a valid email\")\n  # ValidationError!\n\nThanks to @sinisaos for implementing this feature.\n\n-------------------------------------------------------------------------------\n\n0.85.1\n------\n\nFixed a bug with migrations - when run backwards, ``raw`` was being called\ninstead of ``raw_backwards``. Thanks to @translunar for the fix.\n\n-------------------------------------------------------------------------------\n\n---\n\n[CHANGES.rst:2797-2862] (relevance 0.28)\n* Improved ``PostgresEngine`` docstring.\n* Resolving rename migrations before adding columns.\n* Fixed bug serialising ``TimestampCustom``.\n* Fixed bug with altering column defaults to be non-static values.\n* Removed ``response_handler`` from ``Alter`` query.\n\n---------------------"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "TransactionError"
+                },
+                "result": "NOTE: identical to an earlier search_policy call with arguments {\"query\": \"TransactionError\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 300,
+                  "end_line": 380,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=300-380]\n300:         return self.run().__await__()\n301: \n302: \n303: ###############################################################################\n304: \n305: \n306: class Savepoint:\n307:     def __init__(self, name: str, transaction: SQLiteTransaction):\n308:         self.name = name\n309:         self.transaction = transaction\n310: \n311:     async def rollback_to(self):\n312:         await self.transaction.connection.execute(\n313:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n314:         )\n315: \n316:     async def release(self):\n317:         await self.transaction.connection.execute(\n318:             f\"RELEASE SAVEPOINT {self.name}\"\n319:         )\n320: \n321: \n322: class SQLiteTransaction:\n323:     \"\"\"\n324:     Used for wrapping queries in a transaction, using a context manager.\n325:     Currently it's async only.\n326: \n327:     Usage::\n328: \n329:         async with engine.transaction():\n330:             # Run some queries:\n331:             await Band.select().run()\n332: \n333:     \"\"\"\n334: \n335:     __slots__ = (\n336:         \"engine\",\n337:         \"context\",\n338:         \"connection\",\n339:         \"transaction_type\",\n340:         \"allow_nested\",\n341:         \"_savepoint_id\",\n342:         \"_parent\",\n343:         \"_committed\",\n344:         \"_rolled_back\",\n345:     )\n346: \n347:     def __init__(\n348:         self,\n349:         engine: SQLiteEngine,\n350:         transaction_type: TransactionType = TransactionType.deferred,\n351:         allow_nested: bool = True,\n352:     ):\n353:         \"\"\"\n354:         :param transaction_type:\n355:             If your transaction just contains ``SELECT`` queries, then use\n356:             ``TransactionType.deferred``. This will give you the best\n357:             performance. When performing ``INSERT``, ``UPDATE``, ``DELETE``\n358:             queries, we recommend using ``TransactionType.immediate`` to\n359:             avoid database locks.\n360:         \"\"\"\n361:         self.engine = engine\n362:         self.transaction_type = transaction_type\n363:         current_transaction = self.engine.current_transaction.get()\n364: \n365:         self._savepoint_id = 0\n366:         self._parent = None\n367:         self._committed = False\n368:         self._rolled_back = False\n369: \n370:         if current_transaction:\n371:             if allow_nested:\n372:                 self._parent = current_transaction\n373:             else:\n374:                 raise TransactionError(\n375:                     \"A transaction is already active - nested transactions \"\n376:                     \"aren't allowed.\"\n377:                 )\n378: \n379:     async def __aenter__(self) -> SQLiteTransaction:\n380:         if self._parent is not None:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "class TransactionError"
+                },
+                "result": "[docs/src/piccolo/query_types/transactions.rst:1-71] (relevance 0.48)\n.. _Transactions:\n\nTransactions\n============\n\nTransactions allow multiple queries to be committed only once successful.\n\nThis is useful for things like migrations, where you can't have it fail in an\ninbetween state.\n\n.. note::\n    In the examples below we use ``MyTable._meta.db`` to access the ``Engine``,\n    which is used to create transactions.\n\n-------------------------------------------------------------------------------\n\nAtomic\n------\n\nThis is useful when you want to programmatically add some queries to the\ntransaction before running it.\n\n.. code-block:: python\n\n    transaction = Band._meta.db.atomic()\n    transaction.add(Manager.create_table())\n    transaction.add(Concert.create_table())\n    await transaction.run()\n\n    # You're also able to run this synchronously:\n    transaction.run_sync()\n\n-------------------------------------------------------------------------------\n\nTransaction\n-----------\n\nThis is the preferred way to run transactions - it currently only works with\nasync.\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        await Manager.create_table()\n        await Concert.create_table()\n\nIf an exception is raised within the body of the context manager, then the\ntransaction is automatically rolled back. The exception is still propagated\nthough.\n\n``transaction_exists``\n~~~~~~~~~~~~~~~~~~~~~~\n\nYou can check whether your code is currently inside a transaction using the\nfollowing:\n\n.. code-block:: python\n\n    >>> Band._meta.db.transaction_exists()\n    True\n\n-------------------------------------------------------------------------------\n\nTransaction types\n-----------------\n\nSQLite\n~~~~~~\n\nFor SQLite you may want to specify the :ref:`transaction type <SQLiteTransactionTypes>`,\nas it can have an effect on how well the database handles concurrent requests.\n\n---\n\n[docs/src/piccolo/tutorials/using_sqlite_and_asyncio_effectively.rst:62-103] (relevance 0.34)\nfrom piccolo.engine.sqlite import TransactionType\n\n    async with Band._meta.db.transaction(\n        transaction_type=TransactionType.immediate\n    ):\n        # We perform a SELECT first, but as it's an IMMEDIATE transaction,\n        # we can later perform writes without getting a database locked\n        # error.\n        if not await Band.exists().where(Band.name == 'Pythonistas'):\n            await Band.objects().create(name=\"Pythonistas\")\n\nMultiple ``IMMEDIATE`` transactions can exist concurrently - SQLite uses a lock\nto make sure only one of them writes at a time.\n\nIf your transaction will just be performing ``SELECT`` queries, then just use\nthe default ``DEFERRED`` transactions - you will get improved performance, as\nno locking is involved:\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        bands = await Band.select()\n        managers = await Manager.select()\n\n-------------------------------------------------------------------------------\n\ntimeout\n-------\n\nIt's recommended to specify the ``timeout`` argument in :class:`SQLiteEngine <piccolo.engine.sqlite.SQLiteEngine>`.\n\n.. code-block:: python\n\n    DB = SQLiteEngine(timeout=60)\n\nImagine you have a web app, and each endpoint creates a transaction which runs\nmultiple queries. With SQLite, only a single write operation can happen at a\ntime, so if several connections are open, they may be queued for a while.\n\nBy increasing ``timeout`` it means that queries are less likely to timeout.\n\nTo find out more about ``timeout`` see the Python :func:`sqlite3 docs <sqlite3.connect>`.\n\n---\n\n[CHANGES.rst:224-300] (relevance 0.34)\nfrom piccolo.engine.sqlite import TransactionType\n\n  async with Band._meta.db.transaction(\n      transaction_type=TransactionType.immediate\n  ):\n      band = await Band.objects().get_or_create(Band.name == 'Pythonistas')\n      ...\n\nWe've added a `new tutorial <https://piccolo-orm.readthedocs.io/en/latest/piccolo/tutorials/using_sqlite_and_asyncio_effectively.html>`_\nwhich explains this in more detail, as well as other tips for using asyncio and\nSQLite together effectively.\n\nThanks to @powellnorma and @sinisaos for their help with this.\n\nOther changes\n~~~~~~~~~~~~~\n\n* Fixed a bug with camelCase column names (we recommend using snake_case, but\n  sometimes it's unavoidable when using Piccolo with an existing schema).\n  Thanks to @sinisaos for this.\n* Fixed a typo in the docs with ``raw`` queries - thanks to @StitiFatah for\n  this.\n\n-------------------------------------------------------------------------------\n\n0.97.0\n------\n\nSome big improvements to ``order_by`` clauses.\n\nIt's now possible to combine ascending and descending:\n\n.. code-block:: python\n\n  await Band.select(\n      Band.name,\n      Band.popularity\n  ).order_by(\n      Band.name\n  ).order_by(\n      Band.popularity,\n      ascending=False\n  )\n\nYou can also order by anything you want using ``OrderByRaw``:\n\n.. code-block:: python\n\n  from piccolo.query import OrderByRaw\n\n  await Band.select(\n      Band.name\n  ).order_by(\n      OrderByRaw('random()')\n  )\n\n-------------------------------------------------------------------------------\n\n0.96.0\n------\n\nAdded the ``auto_update`` argument to ``Column``. Its main use case is columns\nlike ``modified_on`` where we want the value to be updated automatically each\ntime the row is saved.\n\n.. code-block:: python\n\n  class Band(Table):\n      name = Varchar()\n      popularity = Integer()\n      modified_on = Timestamp(\n        null=True,\n        default=None,\n        auto_update=datetime.datetime.now\n      )\n\n    # The `modified_on` column will automatically be updated to the current\n\n---\n\n[CHANGES.rst:419-492] (relevance 0.32)\n-------------------------------------------------------------------------------\n\n0.88.0\n------\n\nFixed a bug with migrations - when using ``db_column_name`` it wasn't being\nused in some alter statements. Thanks to @theelderbeever for reporting this\nissue.\n\n.. code-block:: python\n\n  class Concert(Table):\n      # We use `db_column_name` when the column name is problematic - e.g. if\n      # it clashes with a Python keyword.\n      in_ = Varchar(db_column_name='in')\n\n-------------------------------------------------------------------------------\n\n0.87.0\n------\n\nWhen using ``get_or_create`` with ``prefetch`` the behaviour was inconsistent -\nit worked as expected when the row already existed, but prefetch wasn't working\nif the row was being created. This now works as expected:\n\n.. code-block:: python\n\n  >>> band = Band.objects(Band.manager).get_or_create(\n  ...     (Band.name == \"New Band 2\") & (Band.manager == 1)\n  ... )\n\n  >>> band.manager\n  <Manager: 1>\n  >>> band.manager.name\n  \"Mr Manager\"\n\nThanks to @backwardspy for reporting this issue.\n\n-------------------------------------------------------------------------------\n\n0.86.0\n------\n\nAdded the ``Email`` column type. It's basically identical to ``Varchar``,\nexcept that when we use ``create_pydantic_model`` we add email validation\nto the generated Pydantic model.\n\n.. code-block:: python\n\n  from piccolo.columns.column_types import Email\n  from piccolo.table import Table\n  from piccolo.utils.pydantic import create_pydantic_model\n\n\n  class MyTable(Table):\n      email = Email()\n\n\n  model = create_pydantic_model(MyTable)\n\n  model(email=\"not a valid email\")\n  # ValidationError!\n\nThanks to @sinisaos for implementing this feature.\n\n-------------------------------------------------------------------------------\n\n0.85.1\n------\n\nFixed a bug with migrations - when run backwards, ``raw`` was being called\ninstead of ``raw_backwards``. Thanks to @translunar for the fix.\n\n-------------------------------------------------------------------------------\n\n---\n\n[CHANGES.rst:1421-1494] (relevance 0.31)\n-------------------------------------------------------------------------------\n\n0.60.2\n------\n\nFixed a bug with ``asyncio.gather`` not working with some query types. It was\ndue to them being dataclasses, and they couldn't be hashed properly. Thanks to\n@brnosouza for reporting thi"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 560,
+                  "end_line": 580,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=560-568]\n560:             self.print_response(query_id=query_id, response=response)\n561: \n562:         return response\n563: \n564:     def atomic(self) -> Atomic:\n565:         return Atomic(engine=self)\n566: \n567:     def transaction(self, allow_nested: bool = True) -> PostgresTransaction:\n568:         return PostgresTransaction(engine=self, allow_nested=allow_nested)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 380,
+                  "end_line": 460,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=380-460]\n380:         if self._parent is not None:\n381:             return self._parent\n382: \n383:         self.connection = await self.get_connection()\n384:         await self.begin()\n385:         self.context = self.engine.current_transaction.set(self)\n386:         return self\n387: \n388:     async def get_connection(self):\n389:         return await self.engine.get_connection()\n390: \n391:     async def begin(self):\n392:         await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")\n393: \n394:     async def commit(self):\n395:         await self.connection.execute(\"COMMIT\")\n396:         self._committed = True\n397: \n398:     async def rollback(self):\n399:         await self.connection.execute(\"ROLLBACK\")\n400:         self._rolled_back = True\n401: \n402:     async def rollback_to(self, savepoint_name: str):\n403:         \"\"\"\n404:         Used to rollback to a savepoint just using the name.\n405:         \"\"\"\n406:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n407: \n408:     ###########################################################################\n409: \n410:     def get_savepoint_id(self) -> int:\n411:         self._savepoint_id += 1\n412:         return self._savepoint_id\n413: \n414:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n415:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n416:         await self.connection.execute(f\"SAVEPOINT {name}\")\n417:         return Savepoint(name=name, transaction=self)\n418: \n419:     ###########################################################################\n420: \n421:     async def __aexit__(self, exception_type, exception, traceback):\n422:         if self._parent:\n423:             return exception is None\n424: \n425:         if exception:\n426:             # The user may have manually rolled it back.\n427:             if not self._rolled_back:\n428:                 await self.rollback()\n429:         else:\n430:             # The user may have manually committed it.\n431:             if not self._committed and not self._rolled_back:\n432:                 await self.commit()\n433: \n434:         await self.connection.close()\n435:         self.engine.current_transaction.reset(self.context)\n436: \n437:         return exception is None\n438: \n439: \n440: ###############################################################################\n441: \n442: \n443: def dict_factory(cursor, row) -> t.Dict:\n444:     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}\n445: \n446: \n447: class SQLiteEngine(Engine[t.Optional[SQLiteTransaction]]):\n448: \n449:     __slots__ = (\n450:         \"connection_kwargs\",\n451:         \"current_transaction\",\n452:         \"log_queries\",\n453:         \"log_responses\",\n454:     )\n455: \n456:     engine_type = \"sqlite\"\n457:     min_version_number = 3.25\n458: \n459:     def __init__(\n460:         self,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "def transaction(",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"nested_txn_support\",\n      \"title\": \"Add optional nested transaction support and savepoint API\",\n      \"rationale\": \"All modified hunks introduce allow_nested flag, parent transaction handling, and Savepoint class for both Postgres and SQLite engines.\",\n      \"hunks\": [\n        \"piccolo/engine/postgres.py#0\",\n        \"piccolo/engine/postgres.py#1\",\n        \"piccolo/engine/postgres.py#2\",\n        \"piccolo/engine/sqlite.py#0\",\n        \"piccolo/engine/sqlite.py#1\",\n        \"piccolo/engine/sqlite.py#2\",\n        \"piccolo/engine/sqlite.py#3\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction\",\n          \"start_line\": 155,\n          \"end_line\": 164,\n          \"snapshot\": \"pr\",\n          \"why\": \"Slots now include nested\u2011transaction fields\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.__init__\",\n          \"start_line\": 166,\n          \"end_line\": 197,\n          \"snapshot\": \"pr\",\n          \"why\": \"Handles allow_nested flag and parent transaction\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.__aenter__\",\n          \"start_line\": 198,\n          \"end_line\": 206,\n          \"snapshot\": \"pr\",\n          \"why\": \"Returns parent when nested\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.savepoint\",\n          \"start_line\": 237,\n          \"end_line\": 241,\n          \"snapshot\": \"pr\",\n          \"why\": \"Provides savepoint creation\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.rollback_to\",\n          \"start_line\": 225,\n          \"end_line\": 229,\n          \"snapshot\": \"pr\",\n          \"why\": \"Rollback via savepoint name\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresEngine.transaction\",\n          \"start_line\": 567,\n          \"end_line\": 568,\n          \"snapshot\": \"pr\",\n          \"why\": \"Exposes allow_nested parameter\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction\",\n          \"start_line\": 335,\n          \"end_line\": 345,\n          \"snapshot\": \"pr\",\n          \"why\": \"Slots now include nested\u2011transaction fields\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.__init__\",\n          \"start_line\": 347,\n          \"end_line\": 378,\n          \"snapshot\": \"pr\",\n          \"why\": \"Handles allow_nested flag and parent transaction\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.__aenter__\",\n          \"start_line\": 379,\n          \"end_line\": 386,\n          \"snapshot\": \"pr\",\n          \"why\": \"Returns parent when nested\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.savepoint\",\n          \"start_line\": 414,\n          \"end_line\": 418,\n          \"snapshot\": \"pr\",\n          \"why\": \"Provides savepoint creation\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.rollback_to\",\n          \"start_line\": 402,\n          \"end_line\": 406,\n          \"snapshot\": \"pr\",\n          \"why\": \"Rollback via savepoint name\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteEngine.transaction\",\n          \"start_line\": 704,\n          \"end_line\": 708,\n          \"snapshot\": \"pr\",\n          \"why\": \"Exposes allow_nested parameter\"\n        }\n      ]\n    },\n    {\n      \"id\": \"transaction_manual_commit_rollback\",\n      \"title\": \"Expose manual commit/rollback methods on transaction objects\",\n      \"rationale\": \"Tests add calls to transaction.commit() and transaction.rollback() to verify manual control.\",\n      \"hunks\": [\n        \"tests/engine/test_transaction.py#0\",\n        \"tests/engine/test_transaction.py#1\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.commit\",\n          \"start_line\": 217,\n          \"end_line\": 220,\n          \"snapshot\": \"pr\",\n          \"why\": \"Commit method sets _committed flag\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.rollback\",\n          \"start_line\": 221,\n          \"end_line\": 224,\n          \"snapshot\": \"pr\",\n          \"why\": \"Rollback method sets _rolled_back flag\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.commit\",\n          \"start_line\": 394,\n          \"end_line\": 397,\n          \"snapshot\": \"pr\",\n          \"why\": \"Commit method sets _committed flag\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.rollback\",\n          \"start_line\": 398,\n          \"end_line\": 401,\n          \"snapshot\": \"pr\",\n          \"why\": \"Rollback method sets _rolled_back flag\"\n        }\n      ]\n    },\n    {\n      \"id\": \"savepoint_api_tests\",\n      \"title\": \"Add tests for savepoint creation, named savepoints, and rollback\",\n      \"rationale\": \"New test class validates the Savepoint API introduced for both engines.\",\n      \"hunks\": [\n        \"tests/engine/test_transaction.py#2\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.savepoint\",\n          \"start_line\": 237,\n          \"end_line\": 241,\n          \"snapshot\": \"pr\",\n          \"why\": \"Used by tests to create a savepoint\"\n        },\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresTransaction.rollback_to\",\n          \"start_line\": 225,\n          \"end_line\": 229,\n          \"snapshot\": \"pr\",\n          \"why\": \"Used by tests to rollback to a savepoint\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.savepoint\",\n          \"start_line\": 414,\n          \"end_line\": 418,\n          \"snapshot\": \"pr\",\n          \"why\": \"Used by tests to create a savepoint\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteTransaction.rollback_to\",\n          \"start_line\": 402,\n          \"end_line\": 406,\n          \"snapshot\": \"pr\",\n          \"why\": \"Used by tests to rollback to a savepoint\"\n        }\n      ]\n    },\n    {\n      \"id\": \"nested_transaction_test_updates\",\n      \"title\": \"Update nested transaction tests to reflect new allow_nested flag\",\n      \"rationale\": \"Test modifications verify behavior when nested transactions are allowed or disallowed via the new flag.\",\n      \"hunks\": [\n        \"tests/engine/test_nested_transaction.py#0\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"piccolo/engine/postgres.py\",\n          \"symbol\": \"PostgresEngine.transaction\",\n          \"start_line\": 567,\n          \"end_line\": 568,\n          \"snapshot\": \"pr\",\n          \"why\": \"Called with allow_nested=False in test\"\n        },\n        {\n          \"path\": \"piccolo/engine/sqlite.py\",\n          \"symbol\": \"SQLiteEngine.transaction\",\n          \"start_line\": 704,\n          \"end_line\": 708,\n          \"snapshot\": \"pr\",\n          \"why\": \"Called with allow_nested=False in test\"\n        }\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "nested_txn_support",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization"
+                },
+                "result": "[docs/src/piccolo/authentication/index.rst:1-35] (relevance 0.30)\n.. _Authentication:\n\nAuthentication\n==============\n\nPiccolo ships with authentication support out of the box.\n\n-------------------------------------------------------------------------------\n\nRegistering the app\n-------------------\n\nMake sure ``'piccolo.apps.user.piccolo_app'`` is in your ``AppRegistry`` (see\n:ref:`PiccoloProjects`).\n\n-------------------------------------------------------------------------------\n\nTables\n------\n\n.. toctree::\n    :maxdepth: 1\n\n    ./baseuser\n\n-------------------------------------------------------------------------------\n\nWeb app integration\n-------------------\n\nOur sister project, `Piccolo API <https://piccolo-api.readthedocs.io/en/latest/index.html>`_,\ncontains powerful endpoints and middleware for integrating\n`session auth <https://piccolo-api.readthedocs.io/en/latest/session_auth/index.html>`_\nand `token auth <https://piccolo-api.readthedocs.io/en/latest/token_auth/index.html>`_\ninto your ASGI web application, using ``BaseUser``.\n\n---\n\n[docs/src/piccolo/authentication/baseuser.rst:1-88] (relevance 0.27)\n.. _BaseUser:\n\nBaseUser\n========\n\n``BaseUser`` is a ``Table`` you can use to store and authenticate your users.\n\n-------------------------------------------------------------------------------\n\nCreating the Table\n------------------\n\nRun the migrations:\n\n.. code-block:: bash\n\n    piccolo migrations forwards user\n\n-------------------------------------------------------------------------------\n\nCommands\n--------\n\nThe app comes with some useful commands.\n\ncreate\n~~~~~~\n\nCreates a new user. It presents an interactive prompt, asking for the username,\npassword etc.\n\n.. code-block:: bash\n\n    piccolo user create\n\nIf you'd prefer to create a user without the interactive prompt (perhaps in a\nscript), you can pass all of the arguments in as follows:\n\n.. code-block:: bash\n\n    piccolo user create --username=bob --password=bob123 --email=foo@bar.com  --is_admin=t --is_superuser=t --is_active=t\n\n.. warning::\n   If you choose this approach then be careful, as the password will be in the\n   shell's history.\n\nchange_password\n~~~~~~~~~~~~~~~\n\nChange a user's password.\n\n.. code-block:: bash\n\n    piccolo user change_password\n\nchange_permissions\n~~~~~~~~~~~~~~~~~~\n\nChange a user's permissions. The options are ``--admin``, ``--superuser`` and\n``--active``, which change the corresponding attributes on ``BaseUser``.\n\nFor example:\n\n.. code-block:: bash\n\n    piccolo user change_permissions some_user --active=true\n\nThe :ref:`Piccolo Admin<PiccoloAdmin>` uses these attributes to control who\ncan login and what they can do.\n\n* **active** and **admin** - must be true for a user to be able to login.\n* **superuser** - must be true for a user to be able to change other user's\n  passwords.\n\n-------------------------------------------------------------------------------\n\nWithin your code\n----------------\n\ncreate_user / create_user_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo create a new user:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.create_user(username=\"bob\", password=\"abc123\", active=True)\n\n---\n\n[docs/src/piccolo/authentication/baseuser.rst:80-150] (relevance 0.26)\ncreate_user / create_user_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo create a new user:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.create_user(username=\"bob\", password=\"abc123\", active=True)\n\n    # When not in an event loop:\n    BaseUser.create_user_sync(username=\"bob\", password=\"abc123\", active=True)\n\nIt saves the user in the database, and returns the created ``BaseUser``\ninstance.\n\n.. note:: It is preferable to use this rather than instantiating and saving\n    ``BaseUser`` directly, as we add additional validation.\n\nlogin / login_sync\n~~~~~~~~~~~~~~~~~~\n\nTo check a user's credentials, do the following:\n\n.. code-block:: python\n\n    from piccolo.apps.user.tables import BaseUser\n\n    # From within a coroutine:\n    >>> await BaseUser.login(username=\"bob\", password=\"abc123\")\n    1\n\n    # When not in an event loop:\n    >>> BaseUser.login_sync(username=\"bob\", password=\"abc123\")\n    1\n\nIf the login is successful, the user's id is returned, otherwise ``None`` is\nreturned.\n\nupdate_password / update_password_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo change a user's password:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.update_password(username=\"bob\", password=\"abc123\")\n\n    # When not in an event loop:\n    BaseUser.update_password_sync(username=\"bob\", password=\"abc123\")\n\n.. warning:: Don't use bulk updates for passwords - use ``update_password`` /\n   ``update_password_sync``, and they'll correctly hash the password.\n\n-------------------------------------------------------------------------------\n\nLimits\n------\n\nThe maximum password length allowed is 128 characters. This should be\nsufficiently long for most use cases.\n\n-------------------------------------------------------------------------------\n\nExtending ``BaseUser``\n----------------------\n\nIf you want to extend ``BaseUser`` with additional fields, we recommend creating\na ``Profile`` table with a ``ForeignKey`` to ``BaseUser``, which can include\nany custom fields.\n\n---\n\n[CHANGES.rst:1220-1293] (relevance 0.24)\ncareful in case ``BaseUser`` tries to hash the password again (it would then be a hash of\na hash, and hence incorrect). We now have additional checks in place to prevent\nthis.\n\nThanks to @mrbazzan for implementing this, and @sinisaos for help reviewing.\n\n-------------------------------------------------------------------------------\n\n0.64.0\n------\n\nAdded initial support for ``ForeignKey`` columns referencing non-primary key\ncolumns. For example:\n\n.. code-block:: python\n\n  class Manager(Table):\n      name = Varchar()\n      email = Varchar(unique=True)\n\n  class Band(Table):\n      manager = ForeignKey(Manager, target_column=Manager.email)\n\nThanks to @theelderbeever for suggesting this feature, and with help testing.\n\n-------------------------------------------------------------------------------\n\n0.63.1\n------\n\nFixed an issue with the ``value_type`` of ``ForeignKey`` columns when\nreferencing a table with a custom primary key column (such as a ``UUID``).\n\n-------------------------------------------------------------------------------\n\n0.63.0\n------\n\nAdded an ``exclude_imported`` option to ``table_finder``.\n\n.. code-block:: python\n\n  APP_CONFIG = AppConfig(\n      table_classes=table_finder(['music.tables'], exclude_imported=True)\n  )\n\nIt's useful when we want to import ``Table`` subclasses defined within a\nmodule itself, but not imported ones:\n\n.. code-block:: python\n\n  # tables.py\n  from piccolo.apps.user.tables import BaseUser # excluded\n  from piccolo.columns.column_types import ForeignKey, Varchar\n  from piccolo.table import Table\n\n\n  class Musician(Table): # included\n      name = Varchar()\n      user = ForeignKey(BaseUser)\n\nThis was also possible using tags, but was less convenient. Thanks to @sinisaos\nfor reporting this issue.\n\n-------------------------------------------------------------------------------\n\n0.62.3\n------\n\nFixed the error message in ``LazyTableReference``.\n\nFixed a bug with ``create_pydantic_model`` with nested models. For example:\n\n.. code-block:: python\n\n---\n\n[docs/src/piccolo/ecosystem/index.rst:1-42] (relevance 0.18)\n.. _Ecosystem:\n\nEcosystem\n=========\n\nPiccolo API\n-----------\n\nProvides some handy utilities for creating an API around your Piccolo tables.\nExamples include:\n\n* Easily creating CRUD endpoints for ASGI apps, based on Piccolo tables.\n* Automatically creating Pydantic models from your Piccolo tables.\n* Great FastAPI integration.\n* Authentication and rate limiting.\n\n`See the docs <https://piccolo-api.readthedocs.io/en/latest/index.html>`_ for\nmore information.\n\n-------------------------------------------------------------------------------\n\n.. _PiccoloAdmin:\n\nPiccolo Admin\n-------------\n\nLets you create a powerful web GUI for your tables in two min"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization"
+                },
+                "result": "[docs/src/piccolo/authentication/index.rst:1-35] (relevance 0.30)\n.. _Authentication:\n\nAuthentication\n==============\n\nPiccolo ships with authentication support out of the box.\n\n-------------------------------------------------------------------------------\n\nRegistering the app\n-------------------\n\nMake sure ``'piccolo.apps.user.piccolo_app'`` is in your ``AppRegistry`` (see\n:ref:`PiccoloProjects`).\n\n-------------------------------------------------------------------------------\n\nTables\n------\n\n.. toctree::\n    :maxdepth: 1\n\n    ./baseuser\n\n-------------------------------------------------------------------------------\n\nWeb app integration\n-------------------\n\nOur sister project, `Piccolo API <https://piccolo-api.readthedocs.io/en/latest/index.html>`_,\ncontains powerful endpoints and middleware for integrating\n`session auth <https://piccolo-api.readthedocs.io/en/latest/session_auth/index.html>`_\nand `token auth <https://piccolo-api.readthedocs.io/en/latest/token_auth/index.html>`_\ninto your ASGI web application, using ``BaseUser``.\n\n---\n\n[docs/src/piccolo/authentication/baseuser.rst:1-88] (relevance 0.27)\n.. _BaseUser:\n\nBaseUser\n========\n\n``BaseUser`` is a ``Table`` you can use to store and authenticate your users.\n\n-------------------------------------------------------------------------------\n\nCreating the Table\n------------------\n\nRun the migrations:\n\n.. code-block:: bash\n\n    piccolo migrations forwards user\n\n-------------------------------------------------------------------------------\n\nCommands\n--------\n\nThe app comes with some useful commands.\n\ncreate\n~~~~~~\n\nCreates a new user. It presents an interactive prompt, asking for the username,\npassword etc.\n\n.. code-block:: bash\n\n    piccolo user create\n\nIf you'd prefer to create a user without the interactive prompt (perhaps in a\nscript), you can pass all of the arguments in as follows:\n\n.. code-block:: bash\n\n    piccolo user create --username=bob --password=bob123 --email=foo@bar.com  --is_admin=t --is_superuser=t --is_active=t\n\n.. warning::\n   If you choose this approach then be careful, as the password will be in the\n   shell's history.\n\nchange_password\n~~~~~~~~~~~~~~~\n\nChange a user's password.\n\n.. code-block:: bash\n\n    piccolo user change_password\n\nchange_permissions\n~~~~~~~~~~~~~~~~~~\n\nChange a user's permissions. The options are ``--admin``, ``--superuser`` and\n``--active``, which change the corresponding attributes on ``BaseUser``.\n\nFor example:\n\n.. code-block:: bash\n\n    piccolo user change_permissions some_user --active=true\n\nThe :ref:`Piccolo Admin<PiccoloAdmin>` uses these attributes to control who\ncan login and what they can do.\n\n* **active** and **admin** - must be true for a user to be able to login.\n* **superuser** - must be true for a user to be able to change other user's\n  passwords.\n\n-------------------------------------------------------------------------------\n\nWithin your code\n----------------\n\ncreate_user / create_user_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo create a new user:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.create_user(username=\"bob\", password=\"abc123\", active=True)\n\n---\n\n[docs/src/piccolo/authentication/baseuser.rst:80-150] (relevance 0.26)\ncreate_user / create_user_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo create a new user:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.create_user(username=\"bob\", password=\"abc123\", active=True)\n\n    # When not in an event loop:\n    BaseUser.create_user_sync(username=\"bob\", password=\"abc123\", active=True)\n\nIt saves the user in the database, and returns the created ``BaseUser``\ninstance.\n\n.. note:: It is preferable to use this rather than instantiating and saving\n    ``BaseUser`` directly, as we add additional validation.\n\nlogin / login_sync\n~~~~~~~~~~~~~~~~~~\n\nTo check a user's credentials, do the following:\n\n.. code-block:: python\n\n    from piccolo.apps.user.tables import BaseUser\n\n    # From within a coroutine:\n    >>> await BaseUser.login(username=\"bob\", password=\"abc123\")\n    1\n\n    # When not in an event loop:\n    >>> BaseUser.login_sync(username=\"bob\", password=\"abc123\")\n    1\n\nIf the login is successful, the user's id is returned, otherwise ``None`` is\nreturned.\n\nupdate_password / update_password_sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo change a user's password:\n\n.. code-block:: python\n\n    # From within a coroutine:\n    await BaseUser.update_password(username=\"bob\", password=\"abc123\")\n\n    # When not in an event loop:\n    BaseUser.update_password_sync(username=\"bob\", password=\"abc123\")\n\n.. warning:: Don't use bulk updates for passwords - use ``update_password`` /\n   ``update_password_sync``, and they'll correctly hash the password.\n\n-------------------------------------------------------------------------------\n\nLimits\n------\n\nThe maximum password length allowed is 128 characters. This should be\nsufficiently long for most use cases.\n\n-------------------------------------------------------------------------------\n\nExtending ``BaseUser``\n----------------------\n\nIf you want to extend ``BaseUser`` with additional fields, we recommend creating\na ``Profile`` table with a ``ForeignKey`` to ``BaseUser``, which can include\nany custom fields.\n\n---\n\n[CHANGES.rst:1220-1293] (relevance 0.24)\ncareful in case ``BaseUser`` tries to hash the password again (it would then be a hash of\na hash, and hence incorrect). We now have additional checks in place to prevent\nthis.\n\nThanks to @mrbazzan for implementing this, and @sinisaos for help reviewing.\n\n-------------------------------------------------------------------------------\n\n0.64.0\n------\n\nAdded initial support for ``ForeignKey`` columns referencing non-primary key\ncolumns. For example:\n\n.. code-block:: python\n\n  class Manager(Table):\n      name = Varchar()\n      email = Varchar(unique=True)\n\n  class Band(Table):\n      manager = ForeignKey(Manager, target_column=Manager.email)\n\nThanks to @theelderbeever for suggesting this feature, and with help testing.\n\n-------------------------------------------------------------------------------\n\n0.63.1\n------\n\nFixed an issue with the ``value_type`` of ``ForeignKey`` columns when\nreferencing a table with a custom primary key column (such as a ``UUID``).\n\n-------------------------------------------------------------------------------\n\n0.63.0\n------\n\nAdded an ``exclude_imported`` option to ``table_finder``.\n\n.. code-block:: python\n\n  APP_CONFIG = AppConfig(\n      table_classes=table_finder(['music.tables'], exclude_imported=True)\n  )\n\nIt's useful when we want to import ``Table`` subclasses defined within a\nmodule itself, but not imported ones:\n\n.. code-block:: python\n\n  # tables.py\n  from piccolo.apps.user.tables import BaseUser # excluded\n  from piccolo.columns.column_types import ForeignKey, Varchar\n  from piccolo.table import Table\n\n\n  class Musician(Table): # included\n      name = Varchar()\n      user = ForeignKey(BaseUser)\n\nThis was also possible using tags, but was less convenient. Thanks to @sinisaos\nfor reporting this issue.\n\n-------------------------------------------------------------------------------\n\n0.62.3\n------\n\nFixed the error message in ``LazyTableReference``.\n\nFixed a bug with ``create_pydantic_model`` with nested models. For example:\n\n.. code-block:: python\n\n---\n\n[docs/src/piccolo/ecosystem/index.rst:1-42] (relevance 0.18)\n.. _Ecosystem:\n\nEcosystem\n=========\n\nPiccolo API\n-----------\n\nProvides some handy utilities for creating an API around your Piccolo tables.\nExamples include:\n\n* Easily creating CRUD endpoints for ASGI apps, based on Piccolo tables.\n* Automatically creating Pydantic models from your Piccolo tables.\n* Great FastAPI integration.\n* Authentication and rate limiting.\n\n`See the docs <https://piccolo-api.readthedocs.io/en/latest/index.html>`_ for\nmore information.\n\n-------------------------------------------------------------------------------\n\n.. _PiccoloAdmin:\n\nPiccolo Admin\n-------------\n\nLets you create a powerful web GUI for your tables in two min"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "transaction"
+                },
+                "result": "[docs/src/piccolo/query_types/transactions.rst:1-71] (relevance 0.44)\n.. _Transactions:\n\nTransactions\n============\n\nTransactions allow multiple queries to be committed only once successful.\n\nThis is useful for things like migrations, where you can't have it fail in an\ninbetween state.\n\n.. note::\n    In the examples below we use ``MyTable._meta.db`` to access the ``Engine``,\n    which is used to create transactions.\n\n-------------------------------------------------------------------------------\n\nAtomic\n------\n\nThis is useful when you want to programmatically add some queries to the\ntransaction before running it.\n\n.. code-block:: python\n\n    transaction = Band._meta.db.atomic()\n    transaction.add(Manager.create_table())\n    transaction.add(Concert.create_table())\n    await transaction.run()\n\n    # You're also able to run this synchronously:\n    transaction.run_sync()\n\n-------------------------------------------------------------------------------\n\nTransaction\n-----------\n\nThis is the preferred way to run transactions - it currently only works with\nasync.\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        await Manager.create_table()\n        await Concert.create_table()\n\nIf an exception is raised within the body of the context manager, then the\ntransaction is automatically rolled back. The exception is still propagated\nthough.\n\n``transaction_exists``\n~~~~~~~~~~~~~~~~~~~~~~\n\nYou can check whether your code is currently inside a transaction using the\nfollowing:\n\n.. code-block:: python\n\n    >>> Band._meta.db.transaction_exists()\n    True\n\n-------------------------------------------------------------------------------\n\nTransaction types\n-----------------\n\nSQLite\n~~~~~~\n\nFor SQLite you may want to specify the :ref:`transaction type <SQLiteTransactionTypes>`,\nas it can have an effect on how well the database handles concurrent requests.\n\n---\n\n[docs/src/piccolo/tutorials/using_sqlite_and_asyncio_effectively.rst:62-103] (relevance 0.35)\nfrom piccolo.engine.sqlite import TransactionType\n\n    async with Band._meta.db.transaction(\n        transaction_type=TransactionType.immediate\n    ):\n        # We perform a SELECT first, but as it's an IMMEDIATE transaction,\n        # we can later perform writes without getting a database locked\n        # error.\n        if not await Band.exists().where(Band.name == 'Pythonistas'):\n            await Band.objects().create(name=\"Pythonistas\")\n\nMultiple ``IMMEDIATE`` transactions can exist concurrently - SQLite uses a lock\nto make sure only one of them writes at a time.\n\nIf your transaction will just be performing ``SELECT`` queries, then just use\nthe default ``DEFERRED`` transactions - you will get improved performance, as\nno locking is involved:\n\n.. code-block:: python\n\n    async with Band._meta.db.transaction():\n        bands = await Band.select()\n        managers = await Manager.select()\n\n-------------------------------------------------------------------------------\n\ntimeout\n-------\n\nIt's recommended to specify the ``timeout`` argument in :class:`SQLiteEngine <piccolo.engine.sqlite.SQLiteEngine>`.\n\n.. code-block:: python\n\n    DB = SQLiteEngine(timeout=60)\n\nImagine you have a web app, and each endpoint creates a transaction which runs\nmultiple queries. With SQLite, only a single write operation can happen at a\ntime, so if several connections are open, they may be queued for a while.\n\nBy increasing ``timeout`` it means that queries are less likely to timeout.\n\nTo find out more about ``timeout`` see the Python :func:`sqlite3 docs <sqlite3.connect>`.\n\n---\n\n[CHANGES.rst:224-300] (relevance 0.28)\nfrom piccolo.engine.sqlite import TransactionType\n\n  async with Band._meta.db.transaction(\n      transaction_type=TransactionType.immediate\n  ):\n      band = await Band.objects().get_or_create(Band.name == 'Pythonistas')\n      ...\n\nWe've added a `new tutorial <https://piccolo-orm.readthedocs.io/en/latest/piccolo/tutorials/using_sqlite_and_asyncio_effectively.html>`_\nwhich explains this in more detail, as well as other tips for using asyncio and\nSQLite together effectively.\n\nThanks to @powellnorma and @sinisaos for their help with this.\n\nOther changes\n~~~~~~~~~~~~~\n\n* Fixed a bug with camelCase column names (we recommend using snake_case, but\n  sometimes it's unavoidable when using Piccolo with an existing schema).\n  Thanks to @sinisaos for this.\n* Fixed a typo in the docs with ``raw`` queries - thanks to @StitiFatah for\n  this.\n\n-------------------------------------------------------------------------------\n\n0.97.0\n------\n\nSome big improvements to ``order_by`` clauses.\n\nIt's now possible to combine ascending and descending:\n\n.. code-block:: python\n\n  await Band.select(\n      Band.name,\n      Band.popularity\n  ).order_by(\n      Band.name\n  ).order_by(\n      Band.popularity,\n      ascending=False\n  )\n\nYou can also order by anything you want using ``OrderByRaw``:\n\n.. code-block:: python\n\n  from piccolo.query import OrderByRaw\n\n  await Band.select(\n      Band.name\n  ).order_by(\n      OrderByRaw('random()')\n  )\n\n-------------------------------------------------------------------------------\n\n0.96.0\n------\n\nAdded the ``auto_update`` argument to ``Column``. Its main use case is columns\nlike ``modified_on`` where we want the value to be updated automatically each\ntime the row is saved.\n\n.. code-block:: python\n\n  class Band(Table):\n      name = Varchar()\n      popularity = Integer()\n      modified_on = Timestamp(\n        null=True,\n        default=None,\n        auto_update=datetime.datetime.now\n      )\n\n    # The `modified_on` column will automatically be updated to the current\n\n---\n\n[docs/src/piccolo/tutorials/using_sqlite_and_asyncio_effectively.rst:1-67] (relevance 0.21)\n.. _UsingSQLitAndAsyncioEffectively:\n\nUsing SQLite and asyncio effectively\n====================================\n\nWhen using Piccolo with SQLite, there are some best practices to follow.\n\nasyncio => lots of connections\n------------------------------\n\nWith asyncio, we can potentially open lots of database connections, and attempt\nto perform concurrent database writes.\n\nSQLite doesn't support such concurrent behavior as effectively as Postgres, so\nwe need to be careful.\n\nOne write at a time\n~~~~~~~~~~~~~~~~~~~\n\nSQLite can easily support lots of transactions concurrently if they are reading,\nbut only one write can be performed at a time.\n\n-------------------------------------------------------------------------------\n\n.. _SQLiteTransactionTypes:\n\nTransactions\n------------\n\nSQLite has several transaction types, as specified by Piccolo's\n``TransactionType`` enum:\n\n.. currentmodule:: piccolo.engine.sqlite\n\n.. autoclass:: TransactionType\n    :members:\n    :undoc-members:\n\nWhich to use?\n~~~~~~~~~~~~~\n\nWhen creating a transaction, Piccolo uses ``DEFERRED`` by default (to be\nconsistent with SQLite).\n\nThis means that the first SQL query executed within the transaction determines\nwhether it's a **READ** or **WRITE**:\n\n* **READ** - if the first query is a ``SELECT``\n* **WRITE** - if the first query is something like an ``INSERT`` / ``UPDATE`` / ``DELETE``\n\nIf a transaction starts off with a ``SELECT``, but then tries to perform an ``INSERT`` / ``UPDATE`` / ``DELETE``,\nSQLite tries to 'promote' the transaction so it can write.\n\nThe problem is, if multiple concurrent connections try doing this at the same time,\nSQLite will return a database locked error.\n\nSo if you're creating a transaction which you know will perform writes, then\ncreate an ``IMMEDIATE`` transaction:\n\n.. code-block:: python\n\n    from piccolo.engine.sqlite import TransactionType\n\n    async with Band._meta.db.transaction(\n        transaction_type=TransactionType.immediate\n    ):\n        # We perform a SELECT first, but as it's an IMMEDIATE transaction,\n\n---\n\n[CHANGES.rst:348-428] (relevance 0.19)\n* Postgres 9.6 is no longer officially supported, as it's end of life, but\n  Piccolo should continue to work with it just fine for now.\n* Improved docs for transactions, added docs for the ``as_of`` clause in"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "transaction_manual_commit_rollback",
+        "turns": [
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "nested_transaction_test_updates",
+        "turns": [
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:nested_txn_support",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "savepoint(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 9"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 124,
+                  "end_line": 144,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=124-144]\n124: \n125: \n126: class Savepoint:\n127:     def __init__(self, name: str, transaction: PostgresTransaction):\n128:         self.name = name\n129:         self.transaction = transaction\n130: \n131:     async def rollback_to(self):\n132:         await self.transaction.connection.execute(\n133:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n134:         )\n135: \n136:     async def release(self):\n137:         await self.transaction.connection.execute(\n138:             f\"RELEASE SAVEPOINT {self.name}\"\n139:         )\n140: \n141: \n142: class PostgresTransaction:\n143:     \"\"\"\n144:     Used for wrapping queries in a transaction, using a context manager.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "rollback_to(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: invalid regex: missing ), unterminated subpattern at position 11"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/postgres.py",
+                  "start_line": 131,
+                  "end_line": 242,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/postgres.py lines=131-242]\n131:     async def rollback_to(self):\n132:         await self.transaction.connection.execute(\n133:             f\"ROLLBACK TO SAVEPOINT {self.name}\"\n134:         )\n135: \n136:     async def release(self):\n137:         await self.transaction.connection.execute(\n138:             f\"RELEASE SAVEPOINT {self.name}\"\n139:         )\n140: \n141: \n142: class PostgresTransaction:\n143:     \"\"\"\n144:     Used for wrapping queries in a transaction, using a context manager.\n145:     Currently it's async only.\n146: \n147:     Usage::\n148: \n149:         async with engine.transaction():\n150:             # Run some queries:\n151:             await Band.select().run()\n152: \n153:     \"\"\"\n154: \n155:     __slots__ = (\n156:         \"engine\",\n157:         \"transaction\",\n158:         \"context\",\n159:         \"connection\",\n160:         \"_savepoint_id\",\n161:         \"_parent\",\n162:         \"_committed\",\n163:         \"_rolled_back\",\n164:     )\n165: \n166:     def __init__(self, engine: PostgresEngine, allow_nested: bool = True):\n167:         \"\"\"\n168:         :param allow_nested:\n169:             If ``True`` then if we try creating a new transaction when another\n170:             is already active, we treat this as a no-op::\n171: \n172:                 async with DB.transaction():\n173:                     async with DB.transaction():\n174:                         pass\n175: \n176:             If we want to disallow this behaviour, then setting\n177:             ``allow_nested=False`` will cause a ``TransactionError`` to be\n178:             raised.\n179: \n180:         \"\"\"\n181:         self.engine = engine\n182:         current_transaction = self.engine.current_transaction.get()\n183: \n184:         self._savepoint_id = 0\n185:         self._parent = None\n186:         self._committed = False\n187:         self._rolled_back = False\n188: \n189:         if current_transaction:\n190:             if allow_nested:\n191:                 self._parent = current_transaction\n192:             else:\n193:                 raise TransactionError(\n194:                     \"A transaction is already active - nested transactions \"\n195:                     \"aren't allowed.\"\n196:                 )\n197: \n198:     async def __aenter__(self) -> PostgresTransaction:\n199:         if self._parent is not None:\n200:             return self._parent\n201: \n202:         self.connection = await self.get_connection()\n203:         self.transaction = self.connection.transaction()\n204:         await self.begin()\n205:         self.context = self.engine.current_transaction.set(self)\n206:         return self\n207: \n208:     async def get_connection(self):\n209:         if self.engine.pool:\n210:             return await self.engine.pool.acquire()\n211:         else:\n212:             return await self.engine.get_new_connection()\n213: \n214:     async def begin(self):\n215:         await self.transaction.start()\n216: \n217:     async def commit(self):\n218:         await self.transaction.commit()\n219:         self._committed = True\n220: \n221:     async def rollback(self):\n222:         await self.transaction.rollback()\n223:         self._rolled_back = True\n224: \n225:     async def rollback_to(self, savepoint_name: str):\n226:         \"\"\"\n227:         Used to rollback to a savepoint just using the name.\n228:         \"\"\"\n229:         await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n230: \n231:     ###########################################################################\n232: \n233:     def get_savepoint_id(self) -> int:\n234:         self._savepoint_id += 1\n235:         return self._savepoint_id\n236: \n237:     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n238:         name = name or f\"savepoint_{self.get_savepoint_id()}\"\n239:         await self.connection.execute(f\"SAVEPOINT {name}\")\n240:         return Savepoint(name=name, transaction=self)\n241: \n242:     ###########################################################################\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "piccolo/engine/sqlite.py",
+                  "start_line": 124,
+                  "end_line": 150,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=72b85975ef4364cb5609c5c6af5240e4f4782f90 path=piccolo/engine/sqlite.py lines=124-150]\n124:     If the value is a time, convert it to a UUID instance.\n125:     \"\"\"\n126:     return datetime.time.fromisoformat(value.decode(\"utf8\"))\n127: \n128: \n129: def convert_seconds_out(value: bytes) -> datetime.timedelta:\n130:     \"\"\"\n131:     If the value is from a seconds column, convert it to a timedelta instance.\n132:     \"\"\"\n133:     return datetime.timedelta(seconds=float(value.decode(\"utf8\")))\n134: \n135: \n136: def convert_boolean_out(value: bytes) -> bool:\n137:     \"\"\"\n138:     If the value is from a boolean column, convert it to a bool value.\n139:     \"\"\"\n140:     _value = value.decode(\"utf8\")\n141:     return _value == \"1\"\n142: \n143: \n144: def convert_timestamp_out(value: bytes) -> datetime.datetime:\n145:     \"\"\"\n146:     If the value is from a timestamp column, convert it to a datetime value.\n147:     \"\"\"\n148:     return datetime.datetime.fromisoformat(value.decode(\"utf8\"))\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The transaction API builds raw SQL statements for SAVEPOINT, ROLLBACK TO SAVEPOINT and RELEASE SAVEPOINT using f-strings that directly embed a caller\u2011provided name. The name argument (savepoint_name) can be supplied by external code and is not validated or parameterised, allowing an attacker to inject arbitrary SQL via a crafted savepoint name.\",\n      \"evidence\": [\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/postgres.py\",\n          \"lines\": [131, 139],\n          \"content\": \"async def rollback_to(self):\\n    await self.transaction.connection.execute(\\n        f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n    )\\n\\nasync def release(self):\\n    await self.transaction.connection.execute(\\n        f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n    )\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/postgres.py\",\n          \"lines\": [225, 229],\n          \"content\": \"async def rollback_to(self, savepoint_name: str):\\n    \\\"\\\"\\\"\\n    Used to rollback to a savepoint just using the name.\\n    \\\"\\\"\\\"\\n    await Savepoint(name=savepoint_name, transaction=self).rollback_to()\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/postgres.py\",\n          \"lines\": [237, 240],\n          \"content\": \"async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n    name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n    await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n    return Savepoint(name=name, transaction=self)\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/sqlite.py\",\n          \"lines\": [311, 319],\n          \"content\": \"async def rollback_to(self):\\n    await self.transaction.connection.execute(\\n        f\\\"ROLLBACK TO SAVEPOINT {self.name}\\\"\\n    )\\n\\nasync def release(self):\\n    await self.transaction.connection.execute(\\n        f\\\"RELEASE SAVEPOINT {self.name}\\\"\\n    )\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/sqlite.py\",\n          \"lines\": [402, 406],\n          \"content\": \"async def rollback_to(self, savepoint_name: str):\\n    await Savepoint(name=savepoint_name, transaction=self).rollback_to()\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"piccolo/engine/sqlite.py\",\n          \"lines\": [414, 417],\n          \"content\": \"async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\\n    name = name or f\\\"savepoint_{self.get_savepoint_id()}\\\"\\n    await self.connection.execute(f\\\"SAVEPOINT {name}\\\")\\n    return Savepoint(name=name, transaction=self)\"\n        }\n      ],\n      \"suggested_fix\": \"Do not interpolate the savepoint name directly into the SQL string. Either restrict the name to a safe, internally generated identifier (e.g., always use the auto\u2011generated name and ignore user\u2011provided values) or validate the supplied name against an allowlist/regex that permits only alphanumeric characters and underscores. Then construct the statement using a parameterised API if supported, or safely quote the identifier.\",\n      \"file\": \"piccolo/engine/postgres.py\",\n      \"line\": 225\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:132",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.883,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/postgres.py:137",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.8517,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:317",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.8881,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "lgtm-python-sqli-fstring:piccolo/engine/sqlite.py:392",
+        "judged": true,
+        "kev_verdict": "not_real",
+        "kev_severity": "low",
+        "supported": false,
+        "provenance_confidence": 0.4308,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "piccolo-savepoint-name-sqli",
+  "url": "https://github.com/piccolo-orm/piccolo/pull/778",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xq59-7jf3-rjc6",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "piccolo/engine/postgres.py",
+    "piccolo/engine/sqlite.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

@@ -1,0 +1,274 @@
+{
+  "id": "rucio-oracle-json-meta-filter-sqli-vulnerable",
+  "repo": "rucio/rucio",
+  "pr": 5104,
+  "title": "Porting the DID filter engine to JSON metadata added an Oracle branch that str.format()s user filter keys and values into a json_exists() expression wrapped in sqlalchemy text().",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "81394b76f9d83b0f06ec6c0116fd0516418ea437",
+  "pr_sha": "6b4036231214746e5c0cd28a713ba3e92be3bbd1",
+  "files_changed": 20,
+  "python_files_changed": 19,
+  "added_lines": 1031,
+  "diff_chars": 115591,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 579.0,
+  "index_seconds": 0.2,
+  "index_reused": false,
+  "index_chunks": 20,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 85,
+    "hunks_reviewed": 77,
+    "sections_scheduled": 16,
+    "sections_completed": 13,
+    "sections_failed": 3,
+    "complete": false
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [
+    {
+      "source": "sqli:plugin-interface.1",
+      "stage": null,
+      "message": "SQL injection review returned no parsable findings for lib/rucio/core/did_meta_plugins/__init__.py lines 24-206"
+    },
+    {
+      "source": "sqli:plugin-interface.4",
+      "stage": null,
+      "message": "SQL injection review returned no parsable findings for lib/rucio/core/did_meta_plugins/json_meta.py lines 142-213"
+    },
+    {
+      "source": "sqli:tests.2",
+      "stage": null,
+      "message": "SQL injection review returned no parsable findings for lib/rucio/tests/test_filter_engine.py lines 482-748"
+    }
+  ],
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:lib/rucio/core/did_meta_plugins/filter_engine.py:299",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 299,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "Line 299 builds a raw SQL fragment via string formatting: `text(\"json_exists(meta,'$?(@.{} == \\\"{}\\\")')\".format(key, value))`. Both `key` and `value` are interpolated directly into the SQL text with no parameter binding, escaping, or whitelist validation. Tracing the data flow: `create_sqla_query` (filter_engine.py:252) receives `key`/`value` from `self._filters`, which are populated by the `Filte"
+    },
+    {
+      "finding_id": "authz:filter-api-normalization:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "lib/rucio/api/did.py",
+      "line": 109,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "In list_dids_extended, the new loop that normalizes each OR-group filter writes the scope value into the 'account' key instead of the 'scope' key. When a filter group contains both 'account' and 'scope', the 'scope' branch overwrites the already-normalized 'account' value with an InternalScope object, so the account filter is silently dropped and the scope filter is never applied under its own key"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 9,
+  "sast_triage_tool_calls": 5,
+  "sast_triage_units": 1,
+  "reviewer_tool_calls": 149,
+  "reviewer_units": 29,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:lib/rucio/core/did_meta_plugins/filter_engine.py:299",
+      "cwe_id": "CWE-89",
+      "explanation": "Line 299 builds a raw SQL fragment via string formatting: `text(\"json_exists(meta,'$?(@.{} == \\\"{}\\\")')\".format(key, value))`. Both `key` and `value` are interpolated directly into the SQL text with no parameter binding, escaping, or whitelist validation. Tracing the data flow: `create_sqla_query` (filter_engine.py:252) receives `key`/`value` from `self._filters`, which are populated by the `FilterEngine` constructor from the `filters` argument. In json_meta.py:155-164, `FilterEngine(filters, model_class=models.DidMeta, strict_coerce=False)` is called with `json_column=models.DidMeta.meta`, and `filters` originates from the `list_dids` API parameter (json_meta.py:141), which is user-controlled input. The Oracle branch (line 292) is reached when `session.bind.dialect.name == 'oracle'`, and in that branch the only checks are that `oper == operator.eq` and that `value` contains no wildcard characters (lines 295-298) \u2014 neither `key` nor `value` is validated against a whitelist or sanitized. An attacker controlling the filter dict can inject arbitrary SQL/JSON-path expressions through `key` or `value` (e.g., a `value` containing a closing quote to break out of the JSON path expression). This is a genuine SQL injection sink, not a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            291,
+            299
+          ],
+          "source": null,
+          "content": "elif json_column:\n    if session.bind.dialect.name == 'oracle':\n        if oper != operator.eq:\n            raise exception.FilterEngineGenericError(\"Oracle implementation does not support this operator.\")\n        if isinstance(value, str) and any([char in value for char in ['*', '%']]):\n            raise exception.FilterEngineGenericError(\"Oracle implementation does not support wildcards.\")\n        expression = text(\"json_exists(meta,'$?(@.{} == \\\"{}\\\")')\".format(key, value))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/json_meta.py",
+          "lines": [
+            155,
+            164
+          ],
+          "source": null,
+          "content": "fe = FilterEngine(filters, model_class=models.DidMeta, strict_coerce=False)\nquery = fe.create_sqla_query(\n    additional_model_attributes=[\n        models.DidMeta.scope,\n        models.DidMeta.name\n    ], additional_filters=[\n        (models.DidMeta.scope, operator.eq, scope)\n    ],\n    json_column=models.DidMeta.meta\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/json_meta.py",
+          "lines": [
+            141,
+            142
+          ],
+          "source": null,
+          "content": "def list_dids(self, scope, filters, did_type='collection', ignore_case=False, limit=None,\n              offset=None, long=False, recursive=False, ignore_dids=None, session=None):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            297,
+            299
+          ],
+          "source": null,
+          "content": "if isinstance(value, str) and any([char in value for char in ['*', '%']]):\n    raise exception.FilterEngineGenericError(\"Oracle implementation does not support wildcards.\")\nexpression = text(\"json_exists(meta,'$?(@.{} == \\\"{}\\\")')\".format(key, value))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            292,
+            299
+          ],
+          "source": null,
+          "content": "if session.bind.dialect.name == 'oracle':\n    if oper != operator.eq:\n        raise exception.FilterEngineGenericError(\"Oracle implementation does not support this operator.\")\n    if isinstance(value, str) and any([char in value for char in ['*', '%'])):\n        raise exception.FilterEngineGenericError(\"Oracle implementation does not support wildcards.\")\n    expression = text(\"json_exists(meta,'$?(@.{} == \\\"{}\\\")')\".format(key, value))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/web/rest/flaskapi/v1/dids.py",
+          "lines": [
+            167,
+            167
+          ],
+          "source": null,
+          "content": "for did in list_dids(scope=scope, filters=filters, did_type=did_type, limit=limit, long=long, recursive=recursive, vo=vo):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            58,
+            66
+          ],
+          "source": null,
+          "content": "def __init__(self, filters, model_class=None, strict_coerce=True):\n    if isinstance(filters, str):\n        self._filters, _ = parse_did_filter_from_string_fe(filters, omit_name=True)\n    elif isinstance(filters, dict):\n        self._filters = [filters]\n    elif isinstance(filters, list):\n        self._filters = filters",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Replace the string-formatted `text()` call with a parameterized query. For example, use `text(\"json_exists(meta, :json_path)\").bindparams(bindparam('json_path'))` and pass the constructed JSON path as a bound parameter, or better, build the JSON path safely (e.g., using `json.dumps` for the value and validating `key` against a strict identifier whitelist) so that no user-controlled characters are interpolated into the SQL string. Ensure both `key` and `value` are validated/escaped before use.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8997,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 299,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:filter-api-normalization:1",
+      "cwe_id": "CWE-863",
+      "explanation": "In list_dids_extended, the new loop that normalizes each OR-group filter writes the scope value into the 'account' key instead of the 'scope' key. When a filter group contains both 'account' and 'scope', the 'scope' branch overwrites the already-normalized 'account' value with an InternalScope object, so the account filter is silently dropped and the scope filter is never applied under its own key. This is an incorrect authorization/filter condition: the query no longer enforces the intended account/scope constraints, allowing DIDs to be returned that the filter was meant to exclude. The base code correctly assigned filters['scope'] = InternalScope(...); the PR changed this to or_group['account'] = InternalScope(...).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/api/did.py",
+          "lines": [
+            104,
+            109
+          ],
+          "source": null,
+          "content": "    # replace account and scope in filters with internal representation\n    for or_group in filters:\n        if 'account' in or_group:\n            or_group['account'] = InternalAccount(or_group['account'], vo=vo)\n        if 'scope' in or_group:\n            or_group['account'] = InternalScope(or_group['scope'], vo=vo)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/web/rest/flaskapi/v1/dids.py",
+          "lines": [
+            242,
+            245
+          ],
+          "source": null,
+          "content": "            def generate(vo):\n                for did in list_dids_extended(scope=scope, filters=filters, did_type=did_type, limit=limit, long=long, recursive=recursive, vo=vo):\n                    yield dumps(did) + '\\n'\n            return try_stream(generate(vo=request.environ.get('vo')))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Assign the scope value to the 'scope' key, not 'account': change line 109 to `or_group['scope'] = InternalScope(or_group['scope'], vo=vo)` so each filter key is normalized independently and the intended account/scope constraints are preserved.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8789,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "lib/rucio/api/did.py",
+      "line": 109,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "rucio-oracle-json-meta-filter-sqli",
+  "url": "https://github.com/rucio/rucio/pull/5104",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-vjr5-c9qv-hgm3",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "lib/rucio/core/did_meta_plugins/filter_engine.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

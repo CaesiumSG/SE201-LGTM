@@ -1,0 +1,220 @@
+{
+  "id": "khoj-subscription-email-idor-vulnerable",
+  "repo": "khoj-ai/khoj",
+  "pr": 537,
+  "title": "The billing PR added a PATCH /api/subscription endpoint that takes the target customer's email from a query parameter instead of the logged-in user, so any authenticated user can cancel or resume anyone's Stripe subscription.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "cec54e3a8a6d5c4857b6b7a31f50c50f89963402",
+  "pr_sha": "1d3bdf8fdbdd28627cb90e555d887cc86ae28fd0",
+  "files_changed": 40,
+  "python_files_changed": 23,
+  "added_lines": 375,
+  "diff_chars": 40458,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 388.8,
+  "index_seconds": 0.4,
+  "index_reused": false,
+  "index_chunks": 40,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 18,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "fallback",
+    "investigator_status": "failed",
+    "hunks_total": 63,
+    "hunks_reviewed": 63,
+    "sections_scheduled": 23,
+    "sections_completed": 23,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:fallback:src/khoj/configure.py:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/khoj/routers/subscription.py",
+      "line": 85,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR newly mounts the subscription router (configure.py:148,155), exposing the PATCH /api/subscription endpoint. That endpoint (subscription.py:81-106) is only guarded by @requires([\"authenticated\"]) and then performs a Stripe customer lookup by a user-supplied `email` parameter (line 85) and cancels/resubscribes that customer's subscriptions (lines 90-104). It never verifies that the authentica"
+    },
+    {
+      "finding_id": "authz:fallback:src/khoj/routers/subscription.py:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/khoj/routers/subscription.py",
+      "line": 85,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new update_subscription endpoint (PATCH) is protected only by @requires([\"authenticated\"]), which merely confirms the caller is logged in. It then takes a user-supplied `email` parameter and uses it to look up a Stripe customer (stripe.Customer.list(email=email)) and modify that customer's subscriptions (cancel/resubscribe). There is no check that the authenticated requester's own email matche"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 12,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 112,
+  "reviewer_units": 23,
+  "findings": [
+    {
+      "finding_id": "authz:fallback:src/khoj/configure.py:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR newly mounts the subscription router (configure.py:148,155), exposing the PATCH /api/subscription endpoint. That endpoint (subscription.py:81-106) is only guarded by @requires([\"authenticated\"]) and then performs a Stripe customer lookup by a user-supplied `email` parameter (line 85) and cancels/resubscribes that customer's subscriptions (lines 90-104). It never verifies that the authenticated requester (request.user) is the owner of the `email` being operated on. Any authenticated user can pass another user's email and cancel or resubscribe that user's paid subscription \u2014 a classic IDOR on a user-controlled identifier with no ownership check.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/khoj/configure.py",
+          "lines": [
+            148,
+            155
+          ],
+          "source": null,
+          "content": "from khoj.routers.subscription import subscription_router\n    ...\n    if state.billing_enabled:\n        logger.info(\"\ud83d\udcb3 Enabled Billing\")\n        app.include_router(subscription_router, prefix=\"/api/subscription\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/khoj/routers/subscription.py",
+          "lines": [
+            81,
+            104
+          ],
+          "source": null,
+          "content": "@subscription_router.patch(\"\")\n@requires([\"authenticated\"])\nasync def update_subscription(request: Request, email: str, operation: str):\n    # Retrieve the customer's details\n    customers = stripe.Customer.list(email=email).auto_paging_iter()\n    customer = next(customers, None)\n    ...\n    if operation == \"cancel\":\n        customer_id = customer.id\n        for subscription in stripe.Subscription.list(customer=customer_id):\n            stripe.Subscription.modify(subscription.id, cancel_at_period_end=True)\n        return {\"success\": True}\n    elif operation == \"resubscribe\":\n        ...\n            stripe.Subscription.modify(subscription.id, cancel_at_period_end=False)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/khoj/configure.py",
+          "lines": [
+            63,
+            79
+          ],
+          "source": null,
+          "content": "async def authenticate(self, request: HTTPConnection):\n    current_user = request.session.get(\"user\")\n    if current_user and current_user.get(\"email\"):\n        user = await self.khojuser_manager.filter(email=current_user.get(\"email\")).afirst()\n        if user:\n            return AuthCredentials([\"authenticated\"]), AuthenticatedKhojUser(user)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "In update_subscription, derive the target email from the authenticated request.user (e.g. request.user.object.email) instead of accepting a client-supplied `email` parameter, or explicitly verify that the supplied email matches the authenticated user's email before performing any Stripe cancel/resubscribe operation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9006,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/khoj/routers/subscription.py",
+      "line": 85,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:fallback:src/khoj/routers/subscription.py:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new update_subscription endpoint (PATCH) is protected only by @requires([\"authenticated\"]), which merely confirms the caller is logged in. It then takes a user-supplied `email` parameter and uses it to look up a Stripe customer (stripe.Customer.list(email=email)) and modify that customer's subscriptions (cancel/resubscribe). There is no check that the authenticated requester's own email matches the supplied `email`. A grep for `request.auth` across src/khoj confirms the authenticated user's identity is never retrieved or compared. Thus any authenticated user can cancel or resubscribe another user's Stripe subscription by passing that user's email \u2014 a classic IDOR / broken object-level authorization.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/khoj/routers/subscription.py",
+          "lines": [
+            81,
+            106
+          ],
+          "source": null,
+          "content": "@subscription_router.patch(\"\")\n@requires([\"authenticated\"])\nasync def update_subscription(request: Request, email: str, operation: str):\n    # Retrieve the customer's details\n    customers = stripe.Customer.list(email=email).auto_paging_iter()\n    customer = next(customers, None)\n    if customer is None:\n        return {\"success\": False, \"message\": \"Customer not found\"}\n\n    if operation == \"cancel\":\n        customer_id = customer.id\n        for subscription in stripe.Subscription.list(customer=customer_id):\n            stripe.Subscription.modify(subscription.id, cancel_at_period_end=True)\n        return {\"success\": True}\n\n    elif operation == \"resubscribe\":\n        subscriptions = stripe.Subscription.list(customer=customer.id).auto_paging_iter()\n        for subscription in subscriptions:\n            if subscription.cancel_at_period_end:\n                stripe.Subscription.modify(subscription.id, cancel_at_period_end=False)\n                return {\"success\": True}\n        return {\"success\": False, \"message\": \"No subscription found that is set to cancel\"}\n\n    return {\"success\": False, \"message\": \"Invalid operation\"}",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/khoj/routers/subscription.py",
+          "lines": [
+            85,
+            86
+          ],
+          "source": null,
+          "content": "    customers = stripe.Customer.list(email=email).auto_paging_iter()\n    customer = next(customers, None)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/database/adapters/__init__.py",
+          "lines": [
+            154,
+            155
+          ],
+          "source": null,
+          "content": "async def get_user_by_email(email: str) -> KhojUser:\n    return await KhojUser.objects.filter(email=email).afirst()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Derive the target email from the authenticated session (e.g. request.auth.user.email) instead of accepting a client-supplied `email` parameter, or verify that the supplied `email` equals the authenticated user's email before performing any Stripe customer lookup or subscription modification. Reject the request if they do not match.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8539,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/khoj/routers/subscription.py",
+      "line": 85,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "khoj-subscription-email-idor",
+  "url": "https://github.com/khoj-ai/khoj/pull/537",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-hq4h-w933-jm6c",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/khoj/routers/subscription.py",
+    "src/khoj/routers/api_subscription.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

@@ -1,0 +1,114 @@
+{
+  "case_id": "litellm_authz_safe",
+  "diff": "--- a/litellm/proxy/management_endpoints/internal_user_endpoints.py\n+++ b/litellm/proxy/management_endpoints/internal_user_endpoints.py\n@@ -1131,6 +1131,16 @@ async def _update_single_user_helper(\n     if prisma_client is None:\n         raise Exception(\"Not connected to DB!\")\n \n+    # Only proxy admins can modify user_role\n+    if (\n+        user_request.user_role is not None\n+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n+    ):\n+        raise HTTPException(\n+            status_code=403,\n+            detail=\"Only proxy admins can modify user roles.\",\n+        )\n+\n     # Validate user identifier\n     if not user_request.user_id and not user_request.user_email:\n         raise ValueError(\"Either user_id or user_email must be provided\")\n@@ -1508,12 +1518,35 @@ async def bulk_user_update(\n             detail={\"error\": \"Database not connected\"},\n         )\n \n+    # Only proxy admins can modify user_role in bulk updates\n+    _bulk_role = (\n+        getattr(data.user_updates, \"user_role\", None) if data.user_updates else None\n+    )\n+    if _bulk_role is None and data.users:\n+        _bulk_role = next(\n+            (u.user_role for u in data.users if u.user_role is not None), None\n+        )\n+    if (\n+        _bulk_role is not None\n+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n+    ):\n+        raise HTTPException(\n+            status_code=403,\n+            detail=\"Only proxy admins can modify user roles.\",\n+        )\n+\n     # Determine the list of users to update\n     users_to_update: Union[\n         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]\n     ] = []\n \n     if data.all_users and data.user_updates:\n+        # Only proxy admins can update all users at once\n+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:\n+            raise HTTPException(\n+                status_code=403,\n+                detail=\"Only proxy admins can update all users at once.\",\n+            )\n         # Optimized path for updating all users directly in database\n         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(\n             order={\"created_at\": \"desc\"}\n--- a/litellm/proxy/management_endpoints/key_management_endpoints.py\n+++ b/litellm/proxy/management_endpoints/key_management_endpoints.py\n@@ -768,9 +768,9 @@ async def _common_key_generation_helper(  # noqa: PLR0915\n         request_type=\"key\", **data_json, table_name=\"key\"\n     )\n \n-    response[\"soft_budget\"] = (\n-        data.soft_budget\n-    )  # include the user-input soft budget in the response\n+    response[\n+        \"soft_budget\"\n+    ] = data.soft_budget  # include the user-input soft budget in the response\n \n     response = GenerateKeyResponse(**response)\n \n@@ -1961,8 +1961,13 @@ async def _validate_update_key_data(\n         user_api_key_cache=user_api_key_cache,\n     )\n \n-    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget\n-    if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:\n+    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget or spend\n+    if (\n+        data.max_budget is not None and data.max_budget != existing_key_row.max_budget\n+    ) or (\n+        data.spend is not None\n+        and data.spend != getattr(existing_key_row, \"spend\", None)\n+    ):\n         if prisma_client is not None:\n             hashed_key = existing_key_row.token\n             await _check_key_admin_access(\n@@ -1970,7 +1975,7 @@ async def _validate_update_key_data(\n                 hashed_token=hashed_key,\n                 prisma_client=prisma_client,\n                 user_api_key_cache=user_api_key_cache,\n-                route=\"/key/update (max_budget)\",\n+                route=\"/key/update (max_budget/spend)\",\n             )\n \n     # Check team limits if key has a team_id (from request or existing key)\n@@ -3272,10 +3277,10 @@ async def delete_verification_tokens(\n     try:\n         if prisma_client:\n             tokens = [_hash_token_if_needed(token=key) for key in tokens]\n-            _keys_being_deleted: List[LiteLLM_VerificationToken] = (\n-                await prisma_client.db.litellm_verificationtoken.find_many(\n-                    where={\"token\": {\"in\": tokens}}\n-                )\n+            _keys_being_deleted: List[\n+                LiteLLM_VerificationToken\n+            ] = await prisma_client.db.litellm_verificationtoken.find_many(\n+                where={\"token\": {\"in\": tokens}}\n             )\n \n             if len(_keys_being_deleted) == 0:\n@@ -3475,9 +3480,9 @@ async def _rotate_master_key(  # noqa: PLR0915\n     from litellm.proxy.proxy_server import proxy_config\n \n     try:\n-        models: Optional[List] = (\n-            await prisma_client.db.litellm_proxymodeltable.find_many()\n-        )\n+        models: Optional[\n+            List\n+        ] = await prisma_client.db.litellm_proxymodeltable.find_many()\n     except Exception:\n         models = None\n     # 2. process model table\n@@ -4117,11 +4122,11 @@ async def validate_key_list_check(\n             param=\"user_id\",\n             code=status.HTTP_403_FORBIDDEN,\n         )\n-    complete_user_info_db_obj: Optional[BaseModel] = (\n-        await prisma_client.db.litellm_usertable.find_unique(\n-            where={\"user_id\": user_api_key_dict.user_id},\n-            include={\"organization_memberships\": True},\n-        )\n+    complete_user_info_db_obj: Optional[\n+        BaseModel\n+    ] = await prisma_client.db.litellm_usertable.find_unique(\n+        where={\"user_id\": user_api_key_dict.user_id},\n+        include={\"organization_memberships\": True},\n     )\n \n     if complete_user_info_db_obj is None:\n@@ -4204,10 +4209,10 @@ async def _fetch_user_team_objects(\n     if complete_user_info is None or not complete_user_info.teams:\n         return []\n \n-    teams: Optional[List[BaseModel]] = (\n-        await prisma_client.db.litellm_teamtable.find_many(\n-            where={\"team_id\": {\"in\": complete_user_info.teams}}\n-        )\n+    teams: Optional[\n+        List[BaseModel]\n+    ] = await prisma_client.db.litellm_teamtable.find_many(\n+        where={\"team_id\": {\"in\": complete_user_info.teams}}\n     )\n     if teams is None:\n         return []",
+  "sections": [
+    {
+      "id": "user-role-modification-guard",
+      "title": "Restrict user_role modification to proxy admins on single and bulk user update",
+      "rationale": "Both hunks add 403 guards that block non-proxy-admin callers from changing user_role via /user/update and /user/bulk_update.",
+      "hunks": [
+        {
+          "hunk_id": "litellm/proxy/management_endpoints/internal_user_endpoints.py#0",
+          "lines": [
+            "     if prisma_client is None:",
+            "         raise Exception(\"Not connected to DB!\")",
+            " ",
+            "+    # Only proxy admins can modify user_role",
+            "+    if (",
+            "+        user_request.user_role is not None",
+            "+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+            "+    ):",
+            "+        raise HTTPException(",
+            "+            status_code=403,",
+            "+            detail=\"Only proxy admins can modify user roles.\",",
+            "+        )",
+            "+",
+            "     # Validate user identifier",
+            "     if not user_request.user_id and not user_request.user_email:",
+            "         raise ValueError(\"Either user_id or user_email must be provided\")"
+          ]
+        },
+        {
+          "hunk_id": "litellm/proxy/management_endpoints/internal_user_endpoints.py#1",
+          "lines": [
+            "             detail={\"error\": \"Database not connected\"},",
+            "         )",
+            " ",
+            "+    # Only proxy admins can modify user_role in bulk updates",
+            "+    _bulk_role = (",
+            "+        getattr(data.user_updates, \"user_role\", None) if data.user_updates else None",
+            "+    )",
+            "+    if _bulk_role is None and data.users:",
+            "+        _bulk_role = next(",
+            "+            (u.user_role for u in data.users if u.user_role is not None), None",
+            "+        )",
+            "+    if (",
+            "+        _bulk_role is not None",
+            "+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value",
+            "+    ):",
+            "+        raise HTTPException(",
+            "+            status_code=403,",
+            "+            detail=\"Only proxy admins can modify user roles.\",",
+            "+        )",
+            "+",
+            "     # Determine the list of users to update",
+            "     users_to_update: Union[",
+            "         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]",
+            "     ] = []",
+            " ",
+            "     if data.all_users and data.user_updates:",
+            "+        # Only proxy admins can update all users at once",
+            "+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:",
+            "+            raise HTTPException(",
+            "+                status_code=403,",
+            "+                detail=\"Only proxy admins can update all users at once.\",",
+            "+            )",
+            "         # Optimized path for updating all users directly in database",
+            "         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(",
+            "             order={\"created_at\": \"desc\"}"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "key-spend-admin-guard",
+      "title": "Extend key-update admin check to cover spend changes",
+      "rationale": "The two hunks widen the /key/update authorization condition so modifying spend triggers the same _check_key_admin_access as max_budget.",
+      "hunks": [
+        {
+          "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#1",
+          "lines": [
+            "         user_api_key_cache=user_api_key_cache,",
+            "     )",
+            " ",
+            "-    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget",
+            "-    if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:",
+            "+    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget or spend",
+            "+    if (",
+            "+        data.max_budget is not None and data.max_budget != existing_key_row.max_budget",
+            "+    ) or (",
+            "+        data.spend is not None",
+            "+        and data.spend != getattr(existing_key_row, \"spend\", None)",
+            "+    ):",
+            "         if prisma_client is not None:",
+            "             hashed_key = existing_key_row.token",
+            "             await _check_key_admin_access("
+          ]
+        },
+        {
+          "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#2",
+          "lines": [
+            "                 hashed_token=hashed_key,",
+            "                 prisma_client=prisma_client,",
+            "                 user_api_key_cache=user_api_key_cache,",
+            "-                route=\"/key/update (max_budget)\",",
+            "+                route=\"/key/update (max_budget/spend)\",",
+            "             )",
+            " ",
+            "     # Check team limits if key has a team_id (from request or existing key)"
+          ]
+        }
+      ]
+    }
+  ]
+}

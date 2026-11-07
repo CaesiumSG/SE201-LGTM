@@ -1,0 +1,666 @@
+{
+  "id": "wger-repetitions-config-idor-vulnerable",
+  "repo": "wger-project/wger",
+  "pr": 1827,
+  "title": "When the routine config objects were exposed over the API, two of the eight new viewsets returned every user's rows instead of filtering by owner.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "a8e94a5a809aa4f066aadb11294571b6949f87ac",
+  "pr_sha": "4005375bc16af77f3b1122f80ab34fca66c0ce8f",
+  "files_changed": 6,
+  "python_files_changed": 6,
+  "added_lines": 270,
+  "diff_chars": 13081,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 92.2,
+  "index_seconds": 1.1,
+  "index_reused": false,
+  "index_chunks": 96,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 15,
+    "hunks_reviewed": 15,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:config-api-ownership:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "wger/manager/api/views.py",
+      "line": 508,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "RepsConfigViewSet.get_queryset returns RepsConfig.objects.all() without filtering by the requesting user, unlike every sibling config viewset (WeightConfig, MaxWeightConfig, SetsConfig, RestConfig, MaxRestConfig, RiRConfig) which filter on slot_config__slot__day__routine__user=self.request.user. RepsConfig extends AbstractChangeConfig, which has a slot_config FK and the new get_owner_object() (slo"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 20,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 15,
+  "reviewer_units": 3,
+  "findings": [
+    {
+      "finding_id": "authz:config-api-ownership:1",
+      "cwe_id": "CWE-639",
+      "explanation": "RepsConfigViewSet.get_queryset returns RepsConfig.objects.all() without filtering by the requesting user, unlike every sibling config viewset (WeightConfig, MaxWeightConfig, SetsConfig, RestConfig, MaxRestConfig, RiRConfig) which filter on slot_config__slot__day__routine__user=self.request.user. RepsConfig extends AbstractChangeConfig, which has a slot_config FK and the new get_owner_object() (slot_config.slot.day.routine), so the object is owner-scoped. Because the queryset is unfiltered, a GET /reps-config/ list and a GET /reps-config/<pk>/ detail expose other users' RepsConfig objects (IDOR). The WgerPermission.has_object_permission check (wger/utils/permissions.py:43-58) is bypassed for list retrieval, and the WgerOwnerObjectModelViewSet.create/update ownership check (wger/utils/viewsets.py:30-54) only validates the slot_config passed in request.data, not the object being read. This is a newly exposed endpoint added by the PR (registered in wger/urls.py).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "wger/manager/api/views.py",
+          "lines": [
+            500,
+            508
+          ],
+          "source": null,
+          "content": "    def get_queryset(self):\n        if getattr(self, 'swagger_fake_view', False):\n            return RepsConfig.objects.none()\n\n        return RepsConfig.objects.all()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "wger/manager/api/views.py",
+          "lines": [
+            462,
+            470
+          ],
+          "source": null,
+          "content": "    def get_queryset(self):\n        if getattr(self, 'swagger_fake_view', False):\n            return WeightConfig.objects.none()\n\n        return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "wger/manager/models/abstract_config.py",
+          "lines": [
+            99,
+            103
+          ],
+          "source": null,
+          "content": "    def get_owner_object(self):\n        \"\"\"\n        Config has no owner information\n        \"\"\"\n        return self.slot_config.slot.day.routine",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "wger/utils/permissions.py",
+          "lines": [
+            43,
+            58
+          ],
+          "source": null,
+          "content": "    def has_object_permission(self, request, view, obj):\n        owner_object = obj.get_owner_object() if hasattr(obj, 'get_owner_object') else False\n        if owner_object and owner_object.user == request.user:\n            return True\n        if not owner_object and request.method in permissions.SAFE_METHODS:\n            return True\n        return False",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "wger/manager/models/reps_config.py",
+          "lines": [
+            21,
+            21
+          ],
+          "source": null,
+          "content": "class RepsConfig(AbstractChangeConfig):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "wger/manager/api/views.py",
+          "lines": [
+            518,
+            526
+          ],
+          "source": null,
+          "content": "    def get_queryset(self):\n        if getattr(self, 'swagger_fake_view', False):\n            return MaxRepsConfig.objects.none()\n\n        return MaxRepsConfig.objects.all()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "wger/manager/models/reps_config.py",
+          "lines": [
+            29,
+            29
+          ],
+          "source": null,
+          "content": "class MaxRepsConfig(AbstractChangeConfig):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Filter the queryset by the requesting user, consistent with the sibling viewsets: return RepsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user).",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8179,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "wger/manager/api/views.py",
+      "line": 508,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/viewsets.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/utils/viewsets.py lines=1-54]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import (\n20:     exceptions,\n21:     viewsets,\n22: )\n23: \n24: \n25: class WgerOwnerObjectModelViewSet(viewsets.ModelViewSet):\n26:     \"\"\"\n27:     Custom viewset that makes sure the user can only create objects for himself\n28:     \"\"\"\n29: \n30:     def create(self, request, *args, **kwargs):\n31:         \"\"\"\n32:         Check for creation (PUT, POST)\n33:         \"\"\"\n34:         for entry in self.get_owner_objects():\n35:             if request.data.get(entry[1]):\n36:                 pk = request.data.get(entry[1])\n37:                 obj = entry[0].objects.get(pk=pk)\n38:                 if obj.get_owner_object().user != request.user:\n39:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n40:         else:\n41:             return super().create(request, *args, **kwargs)\n42: \n43:     def update(self, request, *args, **kwargs):\n44:         \"\"\"\n45:         Check for updates (PUT, PATCH)\n46:         \"\"\"\n47:         for entry in self.get_owner_objects():\n48:             if request.data.get(entry[1]):\n49:                 pk = request.data.get(entry[1])\n50:                 obj = entry[0].objects.get(pk=pk)\n51:                 if obj.get_owner_object().user != request.user:\n52:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n53:         else:\n54:             return super().update(request, *args, **kwargs)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "snapshot": "base",
+                  "start_line": 380,
+                  "end_line": 420
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/api/views.py lines=380-418]\n380: class WorkoutLogViewSet(WgerOwnerObjectModelViewSet):\n381:     \"\"\"\n382:     API endpoint for workout log objects\n383:     \"\"\"\n384: \n385:     serializer_class = WorkoutLogSerializer\n386:     is_private = True\n387:     ordering_fields = '__all__'\n388:     filterset_fields = (\n389:         'date',\n390:         'exercise',\n391:         'reps',\n392:         'weight',\n393:         'routine',\n394:         'repetition_unit',\n395:         'weight_unit',\n396:     )\n397: \n398:     def get_queryset(self):\n399:         \"\"\"\n400:         Only allow access to appropriate objects\n401:         \"\"\"\n402:         # REST API generation\n403:         if getattr(self, 'swagger_fake_view', False):\n404:             return WorkoutLog.objects.none()\n405: \n406:         return WorkoutLog.objects.filter(user=self.request.user)\n407: \n408:     def perform_create(self, serializer):\n409:         \"\"\"\n410:         Set the owner\n411:         \"\"\"\n412:         serializer.save(user=self.request.user)\n413: \n414:     def get_owner_objects(self):\n415:         \"\"\"\n416:         Return objects to check for ownership permission\n417:         \"\"\"\n418:         return [(Workout, 'workout')]\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/abstract_config.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/models/abstract_config.py lines=1-97]\n1: #  This file is part of wger Workout Manager <https://github.com/wger-project>.\n2: #  Copyright (C) 2013 - 2021 wger Team\n3: #\n4: #  wger Workout Manager is free software: you can redistribute it and/or modify\n5: #  it under the terms of the GNU Affero General Public License as published by\n6: #  the Free Software Foundation, either version 3 of the License, or\n7: #  (at your option) any later version.\n8: #\n9: #  wger Workout Manager is distributed in the hope that it will be useful,\n10: #  but WITHOUT ANY WARRANTY; without even the implied warranty of\n11: #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n12: #  GNU Affero General Public License for more details.\n13: #\n14: #  You should have received a copy of the GNU Affero General Public License\n15: #  along with this program.  If not, see <http://www.gnu.org/licenses/>.\n16: \n17: # Django\n18: from django.db import models\n19: \n20: \n21: class OperationChoices(models.TextChoices):\n22:     PLUS = '+'\n23:     MINUS = '-'\n24: \n25: \n26: class StepChoices(models.TextChoices):\n27:     ABSOLUTE = 'abs'\n28:     PERCENT = 'percent'\n29: \n30: \n31: class AbstractChangeConfig(models.Model):\n32:     \"\"\"\n33:     Abstract model for weight configurations\n34:     \"\"\"\n35: \n36:     class Meta:\n37:         abstract = True\n38:         ordering = ['slot_config', 'iteration']\n39:         unique_together = ['slot_config', 'iteration']\n40: \n41:     slot_config = models.ForeignKey(\n42:         'SlotConfig',\n43:         on_delete=models.CASCADE,\n44:     )\n45: \n46:     iteration = models.PositiveIntegerField()\n47:     \"\"\"\n48:     The iteration this takes effect on.\n49:     \"\"\"\n50: \n51:     value = models.DecimalField(\n52:         decimal_places=2,\n53:         max_digits=6,\n54:     )\n55:     \"\"\"The actual increment\"\"\"\n56: \n57:     operation = models.CharField(\n58:         choices=OperationChoices.choices,\n59:         max_length=1,\n60:         default=OperationChoices.PLUS,\n61:         null=True,\n62:     )\n63:     \"\"\"The operation\"\"\"\n64: \n65:     step = models.CharField(\n66:         choices=StepChoices.choices,\n67:         max_length=10,\n68:         default=StepChoices.ABSOLUTE,\n69:         null=True,\n70:     )\n71:     \"\"\"The step by which the change will happen\"\"\"\n72: \n73:     replace = models.BooleanField(\n74:         default=False,\n75:     )\n76:     \"\"\"\n77:     Flag indicating that there is no increase, but that the value will simply\n78:     be replaced with the new one\n79:     \"\"\"\n80: \n81:     need_log_to_apply = models.BooleanField(\n82:         default=False,\n83:     )\n84:     \"\"\"\n85:     Only apply the change if the user logged the last weight, otherwise\n86:     apply the rules anyway\n87:     \"\"\"\n88: \n89:     def save(self, **kwargs):\n90:         # Override values for the first iteration. While these would be ignored\n91:         # in the calculations anyway, this is cleaner\n92:         if self.iteration == 1:\n93:             self.replace = True\n94:             self.need_log_to_apply = False\n95:             self.step = None\n96:             self.operation = None\n97:         super().save(**kwargs)\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class (MaxWeightConfig|MaxRepsConfig|MaxRestConfig|WeightConfig|RepsConfig|SetsConfig|RestConfig|RiRConfig|SlotConfig)",
+                  "file_glob": "wger/manager/models/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac pattern=\"class (MaxWeightConfig|MaxRepsConfig|MaxRestConfig|WeightConfig|RepsConfig|SetsC\"]\nwger/manager/models/reps_config.py:21:class RepsConfig(AbstractChangeConfig):\nwger/manager/models/reps_config.py:29:class MaxRepsConfig(AbstractChangeConfig):\nwger/manager/models/rest_config.py:21:class RestConfig(AbstractChangeConfig):\nwger/manager/models/rest_config.py:29:class MaxRestConfig(AbstractChangeConfig):\nwger/manager/models/rir_config.py:21:class RiRConfig(AbstractChangeConfig):\nwger/manager/models/sets_config.py:21:class SetsConfig(AbstractChangeConfig):\nwger/manager/models/slot_config.py:50:class SlotConfig(models.Model):\nwger/manager/models/weight_config.py:21:class WeightConfig(AbstractChangeConfig):\nwger/manager/models/weight_config.py:29:class MaxWeightConfig(AbstractChangeConfig):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/slot_config.py",
+                  "snapshot": "base",
+                  "start_line": 40,
+                  "end_line": 110
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/models/slot_config.py lines=40-110]\n40:     NORMAL = 'normal'\n41:     DROPSET = 'dropset'\n42:     MYO = 'myo'\n43:     PARTIAL = 'partial'\n44:     FORCED = 'forced'\n45:     TUT = 'tut'\n46:     ISO_HOLD = 'iso'\n47:     JUMP = 'jump'\n48: \n49: \n50: class SlotConfig(models.Model):\n51:     \"\"\"\n52:     Set configuration for an exercise (weight, reps, etc.)\n53:     \"\"\"\n54: \n55:     slot = models.ForeignKey(\n56:         'Slot',\n57:         on_delete=models.CASCADE,\n58:         related_name='configs',\n59:     )\n60: \n61:     exercise = models.ForeignKey(\n62:         ExerciseBase,\n63:         on_delete=models.CASCADE,\n64:     )\n65: \n66:     repetition_unit = models.ForeignKey(\n67:         RepetitionUnit,\n68:         default=1,\n69:         on_delete=models.CASCADE,\n70:     )\n71:     \"\"\"\n72:     The repetition unit of a set. This can be e.g. a repetition, a minute, etc.\n73:     \"\"\"\n74: \n75:     repetition_rounding = models.DecimalField(\n76:         decimal_places=2,\n77:         max_digits=4,\n78:         default=1,\n79:     )\n80:     \"\"\"\n81:     The amount by which the repetitions will be rounded\n82: \n83:     Note that this will happen in the UI, and not in the backend\n84:     \"\"\"\n85: \n86:     weight_unit = models.ForeignKey(\n87:         WeightUnit,\n88:         verbose_name=_('Unit'),\n89:         default=1,\n90:         on_delete=models.CASCADE,\n91:     )\n92:     \"\"\"\n93:     The weight unit of a set. This can be e.g. kg, lb, km/h, etc.\n94:     \"\"\"\n95: \n96:     weight_rounding = models.DecimalField(\n97:         decimal_places=2,\n98:         max_digits=4,\n99:         default=1.25,\n100:     )\n101:     \"\"\"\n102:     The amount by which the weight will be rounded\n103: \n104:     Note that this will happen in the UI, and not in the backend\n105:     \"\"\"\n106: \n107:     order = models.PositiveIntegerField(\n108:         blank=True,\n109:     )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "snapshot": "pr",
+                  "start_line": 434,
+                  "end_line": 598
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/api/views.py lines=434-598]\n434:         Return objects to check for ownership permission\n435:         \"\"\"\n436:         return [(Workout, 'workout')]\n437: \n438: \n439: class AbstractConfigViewSet(WgerOwnerObjectModelViewSet):\n440:     \"\"\"\n441:     API endpoint for weight config objects\n442:     \"\"\"\n443: \n444:     is_private = True\n445:     ordering_fields = '__all__'\n446:     filterset_fields = CONFIG_FIELDS\n447: \n448:     def get_owner_objects(self):\n449:         \"\"\"\n450:         Return objects to check for ownership permission\n451:         \"\"\"\n452:         return [(SlotConfig, 'slot_config')]\n453: \n454: \n455: class WeightConfigViewSet(AbstractConfigViewSet):\n456:     \"\"\"\n457:     API endpoint for weight config objects\n458:     \"\"\"\n459: \n460:     serializer_class = WeightConfigSerializer\n461: \n462:     def get_queryset(self):\n463:         \"\"\"\n464:         Only allow access to appropriate objects\n465:         \"\"\"\n466:         # REST API generation\n467:         if getattr(self, 'swagger_fake_view', False):\n468:             return WeightConfig.objects.none()\n469: \n470:         return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n471: \n472: \n473: class MaxWeightConfigViewSet(AbstractConfigViewSet):\n474:     \"\"\"\n475:     API endpoint for max weight config objects\n476:     \"\"\"\n477: \n478:     serializer_class = MaxWeightConfigSerializer\n479: \n480:     def get_queryset(self):\n481:         \"\"\"\n482:         Only allow access to appropriate objects\n483:         \"\"\"\n484:         # REST API generation\n485:         if getattr(self, 'swagger_fake_view', False):\n486:             return MaxWeightConfig.objects.none()\n487: \n488:         return MaxWeightConfig.objects.filter(\n489:             slot_config__slot__day__routine__user=self.request.user\n490:         )\n491: \n492: \n493: class RepsConfigViewSet(AbstractConfigViewSet):\n494:     \"\"\"\n495:     API endpoint for reps config objects\n496:     \"\"\"\n497: \n498:     serializer_class = RepsConfigSerializer\n499: \n500:     def get_queryset(self):\n501:         \"\"\"\n502:         Only allow access to appropriate objects\n503:         \"\"\"\n504:         # REST API generation\n505:         if getattr(self, 'swagger_fake_view', False):\n506:             return RepsConfig.objects.none()\n507: \n508:         return RepsConfig.objects.all()\n509: \n510: \n511: class MaxRepsConfigViewSet(AbstractConfigViewSet):\n512:     \"\"\"\n513:     API endpoint for max reps config objects\n514:     \"\"\"\n515: \n516:     serializer_class = MaxRepsConfigSerializer\n517: \n518:     def get_queryset(self):\n519:         \"\"\"\n520:         Only allow access to appropriate objects\n521:         \"\"\"\n522:         # REST API generation\n523:         if getattr(self, 'swagger_fake_view', False):\n524:             return MaxRepsConfig.objects.none()\n525: \n526:         return MaxRepsConfig.objects.all()\n527: \n528: \n529: class SetsConfigViewSet(AbstractConfigViewSet):\n530:     \"\"\"\n531:     API endpoint for set config objects\n532:     \"\"\"\n533: \n534:     serializer_class = SetNrConfigSerializer\n535: \n536:     def get_queryset(self):\n537:         \"\"\"\n538:         Only allow access to appropriate objects\n539:         \"\"\"\n540:         # REST API generation\n541:         if getattr(self, 'swagger_fake_view', False):\n542:             return SetsConfig.objects.none()\n543: \n544:         return SetsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n545: \n546: \n547: class RestConfigViewSet(AbstractConfigViewSet):\n548:     \"\"\"\n549:     API endpoint for set config objects\n550:     \"\"\"\n551: \n552:     serializer_class = RestConfigSerializer\n553: \n554:     def get_queryset(self):\n555:         \"\"\"\n556:         Only allow access to appropriate objects\n557:         \"\"\"\n558:         # REST API generation\n559:         if getattr(self, 'swagger_fake_view', False):\n560:             return RestConfig.objects.none()\n561: \n562:         return RestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n563: \n564: \n565: class MaxRestConfigViewSet(AbstractConfigViewSet):\n566:     \"\"\"\n567:     API endpoint for max rest config objects\n568:     \"\"\"\n569: \n570:     serializer_class = MaxRestConfigSerializer\n571: \n572:     def get_queryset(self):\n573:         \"\"\"\n574:         Only allow access to appropriate objects\n575:         \"\"\"\n576:         # REST API generation\n577:         if getattr(self, 'swagger_fake_view', False):\n578:             return MaxRestConfig.objects.none()\n579: \n580:         return MaxRestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n581: \n582: \n583: class RiRConfigViewSet(AbstractConfigViewSet):\n584:     \"\"\"\n585:     API endpoint for set config objects\n586:     \"\"\"\n587: \n588:     serializer_class = RiRConfigSerializer\n589: \n590:     def get_queryset(self):\n591:         \"\"\"\n592:         Only allow access to appropriate objects\n593:         \"\"\"\n594:         # REST API generation\n595:         if getattr(self, 'swagger_fake_view', False):\n596:             return RiRConfig.objects.none()\n597: \n598:         return RiRConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class (Slot|Day|Routine)\\b",
+                  "file_glob": "wger/manager/models/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac pattern=\"class (Slot|Day|Routine)\\b\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/serializers.py",
+                  "snapshot": "pr",
+                  "start_line": 160,
+                  "end_line": 200
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/api/serializers.py lines=160-200]\n160: \n161: class SlotConfigSerializer(serializers.ModelSerializer):\n162:     \"\"\"\n163:     Slot configuration\n164:     \"\"\"\n165: \n166:     weight_configs = WeightConfigSerializer(source='weightconfig_set', many=True)\n167:     max_weight_configs = WeightConfigSerializer(source='maxweightconfig_set', many=True)\n168:     reps_configs = RepsConfigSerializer(source='repsconfig_set', many=True)\n169:     max_reps_configs = RepsConfigSerializer(source='maxrepsconfig_set', many=True)\n170:     set_nr_configs = SetNrConfigSerializer(source='setsconfig_set', many=True)\n171:     rir_configs = RiRConfigSerializer(source='rirconfig_set', many=True)\n172:     rest_configs = RestConfigSerializer(source='restconfig_set', many=True)\n173:     max_rest_configs = RestConfigSerializer(source='maxrestconfig_set', many=True)\n174: \n175:     class Meta:\n176:         model = SlotConfig\n177:         fields = (\n178:             'id',\n179:             'slot',\n180:             'exercise',\n181:             'order',\n182:             'comment',\n183:             'type',\n184:             'class_name',\n185:             'repetition_unit',\n186:             'repetition_rounding',\n187:             'reps_configs',\n188:             'max_reps_configs',\n189:             'weight_unit',\n190:             'weight_rounding',\n191:             'weight_configs',\n192:             'max_weight_configs',\n193:             'set_nr_configs',\n194:             'rir_configs',\n195:             'rest_configs',\n196:             'max_rest_configs',\n197:         )\n198: \n199: \n200: class SlotSerializer(serializers.ModelSerializer):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "^class (Slot|Day|Routine)",
+                  "file_glob": "wger/manager/models/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac pattern=\"^class (Slot|Day|Routine)\"]\nwger/manager/models/day.py:30:class DayType(models.TextChoices):\nwger/manager/models/day.py:41:class Day(models.Model):\nwger/manager/models/routine.py:33:class Routine(models.Model):\nwger/manager/models/slot.py:16:class Slot(models.Model):\nwger/manager/models/slot_config.py:50:class SlotConfig(models.Model):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_owner_object",
+                  "file_glob": "wger/**/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac pattern=\"def get_owner_object\"]\nwger/core/api/views.py:108:    def get_owner_objects(self):\nwger/core/models/language.py:75:    def get_owner_object(self):\nwger/core/models/license.py:73:    def get_owner_object(self):\nwger/core/models/profile.py:535:    def get_owner_object(self):\nwger/core/models/rep_unit.py:47:    def get_owner_object(self):\nwger/core/models/weight_unit.py:47:    def get_owner_object(self):\nwger/exercises/models/category.py:45:    def get_owner_object(self):\nwger/exercises/models/comment.py:88:    def get_owner_object(self):\nwger/exercises/models/equipment.py:47:    def get_owner_object(self):\nwger/exercises/models/exercise.py:202:    def get_owner_object(self):\nwger/exercises/models/exercise_alias.py:90:    def get_owner_object(self):\nwger/exercises/models/image.py:179:    def get_owner_object(self):\nwger/exercises/models/muscle.py:73:    def get_owner_object(self):\nwger/exercises/models/variation.py:32:    def get_owner_object(self):\nwger/exercises/models/video.py:190:    def get_owner_object(self):\nwger/gallery/models/image.py:70:    def get_owner_object(self):\nwger/gym/models/admin_user_note.py:72:    def get_owner_object(self):\nwger/gym/models/contract.py:72:    def get_owner_object(self):\nwger/gym/models/contract.py:123:    def get_owner_object(self):\nwger/gym/models/contract.py:325:    def get_owner_object(self):\nwger/gym/models/gym.py:108:    def get_owner_object(self):\nwger/gym/models/gym_config.py:70:    def get_owner_object(self):\nwger/gym/models/user_config.py:73:    def get_owner_object(self):\nwger/gym/models/user_config.py:100:    def get_owner_object(self):\nwger/gym/models/user_document.py:110:    def get_owner_object(self):\nwger/manager/api/views.py:309:    def get_owner_objects(self):\nwger/manager/api/views.py:341:    def get_owner_objects(self):\nwger/manager/api/views.py:414:    def get_owner_objects(self):\nwger/manager/models/day.py:106:    def get_owner_object(self):\nwger/manager/models/label.py:91:    def get_owner_object(self):\n... (truncated at 30 matches)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/day.py",
+                  "snapshot": "base",
+                  "start_line": 41,
+                  "end_line": 115
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/models/day.py lines=41-115]\n41: class Day(models.Model):\n42:     \"\"\"\n43:     Model for a training day\n44:     \"\"\"\n45: \n46:     routine = models.ForeignKey(\n47:         'Routine',\n48:         verbose_name=_('Routine'),\n49:         on_delete=models.CASCADE,\n50:         related_name='days',\n51:     )\n52: \n53:     next_day = models.ForeignKey(\n54:         'self',\n55:         blank=True,\n56:         null=True,\n57:         on_delete=models.CASCADE,\n58:     )\n59: \n60:     type = models.CharField(\n61:         choices=DayType.choices,\n62:         max_length=10,\n63:         default=DayType.CUSTOM,\n64:         null=False,\n65:     )\n66: \n67:     name = models.CharField(\n68:         max_length=20,\n69:         verbose_name=_('Name'),\n70:     )\n71: \n72:     description = models.CharField(\n73:         max_length=1000,\n74:         verbose_name=_('Description'),\n75:     )\n76: \n77:     is_rest = models.BooleanField(\n78:         default=False,\n79:     )\n80:     \"\"\"\n81:     Flag indicating that this day is a rest day.\n82: \n83:     Rest days have no exercises\n84:     \"\"\"\n85: \n86:     need_logs_to_advance = models.BooleanField(\n87:         default=False,\n88:     )\n89:     \"\"\"\n90:     Needs logs to advance to the next day\n91:     \"\"\"\n92: \n93:     last_day_in_week = models.BooleanField(\n94:         default=False,\n95:     )\n96:     \"\"\"\n97:     Flag indicating that this is the last workout day in the week\n98:     \"\"\"\n99: \n100:     def __str__(self):\n101:         \"\"\"\n102:         Return a more human-readable representation\n103:         \"\"\"\n104:         return self.description\n105: \n106:     def get_owner_object(self):\n107:         \"\"\"\n108:         Returns the object that has owner information\n109:         \"\"\"\n110:         return self.routine\n111: \n112:     def can_proceed(self, date: datetime.date) -> bool:\n113:         \"\"\"\n114:         Checks whether the user can proceed to the next day in the sequence\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/routine.py",
+                  "snapshot": "base",
+                  "start_line": 33,
+                  "end_line": 80
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/models/routine.py lines=33-80]\n33: class Routine(models.Model):\n34:     \"\"\"\n35:     Model for a routine\n36:     \"\"\"\n37: \n38:     # objects = WorkoutManager()\n39:     # templates = WorkoutTemplateManager()\n40:     # both = WorkoutAndTemplateManager()\n41: \n42:     class Meta:\n43:         ordering = [\n44:             '-created',\n45:         ]\n46: \n47:     user = models.ForeignKey(\n48:         User,\n49:         verbose_name=_('User'),\n50:         on_delete=models.CASCADE,\n51:     )\n52: \n53:     first_day = models.ForeignKey(\n54:         'Day',\n55:         on_delete=models.CASCADE,\n56:         null=True,\n57:         related_name='first_days',\n58:     )\n59: \n60:     name = models.CharField(\n61:         verbose_name=_('Name'),\n62:         max_length=50,\n63:         blank=True,\n64:     )\n65: \n66:     description = models.TextField(\n67:         verbose_name=_('Description'),\n68:         max_length=1000,\n69:         blank=True,\n70:     )\n71: \n72:     # TODO: remove the auto_now_add during migration so we can set this to a custom\n73:     #       value and then set it back to auto_now_add\n74:     created = models.DateTimeField(\n75:         _('Creation date'),\n76:         auto_now_add=True,\n77:     )\n78: \n79:     start = models.DateField(\n80:         _('Start date'),\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/slot.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/models/slot.py lines=1-121]\n1: # Standard Library\n2: from typing import List\n3: \n4: # Django\n5: from django.db import models\n6: from django.utils.translation import gettext_lazy as _\n7: \n8: # wger\n9: from wger.manager.dataclasses import (\n10:     SetConfigData,\n11:     SetExerciseData,\n12: )\n13: from wger.manager.models import Day\n14: \n15: \n16: class Slot(models.Model):\n17:     \"\"\"\n18:     Model for a set of exercises\n19:     \"\"\"\n20: \n21:     DEFAULT_SETS = 4\n22:     MAX_SETS = 10\n23: \n24:     day = models.ForeignKey(\n25:         Day,\n26:         verbose_name=_('Exercise day'),\n27:         on_delete=models.CASCADE,\n28:         related_name='slots',\n29:     )\n30: \n31:     order = models.IntegerField(\n32:         default=1,\n33:         null=False,\n34:         verbose_name=_('Order'),\n35:     )\n36: \n37:     comment = models.CharField(\n38:         max_length=200,\n39:         verbose_name=_('Comment'),\n40:         blank=True,\n41:     )\n42: \n43:     # Metaclass to set some other properties\n44:     class Meta:\n45:         ordering = [\n46:             'order',\n47:         ]\n48: \n49:     def __str__(self):\n50:         \"\"\"\n51:         Return a more human-readable representation\n52:         \"\"\"\n53:         return f'Set {self.id}'\n54: \n55:     def get_owner_object(self):\n56:         \"\"\"\n57:         Returns the object that has owner information\n58:         \"\"\"\n59:         return self.day.routine\n60: \n61:     @property\n62:     def is_superset(self) -> bool:\n63:         \"\"\"\n64:         Checks whether this slot is a superset or not\n65:         \"\"\"\n66:         return self.configs.count() > 1\n67: \n68:     def set_data(self, iteration: int) -> List[SetExerciseData]:\n69:         \"\"\"Calculates the set data for a specific iteration\"\"\"\n70: \n71:         return [SetExerciseData(data=s.get_config(iteration), config=s) for s in self.configs.all()]\n72: \n73:     def get_sets(self, iteration: int) -> list[SetConfigData]:\n74:         \"\"\"\n75:         Calculates the sets as they would be performed in the gym\n76: \n77:         Note that this is only different from the list of sets in supersets, since\n78:         they will be \"interleaved\". E.g.:\n79:         - Exercise 1, 4 Sets\n80:         - Exercise 2, 3 Sets\n81:         - Exercise 3, 2 Sets\n82:         (the other weight, reps, etc. settings are not important here)\n83: \n84:         Would result in:\n85:         - Exercise 1\n86:         - Exercise 2\n87:         - Exercise 3\n88:         - Exercise 1\n89:         - Exercise 2\n90:         - Exercise 3\n91:         - Exercise 1\n92:         - Exercise 2\n93:         - Exercise 1\n94:         \"\"\"\n95:         set_data = self.set_data(iteration)\n96: \n97:         # If this is not a superset, just return the data\n98:         if len(set_data) == 1:\n99:             return [\n100:                 set_data[0].data,\n101:             ]\n102: \n103:         result = []\n104:         sets = [slot.data.sets for slot in set_data]\n105: \n106:         while any(repeat > 0 for repeat in sets):\n107:             for i, slot in enumerate(set_data):\n108:                 if sets[i] > 0:\n109:                     # Override the number of sets. After all, each of the individual\n110:                     # sets here is only done once\n111:                     slot.data.sets = 1\n112: \n113:                     result.append(slot.data)\n114:                     sets[i] -= 1\n115:         return result\n116: \n117:     def get_exercises(self) -> List[int]:\n118:         \"\"\"\n119:         Returns the list of distinct exercises in the configs\n120:         \"\"\"\n121:         return [slot.exercise.id for slot in self.configs.all()]\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "snapshot": "base",
+                  "start_line": 290,
+                  "end_line": 360
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/manager/api/views.py lines=290-360]\n290:     )\n291: \n292:     def get_queryset(self):\n293:         \"\"\"\n294:         Only allow access to appropriate objects\n295:         \"\"\"\n296: \n297:         # REST API generation\n298:         if getattr(self, 'swagger_fake_view', False):\n299:             return WorkoutSession.objects.none()\n300: \n301:         return WorkoutSession.objects.filter(user=self.request.user)\n302: \n303:     def perform_create(self, serializer):\n304:         \"\"\"\n305:         Set the owner\n306:         \"\"\"\n307:         serializer.save(user=self.request.user)\n308: \n309:     def get_owner_objects(self):\n310:         \"\"\"\n311:         Return objects to check for ownership permission\n312:         \"\"\"\n313:         return [(Workout, 'workout')]\n314: \n315: \n316: class ScheduleStepViewSet(WgerOwnerObjectModelViewSet):\n317:     \"\"\"\n318:     API endpoint for schedule step objects\n319:     \"\"\"\n320: \n321:     serializer_class = ScheduleStepSerializer\n322:     is_private = True\n323:     ordering_fields = '__all__'\n324:     filterset_fields = (\n325:         'schedule',\n326:         'workout',\n327:         'duration',\n328:         'order',\n329:     )\n330: \n331:     def get_queryset(self):\n332:         \"\"\"\n333:         Only allow access to appropriate objects\n334:         \"\"\"\n335:         # REST API generation\n336:         if getattr(self, 'swagger_fake_view', False):\n337:             return ScheduleStep.objects.none()\n338: \n339:         return ScheduleStep.objects.filter(schedule__user=self.request.user)\n340: \n341:     def get_owner_objects(self):\n342:         \"\"\"\n343:         Return objects to check for ownership permission\n344:         \"\"\"\n345:         return [(Workout, 'workout'), (Schedule, 'schedule')]\n346: \n347: \n348: class ScheduleViewSet(viewsets.ModelViewSet):\n349:     \"\"\"\n350:     API endpoint for schedule objects\n351:     \"\"\"\n352: \n353:     serializer_class = ScheduleSerializer\n354:     is_private = True\n355:     ordering_fields = '__all__'\n356:     filterset_fields = (\n357:         'is_active',\n358:         'is_loop',\n359:         'start_date',\n360:         'name',\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/urls.py",
+                  "snapshot": "pr",
+                  "start_line": 40,
+                  "end_line": 105
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/urls.py lines=40-105]\n40:     TokenVerifyView,\n41: )\n42: \n43: # wger\n44: from wger.core.api import views as core_api_views\n45: from wger.exercises.api import views as exercises_api_views\n46: from wger.exercises.sitemap import ExercisesSitemap\n47: from wger.gallery.api import views as gallery_api_views\n48: from wger.manager.api import views as manager_api_views\n49: from wger.measurements.api import views as measurements_api_views\n50: from wger.nutrition.api import views as nutrition_api_views\n51: from wger.nutrition.sitemap import NutritionSitemap\n52: from wger.utils.generic_views import TextTemplateView\n53: from wger.weight.api import views as weight_api_views\n54: \n55: \n56: #\n57: # REST API\n58: #\n59: router = routers.DefaultRouter()\n60: \n61: #\n62: # Application\n63: #\n64: \n65: # Manager app\n66: router.register(r'workout', manager_api_views.WorkoutViewSet, basename='workout')\n67: router.register(r'routine', manager_api_views.RoutineViewSet, basename='routine')\n68: router.register(r'templates', manager_api_views.UserWorkoutTemplateViewSet, basename='templates')\n69: router.register(\n70:     r'public-templates',\n71:     manager_api_views.PublicWorkoutTemplateViewSet,\n72:     basename='public-templates',\n73: )\n74: router.register(\n75:     r'workoutsession',\n76:     manager_api_views.WorkoutSessionViewSet,\n77:     basename='workoutsession',\n78: )\n79: router.register(r'workoutlog', manager_api_views.WorkoutLogViewSet, basename='workoutlog')\n80: router.register(r'weight-config', manager_api_views.WeightConfigViewSet, basename='weight-config')\n81: router.register(\n82:     r'max-weight-config',\n83:     manager_api_views.MaxWeightConfigViewSet,\n84:     basename='max-weight-config',\n85: )\n86: router.register(r'reps-config', manager_api_views.RepsConfigViewSet, basename='reps-config')\n87: router.register(\n88:     r'max-reps-config',\n89:     manager_api_views.MaxRepsConfigViewSet,\n90:     basename='max-reps-config',\n91: )\n92: router.register(r'sets-config', manager_api_views.SetsConfigViewSet, basename='sets-config')\n93: router.register(r'rest-config', manager_api_views.RestConfigViewSet, basename='rest-config')\n94: router.register(\n95:     r'max-rest-config',\n96:     manager_api_views.MaxRestConfigViewSet,\n97:     basename='max-rest-config',\n98: )\n99: router.register(r'rir-config', manager_api_views.RiRConfigViewSet, basename='rir-config')\n100: router.register(r'schedulestep', manager_api_views.ScheduleStepViewSet, basename='schedulestep')\n101: router.register(r'schedule', manager_api_views.ScheduleViewSet, basename='schedule')\n102: \n103: # Core app\n104: router.register(r'daysofweek', core_api_views.DaysOfWeekViewSet, basename='daysofweek')\n105: router.register(r'language', core_api_views.LanguageViewSet, basename='language')\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "is_private",
+                  "file_glob": "wger/utils/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac pattern=\"is_private\"]\nwger/utils/permissions.py:39:        if hasattr(view, 'is_private') and view.is_private:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/permissions.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/utils/permissions.py lines=1-86]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import permissions\n20: \n21: \n22: class WgerPermission(permissions.BasePermission):\n23:     \"\"\"\n24:     Checks that the user has access to the object\n25: \n26:     If the object has a 'owner_object' method, only allow access for the owner\n27:     user. For the other objects (system-wide objects like exercises, etc.) allow\n28:     only safe methods (GET, HEAD or OPTIONS)\n29:     \"\"\"\n30: \n31:     def has_permission(self, request, view):\n32:         \"\"\"\n33:         Access to public resources is allowed for all, for others, the user\n34:         has to be authenticated\n35: \n36:         The is_public flag is not present in all views, e.g. the special APIRoot\n37:         view. If it is not present, treat is as a public endpoint\n38:         \"\"\"\n39:         if hasattr(view, 'is_private') and view.is_private:\n40:             return request.user and request.user.is_authenticated\n41:         return True\n42: \n43:     def has_object_permission(self, request, view, obj):\n44:         \"\"\"\n45:         Perform the check\n46:         \"\"\"\n47:         owner_object = obj.get_owner_object() if hasattr(obj, 'get_owner_object') else False\n48: \n49:         # Owner\n50:         if owner_object and owner_object.user == request.user:\n51:             return True\n52: \n53:         # 'global' objects only for GET, HEAD or OPTIONS\n54:         if not owner_object and request.method in permissions.SAFE_METHODS:\n55:             return True\n56: \n57:         # Everything else is a no-no\n58:         return False\n59: \n60: \n61: class CreateOnlyPermission(permissions.BasePermission):\n62:     \"\"\"\n63:     Custom permission that permits read access the resource but limits the\n64:     write operations to creating (POSTing) new objects only and does not\n65:     allow editing them. This is currently used for exercises and their\n66:     images.\n67:     \"\"\"\n68: \n69:     def has_permission(self, request, view):\n70:         return request.method in ['GET', 'HEAD', 'OPTIONS'] or (\n71:             request.user and request.user.is_authenticated and request.method == 'POST'\n72:         )\n73: \n74: \n75: class UpdateOnlyPermission(permissions.BasePermission):\n76:     \"\"\"\n77:     Custom permission that restricts write operations to PATCH. This is currently\n78:     used for the user profile.\n79:     \"\"\"\n80: \n81:     def has_permission(self, request, view):\n82:         return (\n83:             request.user\n84:             and request.user.is_authenticated\n85:             and request.method in ['GET', 'HEAD', 'OPTIONS', 'PATCH']\n86:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/serializers.py",
+                  "snapshot": "pr",
+                  "start_line": 19,
+                  "end_line": 160
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/api/serializers.py lines=19-160]\n19: from rest_framework import serializers\n20: \n21: # wger\n22: from wger.manager.api.consts import CONFIG_FIELDS\n23: from wger.manager.models import (\n24:     Day,\n25:     MaxRepsConfig,\n26:     MaxRestConfig,\n27:     MaxWeightConfig,\n28:     RepsConfig,\n29:     RestConfig,\n30:     RiRConfig,\n31:     Routine,\n32:     Schedule,\n33:     ScheduleStep,\n34:     SetsConfig,\n35:     Slot,\n36:     SlotConfig,\n37:     WeightConfig,\n38:     Workout,\n39:     WorkoutLog,\n40:     WorkoutSession,\n41: )\n42: \n43: \n44: class RoutineSerializer(serializers.ModelSerializer):\n45:     \"\"\"\n46:     Routine serializer\n47:     \"\"\"\n48: \n49:     class Meta:\n50:         model = Routine\n51:         fields = (\n52:             'id',\n53:             'name',\n54:             'description',\n55:             'first_day',\n56:             'created',\n57:             'start',\n58:             'end',\n59:         )\n60: \n61: \n62: class DaySerializer(serializers.ModelSerializer):\n63:     \"\"\"\n64:     Day serializer\n65:     \"\"\"\n66: \n67:     class Meta:\n68:         model = Day\n69:         fields = (\n70:             'id',\n71:             'next_day',\n72:             'name',\n73:             'description',\n74:             'is_rest',\n75:             'last_day_in_week',\n76:             'need_logs_to_advance',\n77:             'type',\n78:         )\n79: \n80: \n81: class WeightConfigSerializer(serializers.ModelSerializer):\n82:     \"\"\"\n83:     Weight Config serializer\n84:     \"\"\"\n85: \n86:     class Meta:\n87:         model = WeightConfig\n88:         fields = CONFIG_FIELDS\n89: \n90: \n91: class MaxWeightConfigSerializer(serializers.ModelSerializer):\n92:     \"\"\"\n93:     Max Weight Config serializer\n94:     \"\"\"\n95: \n96:     class Meta:\n97:         model = MaxWeightConfig\n98:         fields = CONFIG_FIELDS\n99: \n100: \n101: class RepsConfigSerializer(serializers.ModelSerializer):\n102:     \"\"\"\n103:     Repetition Config serializer\n104:     \"\"\"\n105: \n106:     class Meta:\n107:         model = RepsConfig\n108:         fields = CONFIG_FIELDS\n109: \n110: \n111: class MaxRepsConfigSerializer(serializers.ModelSerializer):\n112:     \"\"\"\n113:     Max Repetition Config serializer\n114:     \"\"\"\n115: \n116:     class Meta:\n117:         model = MaxRepsConfig\n118:         fields = CONFIG_FIELDS\n119: \n120: \n121: class SetNrConfigSerializer(serializers.ModelSerializer):\n122:     \"\"\"\n123:     Set Nr config serializer\n124:     \"\"\"\n125: \n126:     class Meta:\n127:         model = SetsConfig\n128:         fields = CONFIG_FIELDS\n129: \n130: \n131: class RiRConfigSerializer(serializers.ModelSerializer):\n132:     \"\"\"\n133:     RiR Config serializer\n134:     \"\"\"\n135: \n136:     class Meta:\n137:         model = RiRConfig\n138:         fields = CONFIG_FIELDS\n139: \n140: \n141: class RestConfigSerializer(serializers.ModelSerializer):\n142:     \"\"\"\n143:     Rest Config serializer\n144:     \"\"\"\n145: \n146:     class Meta:\n147:         model = RestConfig\n148:         fields = CONFIG_FIELDS\n149: \n150: \n151: class MaxRestConfigSerializer(serializers.ModelSerializer):\n152:     \"\"\"\n153:     Rest Config serializer\n154:     \"\"\"\n155: \n156:     class Meta:\n157:         model = MaxRestConfig\n158:         fields = CONFIG_FIELDS\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/abstract_config.py",
+                  "snapshot": "pr",
+                  "start_line": 88,
+                  "end_line": 104
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/viewsets.py",
+                  "snapshot": "pr",
+                  "start_line": 43,
+                  "end_line": 54
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"config-api-ownership\",\n      \"title\": \"New config viewsets expose all users' Reps/MaxReps configs and rely on a new SlotConfig.get_owner_object for create/update authorization\",\n      \"rationale\": \"These hunks add the config endpoints, their ownership check (get_owner_objects -> SlotConfig.get_owner_object), and the unfiltered RepsConfig/MaxRepsConfig querysets that bypass per-user scoping, so they must be reviewed together as one authorization surface.\",\n      \"hunks\": [\n        \"wger/manager/api/views.py#0\",\n        \"wger/manager/api/views.py#1\",\n        \"wger/manager/api/views.py#2\",\n        \"wger/manager/models/abstract_config.py#0\",\n        \"wger/urls.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"wger/utils/viewsets.py\", \"symbol\": \"WgerOwnerObjectModelViewSet.create/update\", \"start_line\": 30, \"end_line\": 54, \"snapshot\": \"base\", \"why\": \"create/update call get_owner_objects() and compare obj.get_owner_object().user to request.user; the new SlotConfig.get_owner_object is the object this check resolves\"},\n        {\"path\": \"wger/utils/permissions.py\", \"symbol\": \"WgerPermission.has_object_permission\", \"start_line\": 43, \"end_line\": 58, \"snapshot\": \"base\", \"why\": \"object-level permission also calls obj.get_owner_object(); the new method makes config objects owner-scoped\"},\n        {\"path\": \"wger/manager/models/slot_config.py\", \"symbol\": \"SlotConfig.slot\", \"start_line\": 55, \"end_line\": 59, \"snapshot\": \"base\", \"why\": \"SlotConfig.slot -> Slot.day -> Day.routine -> Routine.user is the ownership chain the new get_owner_object and the filtered querysets depend on\"},\n        {\"path\": \"wger/manager/models/day.py\", \"symbol\": \"Day.routine\", \"start_line\": 46, \"end_line\": 51, \"snapshot\": \"base\", \"why\": \"Day links to Routine which holds the user FK used for ownership\"},\n        {\"path\": \"wger/manager/models/routine.py\", \"symbol\": \"Routine.user\", \"start_line\": 47, \"end_line\": 51, \"snapshot\": \"base\", \"why\": \"Routine.user is the final owner compared in the permission checks\"}\n      ]\n    },\n    {\n      \"id\": \"config-serializers\",\n      \"title\": \"Add Max* config serializers and expose them nested under SlotConfigSerializer\",\n      \"rationale\": \"These hunks define the new MaxWeight/MaxReps/MaxRest serializers and wire them into the SlotConfig serializer, which is the read path that surfaces the newly exposed config data.\",\n      \"hunks\": [\n        \"wger/manager/api/consts.py#0\",\n        \"wger/manager/api/serializers.py#0\",\n        \"wger/manager/api/serializers.py#1\",\n        \"wger/manager/api/serializers.py#2\",\n        \"wger/manager/api/serializers.py#3\",\n        \"wger/manager/api/serializers.py#4\",\n        \"wger/manager/api/serializers.py#5\",\n        \"wger/manager/api/serializers.py#6\",\n        \"wger/manager/api/serializers.py#7\"\n      ],\n      \"context\": [\n        {\"path\": \"wger/manager/models/abstract_config.py\", \"symbol\": \"AbstractChangeConfig\", \"start_line\": 31, \"end_line\": 87, \"snapshot\": \"base\", \"why\": \"defines the shared fields (slot_config, iteration, value, operation, step, replace, need_log_to_apply) that CONFIG_FIELDS and the new serializers expose\"},\n        {\"path\": \"wger/manager/models/weight_config.py\", \"symbol\": \"MaxWeightConfig\", \"start_line\": 29, \"end_line\": 29, \"snapshot\": \"base\", \"why\": \"new MaxWeightConfigSerializer targets this model\"},\n        {\"path\": \"wger/manager/models/reps_config.py\", \"symbol\": \"MaxRepsConfig\", \"start_line\": 29, \"end_line\": 29, \"snapshot\": \"base\", \"why\": \"new MaxRepsConfigSerializer targets this model\"},\n        {\"path\": \"wger/manager/models/rest_config.py\", \"symbol\": \"MaxRestConfig\", \"start_line\": 29, \"end_line\": 29, \"snapshot\": \"base\", \"why\": \"new MaxRestConfigSerializer targets this model\"}\n      ]\n    },\n    {\n      \"id\": \"permission-message\",\n      \"title\": \"Alter the PermissionDenied message in the shared owner-object viewset\",\n      \"rationale\": \"This hunk modifies the error string raised by WgerOwnerObjectModelViewSet.update, which is the authorization enforcement point used by the new config viewsets.\",\n      \"hunks\": [\n        \"wger/utils/viewsets.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"wger/utils/viewsets.py\", \"symbol\": \"WgerOwnerObjectModelViewSet.update\", \"start_line\": 43, \"end_line\": 54, \"snapshot\": \"base\", \"why\": \"the changed line is the PermissionDenied raised when obj.get_owner_object().user != request.user\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "config-api-ownership",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/viewsets.py",
+                  "start_line": 1,
+                  "end_line": 80,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/utils/viewsets.py lines=1-54]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import (\n20:     exceptions,\n21:     viewsets,\n22: )\n23: \n24: \n25: class WgerOwnerObjectModelViewSet(viewsets.ModelViewSet):\n26:     \"\"\"\n27:     Custom viewset that makes sure the user can only create objects for himself\n28:     \"\"\"\n29: \n30:     def create(self, request, *args, **kwargs):\n31:         \"\"\"\n32:         Check for creation (PUT, POST)\n33:         \"\"\"\n34:         for entry in self.get_owner_objects():\n35:             if request.data.get(entry[1]):\n36:                 pk = request.data.get(entry[1])\n37:                 obj = entry[0].objects.get(pk=pk)\n38:                 if obj.get_owner_object().user != request.user:\n39:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n40:         else:\n41:             return super().create(request, *args, **kwargs)\n42: \n43:     def update(self, request, *args, **kwargs):\n44:         \"\"\"\n45:         Check for updates (PUT, PATCH)\n46:         \"\"\"\n47:         for entry in self.get_owner_objects():\n48:             if request.data.get(entry[1]):\n49:                 pk = request.data.get(entry[1])\n50:                 obj = entry[0].objects.get(pk=pk)\n51:                 if obj.get_owner_object().user != request.user:\n52:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n53:         else:\n54:             return super().update(request, *args, **kwargs)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/permissions.py",
+                  "start_line": 1,
+                  "end_line": 80,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/utils/permissions.py lines=1-80]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import permissions\n20: \n21: \n22: class WgerPermission(permissions.BasePermission):\n23:     \"\"\"\n24:     Checks that the user has access to the object\n25: \n26:     If the object has a 'owner_object' method, only allow access for the owner\n27:     user. For the other objects (system-wide objects like exercises, etc.) allow\n28:     only safe methods (GET, HEAD or OPTIONS)\n29:     \"\"\"\n30: \n31:     def has_permission(self, request, view):\n32:         \"\"\"\n33:         Access to public resources is allowed for all, for others, the user\n34:         has to be authenticated\n35: \n36:         The is_public flag is not present in all views, e.g. the special APIRoot\n37:         view. If it is not present, treat is as a public endpoint\n38:         \"\"\"\n39:         if hasattr(view, 'is_private') and view.is_private:\n40:             return request.user and request.user.is_authenticated\n41:         return True\n42: \n43:     def has_object_permission(self, request, view, obj):\n44:         \"\"\"\n45:         Perform the check\n46:         \"\"\"\n47:         owner_object = obj.get_owner_object() if hasattr(obj, 'get_owner_object') else False\n48: \n49:         # Owner\n50:         if owner_object and owner_object.user == request.user:\n51:             return True\n52: \n53:         # 'global' objects only for GET, HEAD or OPTIONS\n54:         if not owner_object and request.method in permissions.SAFE_METHODS:\n55:             return True\n56: \n57:         # Everything else is a no-no\n58:         return False\n59: \n60: \n61: class CreateOnlyPermission(permissions.BasePermission):\n62:     \"\"\"\n63:     Custom permission that permits read access the resource but limits the\n64:     write operations to creating (POSTing) new objects only and does not\n65:     allow editing them. This is currently used for exercises and their\n66:     images.\n67:     \"\"\"\n68: \n69:     def has_permission(self, request, view):\n70:         return request.method in ['GET', 'HEAD', 'OPTIONS'] or (\n71:             request.user and request.user.is_authenticated and request.method == 'POST'\n72:         )\n73: \n74: \n75: class UpdateOnlyPermission(permissions.BasePermission):\n76:     \"\"\"\n77:     Custom permission that restricts write operations to PATCH. This is currently\n78:     used for the user profile.\n79:     \"\"\"\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/models/abstract_config.py",
+                  "start_line": 1,
+                  "end_line": 110,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/models/abstract_config.py lines=1-103]\n1: #  This file is part of wger Workout Manager <https://github.com/wger-project>.\n2: #  Copyright (C) 2013 - 2021 wger Team\n3: #\n4: #  wger Workout Manager is free software: you can redistribute it and/or modify\n5: #  it under the terms of the GNU Affero General Public License as published by\n6: #  the Free Software Foundation, either version 3 of the License, or\n7: #  (at your option) any later version.\n8: #\n9: #  wger Workout Manager is distributed in the hope that it will be useful,\n10: #  but WITHOUT ANY WARRANTY; without even the implied warranty of\n11: #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n12: #  GNU Affero General Public License for more details.\n13: #\n14: #  You should have received a copy of the GNU Affero General Public License\n15: #  along with this program.  If not, see <http://www.gnu.org/licenses/>.\n16: \n17: # Django\n18: from django.db import models\n19: \n20: \n21: class OperationChoices(models.TextChoices):\n22:     PLUS = '+'\n23:     MINUS = '-'\n24: \n25: \n26: class StepChoices(models.TextChoices):\n27:     ABSOLUTE = 'abs'\n28:     PERCENT = 'percent'\n29: \n30: \n31: class AbstractChangeConfig(models.Model):\n32:     \"\"\"\n33:     Abstract model for weight configurations\n34:     \"\"\"\n35: \n36:     class Meta:\n37:         abstract = True\n38:         ordering = ['slot_config', 'iteration']\n39:         unique_together = ['slot_config', 'iteration']\n40: \n41:     slot_config = models.ForeignKey(\n42:         'SlotConfig',\n43:         on_delete=models.CASCADE,\n44:     )\n45: \n46:     iteration = models.PositiveIntegerField()\n47:     \"\"\"\n48:     The iteration this takes effect on.\n49:     \"\"\"\n50: \n51:     value = models.DecimalField(\n52:         decimal_places=2,\n53:         max_digits=6,\n54:     )\n55:     \"\"\"The actual increment\"\"\"\n56: \n57:     operation = models.CharField(\n58:         choices=OperationChoices.choices,\n59:         max_length=1,\n60:         default=OperationChoices.PLUS,\n61:         null=True,\n62:     )\n63:     \"\"\"The operation\"\"\"\n64: \n65:     step = models.CharField(\n66:         choices=StepChoices.choices,\n67:         max_length=10,\n68:         default=StepChoices.ABSOLUTE,\n69:         null=True,\n70:     )\n71:     \"\"\"The step by which the change will happen\"\"\"\n72: \n73:     replace = models.BooleanField(\n74:         default=False,\n75:     )\n76:     \"\"\"\n77:     Flag indicating that there is no increase, but that the value will simply\n78:     be replaced with the new one\n79:     \"\"\"\n80: \n81:     need_log_to_apply = models.BooleanField(\n82:         default=False,\n83:     )\n84:     \"\"\"\n85:     Only apply the change if the user logged the last weight, otherwise\n86:     apply the rules anyway\n87:     \"\"\"\n88: \n89:     def save(self, **kwargs):\n90:         # Override values for the first iteration. While these would be ignored\n91:         # in the calculations anyway, this is cleaner\n92:         if self.iteration == 1:\n93:             self.replace = True\n94:             self.need_log_to_apply = False\n95:             self.step = None\n96:             self.operation = None\n97:         super().save(**kwargs)\n98: \n99:     def get_owner_object(self):\n100:         \"\"\"\n101:         Config has no owner information\n102:         \"\"\"\n103:         return self.slot_config.slot.day.routine\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "start_line": 434,
+                  "end_line": 600,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/api/views.py lines=434-598]\n434:         Return objects to check for ownership permission\n435:         \"\"\"\n436:         return [(Workout, 'workout')]\n437: \n438: \n439: class AbstractConfigViewSet(WgerOwnerObjectModelViewSet):\n440:     \"\"\"\n441:     API endpoint for weight config objects\n442:     \"\"\"\n443: \n444:     is_private = True\n445:     ordering_fields = '__all__'\n446:     filterset_fields = CONFIG_FIELDS\n447: \n448:     def get_owner_objects(self):\n449:         \"\"\"\n450:         Return objects to check for ownership permission\n451:         \"\"\"\n452:         return [(SlotConfig, 'slot_config')]\n453: \n454: \n455: class WeightConfigViewSet(AbstractConfigViewSet):\n456:     \"\"\"\n457:     API endpoint for weight config objects\n458:     \"\"\"\n459: \n460:     serializer_class = WeightConfigSerializer\n461: \n462:     def get_queryset(self):\n463:         \"\"\"\n464:         Only allow access to appropriate objects\n465:         \"\"\"\n466:         # REST API generation\n467:         if getattr(self, 'swagger_fake_view', False):\n468:             return WeightConfig.objects.none()\n469: \n470:         return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n471: \n472: \n473: class MaxWeightConfigViewSet(AbstractConfigViewSet):\n474:     \"\"\"\n475:     API endpoint for max weight config objects\n476:     \"\"\"\n477: \n478:     serializer_class = MaxWeightConfigSerializer\n479: \n480:     def get_queryset(self):\n481:         \"\"\"\n482:         Only allow access to appropriate objects\n483:         \"\"\"\n484:         # REST API generation\n485:         if getattr(self, 'swagger_fake_view', False):\n486:             return MaxWeightConfig.objects.none()\n487: \n488:         return MaxWeightConfig.objects.filter(\n489:             slot_config__slot__day__routine__user=self.request.user\n490:         )\n491: \n492: \n493: class RepsConfigViewSet(AbstractConfigViewSet):\n494:     \"\"\"\n495:     API endpoint for reps config objects\n496:     \"\"\"\n497: \n498:     serializer_class = RepsConfigSerializer\n499: \n500:     def get_queryset(self):\n501:         \"\"\"\n502:         Only allow access to appropriate objects\n503:         \"\"\"\n504:         # REST API generation\n505:         if getattr(self, 'swagger_fake_view', False):\n506:             return RepsConfig.objects.none()\n507: \n508:         return RepsConfig.objects.all()\n509: \n510: \n511: class MaxRepsConfigViewSet(AbstractConfigViewSet):\n512:     \"\"\"\n513:     API endpoint for max reps config objects\n514:     \"\"\"\n515: \n516:     serializer_class = MaxRepsConfigSerializer\n517: \n518:     def get_queryset(self):\n519:         \"\"\"\n520:         Only allow access to appropriate objects\n521:         \"\"\"\n522:         # REST API generation\n523:         if getattr(self, 'swagger_fake_view', False):\n524:             return MaxRepsConfig.objects.none()\n525: \n526:         return MaxRepsConfig.objects.all()\n527: \n528: \n529: class SetsConfigViewSet(AbstractConfigViewSet):\n530:     \"\"\"\n531:     API endpoint for set config objects\n532:     \"\"\"\n533: \n534:     serializer_class = SetNrConfigSerializer\n535: \n536:     def get_queryset(self):\n537:         \"\"\"\n538:         Only allow access to appropriate objects\n539:         \"\"\"\n540:         # REST API generation\n541:         if getattr(self, 'swagger_fake_view', False):\n542:             return SetsConfig.objects.none()\n543: \n544:         return SetsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n545: \n546: \n547: class RestConfigViewSet(AbstractConfigViewSet):\n548:     \"\"\"\n549:     API endpoint for set config objects\n550:     \"\"\"\n551: \n552:     serializer_class = RestConfigSerializer\n553: \n554:     def get_queryset(self):\n555:         \"\"\"\n556:         Only allow access to appropriate objects\n557:         \"\"\"\n558:         # REST API generation\n559:         if getattr(self, 'swagger_fake_view', False):\n560:             return RestConfig.objects.none()\n561: \n562:         return RestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n563: \n564: \n565: class MaxRestConfigViewSet(AbstractConfigViewSet):\n566:     \"\"\"\n567:     API endpoint for max rest config objects\n568:     \"\"\"\n569: \n570:     serializer_class = MaxRestConfigSerializer\n571: \n572:     def get_queryset(self):\n573:         \"\"\"\n574:         Only allow access to appropriate objects\n575:         \"\"\"\n576:         # REST API generation\n577:         if getattr(self, 'swagger_fake_view', False):\n578:             return MaxRestConfig.objects.none()\n579: \n580:         return MaxRestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n581: \n582: \n583: class RiRConfigViewSet(AbstractConfigViewSet):\n584:     \"\"\"\n585:     API endpoint for set config objects\n586:     \"\"\"\n587: \n588:     serializer_class = RiRConfigSerializer\n589: \n590:     def get_queryset(self):\n591:         \"\"\"\n592:         Only allow access to appropriate objects\n593:         \"\"\"\n594:         # REST API generation\n595:         if getattr(self, 'swagger_fake_view', False):\n596:             return RiRConfig.objects.none()\n597: \n598:         return RiRConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class (RepsConfig|MaxRepsConfig|WeightConfig|SetsConfig|RestConfig|MaxRestConfig|RiRConfig)",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f pattern=\"class (RepsConfig|MaxRepsConfig|WeightConfig|SetsConfig|RestConfig|MaxRestConfig\"]\nwger/manager/api/serializers.py:81:class WeightConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/serializers.py:101:class RepsConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/serializers.py:111:class MaxRepsConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/serializers.py:131:class RiRConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/serializers.py:141:class RestConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/serializers.py:151:class MaxRestConfigSerializer(serializers.ModelSerializer):\nwger/manager/api/views.py:455:class WeightConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:493:class RepsConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:511:class MaxRepsConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:529:class SetsConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:547:class RestConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:565:class MaxRestConfigViewSet(AbstractConfigViewSet):\nwger/manager/api/views.py:583:class RiRConfigViewSet(AbstractConfigViewSet):\nwger/manager/models/reps_config.py:21:class RepsConfig(AbstractChangeConfig):\nwger/manager/models/reps_config.py:29:class MaxRepsConfig(AbstractChangeConfig):\nwger/manager/models/rest_config.py:21:class RestConfig(AbstractChangeConfig):\nwger/manager/models/rest_config.py:29:class MaxRestConfig(AbstractChangeConfig):\nwger/manager/models/rir_config.py:21:class RiRConfig(AbstractChangeConfig):\nwger/manager/models/sets_config.py:21:class SetsConfig(AbstractChangeConfig):\nwger/manager/models/weight_config.py:21:class WeightConfig(AbstractChangeConfig):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"RepsConfigViewSet.get_queryset returns RepsConfig.objects.all() without filtering by the requesting user, unlike every sibling config viewset (WeightConfig, MaxWeightConfig, SetsConfig, RestConfig, MaxRestConfig, RiRConfig) which filter on slot_config__slot__day__routine__user=self.request.user. RepsConfig extends AbstractChangeConfig, which has a slot_config FK and the new get_owner_object() (slot_config.slot.day.routine), so the object is owner-scoped. Because the queryset is unfiltered, a GET /reps-config/ list and a GET /reps-config/<pk>/ detail expose other users' RepsConfig objects (IDOR). The WgerPermission.has_object_permission check (wger/utils/permissions.py:43-58) is bypassed for list retrieval, and the WgerOwnerObjectModelViewSet.create/update ownership check (wger/utils/viewsets.py:30-54) only validates the slot_config passed in request.data, not the object being read. This is a newly exposed endpoint added by the PR (registered in wger/urls.py).\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"wger/manager/api/views.py\", \"lines\": [500, 508], \"content\": \"    def get_queryset(self):\\n        if getattr(self, 'swagger_fake_view', False):\\n            return RepsConfig.objects.none()\\n\\n        return RepsConfig.objects.all()\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/api/views.py\", \"lines\": [462, 470], \"content\": \"    def get_queryset(self):\\n        if getattr(self, 'swagger_fake_view', False):\\n            return WeightConfig.objects.none()\\n\\n        return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/models/abstract_config.py\", \"lines\": [99, 103], \"content\": \"    def get_owner_object(self):\\n        \\\"\\\"\\\"\\n        Config has no owner information\\n        \\\"\\\"\\\"\\n        return self.slot_config.slot.day.routine\"},\n        {\"type\": \"code\", \"file\": \"wger/utils/permissions.py\", \"lines\": [43, 58], \"content\": \"    def has_object_permission(self, request, view, obj):\\n        owner_object = obj.get_owner_object() if hasattr(obj, 'get_owner_object') else False\\n        if owner_object and owner_object.user == request.user:\\n            return True\\n        if not owner_object and request.method in permissions.SAFE_METHODS:\\n            return True\\n        return False\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/models/reps_config.py\", \"lines\": [21, 21], \"content\": \"class RepsConfig(AbstractChangeConfig):\"}\n      ],\n      \"suggested_fix\": \"Filter the queryset by the requesting user, consistent with the sibling viewsets: return RepsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user).\",\n      \"file\": \"wger/manager/api/views.py\",\n      \"line\": 508\n    },\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"MaxRepsConfigViewSet.get_queryset returns MaxRepsConfig.objects.all() without filtering by the requesting user, unlike every sibling config viewset which filter on slot_config__slot__day__routine__user=self.request.user. MaxRepsConfig extends AbstractChangeConfig, which has a slot_config FK and the new get_owner_object() (slot_config.slot.day.routine), so the object is owner-scoped. Because the queryset is unfiltered, a GET /max-reps-config/ list and a GET /max-reps-config/<pk>/ detail expose other users' MaxRepsConfig objects (IDOR). The WgerPermission.has_object_permission check is bypassed for list retrieval, and the WgerOwnerObjectModelViewSet.create/update ownership check only validates the slot_config passed in request.data, not the object being read. This is a newly exposed endpoint added by the PR (registered in wger/urls.py).\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"wger/manager/api/views.py\", \"lines\": [518, 526], \"content\": \"    def get_queryset(self):\\n        if getattr(self, 'swagger_fake_view', False):\\n            return MaxRepsConfig.objects.none()\\n\\n        return MaxRepsConfig.objects.all()\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/api/views.py\", \"lines\": [462, 470], \"content\": \"    def get_queryset(self):\\n        if getattr(self, 'swagger_fake_view', False):\\n            return WeightConfig.objects.none()\\n\\n        return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/models/abstract_config.py\", \"lines\": [99, 103], \"content\": \"    def get_owner_object(self):\\n        \\\"\\\"\\\"\\n        Config has no owner information\\n        \\\"\\\"\\\"\\n        return self.slot_config.slot.day.routine\"},\n        {\"type\": \"code\", \"file\": \"wger/utils/permissions.py\", \"lines\": [43, 58], \"content\": \"    def has_object_permission(self, request, view, obj):\\n        owner_object = obj.get_owner_object() if hasattr(obj, 'get_owner_object') else False\\n        if owner_object and owner_object.user == request.user:\\n            return True\\n        if not owner_object and request.method in permissions.SAFE_METHODS:\\n            return True\\n        return False\"},\n        {\"type\": \"code\", \"file\": \"wger/manager/models/reps_config.py\", \"lines\": [29, 29], \"content\": \"class MaxRepsConfig(AbstractChangeConfig):\"}\n      ],\n      \"suggested_fix\": \"Filter the queryset by the requesting user, consistent with the sibling viewsets: return MaxRepsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user).\",\n      \"file\": \"wger/manager/api/views.py\",\n      \"line\": 526\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "config-serializers",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "API authorization access control who can modify config serializers"
+                },
+                "result": "[LICENSE.txt:320-357] (relevance 0.37)\nthe User Product in which it has been modified or installed.  Access to a\nnetwork may be denied when the modification itself materially and\nadversely affects the operation of the network or violates the rules and\nprotocols for communication across the network.\n\n  Corresponding Source conveyed, and Installation Information provided,\nin accord with this section must be in a format that is publicly\ndocumented (and with an implementation available to the public in\nsource code form), and must require no special password or key for\nunpacking, reading or copying.\n\n  7. Additional Terms.\n\n  \"Additional permissions\" are terms that supplement the terms of this\nLicense by making exceptions from one or more of its conditions.\nAdditional permissions that are applicable to the entire Program shall\nbe treated as though they were included in this License, to the extent\nthat they are valid under applicable law.  If additional permissions\napply only to part of the Program, that part may be used separately\nunder those permissions, but the entire Program remains governed by\nthis License without regard to the additional permissions.\n\n  When you convey a copy of a covered work, you may at your option\nremove any additional permissions from that copy, or from any part of\nit.  (Additional permissions may be written to require their own\nremoval in certain cases when you modify the work.)  You may place\nadditional permissions on material, added by you to a covered work,\nfor which you have or can give appropriate copyright permission.\n\n  Notwithstanding any other provision of this License, for material you\nadd to a covered work, you may (if authorized by the copyright holders of\nthat material) supplement the terms of this License with terms:\n\n    a) Disclaiming warranty or limiting liability differently from the\n    terms of sections 15 and 16 of this License; or\n\n    b) Requiring preservation of specified reasonable legal notices or\n    author attributions in that material or in the Appropriate Legal\n\n---\n\n[LICENSE.txt:427-463] (relevance 0.30)\noccurring solely as a consequence of using peer-to-peer transmission\nto receive a copy likewise does not require acceptance.  However,\nnothing other than this License grants you permission to propagate or\nmodify any covered work.  These actions infringe copyright if you do\nnot accept this License.  Therefore, by modifying or propagating a\ncovered work, you indicate your acceptance of this License to do so.\n\n  10. Automatic Licensing of Downstream Recipients.\n\n  Each time you convey a covered work, the recipient automatically\nreceives a license from the original licensors, to run, modify and\npropagate that work, subject to this License.  You are not responsible\nfor enforcing compliance by third parties with this License.\n\n  An \"entity transaction\" is a transaction transferring control of an\norganization, or substantially all assets of one, or subdividing an\norganization, or merging organizations.  If propagation of a covered\nwork results from an entity transaction, each party to that\ntransaction who receives a copy of the work also receives whatever\nlicenses to the work the party's predecessor in interest had or could\ngive under the previous paragraph, plus a right to possession of the\nCorresponding Source of the work from the predecessor in interest, if\nthe predecessor has it or can get it with reasonable efforts.\n\n  You may not impose any further restrictions on the exercise of the\nrights granted or affirmed under this License.  For example, you may\nnot impose a license fee, royalty, or other charge for exercise of\nrights granted under this License, and you may not initiate litigation\n(including a cross-claim or counterclaim in a lawsuit) alleging that\nany patent claim is infringed by making, using, selling, offering for\nsale, or importing the Program or any portion of it.\n\n  11. Patents.\n\n  A \"contributor\" is a copyright holder who authorizes use under this\nLicense of the Program or a work on which the Program is based.  The\nwork thus licensed is called the contributor's \"contributor version\".\n\n---\n\n[LICENSE.txt:353-392] (relevance 0.29)\na) Disclaiming warranty or limiting liability differently from the\n    terms of sections 15 and 16 of this License; or\n\n    b) Requiring preservation of specified reasonable legal notices or\n    author attributions in that material or in the Appropriate Legal\n    Notices displayed by works containing it; or\n\n    c) Prohibiting misrepresentation of the origin of that material, or\n    requiring that modified versions of such material be marked in\n    reasonable ways as different from the original version; or\n\n    d) Limiting the use for publicity purposes of names of licensors or\n    authors of the material; or\n\n    e) Declining to grant rights under trademark law for use of some\n    trade names, trademarks, or service marks; or\n\n    f) Requiring indemnification of licensors and authors of that\n    material by anyone who conveys the material (or modified versions of\n    it) with contractual assumptions of liability to the recipient, for\n    any liability that these contractual assumptions directly impose on\n    those licensors and authors.\n\n  All other non-permissive additional terms are considered \"further\nrestrictions\" within the meaning of section 10.  If the Program as you\nreceived it, or any part of it, contains a notice stating that it is\ngoverned by this License along with a term that is a further\nrestriction, you may remove that term.  If a license document contains\na further restriction but permits relicensing or conveying under this\nLicense, you may add to a covered work material governed by the terms\nof that license document, provided that the further restriction does\nnot survive such relicensing or conveying.\n\n  If you add terms to a covered work in accord with this section, you\nmust place, in the relevant source files, a statement of the\nadditional terms that apply to those files, or a notice indicating\nwhere to find the applicable terms.\n\n  Additional terms, permissive or non-permissive, may be stated in the\nform of a separately written license, or stated as exceptions;\n\n---\n\n[LICENSE.txt:461-495] (relevance 0.27)\nA \"contributor\" is a copyright holder who authorizes use under this\nLicense of the Program or a work on which the Program is based.  The\nwork thus licensed is called the contributor's \"contributor version\".\n\n  A contributor's \"essential patent claims\" are all patent claims\nowned or controlled by the contributor, whether already acquired or\nhereafter acquired, that would be infringed by some manner, permitted\nby this License, of making, using, or selling its contributor version,\nbut do not include claims that would be infringed only as a\nconsequence of further modification of the contributor version.  For\npurposes of this definition, \"control\" includes the right to grant\npatent sublicenses in a manner consistent with the requirements of\nthis License.\n\n  Each contributor grants you a non-exclusive, worldwide, royalty-free\npatent license under the contributor's essential patent claims, to\nmake, use, sell, offer for sale, import and otherwise run, modify and\npropagate the contents of its contributor version.\n\n  In the following three paragraphs, a \"patent license\" is any express\nagreement or commitment, however denominated, not to enforce a patent\n(such as an express permission to practice a patent or covenant not to\nsue for patent infringement).  To \"grant\" such a patent license to a\nparty means to make such an agreement or commitment not to enforce a\npatent against the party.\n\n  If you convey a covered work, knowingly relying on a patent license,\nand the Corresponding Source of the work is not available for anyone\nto copy, free of charge and under the terms of this License, through a\npublicly available network server or other readily accessible means,\nthen you must either (1) cause the Corresponding Source to be so\navailable, or (2) arrange "
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "views using MaxWeightConfigSerializer MaxRepsConfigSerializer MaxRestConfigSerializer permission_classes"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f status=ok truncated=true incomplete=true query=\"views using MaxWeightConfigSerializer MaxRepsConfigSerializer MaxRestConfigSeria\"]\n**Exploration: views using MaxWeightConfigSerializer MaxRepsConfigSerializer MaxRestConfigSerializer permission_classes**\n\nFound 41 symbols across 3 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `RepsConfigViewSet` (wger/manager/api/views.py:493) \u2014 1 caller in `wger/urls.py`; no tests found within 3 caller hops\n- `RestConfigViewSet` (wger/manager/api/views.py:547) \u2014 1 caller in `wger/urls.py`; no tests found within 3 caller hops\n- `MaxRepsConfigViewSet` (wger/manager/api/views.py:511) \u2014 1 caller in `wger/urls.py`; no tests found within 3 caller hops\n- `MaxRestConfigViewSet` (wger/manager/api/views.py:565) \u2014 1 caller in `wger/urls.py`; no tests found within 3 caller hops\n- `MaxRestConfigSerializer` (wger/manager/api/serializers.py:151) \u2014 2 callers in `wger/manager/api/views.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- RepsConfigViewSet \u2192 AbstractConfigViewSet\n- AbstractConfigViewSet \u2192 WgerOwnerObjectModelViewSet\n- RestConfigViewSet \u2192 AbstractConfigViewSet\n- MaxRepsConfigViewSet \u2192 AbstractConfigViewSet\n- MaxRestConfigViewSet \u2192 AbstractConfigViewSet\n- WeightConfigViewSet \u2192 AbstractConfigViewSet\n- MaxWeightConfigViewSet \u2192 AbstractConfigViewSet\n- SetsConfigViewSet \u2192 AbstractConfigViewSet\n- RiRConfigViewSet \u2192 AbstractConfigViewSet\n- MealItemViewSet \u2192 WgerOwnerObjectModelViewSet\n- ... and 7 more\n\n**references:**\n- RepsConfigViewSet \u2192 RepsConfigSerializer\n- VIEWSET /reps-config \u2192 RepsConfigViewSet\n- RestConfigViewSet \u2192 RestConfigSerializer\n- VIEWSET /rest-config \u2192 RestConfigViewSet\n- MaxRepsConfigViewSet \u2192 MaxRepsConfigSerializer\n- VIEWSET /max-reps-config \u2192 MaxRepsConfigViewSet\n- MaxRestConfigViewSet \u2192 MaxRestConfigSerializer\n- VIEWSET /max-rest-config \u2192 MaxRestConfigViewSet\n- SetsConfigViewSet \u2192 SetNrConfigSerializer\n- Meta \u2192 MaxRestConfig\n- ... and 5 more\n\n**instantiates:**\n- SlotConfigSerializer \u2192 RepsConfigSerializer\n- SlotConfigSerializer \u2192 RestConfigSerializer\n- test_weight_config_with_logs_and_range \u2192 MaxRepsConfig\n- SlotConfigSerializer \u2192 WeightConfigSerializer\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`wger/manager/api/serializers.py`** \u2014 Meta(class), references(references), RepsConfigSerializer(instantiates), RestConfigSerializer(instantiates), WeightConfigSerializer(instantiates), instantiates(instantiates), MaxRepsConfig(references), MaxRepsConfigSerializer(class), MaxRestConfig(references), MaxRestConfigSerializer(class), +7 more\n\n```python\n78\t        )\n79\t\n80\t\n81\tclass WeightConfigSerializer(serializers.ModelSerializer):\n82\t    \"\"\"\n83\t    Weight Config serializer\n84\t    \"\"\"\n85\t\n86\t    class Meta:\n87\t        model = WeightConfig\n88\t        fields = CONFIG_FIELDS\n89\t\n90\t\n91\tclass MaxWeightConfigSerializer(serializers.ModelSerializer):\n92\t    \"\"\"\n93\t    Max Weight Config serializer\n94\t    \"\"\"\n95\t\n96\t    class Meta:\n97\t        model = MaxWeightConfig\n98\t        fields = CONFIG_FIELDS\n99\t\n100\t\n101\tclass RepsConfigSerializer(serializers.ModelSerializer):\n102\t    \"\"\"\n103\t    Repetition Config serializer\n104\t    \"\"\"\n105\t\n106\t    class Meta:\n107\t        model = RepsConfig\n108\t        fields = CONFIG_FIELDS\n109\t\n110\t\n111\tclass MaxRepsConfigSerializer(serializers.ModelSerializer):\n112\t    \"\"\"\n113\t    Max Repetition Config serializer\n114\t    \"\"\"\n115\t\n116\t    class Meta:\n117\t        model = MaxRepsConfig\n118\t        fields = CONFIG_FIELDS\n119\t\n120\t\n121\tclass SetNrConfigSerializer(serializers.ModelSerializer):\n122\t    \"\"\"\n123\t    Set Nr config serializer\n124\t    \"\"\"\n125\t\n126\t    class Meta:\n127\t        model = SetsConfig\n128\t        fields = CONFIG_FIELDS\n129\t\n130\t\n131\tclass RiRConfigSerializer(serializers.ModelSerializer):\n\n... (gap: Meta (wger/manager/api/serializers.py:136)) ...\n\n138\t        fields = CONFIG_FIELDS\n139\t\n140\t\n141\tclass RestConfigSerializer(serializers.ModelSerializer):\n142\t    \"\"\"\n143\t    Rest Config serializer\n144\t    \"\"\"\n145\t\n146\t    class Meta:\n147\t        model = RestConfig\n148\t        fields = CONFIG_FIELDS\n149\t\n150\t\n151\tclass MaxRestConfigSerializer(serializers.ModelSerializer):\n152\t    \"\"\"\n153\t    Rest Config serializer\n154\t    \"\"\"\n155\t\n156\t    class Meta:\n157\t        model = MaxRestConfig\n158\t        fields = CONFIG_FIELDS\n159\t\n160\t\n161\tclass SlotConfigSerializer(serializers.ModelSerializer):\n162\t    \"\"\"\n163\t    Slot configuration\n164\t    \"\"\"\n165\t\n166\t    weight_configs = WeightConfigSerializer(source='weightconfig_set', many=True)\n167\t    max_weight_configs = WeightConfigSerializer(source='maxweightconfig_set', many=True)\n168\t    reps_configs = RepsConfigSerializer(source='repsconfig_set', many=True)\n169\t    max_reps_configs = RepsConfigSerializer(source='maxrepsconfig_set', many=True)\n170\t    set_nr_configs = SetNrConfigSerializer(source='setsconfig_set', many=True)\n171\t    rir_configs = RiRConfigSerializer(source='rirconfig_set', many=True)\n172\t    rest_configs = RestConfigSerializer(source='restconfig_set', many=True)\n173\t    max_rest_configs = RestConfigSerializer(source='maxrestconfig_set', many=True)\n174\t\n175\t    class Meta:\n176\t        model = SlotConfig\n177\t        fields = (\n178\t            'id',\n179\t            'slot',\n180\t            'exercise',\n181\t            'order',\n182\t            'comment',\n183\t            'type',\n184\t            'class_name',\n185\t            'repetition_unit',\n186\t            'repetition_rounding',\n187\t            'r\n[TRUNCATED omitted_chars=13534]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "start_line": 440,
+                  "end_line": 590,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/manager/api/views.py lines=440-590]\n440:     \"\"\"\n441:     API endpoint for weight config objects\n442:     \"\"\"\n443: \n444:     is_private = True\n445:     ordering_fields = '__all__'\n446:     filterset_fields = CONFIG_FIELDS\n447: \n448:     def get_owner_objects(self):\n449:         \"\"\"\n450:         Return objects to check for ownership permission\n451:         \"\"\"\n452:         return [(SlotConfig, 'slot_config')]\n453: \n454: \n455: class WeightConfigViewSet(AbstractConfigViewSet):\n456:     \"\"\"\n457:     API endpoint for weight config objects\n458:     \"\"\"\n459: \n460:     serializer_class = WeightConfigSerializer\n461: \n462:     def get_queryset(self):\n463:         \"\"\"\n464:         Only allow access to appropriate objects\n465:         \"\"\"\n466:         # REST API generation\n467:         if getattr(self, 'swagger_fake_view', False):\n468:             return WeightConfig.objects.none()\n469: \n470:         return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n471: \n472: \n473: class MaxWeightConfigViewSet(AbstractConfigViewSet):\n474:     \"\"\"\n475:     API endpoint for max weight config objects\n476:     \"\"\"\n477: \n478:     serializer_class = MaxWeightConfigSerializer\n479: \n480:     def get_queryset(self):\n481:         \"\"\"\n482:         Only allow access to appropriate objects\n483:         \"\"\"\n484:         # REST API generation\n485:         if getattr(self, 'swagger_fake_view', False):\n486:             return MaxWeightConfig.objects.none()\n487: \n488:         return MaxWeightConfig.objects.filter(\n489:             slot_config__slot__day__routine__user=self.request.user\n490:         )\n491: \n492: \n493: class RepsConfigViewSet(AbstractConfigViewSet):\n494:     \"\"\"\n495:     API endpoint for reps config objects\n496:     \"\"\"\n497: \n498:     serializer_class = RepsConfigSerializer\n499: \n500:     def get_queryset(self):\n501:         \"\"\"\n502:         Only allow access to appropriate objects\n503:         \"\"\"\n504:         # REST API generation\n505:         if getattr(self, 'swagger_fake_view', False):\n506:             return RepsConfig.objects.none()\n507: \n508:         return RepsConfig.objects.all()\n509: \n510: \n511: class MaxRepsConfigViewSet(AbstractConfigViewSet):\n512:     \"\"\"\n513:     API endpoint for max reps config objects\n514:     \"\"\"\n515: \n516:     serializer_class = MaxRepsConfigSerializer\n517: \n518:     def get_queryset(self):\n519:         \"\"\"\n520:         Only allow access to appropriate objects\n521:         \"\"\"\n522:         # REST API generation\n523:         if getattr(self, 'swagger_fake_view', False):\n524:             return MaxRepsConfig.objects.none()\n525: \n526:         return MaxRepsConfig.objects.all()\n527: \n528: \n529: class SetsConfigViewSet(AbstractConfigViewSet):\n530:     \"\"\"\n531:     API endpoint for set config objects\n532:     \"\"\"\n533: \n534:     serializer_class = SetNrConfigSerializer\n535: \n536:     def get_queryset(self):\n537:         \"\"\"\n538:         Only allow access to appropriate objects\n539:         \"\"\"\n540:         # REST API generation\n541:         if getattr(self, 'swagger_fake_view', False):\n542:             return SetsConfig.objects.none()\n543: \n544:         return SetsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n545: \n546: \n547: class RestConfigViewSet(AbstractConfigViewSet):\n548:     \"\"\"\n549:     API endpoint for set config objects\n550:     \"\"\"\n551: \n552:     serializer_class = RestConfigSerializer\n553: \n554:     def get_queryset(self):\n555:         \"\"\"\n556:         Only allow access to appropriate objects\n557:         \"\"\"\n558:         # REST API generation\n559:         if getattr(self, 'swagger_fake_view', False):\n560:             return RestConfig.objects.none()\n561: \n562:         return RestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n563: \n564: \n565: class MaxRestConfigViewSet(AbstractConfigViewSet):\n566:     \"\"\"\n567:     API endpoint for max rest config objects\n568:     \"\"\"\n569: \n570:     serializer_class = MaxRestConfigSerializer\n571: \n572:     def get_queryset(self):\n573:         \"\"\"\n574:         Only allow access to appropriate objects\n575:         \"\"\"\n576:         # REST API generation\n577:         if getattr(self, 'swagger_fake_view', False):\n578:             return MaxRestConfig.objects.none()\n579: \n580:         return MaxRestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)\n581: \n582: \n583: class RiRConfigViewSet(AbstractConfigViewSet):\n584:     \"\"\"\n585:     API endpoint for set config objects\n586:     \"\"\"\n587: \n588:     serializer_class = RiRConfigSerializer\n589: \n590:     def get_queryset(self):\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class WgerOwnerObjectModelViewSet|def get_queryset|permission_classes",
+                  "file_glob": "wger/core/api/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f pattern=\"class WgerOwnerObjectModelViewSet|def get_queryset|permission_classes\"]\nwger/core/api/views.py:93:    permission_classes = (\nwger/core/api/views.py:98:    def get_queryset(self):\nwger/core/api/views.py:172:    permission_classes = (AllowAny,)\nwger/core/api/views.py:190:    permission_classes = (AllowAny,)\nwger/core/api/views.py:235:    permission_classes = (AllowAny,)\nwger/core/api/views.py:256:    permission_classes = (AllowAny,)\nwger/core/api/views.py:307:    permission_classes = (AllowRegisterUser,)\nwger/core/api/views.py:310:    def get_queryset(self):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/core/api/views.py",
+                  "start_line": 80,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/core/api/views.py lines=80-130]\n80: logger = logging.getLogger(__name__)\n81: \n82: \n83: class UserProfileViewSet(viewsets.ModelViewSet):\n84:     \"\"\"\n85:     API endpoint for the user profile\n86: \n87:     This endpoint works somewhat differently than the others since it always\n88:     returns the data for the currently logged-in user's profile. To update\n89:     the profile, use a POST request with the new data, not a PATCH.\n90:     \"\"\"\n91: \n92:     serializer_class = UserprofileSerializer\n93:     permission_classes = (\n94:         IsAuthenticated,\n95:         WgerPermission,\n96:     )\n97: \n98:     def get_queryset(self):\n99:         \"\"\"\n100:         Only allow access to appropriate objects\n101:         \"\"\"\n102:         # REST API generation\n103:         if getattr(self, 'swagger_fake_view', False):\n104:             return UserProfile.objects.none()\n105: \n106:         return UserProfile.objects.filter(user=self.request.user)\n107: \n108:     def get_owner_objects(self):\n109:         \"\"\"\n110:         Return objects to check for ownership permission\n111:         \"\"\"\n112:         return [(User, 'user')]\n113: \n114:     def list(self, request, *args, **kwargs):\n115:         \"\"\"\n116:         Customized list view, that returns only the current user's data\n117:         \"\"\"\n118:         queryset = self.get_queryset()\n119:         serializer = self.serializer_class(queryset.first(), many=False)\n120: \n121:         return Response(serializer.data)\n122: \n123:     def retrieve(self, request, *args, **kwargs):\n124:         return self.list(request, *args, **kwargs)\n125: \n126:     def create(self, request, *args, **kwargs):\n127:         data = request.data\n128:         serializer = self.serializer_class(request.user.userprofile, data=data)\n129:         if serializer.is_valid():\n130:             serializer.save()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/manager/api/views.py",
+                  "start_line": 420,
+                  "end_line": 455,
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "permission-message",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/viewsets.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f path=wger/utils/viewsets.py lines=1-54]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import (\n20:     exceptions,\n21:     viewsets,\n22: )\n23: \n24: \n25: class WgerOwnerObjectModelViewSet(viewsets.ModelViewSet):\n26:     \"\"\"\n27:     Custom viewset that makes sure the user can only create objects for himself\n28:     \"\"\"\n29: \n30:     def create(self, request, *args, **kwargs):\n31:         \"\"\"\n32:         Check for creation (PUT, POST)\n33:         \"\"\"\n34:         for entry in self.get_owner_objects():\n35:             if request.data.get(entry[1]):\n36:                 pk = request.data.get(entry[1])\n37:                 obj = entry[0].objects.get(pk=pk)\n38:                 if obj.get_owner_object().user != request.user:\n39:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n40:         else:\n41:             return super().create(request, *args, **kwargs)\n42: \n43:     def update(self, request, *args, **kwargs):\n44:         \"\"\"\n45:         Check for updates (PUT, PATCH)\n46:         \"\"\"\n47:         for entry in self.get_owner_objects():\n48:             if request.data.get(entry[1]):\n49:                 pk = request.data.get(entry[1])\n50:                 obj = entry[0].objects.get(pk=pk)\n51:                 if obj.get_owner_object().user != request.user:\n52:                     raise exceptions.PermissionDenied('You are not allowed to do this 111111')\n53:         else:\n54:             return super().update(request, *args, **kwargs)\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization ownership permission denied user object access"
+                },
+                "result": "[wger/core/static/fonts/LICENSE.txt:1-43] (relevance 0.31)\nApache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n\n---\n\n[LICENSE.txt:320-357] (relevance 0.31)\nthe User Product in which it has been modified or installed.  Access to a\nnetwork may be denied when the modification itself materially and\nadversely affects the operation of the network or violates the rules and\nprotocols for communication across the network.\n\n  Corresponding Source conveyed, and Installation Information provided,\nin accord with this section must be in a format that is publicly\ndocumented (and with an implementation available to the public in\nsource code form), and must require no special password or key for\nunpacking, reading or copying.\n\n  7. Additional Terms.\n\n  \"Additional permissions\" are terms that supplement the terms of this\nLicense by making exceptions from one or more of its conditions.\nAdditional permissions that are applicable to the entire Program shall\nbe treated as though they were included in this License, to the extent\nthat they are valid under applicable law.  If additional permissions\napply only to part of the Program, that part may be used separately\nunder those permissions, but the entire Program remains governed by\nthis License without regard to the additional permissions.\n\n  When you convey a copy of a covered work, you may at your option\nremove any additional permissions from that copy, or from any part of\nit.  (Additional permissions may be written to require their own\nremoval in certain cases when you modify the work.)  You may place\nadditional permissions on material, added by you to a covered work,\nfor which you have or can give appropriate copyright permission.\n\n  Notwithstanding any other provision of this License, for material you\nadd to a covered work, you may (if authorized by the copyright holders of\nthat material) supplement the terms of this License with terms:\n\n    a) Disclaiming warranty or limiting liability differently from the\n    terms of sections 15 and 16 of this License; or\n\n    b) Requiring preservation of specified reasonable legal notices or\n    author attributions in that material or in the Appropriate Legal\n\n---\n\n[LICENSE.txt:290-323] (relevance 0.23)\nproduct received by a particular user, \"normally used\" refers to a\ntypical or common use of that class of product, regardless of the status\nof the particular user or of the way in which the particular user\nactually uses, or expects or is expected to use, the product.  A product\nis a consumer product regardless of whether the product has substantial\ncommercial, industrial or non-consumer uses, unless such uses represent\nthe only significant mode of use of the product.\n\n  \"Installation Information\" for a User Product means any methods,\nprocedures, authorization keys, or other information required to install\nand execute modified versions of a covered work in that User Product from\na modified version of its Corresponding Source.  The information must\nsuffice to ensure that the continued functioning of the modified object\ncode is in no case prevented or interfered with solely because\nmodification has been made.\n\n  If you convey an object code work under this section in, or with, or\nspecifically for use in, a User Product, and the conveying occurs as\npart of a transaction in which the right of possession and use of the\nUser Product is transferred to the recipient in perpetuity or for a\nfixed term (regardless of how the transaction is characterized), the\nCorresponding Source conveyed under this section must be accompanied\nby the Installation Information.  But this requirement does not apply\nif neither you nor any third party retains the ability to install\nmodified object code on the User Product (for example, the work has\nbeen installed in ROM).\n\n  The requirement to provide Installation Information does not include a\nrequirement to continue to provide support service, warranty, or updates\nfor a work that has been modified or installed by the recipient, or for\nthe User Product in which it has been modified or installed.  Access to a\nnetwork may be denied when the modification itself materially and\nadversely affects the operation of the network or violates the rules and\nprotocols for communication across the network.\n\n---\n\n[LICENSE.txt:461-495] (relevance 0.22)\nA \"contributor\" is a copyright holder who authorizes use under this\nLicense of the Program or a work on which the Program is based.  The\nwork thus licensed is called the contributor's \"contributor version\".\n\n  A contributor's \"essential patent claims\" are all patent claims\nowned or controlled by the contributor, whether already acquired or\nhereafter acquired, that would be infringed by some manner, permitted\nby this License, of making, using, or selling its contributor version,\nbut do not include claims that would be infringed only as a\nconsequence of further modification of the contributor version.  For\npurposes of this definition, \"control\" includes the right to grant\npatent sublicenses in a manner consistent with the requirements of\nthis License.\n\n  Each contributor grants you a non-exclusive, worldwide, royalty-free\npatent license under the contributor's essential patent claims, to\nmake, use, sell, offer for sale, import and otherwise run, modify and\npropagate the contents of its contributor version.\n\n  In the following three paragraphs, a \"patent license\" is any express\nagreement or commitment, however denominated, not to enforce a patent\n(such as an express permission to practice a patent or covenant not to\nsue for patent infringement).  To \"grant\" such a patent license to a\nparty means to make such an agreement or commitment not to enforce a\npatent against the party.\n\n  If you convey a covered work, knowingly relying on a patent license,\nand the Corresponding Source of the work is not available for anyone\nto copy, free of charge and under the terms of this License, through a\npublicly available network server or other readily accessible means,\nthen you must either (1) cause the Correspo"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "wger/utils/viewsets.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a8e94a5a809aa4f066aadb11294571b6949f87ac path=wger/utils/viewsets.py lines=1-54]\n1: # -*- coding: utf-8 -*-\n2: \n3: # This file is part of wger Workout Manager.\n4: #\n5: # wger Workout Manager is free software: you can redistribute it and/or modify\n6: # it under the terms of the GNU Affero General Public License as published by\n7: # the Free Software Foundation, either version 3 of the License, or\n8: # (at your option) any later version.\n9: #\n10: # wger Workout Manager is distributed in the hope that it will be useful,\n11: # but WITHOUT ANY WARRANTY; without even the implied warranty of\n12: # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n13: # GNU General Public License for more details.\n14: #\n15: # You should have received a copy of the GNU Affero General Public License\n16: # along with Workout Manager.  If not, see <http://www.gnu.org/licenses/>.\n17: \n18: # Third Party\n19: from rest_framework import (\n20:     exceptions,\n21:     viewsets,\n22: )\n23: \n24: \n25: class WgerOwnerObjectModelViewSet(viewsets.ModelViewSet):\n26:     \"\"\"\n27:     Custom viewset that makes sure the user can only create objects for himself\n28:     \"\"\"\n29: \n30:     def create(self, request, *args, **kwargs):\n31:         \"\"\"\n32:         Check for creation (PUT, POST)\n33:         \"\"\"\n34:         for entry in self.get_owner_objects():\n35:             if request.data.get(entry[1]):\n36:                 pk = request.data.get(entry[1])\n37:                 obj = entry[0].objects.get(pk=pk)\n38:                 if obj.get_owner_object().user != request.user:\n39:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n40:         else:\n41:             return super().create(request, *args, **kwargs)\n42: \n43:     def update(self, request, *args, **kwargs):\n44:         \"\"\"\n45:         Check for updates (PUT, PATCH)\n46:         \"\"\"\n47:         for entry in self.get_owner_objects():\n48:             if request.data.get(entry[1]):\n49:                 pk = request.data.get(entry[1])\n50:                 obj = entry[0].objects.get(pk=pk)\n51:                 if obj.get_owner_object().user != request.user:\n52:                     raise exceptions.PermissionDenied('You are not allowed to do this')\n53:         else:\n54:             return super().update(request, *args, **kwargs)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The only change is the error message string (adding \" 111111\"). The authorization logic (owner check, PermissionDenied) is unchanged. No new authorization flaw is introduced by this PR.",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "get_owner_objects",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=4005375bc16af77f3b1122f80ab34fca66c0ce8f pattern=\"get_owner_objects\"]\nwger/core/api/views.py:108:    def get_owner_objects(self):\nwger/manager/api/views.py:327:    def get_owner_objects(self):\nwger/manager/api/views.py:359:    def get_owner_objects(self):\nwger/manager/api/views.py:432:    def get_owner_objects(self):\nwger/manager/api/views.py:448:    def get_owner_objects(self):\nwger/nutrition/api/views.py:383:    def get_owner_objects(self):\nwger/nutrition/api/views.py:430:    def get_owner_objects(self):\nwger/nutrition/api/views.py:464:    def get_owner_objects(self):\nwger/utils/viewsets.py:34:        for entry in self.get_owner_objects():\nwger/utils/viewsets.py:47:        for entry in self.get_owner_objects():\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "The only change in this section is the error message string (appending \" 111111\"). The authorization logic \u2014 the owner check `obj.get_owner_object().user != request.user` and the `PermissionDenied` raise \u2014 is identical to the base. No new authorization flaw is introduced.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:config-api-ownership:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8179,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "wger-repetitions-config-idor",
+  "url": "https://github.com/wger-project/wger/commit/4005375bc16af77f3b1122f80ab34fca66c0ce8f",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-xf68-8hjw-7mpm",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "wger/manager/api/views.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}
