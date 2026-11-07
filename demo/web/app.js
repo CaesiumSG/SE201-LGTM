@@ -79,8 +79,8 @@
     gh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
   };
   const NAV = [
-    ["overview", "Overview", I.overview], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr], ["findings", "Findings", I.inbox],
-    ["repos", "Repositories", I.repo], ["accuracy", "Accuracy", I.target], ["settings", "Settings", I.gear],
+    ["overview", "Overview", I.overview], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr],
+    ["repos", "Repositories", I.repo], ["settings", "Settings", I.gear],
   ];
 
   // ---------------------------------------------------------------- state
@@ -193,7 +193,7 @@
     if (!signedIn || name === "signin") { setNav(""); return signin(query); }
     const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage, workspace: (a, q) => window.LGTMWorkspace(a, q) };
     const fn = views[name] || overview;
-    setNav(name === "" ? "overview" : name);
+    setNav({ "": "overview", accuracy: "overview", findings: "runs" }[name] ?? name);   // Accuracy lives in Overview, Findings in Pull requests
     try {
       await fn(args, query);
     } catch (e) {
@@ -229,6 +229,10 @@
     $$("[data-repo]").forEach((c) => c.addEventListener("change", () => post(`/api/repos/${c.dataset.repo}`, { enabled: c.checked })));
     const re = $("#recheck");
     if (re) re.addEventListener("click", async () => { re.disabled = true; re.textContent = "Checking…"; await post("/api/sync").catch(() => {}); await loadMe(); onboarding(); });
+  }
+
+  function prSwitch(current) {
+    return `<nav class="pr-switch" aria-label="Pull requests">${[["runs", "Reviews"], ["findings", "Findings"]].map(([k, l]) => `<a href="#/${k}" ${k === current ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>`;
   }
 
   // ---------------------------------------------------------------- overview
@@ -280,7 +284,11 @@
       <section class="panel">
         <h2>Repositories</h2>
         ${repoTable(o.repos)}
-      </section>`);
+      </section>
+      <section class="panel ov-accuracy" id="ov-accuracy"><h2>Accuracy on known bugs</h2>
+        <p class="note">How LGTM scores on pull requests with a known answer: real advisories from open-source Python projects (the change that introduced each bug and the change that fixed it), plus a synthetic shop.</p>
+        <div id="ov-acc-body"><p class="muted">Loading…</p></div></section>`, "overview");
+    get("/api/accuracy").then((a) => { const el = $("#ov-acc-body"); if (el) el.innerHTML = accuracyBlocks(a); }).catch(() => { const el = $("#ov-acc-body"); if (el) el.innerHTML = `<p class="muted">The benchmark numbers did not load.</p>`; });
     S.timers.push(setInterval(() => { if (location.hash.replace(/\?.*/, "") === "#/" || location.hash === "" ) refreshIfChanged(); }, 8000));
   }
 
@@ -380,7 +388,7 @@
     const live = runs.filter((r) => r.status === "running" || r.status === "queued").length;
     page(`
       <header class="page-head row">
-        <div><h1>Pull requests</h1><p>Every review LGTM has run, newest first.${live ? ` ${plural(live, "review")} in progress.` : ""}</p></div>
+        <div><h1>Pull requests</h1>${prSwitch("runs")}<p>Every review LGTM has run, newest first.${live ? ` ${plural(live, "review")} in progress.` : ""}</p></div>
         ${sourceSwitch(source, "#/runs")}
       </header>
       <div class="filters">${[["", "All results"], ["blocked", "Blocked"], ["findings", "Findings"], ["passed", "No findings"]].map(([k, l]) => `<a href="#/runs?source=${source}${k ? `&conclusion=${k}` : ""}" ${k === status ? 'aria-current="true"' : ""}>${l}</a>`).join("")}</div>
@@ -560,7 +568,7 @@
     const rows = await get(`/api/findings?status=${enc(status)}&source=${source}`);
     const tabs = [["open,confirmed", "Needs attention"], ["accepted_risk", "Accepted risk"], ["false_positive", "False positive"], ["fixed", "Fixed"], ["open,confirmed,accepted_risk,false_positive,fixed", "All"]];
     page(`
-      <header class="page-head row"><div><h1>Findings</h1><p>Security bugs LGTM reported on pull requests. Mark each one so the team knows where it stands.</p></div>${sourceSwitch(source, `#/findings`)}</header>
+      <header class="page-head row"><div><h1>Pull requests</h1>${prSwitch("findings")}<p>Security bugs LGTM reported on pull requests. Mark each one so the team knows where it stands.</p></div>${sourceSwitch(source, `#/findings`)}</header>
       <div class="filters">${tabs.map(([k, l]) => `<a href="#/findings?status=${k}&source=${source}" ${k === status ? 'aria-current="true"' : ""}>${l}</a>`).join("")}</div>
       <div class="inbox">
         <section class="panel flush inbox-list">${rows.length ? `<ul class="frows">${rows.map((f, i) => `<li><button type="button" data-i="${i}" aria-pressed="${i === 0}">
@@ -613,18 +621,21 @@
   // ---------------------------------------------------------------- accuracy
   async function accuracyPage() {
     const a = await get("/api/accuracy");
+    page(`<header class="page-head"><h1>Accuracy</h1><p>How LGTM scores on pull requests with a known answer: real security advisories from open-source Python projects (the change that introduced the bug, and the change that fixed it), plus a synthetic shop. The held-out set was chosen after the reviewers were built and run once, untuned.</p></header>${accuracyBlocks(a)}`);
+  }
+
+  function accuracyBlocks(a) {
     const rate = (x, y) => (y ? `${Math.round((100 * x) / y)}%` : "–");
     const lgtmRows = a.sets.map((s) => ({ set: s, m: s.modes.find((m) => m.mode === "lgtm") })).filter((x) => x.m);
     const dev = a.sets.find((s) => s.id === "real_prs");
-    page(`<header class="page-head"><h1>Accuracy</h1><p>How LGTM scores on pull requests with a known answer: real security advisories from open-source Python projects (the change that introduced the bug, and the change that fixed it), plus a synthetic shop. The held-out set was chosen after the reviewers were built and run once, untuned.</p></header>
-      <section class="panel flush"><div class="table-wrap"><table class="table">
+    return `<section class="panel flush"><div class="table-wrap"><table class="table">
         <thead><tr><th scope="col">Evaluation set</th><th scope="col" class="num">Bugs caught</th><th scope="col" class="num">Recall</th><th scope="col" class="num">False alarms on fixes</th><th scope="col" class="num">Precision</th><th scope="col" class="num">Median time</th></tr></thead>
         <tbody>${lgtmRows.map(({ set, m }) => `<tr><th scope="row">${esc(set.label)}<span class="row-note">${esc(set.note)}</span></th>
           <td class="num">${m.TP} of ${m.TP + m.FN}</td><td class="num"><b>${rate(m.TP, m.TP + m.FN)}</b></td><td class="num">${m.FP} of ${m.FP + m.TN}</td><td class="num"><b>${rate(m.TP, m.TP + m.FP)}</b></td><td class="num">${secs(m.median_latency)}</td></tr>`).join("")}</tbody></table></div></section>
       ${dev ? `<section class="panel"><h2>Why the agents and the judge matter</h2><p class="note">Same 26 pull requests (development set), three ways of reviewing them.</p>
         <div class="compare">${dev.modes.map((m) => `<div class="cmp"><h3>${esc({ lgtm: "LGTM", "llm-only": "The same model, prompted directly", "sast-only": "Semgrep alone" }[m.mode] || m.label)}</h3>
           ${meter("Bugs caught", m.TP, m.TP + m.FN)}${meter("Quiet on fixed code", m.TN, m.TN + m.FP)}</div>`).join("")}</div></section>` : ""}
-      <p class="note">These numbers come from the project's benchmark runs, the same runs listed as "Imported from benchmark" in the history.</p>`);
+      <p class="note">These numbers come from the project's benchmark runs, the same runs listed as "Imported from benchmark" in the history.</p>`;
   }
 
   function meter(label, n, of) {
@@ -695,5 +706,24 @@
 
   window.addEventListener("hashchange", () => { route(); const v = view(); if (v) v.focus({ preventScroll: true }); window.scrollTo(0, 0); });
   setInterval(pollHealth, 5000);
+
+  // If the dashboard's own files change on disk (a new version), say so instead of running stale code.
+  const FILES = ["/app.js", "/workspace.js", "/landing.js", "/base.css"];
+  let stamps = null;
+  async function checkVersion() {
+    try {
+      const now = await Promise.all(FILES.map((f) => fetch(f, { method: "HEAD", cache: "no-store" }).then((r) => r.headers.get("Last-Modified") || "")));
+      if (!stamps) { stamps = now; return; }
+      if (now.join() !== stamps.join() && !document.getElementById("update-bar")) {
+        const bar = document.createElement("div");
+        bar.id = "update-bar";
+        bar.innerHTML = `<span>LGTM was updated. Reload to use the latest version.</span><button type="button" class="btn primary">Reload</button>`;
+        bar.querySelector("button").addEventListener("click", () => location.reload());
+        document.body.appendChild(bar);
+      }
+    } catch (e) { /* server restarting */ }
+  }
+  checkVersion();
+  setInterval(checkVersion, 10000);
   boot();
 })();
