@@ -272,6 +272,67 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
 # ---------------------------------------------------------------------------
 # Text that goes to github.com
 # ---------------------------------------------------------------------------
+_WJ = "⁠"
+
+_FENCE_RE = re.compile(
+    r"(?m)"
+    r"^[ ]{0,3}"
+    r"(?:(`{3,})[^\n`]*\n[\s\S]*?(?:^[ ]{0,3}\1+[ ]*(?:\n|\Z)|\Z)"
+    r"|"
+    r"(~{3,})[^\n]*\n[\s\S]*?(?:^[ ]{0,3}\2+[ ]*(?:\n|\Z)|\Z))"
+)
+
+
+def _find_code_intervals(text: str) -> list[tuple[int, int]]:
+    intervals: list[tuple[int, int]] = []
+
+    for m in _FENCE_RE.finditer(text):
+        intervals.append((m.start(), m.end()))
+
+    def in_fence(p: int) -> bool:
+        return any(s <= p < e for s, e in intervals)
+
+    pos = 0
+    n = len(text)
+    while pos < n:
+        if in_fence(pos):
+            for s, e in intervals:
+                if s <= pos < e:
+                    pos = e
+                    break
+            continue
+
+        if text[pos] == "`":
+            bs_count = 0
+            k = pos - 1
+            while k >= 0 and text[k] == "\\":
+                bs_count += 1
+                k -= 1
+            if bs_count % 2 == 1:
+                pos += 1
+                continue
+
+            start_delim_start = pos
+            while pos < n and text[pos] == "`":
+                pos += 1
+            delim_len = pos - start_delim_start
+
+            next_fence = next((s for s, e in intervals if s >= pos), n)
+            blank_m = re.search(r"\n[ \t]*\n", text[pos:next_fence])
+            limit = pos + blank_m.start() if blank_m else next_fence
+
+            close_pattern = re.compile(r"(?<!`)" + re.escape("`" * delim_len) + r"(?!`)")
+            m_close = close_pattern.search(text, pos, limit)
+            if m_close:
+                intervals.append((start_delim_start, m_close.end()))
+                pos = m_close.end()
+        else:
+            pos += 1
+
+    intervals.sort(key=lambda x: x[0])
+    return intervals
+
+
 def safe_markdown(text: str, own_owner: str) -> str:
     """Make text safe to post: no @mentions, no cross-repository references or links.
 
@@ -279,9 +340,56 @@ def safe_markdown(text: str, own_owner: str) -> str:
     would mention whoever owns that login. Links or ``owner/repo#123`` shorthand
     to another project would put a "mentioned this" backlink on it.
     """
-    text = re.sub(r"@(?=[A-Za-z0-9-])", "@⁠", text)
-    text = re.sub(r"https?://(www\.)?github\.com/(?!" + re.escape(own_owner) + r"/)[^\s)>\]]+",
-                  "(link removed)", text)
-    text = re.sub(r"\b([A-Za-z0-9][\w.-]*)/([\w.-]+)(#|@)(?=\w)", lambda m: f"{m.group(1)}/{m.group(2)}{m.group(3)}⁠", text)
-    text = re.sub(r"(?<![\w/])(GH-|#)(?=\d)", lambda m: m.group(1) + "⁠", text)
-    return text
+    intervals = _find_code_intervals(text)
+    if not intervals:
+        parts = [text]
+    else:
+        parts = []
+        last_idx = 0
+        for start, end in intervals:
+            parts.append(text[last_idx:start])
+            parts.append(text[start:end])
+            last_idx = end
+        parts.append(text[last_idx:])
+
+    for i in range(0, len(parts), 2):
+        chunk = parts[i]
+
+        # 1. Markdown link syntax: [label](url "optional title")
+        def _replace_md_link(m: re.Match) -> str:
+            label, url = m.group(1), m.group(2)
+            if re.match(r"^https?://(?:www\.)?github\.com/" + re.escape(own_owner) + r"/", url):
+                return m.group(0)
+            if label.strip() == url.strip():
+                return "(link removed)"
+            return f"{label} (link removed)"
+
+        chunk = re.sub(
+            r"\[([^\]]+)\]\((https?://(?:www\.)?github\.com/[^\s)]+?)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)",
+            _replace_md_link,
+            chunk,
+        )
+
+        # 2. Bare external GitHub URLs (excluding trailing punctuation)
+        chunk = re.sub(
+            r"https?://(?:www\.)?github\.com/(?!" + re.escape(own_owner) + r"/)[^\s)>\]]*[^\s)>\].,:;]",
+            "(link removed)",
+            chunk,
+        )
+
+        # 3. Defang @mentions (ignores email addresses where @ is preceded by word chars)
+        chunk = re.sub(r"(?<!\w)@(?=[A-Za-z0-9-])", f"@{_WJ}", chunk)
+
+        # 4. Cross-repository shorthand (owner/repo#123 or owner/repo@sha)
+        chunk = re.sub(
+            r"\b([A-Za-z0-9][\w.-]*)/([\w.-]+)(#|@)(?=\w)",
+            lambda m: f"{m.group(1)}/{m.group(2)}{m.group(3)}{_WJ}",
+            chunk,
+        )
+
+        # 5. Local issue/PR shorthand (#123 or GH-123)
+        chunk = re.sub(r"(?<![\w/])(GH-|#)(?=\d)", lambda m: f"{m.group(1)}{_WJ}", chunk)
+
+        parts[i] = chunk
+
+    return "".join(parts)
