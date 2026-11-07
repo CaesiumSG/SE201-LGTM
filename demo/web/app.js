@@ -74,16 +74,17 @@
     inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13.5 6.5 5h11L20 13.5V19H4zm0 0h4.5l1.5 2.5h4l1.5-2.5H20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
     repo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H8a2 2 0 0 1-2-2zm0 13a2 2 0 0 1 2-2h10M9 8h6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     target: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>',
+    code: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M13.5 4.5l-3 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" stroke="currentColor" stroke-width="1.7"/></svg>',
     gh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
   };
   const NAV = [
-    ["overview", "Overview", I.overview], ["runs", "Pull requests", I.pr], ["findings", "Findings", I.inbox],
+    ["overview", "Overview", I.overview], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr], ["findings", "Findings", I.inbox],
     ["repos", "Repositories", I.repo], ["accuracy", "Accuracy", I.target], ["settings", "Settings", I.gear],
   ];
 
   // ---------------------------------------------------------------- state
-  const S = { me: null, health: null, live: null, timers: [] };
+  const S = { me: null, health: null, live: null, timers: [], leave: [] };
   const SKINS = [["ledger", "Ledger"], ["nightshift", "Night shift"], ["console", "Console"]];
 
   function setSkin(name) {
@@ -176,7 +177,11 @@
   }
 
   // ---------------------------------------------------------------- router
-  function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; if (S.live) { S.live.close(); S.live = null; } }
+  function clearTimers() {
+    S.timers.forEach(clearInterval); S.timers = [];
+    if (S.live) { S.live.close(); S.live = null; }
+    S.leave.forEach((f) => { try { f(); } catch (e) { /* already gone */ } }); S.leave = [];
+  }
 
   async function route() {
     clearTimers();
@@ -186,7 +191,7 @@
     const signedIn = S.me && S.me.user;
     if (name === "onboarding") { setNav(""); return onboarding(); }
     if (!signedIn || name === "signin") { setNav(""); return signin(query); }
-    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage };
+    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage, workspace: (a, q) => window.LGTMWorkspace(a, q) };
     const fn = views[name] || overview;
     setNav(name === "" ? "overview" : name);
     try {
@@ -694,6 +699,9 @@
     $$(".skin-card").forEach((b) => b.addEventListener("click", () => { setSkin(b.dataset.skinPick); $$(".skin-card").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
     $("#sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Checking…"; await post("/api/sync").catch(() => {}); route(); });
   }
+
+  // Helpers the workspace tab (workspace.js) builds on.
+  window.LGTM = { $, $$, esc, get, post, secs, ago, when, plural, short, enc, page, view, S, I, stageLabel, conclusionBadge };
 
   // ---------------------------------------------------------------- boot
   async function loadMe() { S.me = await get("/api/me"); }

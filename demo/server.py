@@ -41,6 +41,8 @@ sys.path.insert(0, str(HERE))
 import github_app as gh  # noqa: E402
 import results  # noqa: E402
 import reviews  # noqa: E402
+import liveapp  # noqa: E402
+import workspace  # noqa: E402
 from bedrock_env import ledger_total, read_bedrock_key  # noqa: E402
 from store import SEVERITY_RANK, Store, now  # noqa: E402
 
@@ -58,6 +60,8 @@ BASE_URL = "http://127.0.0.1:8765"
 SESSIONS: dict[str, dict] = {}       # in memory only: user tokens never touch the disk
 OAUTH_STATES: dict[str, float] = {}
 MANIFEST_STATES: dict[str, float] = {}
+WS = workspace.Workspace()
+APPS = liveapp.LiveApps(workspace.ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +482,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(STORE.settings())
         if path == "/api/deliveries":
             return self.send_json(STORE.q("SELECT * FROM deliveries ORDER BY received_at DESC LIMIT 50"))
+        if path.startswith("/api/ws/"):
+            return self.ws_get(sess, path, q)
         raise KeyError(path)
 
     # -- POST -------------------------------------------------------------------
@@ -532,11 +538,101 @@ class Handler(SimpleHTTPRequestHandler):
                 ENGINE.poll_once()
                 sess["scoped_at"] = 0
                 return self.send_json({"ok": True})
+            if path.startswith("/api/ws/"):
+                return self.ws_post(sess, path, body)
         except KeyError:
             return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except gh.GitHubError as exc:
             return self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    # -- workspace (demo IDE) ----------------------------------------------------
+    @staticmethod
+    def ws_repo(sess: dict, repo: str) -> str:
+        if repo not in sess.get("repos", set()):
+            raise workspace.WorkspaceError("Connect this repository to LGTM first.", 404)
+        return repo
+
+    def ws_get(self, sess: dict, path: str, q: dict):
+        try:
+            if path == "/api/ws/presets":
+                return self.send_json([p for p in WS.presets() if p["repo"] in sess.get("repos", set())])
+            if path == "/api/ws/apps":
+                return self.send_json(sorted(r for r in liveapp.APPS if r in sess.get("repos", set())))
+            repo = self.ws_repo(sess, q.get("repo", ""))
+            if path == "/api/ws/state":
+                return self.send_json(WS.state(repo))
+            if path == "/api/ws/tree":
+                return self.send_json(WS.tree(repo))
+            if path == "/api/ws/file":
+                return self.send_json(WS.read(repo, q.get("path", "")))
+            if path == "/api/ws/search":
+                return self.send_json(WS.search(repo, q.get("q", "")))
+            if path == "/api/ws/diff":
+                return self.send_json(WS.diff(repo))
+        except workspace.WorkspaceError as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        raise KeyError(path)
+
+    def ws_post(self, sess: dict, path: str, body: dict):
+        try:
+            repo = self.ws_repo(sess, body.get("repo", ""))
+            if path == "/api/ws/open":
+                return self.send_json(WS.open(repo, body.get("preset") or None))
+            if path == "/api/ws/file":
+                return self.send_json(WS.write(repo, body.get("path", ""), str(body.get("content") or ""), bool(body.get("deleted"))))
+            if path == "/api/ws/push":
+                gen = WS.push_stream(repo, body.get("branch", ""), body.get("message", ""), body.get("title", ""),
+                                     sess["login"], body.get("how", ""))
+                return self.ndjson(gen)
+            if path == "/api/ws/generate":
+                return self.ws_generate(repo, body)
+            if path == "/api/ws/app/start":
+                return self.send_json(APPS.start(repo))
+            if path == "/api/ws/app/call":
+                return self.send_json(APPS.call(repo, str(body.get("method") or "GET"), str(body.get("path") or "/"),
+                                                body.get("token"), body.get("body")))
+        except (workspace.WorkspaceError, liveapp.LiveAppError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def ndjson(self, gen):
+        """Stream a generator's events as newline-delimited JSON; errors before the first event are a normal error reply."""
+        first = next(gen)   # WorkspaceError here is answered by the caller as JSON
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+        try:
+            self.wfile.write((json.dumps(first) + "\n").encode()); self.wfile.flush()
+            for event in gen:
+                self.wfile.write((json.dumps(event) + "\n").encode()); self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:  # noqa: BLE001 - the terminal shows the failure
+            self.wfile.write((json.dumps({"type": "error", "msg": gh.redact(str(exc))[:400]}) + "\n").encode())
+
+    def ws_generate(self, repo: str, body: dict):
+        """Stream Claude's rewrite of one file as newline-delimited JSON events."""
+        gen = WS.generate(repo, body.get("path", ""), body.get("prompt", ""), ENGINE.bedrock_key, ENGINE.bedrock_budget)
+        try:
+            first = next(gen)
+        except workspace.WorkspaceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the model call failed before streaming
+            return self.send_json({"error": gh.redact(f"The assistant could not start: {exc}")[:400]}, HTTPStatus.BAD_GATEWAY)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+        try:
+            for event in [first]:
+                self.wfile.write((json.dumps(event) + "\n").encode())
+            for event in gen:
+                self.wfile.write((json.dumps(event) + "\n").encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:  # noqa: BLE001 - report mid-stream failures to the editor
+            self.wfile.write((json.dumps({"type": "error", "msg": gh.redact(str(exc))[:400]}) + "\n").encode())
 
     # -- GitHub App -----------------------------------------------------------
     def manifest_form(self, name: str) -> dict:

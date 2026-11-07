@@ -46,6 +46,16 @@ Open a PR from the GitHub web UI (or `gh pr create --repo cyberjj999/shoply-demo
 
 Rules for anything posted to GitHub from the replay: no links to the upstream project, no `owner/repo#N` references and no @mentions. LGTM's own posts are filtered for these automatically (`github_app.safe_markdown`).
 
+## The workspace tab (write code, push, watch LGTM review it)
+
+**Workspace** in the dashboard is a small IDE over a connected repository: a file tree, file-name and text search, and an editor (Monaco, loaded from jsDelivr). Edits are saved to a working clone in `demo/.data/workspace/`.
+
+- **Scripted tasks** (`workspace_presets.json`) replay a real commit into the editor, typed out live: the three shoply features (two bugs and a safe change, plus the paged-orders fix as a follow-up pushed to the same pull request) and the 2016 taiga-back change later published as CVE-2025-62367. A task resets the editor to the commit before the change; the result is byte-for-byte the original commit.
+- **Ask Claude** rewrites the open file from a free-text request, streamed into the editor (Claude Sonnet on Bedrock, a few cents a request, on the shared spend ledger).
+- **Commit, push and open a pull request** is real: it commits, pushes a new branch and opens the pull request with the `gh` CLI, as the GitHub account `gh` is signed in as (only when that is also who is signed in to the dashboard). It never force-pushes or pushes to the default branch. Pushing again from the same branch updates the pull request. The panel then follows LGTM's review of that commit and links to the pull request, the check run and the live review.
+
+To replay another published advisory, create a private replay repository the way taiga-back-replay was made, connect it, and add an entry with its `base` (the commit before the change) and `source` (the change) to `workspace_presets.json`. Never add live-hunt leads.
+
 ## Recorded run (5 November 2026)
 
 All on Qwen 3.8 27B + Kev-4B unless noted; screenshots in [screenshots/](screenshots/).
@@ -78,7 +88,9 @@ demo/
   results.py       stored benchmark results, normalised (verdict, findings, trace, diff)
   live_runner.py   one pipeline run in a subprocess, streaming @@EVT progress lines
   bedrock_env.py   Bedrock key and spend ledger (the reviewer can run on Claude, capped at +USD 10)
-  web/             the dashboard: index.html, app.js, base.css, skins/{ledger,nightshift,console}.css, setup.html
+  workspace.py     the Workspace tab: working clones, files, search, scripted replays, Claude, commit and push
+  workspace_presets.json  the scripted tasks (real commits to replay)
+  web/             the dashboard: index.html, app.js, workspace.js, base.css, skins/{ledger,nightshift,console}.css, setup.html
   .secrets/ .data/ .runs/   git-ignored: credentials, database and clones, earlier demo runs
 ```
 
