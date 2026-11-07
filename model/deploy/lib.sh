@@ -11,8 +11,7 @@ die() { echo "error: $*" >&2; exit 1; }
 
 [[ -f "$MODEL_DIR/.env" ]] || die "$MODEL_DIR/.env not found; copy .env.example and fill it in"
 set -a
-# shellcheck disable=SC1090
-source <(tr -d '\r' < "$MODEL_DIR/.env")
+eval "$(tr -d '\r' < "$MODEL_DIR/.env")"
 set +a
 
 : "${REMOTE_ROOT:=llm-serve}"
