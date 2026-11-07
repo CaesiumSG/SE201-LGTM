@@ -205,30 +205,7 @@
   function page(html, cls = "") { view().innerHTML = `<section class="page ${cls}">${html}</section>`; }
 
   // ---------------------------------------------------------------- sign in and onboarding
-  function signin(query) {
-    const app = S.me && S.me.app;
-    const err = query.get("error");
-    page(`
-      <div class="hero">
-        <div class="hero-copy">
-          <h1>Every pull request, reviewed for security before it merges.</h1>
-          <p class="lede">LGTM reads each change the way a security engineer would: it follows the data into the code, checks your access rules, and only reports a bug when it can point at the lines that prove it. Findings land on the pull request as a check and a review.</p>
-          ${err ? `<p class="notice warn">${err === "expired" ? "That sign-in link expired. Try again." : "GitHub did not grant access. Try again."}</p>` : ""}
-          <div class="actions">
-            ${app ? `<a class="btn primary" href="/auth/login">${I.gh}<span>Sign in with GitHub</span></a>` : `<a class="btn primary" href="/setup.html">${I.gh}<span>Create the GitHub App</span></a>`}
-            <a class="btn" href="#/onboarding">How setup works</a>
-          </div>
-        </div>
-        <figure class="hero-demo" aria-label="Example review comment">
-          <div class="mock-comment">
-            <div class="mock-head">${I.logo}<b>LGTM</b><span>commented on <code>app/routes/users.py</code> line 74</span></div>
-            <pre><code><span class="ln">73</span>    rows = session.execute(
-<span class="ln add">74</span>+       text(f"SELECT id, username FROM users WHERE username LIKE '%{name}%'")</code></pre>
-            <p><b class="sev high">High</b> SQL injection (CWE-89), confirmed by the judge. <code>name</code> comes straight from <code>request.args</code> and is formatted into the query.</p>
-          </div>
-        </figure>
-      </div>`, "signin");
-  }
+  function signin(query) { return window.LGTMLanding(query); }
 
   async function onboarding() {
     const me = S.me;
