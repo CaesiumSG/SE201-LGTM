@@ -34,7 +34,7 @@
   const caseCard = ([repo, n, kind, cve, ghsa, what, file]) => {
     const { esc } = L();
     return `<li class="case">
-      <div class="case-top"><b>${esc(repo)}</b><span class="case-stars" title="GitHub stars">&#9733; ${stars(n)}</span></div>
+      <div class="case-top"><b><a href="https://github.com/${esc(repo)}" target="_blank" rel="noopener" title="Open ${esc(repo)} on GitHub">${esc(repo)}</a></b><span class="case-stars" title="GitHub stars">&#9733; ${stars(n)}</span></div>
       <p class="case-what">${esc(what)}</p>
       <p class="case-kind"><span>${esc(kind)}</span><a href="https://github.com/advisories/${ghsa}" target="_blank" rel="noopener">${cve || ghsa}</a></p>
       <p class="case-hit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3.2 3.2L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${file ? `Flagged in <code>${esc(file)}</code>` : "Flagged in the pull request that introduced it"}</span></p>
