@@ -1863,10 +1863,15 @@ class TestUnfoundedPolicyCitation:
         assert "cited policy" in prompts[1] and "cited policy" not in prompts[0]
 
     @BAD_POLICY
-    def test_triage_candidate_is_kept_unsupported_after_the_budget(self, git_repo, bad):
-        llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR, bad]))
+    def test_triage_candidate_is_kept_unsupported_without_the_policy_item_after_the_budget(
+        self, git_repo, bad
+    ):
+        llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR, bad, POLICY_ITEM]))
         agent = _triage_agent(git_repo, llm)
         candidate = agent.triage(SEMGREP_HIT, None)
+        assert [(e.type, e.content) for e in candidate.evidence] == [
+            ("code", PR_SQL_LINE), ("policy", POLICY_ITEM["content"]),
+        ]
         assert candidate.supported is False
         assert candidate.unsupported_reason == UNRESOLVED_EVIDENCE_REASON
         assert llm.calls == 4 and agent.errors == []
