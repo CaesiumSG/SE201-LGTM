@@ -33,7 +33,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -627,7 +627,7 @@ class Handler(SimpleHTTPRequestHandler):
             m = re.fullmatch(r"/api/findings/(.+)", path)
             if m:
                 where, args = scope_sql(sess)
-                row = STORE.one(f"SELECT * FROM findings WHERE id=? AND {where}", [m.group(1), *args])
+                row = STORE.one(f"SELECT * FROM findings WHERE id=? AND {where}", [unquote(m.group(1)), *args])   # ids hold ":" and "/"
                 if not row or body.get("status") not in TRIAGE_STATES:
                     return self.send_json({"error": "bad request"}, HTTPStatus.BAD_REQUEST)
                 STORE.update("findings", row["id"], status=body["status"], note=str(body.get("note") or "")[:500],

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import workspace   # MODEL, prices, spend ledger
 
@@ -24,6 +25,10 @@ FIELDS = {
               "at most 10 words; never a CWE name. Empty string when the explanation names no such rule. "
               "Example: \"security-policy.md §5: SQL must use bound parameters\"",
     "fix": "The fix, at most 10 words. Example: \"Pass `name` as a bound parameter.\"",
+    "fix_code": "The corrected code only, as it would appear in the file: the one to five lines that change, no "
+                "comments, no prose, no backticks or code fences. Copy it from the suggested fix with the same names "
+                "and placeholders, only reformatted; empty string when "
+                "the suggested fix gives no code.",
 }
 
 
@@ -50,6 +55,7 @@ def write(key: str | None, budget: float, f: dict) -> dict | None:
                                  "seconds": round(time.monotonic() - started, 2), "run": "demo:brief"}) + "\n")
     got = next((b.input for b in msg.content if b.type == "tool_use"), None) or {}
     out = {k: str(got.get(k) or "").strip() for k in FIELDS}
+    out["fix_code"] = out["fix_code"].strip("`").removeprefix("python\n").strip()
     return out if out["headline"] else None
 
 
@@ -59,7 +65,8 @@ def briefs(store, key: str | None, budget: float, items: dict[str, dict]) -> dic
         return {}
     marks = ",".join("?" * len(items))
     have = {r["key"]: json.loads(r["body"]) for r in store.q(f"SELECT key, body FROM finding_briefs WHERE key IN ({marks})", list(items))}
-    todo = {k: f for k, f in items.items() if k not in have}
+    # Briefs written before fix_code existed are rewritten once when the finding has a suggested fix.
+    todo = {k: f for k, f in items.items() if k not in have or ("fix_code" not in have[k] and (f.get("suggested_fix") or "").strip())}
     if todo:
         with ThreadPoolExecutor(max_workers=4) as pool:
             for k, b in zip(todo, pool.map(lambda f: _safe(key, budget, f), todo.values())):
@@ -74,6 +81,17 @@ def _safe(key, budget, f):
         return write(key, budget, f)
     except Exception:  # noqa: BLE001 - without a brief, the full explanation is shown as before
         return None
+
+
+FENCE = {".py": "python", ".js": "javascript", ".ts": "typescript", ".go": "go", ".java": "java", ".rb": "ruby", ".php": "php"}
+
+
+def fix_markdown(b: dict | None, path: str) -> str:
+    """The suggested fix for a GitHub comment: one sentence and the corrected code, or "" without a brief."""
+    if not b or not b.get("fix"):
+        return ""
+    lang = FENCE.get(Path(path or "").suffix, "")
+    return f"**Suggested fix:** {b['fix']}" + (f"\n\n```{lang}\n{b['fix_code']}\n```" if b.get("fix_code") else "")
 
 
 def markdown(b: dict) -> str:

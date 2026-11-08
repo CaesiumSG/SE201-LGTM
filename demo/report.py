@@ -102,6 +102,14 @@ def brief_html(b: dict | None) -> str:
             + "".join(f"<dt>{k}</dt><dd>{rich(v)}</dd>" for k, v in rows if v) + "</dl></div>")
 
 
+def fix_html(f: dict) -> str:
+    b = f.get("brief") or {}
+    if not b.get("fix"):
+        return f'<div class="fix"><h4>Suggested fix</h4><p>{rich(f.get("suggested_fix"))}</p></div>'
+    code = f'<pre class="fixcode"><code>{e(b["fix_code"])}</code></pre>' if b.get("fix_code") else ""
+    return f'<div class="fix"><h4>Suggested fix</h4><p>{rich(b["fix"])}</p>{code}</div>'
+
+
 def report_html(detail: dict, generated: datetime.datetime | None = None) -> str:
     run = detail["run"]
     res = detail.get("result") or {}
@@ -208,7 +216,7 @@ def report_html(detail: dict, generated: datetime.datetime | None = None) -> str
           {brief_html(f.get("brief"))}
           {'<h4>Full reasoning</h4>' if f.get("brief") else ''}<p class="why">{rich(f.get("explanation"))}</p>
           {f'<h4>The flagged change</h4>{excerpt}' if excerpt else ''}
-          {f'<div class="fix"><h4>Suggested fix</h4><p>{rich(f.get("suggested_fix"))}</p></div>' if f.get("suggested_fix") else ''}
+          {fix_html(f) if f.get("suggested_fix") else ''}
           {f'<h4>Evidence the agents cited</h4>{evidence(f)}' if any(x.get("content") for x in f.get("evidence") or []) else ''}
           <p class="found-by">Found by the {e(AGENTS.get(f.get("agent"), f.get("agent") or "reviewer"))} with {plural(int(f.get("tool_calls") or 0), "tool call")}.</p>
         </section>""")
@@ -314,6 +322,7 @@ table.sum tr { break-inside: avoid; }
 .fnum { flex: none; width: 24px; height: 24px; border-radius: 50%; background: #111; color: #fff; font-weight: 700; display: grid; place-items: center; font-size: 10pt; }
 .fmeta { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 9pt; color: #444; }
 .why { margin: 10px 0 0; color: #444; font-size: 9pt; }
+.fixcode { margin: 6px 0 0; padding: 8px 10px; background: #f6f6f6; border-radius: 4px; font-size: 8.5pt; white-space: pre-wrap; }
 .brief { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #e3e3e3; border-radius: 6px; break-inside: avoid; }
 .brief .bh { margin: 0 0 6px; font-weight: 600; font-size: 11pt; }
 .brief dl { margin: 0; display: grid; grid-template-columns: 16mm 1fr; gap: 3px 10px; }

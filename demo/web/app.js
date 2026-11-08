@@ -464,7 +464,7 @@
     if (current === "live") return liveTab(box, id, active);
     if (current === "findings") {
       findingsTab(box, d);
-      if (d.result && d.result.findings.some((f) => f.flagged && !f.brief)) {   // written once, then cached
+      if (d.result && d.result.findings.some((f) => f.flagged && needsBrief(f))) {   // written once, then cached
         get(`/api/runs/${enc(id)}/briefs`).then((b) => {
           d.result.findings.forEach((f) => { if (b[f.key]) f.brief = b[f.key]; });
           if (document.body.contains(box)) findingsTab(box, d);
@@ -528,6 +528,20 @@
     const rows = [["Where", b.where], ["Impact", b.impact], ["Breaks", b.breaks], ["Fix", b.fix]].filter(([, v]) => v);
     return `<div class="brief"><p class="brief-h">${rich(b.headline)}</p><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${rich(v)}</dd>`).join("")}</dl></div>`;
   }
+  // The suggested fix as one sentence and the corrected code; the agent's full prose stays one click away.
+  function fixHtml(f) {
+    const b = f.brief;
+    if (!b || !b.fix) return `<p>${rich(f.suggested_fix)}</p>`;
+    return `<div class="fixbox">${b.fix_code ? `<pre class="fixcode"><code>${esc(b.fix_code)}</code></pre>` : `<p>${rich(b.fix)}</p>`}
+      <details class="full-why"><summary>The fix in full</summary>${richBlocks(f.suggested_fix)}</details></div>`;
+  }
+  // Prose with ``` fenced code: paragraphs through rich(), fences as code blocks.
+  function richBlocks(s) {
+    return String(s || "").split(/```[\w-]*\n?/).map((part, i) => i % 2
+      ? `<pre class="fixcode"><code>${esc(part.replace(/\n$/, ""))}</code></pre>`
+      : part.trim() ? `<p>${rich(part.trim())}</p>` : "").join("");
+  }
+  const needsBrief = (f) => !f.brief || (!!f.suggested_fix && !("fix_code" in f.brief));
   function explained(f) {
     return f.brief ? `${briefHtml(f.brief)}<details class="full-why"><summary>Full reasoning</summary><p>${rich(f.explanation)}</p></details>`
       : `<p>${rich(f.explanation)}</p>`;
@@ -540,26 +554,35 @@
         <code class="loc">${esc(f.file)}:${f.line}</code></header>
       ${f.flagged ? explained(f) : `<p>${rich(f.explanation)}</p>`}
       ${ev.length ? `<details ${opts.open ? "open" : ""}><summary>Evidence the agents cited (${ev.length})</summary>${ev.map((e) => `<div class="evidence"><div class="ev-head"><code>${esc(e.file || "")}${e.lines ? ":" + esc(e.lines) : ""}</code><span class="muted">${esc(e.type || "")}${e.grounded_in_pr ? ", in this change" : ""}</span></div><pre><code>${esc(e.content.trim())}</code></pre></div>`).join("")}</details>` : ""}
-      ${f.suggested_fix ? `<details><summary>Suggested fix</summary><p>${rich(f.suggested_fix)}</p></details>` : ""}
+      ${f.suggested_fix ? `<details><summary>Suggested fix</summary>${fixHtml(f)}</details>` : ""}
       <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? `Confirmed by the ${S.judgeName || "Kev judge"}` : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
         <span class="muted">${esc(AGENTS[f.agent] || f.agent || "")}, ${plural(f.tool_calls || 0, "tool call")}</span>
         ${f.key && f.flagged ? triageButtons(f.key, f.triage) : ""}</footer>
     </article>`;
   }
 
+  // Your verdict on a finding. "Fixed" is not a verdict: LGTM sets it when a later commit removes the bug, so it shows
+  // as a status (with Reopen) instead of a fourth button.
   function triageButtons(key, status) {
-    const HELP = { confirmed: "A real bug the team will fix", accepted_risk: "A real bug the team chooses not to fix",
-      false_positive: "LGTM was wrong: this is not a bug", fixed: "Already fixed (LGTM also marks this when a later review no longer reports it)" };
-    return `<span class="triage-wrap"><span class="triage-l">Mark as</span><span class="triage" data-key="${esc(key)}" role="group" aria-label="Mark this finding as">${["confirmed", "accepted_risk", "false_positive", "fixed"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}" title="${esc(HELP[s])}">${TRIAGE[s]}</button>`).join("")}</span></span>`;
+    if (status === "fixed") {
+      return `<span class="triage-wrap"><span class="state fixed">Fixed</span><span class="triage" data-key="${esc(key)}"><button type="button" data-status="open" aria-pressed="false" title="The bug is back or was not really fixed">Reopen</button></span></span>`;
+    }
+    const HELP = { confirmed: "A real bug the team will fix. It becomes Fixed when a later review no longer reports it",
+      accepted_risk: "A real bug the team chooses not to fix", false_positive: "LGTM was wrong: this is not a bug" };
+    return `<span class="triage-wrap"><span class="triage-l">Mark as</span><span class="triage" data-key="${esc(key)}" role="group" aria-label="Mark this finding as">${["confirmed", "accepted_risk", "false_positive"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}" title="${esc(HELP[s])}">${TRIAGE[s]}</button>`).join("")}</span></span>`;
   }
 
   function wireTriage(root, after) {
     $$(".triage button", root).forEach((b) => b.addEventListener("click", async () => {
-      const group = b.closest(".triage");
+      const group = b.closest(".triage"), key = group.dataset.key;
       const next = b.getAttribute("aria-pressed") === "true" ? "open" : b.dataset.status;
-      await post(`/api/findings/${enc(group.dataset.key)}`, { status: next });
-      $$("button", group).forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.status === next)));
-      after && after(group.dataset.key, next);
+      await post(`/api/findings/${enc(key)}`, { status: next });
+      const holder = document.createElement("span");
+      holder.innerHTML = triageButtons(key, next);
+      const fresh = holder.firstElementChild;
+      group.closest(".triage-wrap").replaceWith(fresh);
+      wireTriage(fresh, after);
+      after && after(key, next);
     }));
   }
 
@@ -657,7 +680,7 @@
         ${f.note ? `<p class="muted">${esc(f.note)}</p>` : ""}
         <div class="fd-actions">${f.source === "imported" ? "" : triageButtons(f.id, f.status)}<a class="btn" href="#/runs/${enc(f.run_id)}/findings">Open the review</a></div>`;
       wireTriage($("#fdetail"), (key, next) => { f.status = next; const b = $(`.frows button[data-i="${i}"] .state`); if (b) { b.className = `state ${next}`; b.textContent = TRIAGE[next]; } });
-      if (!f.brief && f.run_id) {
+      if (needsBrief(f) && f.run_id) {
         get(`/api/runs/${enc(f.run_id)}/briefs`).then((b) => {
           if (!b[f.id]) return;
           f.brief = b[f.id];

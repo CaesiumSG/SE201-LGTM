@@ -444,7 +444,7 @@ class Engine:
         self.store.update("runs", run_id, status="completed", finished_at=now(), latency=latency, verdict="safe",
                           conclusion="passed", n_flagged=0, n_candidates=0, severity_max=None, stage="done",
                           judge=prev.get("judge"), trigger=(run.get("trigger") or "") + ":verified-fix")
-        for f in self.store.q("SELECT id, file, cwe FROM findings WHERE repo=? AND pr_number=? AND source='github' AND status='open'",
+        for f in self.store.q("SELECT id, file, cwe FROM findings WHERE repo=? AND pr_number=? AND source='github' AND status IN ('open', 'confirmed')",
                               (run["repo"], run["pr_number"])):
             if any((f["file"], f["cwe"]) == (g["file"], g["cwe"]) for g in flagged):
                 self.store.update("findings", f["id"], status="fixed", updated_at=now(),
@@ -471,7 +471,7 @@ class Engine:
         # A newer review of the same PR supersedes the older ones: what it no longer reports is fixed.
         still = {(f["file"], f["cwe"]) for f in findings if f["flagged"]}
         for old in self.store.q("SELECT id, file, cwe FROM findings WHERE repo=? AND pr_number=? AND run_id<>? "
-                                "AND source='github' AND status='open'", (run["repo"], run["pr_number"], run["id"])):
+                                "AND source='github' AND status IN ('open', 'confirmed')", (run["repo"], run["pr_number"], run["id"])):
             if (old["file"], old["cwe"]) not in still:
                 self.store.update("findings", old["id"], status="fixed", updated_at=now(),
                                   note=f"Not reported by the review of {run['head_sha'][:7]}.")
@@ -678,6 +678,9 @@ class Engine:
                       "```suggestion", fix["replacement"], "```"]
         elif covering:
             parts += ["", f"**Fix:** the suggestion on lines {covering['start_line']}–{covering['end_line']} fixes this too."]
+        elif f.get("suggested_fix") and brief.fix_markdown(f.get("brief"), f["file"]):
+            parts += ["", self._md(brief.fix_markdown(f["brief"], f["file"])), "", "<details><summary>The fix in full</summary>", "",
+                      self._md(f["suggested_fix"]), "", "</details>"]
         elif f.get("suggested_fix"):
             parts += ["", "**Suggested fix**", "", self._md(f["suggested_fix"])]
         parts += ["", f"<sub>{f['agent'] or 'reviewer'} · {f['tool_calls']} tool calls · [trace]({link})</sub>"]
