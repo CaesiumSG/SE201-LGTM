@@ -1,4 +1,4 @@
-// LGTM dashboard: one app, three skins (web/skins/*.css). Plain JS, hash routes, no build step.
+// LGTM dashboard: one app, a light and a dark theme (web/theme.css). Plain JS, hash routes, no build step.
 (function () {
   "use strict";
 
@@ -60,7 +60,7 @@
     ["fetch", "Fetch the pull request"], ["index", "Index repository docs"], ["context", "Read the diff, build code graphs"],
     ["sast", "Semgrep on changed files"], ["triage", "Triage Semgrep hits"], ["investigator", "Investigator agent"],
     ["review", "Authorization and SQL-injection reviewers"], ["validate", "Check the cited evidence"],
-    ["judge", "Kev judge"], ["report", "Write the report"],
+    ["judge", "Evidence judge"], ["report", "Write the report"],
   ];
   const AGENTS = { investigator: "Investigator", authz_reviewer: "Authorization reviewer", sqli_reviewer: "SQL-injection reviewer", sast_triage: "Semgrep triage" };
   const TOOLS = { code: "read code", rag: "looked up policy", graph: "queried the code graph", other: "used a tool" };
@@ -68,35 +68,40 @@
 
   // ---------------------------------------------------------------- icons (inline, stroke)
   const I = {
-    logo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4 5.5v6.2c0 4.6 3.3 8.5 8 9.8 4.7-1.3 8-5.2 8-9.8V5.5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8.5 12.2 2.4 2.4 4.8-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    play: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.2 8.8v6.4l5-3.2z" fill="currentColor"/></svg>',
+    logo: '<img class="mascot brand-owl" src="/assets/mascot/owl.webp" alt="" width="720" height="672">',
     overview: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm10 7h6V11h-6zM4 20h6v-4H4zm10-12h6V4h-6z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     pr: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 8.2v7.6M18 15.8V9a3 3 0 0 0-3-3h-4m2-2.5L10.5 6 13 8.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13.5 6.5 5h11L20 13.5V19H4zm0 0h4.5l1.5 2.5h4l1.5-2.5H20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
     repo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H8a2 2 0 0 1-2-2zm0 13a2 2 0 0 1 2-2h10M9 8h6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     target: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>',
+    code: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M13.5 4.5l-3 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" stroke="currentColor" stroke-width="1.7"/></svg>',
     gh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
   };
   const NAV = [
-    ["overview", "Overview", I.overview], ["runs", "Pull requests", I.pr], ["findings", "Findings", I.inbox],
-    ["repos", "Repositories", I.repo], ["accuracy", "Accuracy", I.target], ["settings", "Settings", I.gear],
+    ["overview", "Overview", I.overview], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr],
+    ["repos", "Repositories", I.repo], ["settings", "Settings", I.gear],
   ];
 
   // ---------------------------------------------------------------- state
-  const S = { me: null, health: null, live: null, timers: [] };
-  const SKINS = [["ledger", "Ledger"], ["nightshift", "Night shift"], ["console", "Console"]];
+  const S = { me: null, health: null, live: null, timers: [], leave: [] };
+  const THEMES = [["light", "Light"], ["dark", "Dark"]];
+  const THEME_ICON = '<svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.6 6.6 0 0 0 10.2 10.2z"/></svg><svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>';
 
-  function setSkin(name) {
-    if (!SKINS.some(([k]) => k === name)) name = "ledger";
-    document.documentElement.dataset.skin = name;
-    $("#skin-css").href = `/skins/${name}.css`;
-    try { localStorage.setItem("lgtm-skin", name); } catch (e) { /* private window */ }
-    $$("[data-skin-pick]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skinPick === name)));
+  function setTheme(name) {
+    if (name !== "dark") name = "light";
+    document.documentElement.dataset.theme = name;
+    try { localStorage.setItem("lgtm-theme", name); } catch (e) { /* private window */ }
+    $$("[data-theme-pick]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePick === name)));
+    $$(".theme-toggle").forEach((b) => { b.setAttribute("aria-label", name === "dark" ? "Switch to light mode" : "Switch to dark mode"); b.title = b.getAttribute("aria-label"); });
+    try { if (window.monaco) window.monaco.editor.setTheme(name === "dark" ? "lgtm-dark" : "lgtm-light"); } catch (e) { /* editor not loaded yet */ }
   }
 
   // ---------------------------------------------------------------- shell
   function shell() {
     const u = S.me && S.me.user;
+    $("#app").classList.toggle("bare", !u);   // signed out: the landing page, no sidebar
     const navLinks = u ? NAV.map(([id, label, icon]) => `<a href="#/${id === "overview" ? "" : id}" data-nav="${id}">${icon}<span>${label}</span></a>`).join("") : "";
     $("#app").innerHTML = `
       <a class="skip" href="#view">Skip to content</a>
@@ -112,16 +117,20 @@
           <nav class="tabs" aria-label="Main">${navLinks}</nav>
           <div class="top-right">
             <span class="status-top" id="status-top"></span>
-            <div class="skin-pick" role="group" aria-label="Skin">${SKINS.map(([k, l]) => `<button type="button" data-skin-pick="${k}" aria-pressed="false">${l}</button>`).join("")}</div>
+            <button class="theme-toggle" type="button">${THEME_ICON}</button>
             ${u ? `<button class="user" type="button" id="signout" title="Sign out ${esc(u.login)}"><img src="${esc(u.avatar)}&s=48" alt=""><span>${esc(u.login)}</span></button>` : ""}
           </div>
         </header>
         <main id="view" tabindex="-1"></main>
       </div>`;
-    $$("[data-skin-pick]").forEach((b) => b.addEventListener("click", () => setSkin(b.dataset.skinPick)));
+    $$(".theme-toggle").forEach((b) => b.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")));
+    ["#status-top", "#status-side"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.addEventListener("click", (e) => { const b = e.target.closest("[data-backend]"); if (b && !b.disabled) setBackend(b.dataset.backend); });
+    });
     const so = $("#signout");
     if (so) so.addEventListener("click", async () => { await fetch("/auth/logout", { method: "POST" }); location.hash = "#/signin"; boot(); });
-    setSkin(document.documentElement.dataset.skin);
+    setTheme(document.documentElement.dataset.theme);
     renderStatus();
   }
 
@@ -135,15 +144,33 @@
     if (!h) return;
     const dot = (ok, label, title) => `<span class="dot ${ok ? "ok" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
     const relay = h.relay || {};
+    const gpu = h.gpu || { reviewer: { ok: h.reviewer, detail: "" }, judge: { ok: h.judge, detail: "" } };
+    const backend = h.backend === "bedrock" && h.bedrock ? "bedrock" : "gpu";
+    const usable = backend === "gpu" ? gpu.reviewer.ok : h.bedrock;
+    const seg = (key, label, ok, title, disabled) => `<button type="button" data-backend="${key}" aria-pressed="${backend === key}" ${disabled ? "disabled" : ""}
+      title="${esc(title)}"><span class="dot ${ok ? "ok" : "off"}" aria-hidden="true"></span>${label}</button>`;
+    const engine = `<div class="engine${usable ? "" : " engine-bad"}" role="group" aria-label="Reviewer model">
+      ${seg("gpu", "GPU", gpu.reviewer.ok, `Qwen 3.8 27B on our GPU job. ${gpu.reviewer.detail}`, false)}
+      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The evidence judge is chosen in Settings." : "No Bedrock key found in .env", !h.bedrock)}
+    </div>${usable ? "" : `<span class="engine-warn" title="${esc(gpu.reviewer.detail)}">GPU offline: reviews will fail</span>`}`;
     const html = [
-      dot(h.reviewer || h.bedrock, "Reviewer", h.reviewer ? "Qwen on the GPU job is reachable" : h.bedrock ? "Claude on Bedrock available" : "No reviewer model reachable"),
-      dot(h.judge, "Judge", h.judge ? "Kev judge reachable" : "Kev judge not reachable: start the GPU job"),
+      engine,
+      dot(gpu.judge.ok, h.judge_kind === "claude" ? "Judge: Claude" : "Judge: Kev", gpu.judge.ok ? gpu.judge.detail : `${gpu.judge.detail} Without a judge, LGTM cannot confirm any finding, so reviews pass.`),
       dot(relay.connected, "Webhooks", relay.connected ? "Relay connected" : "Relay offline: polling every 30 s"),
     ].join("");
     const busy = h.current ? `<a class="busy" href="#/runs/${enc(h.current)}">Reviewing now</a>` : "";
     const side = $("#status-side"), top = $("#status-top");
-    if (side) side.innerHTML = `<div class="dots">${html}</div>${busy}`;
-    if (top) top.innerHTML = busy + html;
+    const put = (el, markup) => { if (el && el.dataset.markup !== markup) { el.innerHTML = markup; el.dataset.markup = markup; } };
+    put(side, `<div class="dots">${html}</div>${busy}`);
+    put(top, busy + html);
+  }
+
+  async function setBackend(backend) {
+    if (S.health) { S.health.backend = backend; renderStatus(); }
+    await post("/api/settings", { backend });
+    const sel = $('select[data-set="backend"]');
+    if (sel) sel.value = backend;
+    await pollHealth();
   }
 
   async function pollHealth() {
@@ -154,7 +181,11 @@
   }
 
   // ---------------------------------------------------------------- router
-  function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; if (S.live) { S.live.close(); S.live = null; } }
+  function clearTimers() {
+    S.timers.forEach(clearInterval); S.timers = [];
+    if (S.live) { S.live.close(); S.live = null; }
+    S.leave.forEach((f) => { try { f(); } catch (e) { /* already gone */ } }); S.leave = [];
+  }
 
   async function route() {
     clearTimers();
@@ -164,9 +195,9 @@
     const signedIn = S.me && S.me.user;
     if (name === "onboarding") { setNav(""); return onboarding(); }
     if (!signedIn || name === "signin") { setNav(""); return signin(query); }
-    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage };
+    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage, workspace: (a, q) => window.LGTMWorkspace(a, q) };
     const fn = views[name] || overview;
-    setNav(name === "" ? "overview" : name);
+    setNav({ "": "overview", accuracy: "overview", findings: "runs" }[name] ?? name);   // Accuracy lives in Overview, Findings in Pull requests
     try {
       await fn(args, query);
     } catch (e) {
@@ -178,30 +209,7 @@
   function page(html, cls = "") { view().innerHTML = `<section class="page ${cls}">${html}</section>`; }
 
   // ---------------------------------------------------------------- sign in and onboarding
-  function signin(query) {
-    const app = S.me && S.me.app;
-    const err = query.get("error");
-    page(`
-      <div class="hero">
-        <div class="hero-copy">
-          <h1>Every pull request, reviewed for security before it merges.</h1>
-          <p class="lede">LGTM reads each change the way a security engineer would: it follows the data into the code, checks your access rules, and only reports a bug when it can point at the lines that prove it. Findings land on the pull request as a check and a review.</p>
-          ${err ? `<p class="notice warn">${err === "expired" ? "That sign-in link expired. Try again." : "GitHub did not grant access. Try again."}</p>` : ""}
-          <div class="actions">
-            ${app ? `<a class="btn primary" href="/auth/login">${I.gh}<span>Sign in with GitHub</span></a>` : `<a class="btn primary" href="/setup.html">${I.gh}<span>Create the GitHub App</span></a>`}
-            <a class="btn" href="#/onboarding">How setup works</a>
-          </div>
-        </div>
-        <figure class="hero-demo" aria-label="Example review comment">
-          <div class="mock-comment">
-            <div class="mock-head">${I.logo}<b>LGTM</b><span>commented on <code>app/routes/users.py</code> line 74</span></div>
-            <pre><code><span class="ln">73</span>    rows = session.execute(
-<span class="ln add">74</span>+       text(f"SELECT id, username FROM users WHERE username LIKE '%{name}%'")</code></pre>
-            <p><b class="sev high">High</b> SQL injection (CWE-89), confirmed by the judge. <code>name</code> comes straight from <code>request.args</code> and is formatted into the query.</p>
-          </div>
-        </figure>
-      </div>`, "signin");
-  }
+  function signin(query) { return window.LGTMLanding(query); }
 
   async function onboarding() {
     const me = S.me;
@@ -225,6 +233,10 @@
     $$("[data-repo]").forEach((c) => c.addEventListener("change", () => post(`/api/repos/${c.dataset.repo}`, { enabled: c.checked })));
     const re = $("#recheck");
     if (re) re.addEventListener("click", async () => { re.disabled = true; re.textContent = "Checking…"; await post("/api/sync").catch(() => {}); await loadMe(); onboarding(); });
+  }
+
+  function prSwitch(current) {
+    return `<nav class="pr-switch" aria-label="Pull requests">${[["runs", "Reviews"], ["findings", "Findings"]].map(([k, l]) => `<a href="#/${k}" ${k === current ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>`;
   }
 
   // ---------------------------------------------------------------- overview
@@ -254,7 +266,7 @@
         <section class="panel funnel-panel">
           <h2>Noise LGTM removed</h2>
           ${funnel([["Raised by the agents", t.candidates], ["Reported to developers", t.flagged]])}
-          <p class="note">Every candidate must cite code that exists and pass the Kev judge before it reaches a pull request. ${t.candidates ? Math.round(100 * t.filtered / t.candidates) : 0}% never did.</p>
+          <p class="note">Every candidate must cite code that exists and pass the evidence judge before it reaches a pull request. ${t.candidates ? Math.round(100 * t.filtered / t.candidates) : 0}% never did.</p>
         </section>
         <section class="panel">
           <h2>Reviews per day</h2>
@@ -276,7 +288,11 @@
       <section class="panel">
         <h2>Repositories</h2>
         ${repoTable(o.repos)}
-      </section>`);
+      </section>
+      <section class="panel ov-accuracy" id="ov-accuracy"><h2>Accuracy on known bugs</h2>
+        <p class="note">How LGTM scores on pull requests with a known answer: real advisories from open-source Python projects (the change that introduced each bug and the change that fixed it), plus a synthetic shop.</p>
+        <div id="ov-acc-body"><p class="muted">Loading…</p></div></section>`, "overview");
+    get("/api/accuracy").then((a) => { const el = $("#ov-acc-body"); if (el) el.innerHTML = accuracyBlocks(a); }).catch(() => { const el = $("#ov-acc-body"); if (el) el.innerHTML = `<p class="muted">The benchmark numbers did not load.</p>`; });
     S.timers.push(setInterval(() => { if (location.hash.replace(/\?.*/, "") === "#/" || location.hash === "" ) refreshIfChanged(); }, 8000));
   }
 
@@ -376,7 +392,7 @@
     const live = runs.filter((r) => r.status === "running" || r.status === "queued").length;
     page(`
       <header class="page-head row">
-        <div><h1>Pull requests</h1><p>Every review LGTM has run, newest first.${live ? ` ${plural(live, "review")} in progress.` : ""}</p></div>
+        <div><h1>Pull requests</h1>${prSwitch("runs")}<p>Every review LGTM has run, newest first.${live ? ` ${plural(live, "review")} in progress.` : ""}</p></div>
         ${sourceSwitch(source, "#/runs")}
       </header>
       <div class="filters">${[["", "All results"], ["blocked", "Blocked"], ["findings", "Findings"], ["passed", "No findings"]].map(([k, l]) => `<a href="#/runs?source=${source}${k ? `&conclusion=${k}` : ""}" ${k === status ? 'aria-current="true"' : ""}>${l}</a>`).join("")}</div>
@@ -390,6 +406,7 @@
     const tab = args[1] || "";
     const d = await get(`/api/runs/${enc(id)}`);
     const r = d.run;
+    S.judgeName = r.judge === "claude" ? "Claude judge" : "Kev judge";
     const res = d.result;
     const active = r.status === "queued" || r.status === "running";
     const findings = res ? res.findings : [];
@@ -408,11 +425,12 @@
             ${r.author ? `<span>${r.author_avatar ? `<img class="av" src="${esc(r.author_avatar)}&s=32" alt="">` : ""}${esc(r.author)}</span>` : ""}
             ${r.head_ref ? `<span><code>${esc(r.head_ref)}</code> into <code>${esc(r.base_ref)}</code></span>` : ""}
             ${r.head_sha ? `<span>at <code>${short(r.head_sha)}</code></span>` : ""}
-            <span>${when(r.created_at)}</span>${r.latency ? `<span>${secs(r.latency)}</span>` : ""}${r.model ? `<span>${esc(String(r.model).replace("bedrock:", ""))} + Kev</span>` : ""}</p>
+            <span>${when(r.created_at)}</span>${r.latency ? `<span>${secs(r.latency)}</span>` : ""}${r.model ? `<span>${esc(String(r.model).replace("bedrock:", ""))} + ${r.judge === "claude" ? "Claude judge" : "Kev"}</span>` : ""}</p>
           ${r.source === "imported" ? `<p class="notice">This run comes from the benchmark: the pipeline reviewed a cached clone of the public project, scored against the advisory${r.outcome ? ` (<b>${esc(outcomeText(r.outcome))}</b>)` : ""}. LGTM was never installed on that repository and posted nothing to it.</p>` : ""}
           ${r.error && r.verdict === "error" || r.status === "failed" ? `<p class="notice warn">${esc(r.error || "The review failed.")}</p>` : ""}
         </div>
         <div class="run-actions">${ghLinks}
+          ${res ? `<button class="btn" type="button" id="pdf">Download report (PDF)</button>` : ""}
           ${r.source === "github" && active ? `<button class="btn" type="button" id="cancel">Cancel</button>` : ""}
           ${r.source === "github" && !active ? `<button class="btn" type="button" id="rerun">Run again</button>` : ""}</div>
       </header>
@@ -424,12 +442,40 @@
       </div>` : ""}
       <div class="tabbar" role="tablist">${tabs.map(([k, l]) => `<a role="tab" href="#/runs/${enc(id)}/${k}" aria-selected="${k === current}">${l}</a>`).join("")}</div>
       <div id="tab"></div>`, "run");
+    const pdf = $("#pdf");
+    if (pdf) pdf.addEventListener("click", async () => {
+      pdf.disabled = true; pdf.textContent = "Preparing the PDF…";
+      try {
+        const resp = await fetch(`/api/runs/${enc(id)}/report.pdf`, { credentials: "same-origin" });
+        if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || resp.statusText);
+        const name = (resp.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await resp.blob());
+        a.download = name ? name[1] : "LGTM-review.pdf";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        pdf.textContent = "Download report (PDF)";
+      } catch (e) {
+        window.open(`/api/runs/${enc(id)}/report.html`, "_blank");
+        pdf.textContent = "Opened the printable report instead";
+      }
+      pdf.disabled = false;
+    });
     const cancel = $("#cancel"), rerun = $("#rerun");
     if (cancel) cancel.addEventListener("click", async () => { cancel.disabled = true; await post(`/api/runs/${enc(id)}/cancel`); route(); });
     if (rerun) rerun.addEventListener("click", async () => { rerun.disabled = true; rerun.textContent = "Queuing…"; const x = await post(`/api/runs/${enc(id)}/rerun`).catch((e) => ({ error: e.message })); if (x.run) location.hash = `#/runs/${enc(x.run)}`; else { rerun.textContent = x.error || "Could not queue"; } });
     const box = $("#tab");
     if (current === "live") return liveTab(box, id, active);
-    if (current === "findings") return findingsTab(box, d);
+    if (current === "findings") {
+      findingsTab(box, d);
+      if (d.result && d.result.findings.some((f) => f.flagged && needsBrief(f))) {   // written once, then cached
+        get(`/api/runs/${enc(id)}/briefs`).then((b) => {
+          d.result.findings.forEach((f) => { if (b[f.key]) f.brief = b[f.key]; });
+          if (document.body.contains(box)) findingsTab(box, d);
+        }).catch(() => {});
+      }
+      return;
+    }
     if (current === "changes") return changesTab(box, d);
     if (current === "trace") return traceTab(box, d);
     if (current === "log") return logTab(box, id);
@@ -449,6 +495,7 @@
         <div class="feed">
           <h2>${st.done ? "Finished" : st.error ? "Stopped" : active ? "Working" : "Activity"} <span class="muted">${secs(st.t)}, ${plural(st.tools, "tool call")}</span></h2>
           ${st.error ? `<p class="notice warn">${esc(st.error)}</p>` : ""}
+          ${st.posting && !st.done && !st.error ? `<p class="notice"><span class="pulse"></span> Analysis finished. Writing fixes and posting the review to GitHub…</p>` : ""}
           ${st.done ? `<p class="notice ${st.done.n_flagged ? "risk" : "ok"}">${st.done.n_flagged ? `${plural(st.done.n_flagged, "security bug")} reported on the pull request.` : "No security bugs: the check passed."} <a href="#/runs/${enc(id)}/${st.done.n_flagged ? "findings" : "changes"}">See the results</a></p>` : ""}
           ${st.verdicts.length ? `<ul class="verdicts">${st.verdicts.map((v) => `<li class="${v.kev_verdict === "real" && v.supported ? "real" : "dropped"}"><b>${v.kev_verdict === "real" && v.supported ? "Confirmed" : "Dropped"}</b> ${esc(cweName(v.cwe))} <code>${esc(v.file)}:${v.line}</code><span class="muted">${v.supported ? `judge: ${esc(v.kev_verdict || "–")}` : "evidence did not check out"}</span></li>`).join("")}</ul>` : ""}
           <ol class="agents">${st.agents.slice().reverse().slice(0, 12).map((a) => `<li><div class="ag-head"><b>${esc(AGENTS[a.agent] || a.agent)}</b> <span class="muted">${esc(a.section && a.section !== a.agent ? a.section : "")}</span></div>
@@ -467,7 +514,8 @@
       else if (ev.type === "agent") st.agents.push({ agent: ev.agent, section: ev.section, tools: [] });
       else if (ev.type === "tool") { (st.agents[st.agents.length - 1] || st.agents[st.agents.push({ agent: ev.agent, section: "", tools: [] }) - 1]).tools.push(ev); st.tools++; }
       else if (ev.type === "verdict") st.verdicts.push(ev);
-      else if (ev.type === "done") st.done = ev;
+      else if (ev.type === "done" && ev.conclusion) st.done = ev;   // LGTM's result; the pipeline's own "done" (no count yet) is not it
+      else if (ev.type === "done") st.posting = true;
       else if (ev.type === "error") st.error = ev.msg;
       if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; draw(); }); }
     };
@@ -481,38 +529,73 @@
     return a.query || Object.values(a).join(" ");
   }
 
+  function briefHtml(b) {
+    if (!b) return "";
+    const rows = [["Where", b.where], ["Impact", b.impact], ["Breaks", b.breaks], ["Fix", b.fix]].filter(([, v]) => v);
+    return `<div class="brief"><p class="brief-h">${rich(b.headline)}</p><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${rich(v)}</dd>`).join("")}</dl></div>`;
+  }
+  // The suggested fix as one sentence and the corrected code; the agent's full prose stays one click away.
+  function fixHtml(f) {
+    const b = f.brief;
+    if (!b || !b.fix) return `<p>${rich(f.suggested_fix)}</p>`;
+    return `<div class="fixbox">${b.fix_code ? `<pre class="fixcode"><code>${esc(b.fix_code)}</code></pre>` : `<p>${rich(b.fix)}</p>`}
+      <details class="full-why"><summary>The fix in full</summary>${richBlocks(f.suggested_fix)}</details></div>`;
+  }
+  // Prose with ``` fenced code: paragraphs through rich(), fences as code blocks.
+  function richBlocks(s) {
+    return String(s || "").split(/```[\w-]*\n?/).map((part, i) => i % 2
+      ? `<pre class="fixcode"><code>${esc(part.replace(/\n$/, ""))}</code></pre>`
+      : part.trim() ? `<p>${rich(part.trim())}</p>` : "").join("");
+  }
+  const needsBrief = (f) => !f.brief || (!!f.suggested_fix && !("fix_code" in f.brief));
+  function explained(f) {
+    return f.brief ? `${briefHtml(f.brief)}<details class="full-why"><summary>Full reasoning</summary><p>${rich(f.explanation)}</p></details>`
+      : `<p>${rich(f.explanation)}</p>`;
+  }
+
   function findingCard(f, runId, opts = {}) {
     const ev = (f.evidence || []).filter((e) => e.content).slice(0, 3);
     return `<article class="finding ${f.flagged ? "" : "filtered"}" id="f-${esc(f.id)}">
       <header><span class="sev ${f.severity}">${esc(f.severity)}</span><h3>${esc(cweName(f.cwe))} <span class="muted">${esc(f.cwe || "")}</span></h3>
         <code class="loc">${esc(f.file)}:${f.line}</code></header>
-      <p>${rich(f.explanation)}</p>
+      ${f.flagged ? explained(f) : `<p>${rich(f.explanation)}</p>`}
       ${ev.length ? `<details ${opts.open ? "open" : ""}><summary>Evidence the agents cited (${ev.length})</summary>${ev.map((e) => `<div class="evidence"><div class="ev-head"><code>${esc(e.file || "")}${e.lines ? ":" + esc(e.lines) : ""}</code><span class="muted">${esc(e.type || "")}${e.grounded_in_pr ? ", in this change" : ""}</span></div><pre><code>${esc(e.content.trim())}</code></pre></div>`).join("")}</details>` : ""}
-      ${f.suggested_fix ? `<details><summary>Suggested fix</summary><p>${rich(f.suggested_fix)}</p></details>` : ""}
-      <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? "Confirmed by the Kev judge" : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
+      ${f.suggested_fix ? `<details><summary>Suggested fix</summary>${fixHtml(f)}</details>` : ""}
+      <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? `Confirmed by the ${S.judgeName || "Kev judge"}` : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
         <span class="muted">${esc(AGENTS[f.agent] || f.agent || "")}, ${plural(f.tool_calls || 0, "tool call")}</span>
         ${f.key && f.flagged ? triageButtons(f.key, f.triage) : ""}</footer>
     </article>`;
   }
 
+  // Your verdict on a finding. "Fixed" is not a verdict: LGTM sets it when a later commit removes the bug, so it shows
+  // as a status (with Reopen) instead of a fourth button.
   function triageButtons(key, status) {
-    return `<span class="triage" data-key="${esc(key)}" role="group" aria-label="Triage">${["confirmed", "accepted_risk", "false_positive", "fixed"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}">${TRIAGE[s]}</button>`).join("")}</span>`;
+    if (status === "fixed") {
+      return `<span class="triage-wrap"><span class="state fixed">Fixed</span><span class="triage" data-key="${esc(key)}"><button type="button" data-status="open" aria-pressed="false" title="The bug is back or was not really fixed">Reopen</button></span></span>`;
+    }
+    const HELP = { confirmed: "A real bug the team will fix. It becomes Fixed when a later review no longer reports it",
+      accepted_risk: "A real bug the team chooses not to fix", false_positive: "LGTM was wrong: this is not a bug" };
+    return `<span class="triage-wrap"><span class="triage-l">Mark as</span><span class="triage" data-key="${esc(key)}" role="group" aria-label="Mark this finding as">${["confirmed", "accepted_risk", "false_positive"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}" title="${esc(HELP[s])}">${TRIAGE[s]}</button>`).join("")}</span></span>`;
   }
 
   function wireTriage(root, after) {
     $$(".triage button", root).forEach((b) => b.addEventListener("click", async () => {
-      const group = b.closest(".triage");
+      const group = b.closest(".triage"), key = group.dataset.key;
       const next = b.getAttribute("aria-pressed") === "true" ? "open" : b.dataset.status;
-      await post(`/api/findings/${enc(group.dataset.key)}`, { status: next });
-      $$("button", group).forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.status === next)));
-      after && after(group.dataset.key, next);
+      await post(`/api/findings/${enc(key)}`, { status: next });
+      const holder = document.createElement("span");
+      holder.innerHTML = triageButtons(key, next);
+      const fresh = holder.firstElementChild;
+      group.closest(".triage-wrap").replaceWith(fresh);
+      wireTriage(fresh, after);
+      after && after(key, next);
     }));
   }
 
   function findingsTab(box, d) {
     const fs = d.result ? d.result.findings : [];
     const flagged = fs.filter((f) => f.flagged), dropped = fs.filter((f) => !f.flagged);
-    box.innerHTML = `${flagged.length ? flagged.map((f) => findingCard(f, d.run.id, { open: true })).join("") : `<div class="empty small"><p>${d.result ? "Nothing reported on this pull request." : "Results appear here when the review finishes."}</p></div>`}
+    box.innerHTML = `${flagged.length ? flagged.map((f) => findingCard(f, d.run.id)).join("") : `<div class="empty small"><p>${d.result ? "Nothing reported on this pull request." : "Results appear here when the review finishes."}</p></div>`}
       ${dropped.length ? `<details class="dropped"><summary>${plural(dropped.length, "candidate")} LGTM checked and did not report</summary>${dropped.map((f) => findingCard(f, d.run.id)).join("")}</details>` : ""}`;
     wireTriage(box);
   }
@@ -543,10 +626,38 @@
       <ol class="calls">${run.calls.map((c) => `<li><details><summary><span class="tool-kind ${c.kind}">${esc(TOOLS[c.kind] || c.tool)}</span> <code>${esc(argSummary(c.tool, c.args))}</code><span class="muted right">${c.result_chars.toLocaleString()} chars</span></summary><pre><code>${esc(c.result)}${c.result_chars > c.result.length ? "\n…" : ""}</code></pre></details></li>`).join("")}</ol></details></li>`).join("")}</ol>`;
   }
 
+  // The full transcript of a review, terminal style: every line, scrollable, refreshed while the review runs.
   async function logTab(box, id) {
     box.innerHTML = `<p class="muted">Loading the log…</p>`;
-    const text = await fetch(`/api/runs/${enc(id)}/log`).then((r) => r.text());
-    box.innerHTML = `<pre class="log"><code>${esc(text || "No log lines yet.")}</code></pre>`;
+    let wrap = (() => { try { return localStorage.getItem("lgtm-log-wrap") === "1"; } catch (e) { return false; } })();
+    let last = "";
+    const kindOf = (l) => { const k = (l.slice(10, 18).trim() || "").toLowerCase(); return ["warn", "error", "verdict", "result", "stage", "agent", "tool"].includes(k) ? k : ""; };
+    const draw = (text, follow) => {
+      const lines = (text || "").replace(/\n$/, "").split("\n").filter((l, i, a) => l || a.length > 1);
+      const term = $(".term", box);
+      const atEnd = term ? term.scrollTop + term.clientHeight >= term.scrollHeight - 8 : false;
+      box.innerHTML = `<div class="termlog">
+          <div class="term-bar"><span>${plural(lines.length, "line")}</span>
+            <button type="button" class="btn" data-a="top">Start</button><button type="button" class="btn" data-a="end">End</button>
+            <button type="button" class="btn" data-a="wrap" aria-pressed="${wrap}">Wrap lines</button><button type="button" class="btn" data-a="copy">Copy</button></div>
+          <div class="term ${wrap ? "wrap" : ""}" tabindex="0" aria-label="Review log">${lines.length ? lines.map((l, i) => `<div class="tl ${kindOf(l)}"><span class="tn">${i + 1}</span><span class="tx">${esc(l)}</span></div>`).join("") : '<div class="tl"><span class="tx">No log lines yet.</span></div>'}</div></div>`;
+      const t = $(".term", box);
+      if (follow || atEnd) t.scrollTop = t.scrollHeight;
+      box.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", async () => {
+        const a = b.dataset.a;
+        if (a === "top") t.scrollTop = 0;
+        if (a === "end") t.scrollTop = t.scrollHeight;
+        if (a === "wrap") { wrap = !wrap; try { localStorage.setItem("lgtm-log-wrap", wrap ? "1" : "0"); } catch (e) { /* private window */ } draw(last, false); }
+        if (a === "copy") { try { await navigator.clipboard.writeText(last); b.textContent = "Copied"; } catch (e) { b.textContent = "Copy failed"; } }
+      }));
+    };
+    const load = async (follow) => {
+      const text = await fetch(`/api/runs/${enc(id)}/log`).then((r) => r.text());
+      if (text !== last) { last = text; draw(text, follow); }
+    };
+    await load(false);
+    const run = await get(`/api/runs/${enc(id)}`).then((d) => d.run).catch(() => null);
+    if (run && (run.status === "queued" || run.status === "running")) S.timers.push(setInterval(() => load(true), 3000));
   }
 
   // ---------------------------------------------------------------- findings inbox
@@ -556,7 +667,7 @@
     const rows = await get(`/api/findings?status=${enc(status)}&source=${source}`);
     const tabs = [["open,confirmed", "Needs attention"], ["accepted_risk", "Accepted risk"], ["false_positive", "False positive"], ["fixed", "Fixed"], ["open,confirmed,accepted_risk,false_positive,fixed", "All"]];
     page(`
-      <header class="page-head row"><div><h1>Findings</h1><p>Security bugs LGTM reported on pull requests. Mark each one so the team knows where it stands.</p></div>${sourceSwitch(source, `#/findings`)}</header>
+      <header class="page-head row"><div><h1>Pull requests</h1>${prSwitch("findings")}<p>Security bugs LGTM reported on pull requests. Mark each one so the team knows where it stands.</p></div>${sourceSwitch(source, `#/findings`)}</header>
       <div class="filters">${tabs.map(([k, l]) => `<a href="#/findings?status=${k}&source=${source}" ${k === status ? 'aria-current="true"' : ""}>${l}</a>`).join("")}</div>
       <div class="inbox">
         <section class="panel flush inbox-list">${rows.length ? `<ul class="frows">${rows.map((f, i) => `<li><button type="button" data-i="${i}" aria-pressed="${i === 0}">
@@ -571,10 +682,18 @@
       $$(".frows button").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.i === i)));
       $("#fdetail").innerHTML = `<header><span class="sev ${f.severity}">${esc(f.severity)}</span><h2>${esc(cweName(f.cwe))} <span class="muted">${esc(f.cwe || "")}</span></h2></header>
         <p class="fd-meta"><code>${esc(f.file)}:${f.line}</code><br>${esc(f.repo)}${f.pr_number ? ` #${f.pr_number}` : ""}: ${esc(f.pr_title || "")}</p>
-        <p>${rich(f.explanation)}</p>
+        ${explained(f)}
         ${f.note ? `<p class="muted">${esc(f.note)}</p>` : ""}
         <div class="fd-actions">${f.source === "imported" ? "" : triageButtons(f.id, f.status)}<a class="btn" href="#/runs/${enc(f.run_id)}/findings">Open the review</a></div>`;
       wireTriage($("#fdetail"), (key, next) => { f.status = next; const b = $(`.frows button[data-i="${i}"] .state`); if (b) { b.className = `state ${next}`; b.textContent = TRIAGE[next]; } });
+      if (needsBrief(f) && f.run_id) {
+        get(`/api/runs/${enc(f.run_id)}/briefs`).then((b) => {
+          if (!b[f.id]) return;
+          f.brief = b[f.id];
+          const btn = $(`.frows button[data-i="${i}"]`);
+          if (btn && btn.getAttribute("aria-pressed") === "true") show(i);
+        }).catch(() => {});
+      }
     };
     $$(".frows button").forEach((b) => b.addEventListener("click", () => {
       show(+b.dataset.i);
@@ -609,18 +728,21 @@
   // ---------------------------------------------------------------- accuracy
   async function accuracyPage() {
     const a = await get("/api/accuracy");
+    page(`<header class="page-head"><h1>Accuracy</h1><p>How LGTM scores on pull requests with a known answer: real security advisories from open-source Python projects (the change that introduced the bug, and the change that fixed it), plus a synthetic shop. The held-out set was chosen after the reviewers were built and run once, untuned.</p></header>${accuracyBlocks(a)}`);
+  }
+
+  function accuracyBlocks(a) {
     const rate = (x, y) => (y ? `${Math.round((100 * x) / y)}%` : "–");
     const lgtmRows = a.sets.map((s) => ({ set: s, m: s.modes.find((m) => m.mode === "lgtm") })).filter((x) => x.m);
     const dev = a.sets.find((s) => s.id === "real_prs");
-    page(`<header class="page-head"><h1>Accuracy</h1><p>How LGTM scores on pull requests with a known answer: real security advisories from open-source Python projects (the change that introduced the bug, and the change that fixed it), plus a synthetic shop. The held-out set was chosen after the reviewers were built and run once, untuned.</p></header>
-      <section class="panel flush"><div class="table-wrap"><table class="table">
+    return `<section class="panel flush"><div class="table-wrap"><table class="table">
         <thead><tr><th scope="col">Evaluation set</th><th scope="col" class="num">Bugs caught</th><th scope="col" class="num">Recall</th><th scope="col" class="num">False alarms on fixes</th><th scope="col" class="num">Precision</th><th scope="col" class="num">Median time</th></tr></thead>
         <tbody>${lgtmRows.map(({ set, m }) => `<tr><th scope="row">${esc(set.label)}<span class="row-note">${esc(set.note)}</span></th>
           <td class="num">${m.TP} of ${m.TP + m.FN}</td><td class="num"><b>${rate(m.TP, m.TP + m.FN)}</b></td><td class="num">${m.FP} of ${m.FP + m.TN}</td><td class="num"><b>${rate(m.TP, m.TP + m.FP)}</b></td><td class="num">${secs(m.median_latency)}</td></tr>`).join("")}</tbody></table></div></section>
       ${dev ? `<section class="panel"><h2>Why the agents and the judge matter</h2><p class="note">Same 26 pull requests (development set), three ways of reviewing them.</p>
         <div class="compare">${dev.modes.map((m) => `<div class="cmp"><h3>${esc({ lgtm: "LGTM", "llm-only": "The same model, prompted directly", "sast-only": "Semgrep alone" }[m.mode] || m.label)}</h3>
           ${meter("Bugs caught", m.TP, m.TP + m.FN)}${meter("Quiet on fixed code", m.TN, m.TN + m.FP)}</div>`).join("")}</div></section>` : ""}
-      <p class="note">These numbers come from the project's benchmark runs, the same runs listed as "Imported from benchmark" in the history.</p>`);
+      <p class="note">These numbers come from the project's benchmark runs, the same runs listed as "Imported from benchmark" in the history.</p>`;
   }
 
   function meter(label, n, of) {
@@ -643,10 +765,13 @@
           <label class="switch"><input type="checkbox" data-set="auto_review" ${st.auto_review ? "checked" : ""}> Review every new and updated pull request</label>
         </section>
         <section class="panel"><h2>Models</h2>
-          <dl class="kv"><dt>Reviewer</dt><dd><span class="dot ${h.reviewer ? "ok" : "off"}">${h.reviewer ? "Qwen 3.8 27B on the GPU job, reachable" : "GPU job not reachable"}</span></dd>
-            <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${h.judge ? "Kev-4B, reachable" : "Kev-4B not reachable"}</span></dd></dl>
-          <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>Our GPU job (Qwen)</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>Claude on Amazon Bedrock (capped spend)</option></select></label>
-          <p class="note">The Kev judge always runs on the GPU job.</p>
+          <dl class="kv"><dt>GPU reviewer</dt><dd><span class="dot ${h.reviewer ? "ok" : "off"}">${esc(h.gpu ? h.gpu.reviewer.detail : h.reviewer ? "Reachable" : "Not reachable")}</span></dd>
+            <dt>API reviewer</dt><dd><span class="dot ${h.bedrock ? "ok" : "off"}">${h.bedrock ? "Bedrock key found (capped spend)" : "No Bedrock key in .env"}</span></dd>
+            <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${esc(h.gpu ? h.gpu.judge.detail : h.judge ? "Reachable" : "Not reachable")}</span></dd></dl>
+          <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>GPU: Qwen 3.8 27B on our GPU job</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>API: Claude on Amazon Bedrock (capped spend)</option></select></label>
+          <p class="note">Also switchable from the GPU / API toggle in the header.</p>
+          <label class="field"><span>Evidence judge</span><select data-set="judge"><option value="kev" ${st.judge !== "claude" ? "selected" : ""}>Kev-4B: on this Mac or the GPU job (port 8008)</option><option value="claude" ${st.judge === "claude" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>Claude via the API: a stand-in, not the evaluated judge</option></select></label>
+          <p class="note">Kev is the judge LGTM was evaluated with. The Claude judge answers the same questions when Kev is not running; reviews it decides are labelled “Claude judge”.</p>
         </section>
         <section class="panel"><h2>GitHub App</h2>
           ${app ? `<dl class="kv"><dt>App</dt><dd><a href="${esc(app.html_url)}" target="_blank" rel="noopener">${esc(app.name)}</a></dd><dt>Owner</dt><dd>${esc(app.owner)}</dd>
@@ -661,23 +786,25 @@
           <h3>Recent deliveries</h3>
           ${deliveries.length ? `<div class="table-wrap"><table class="table small"><thead><tr><th scope="col">Received</th><th scope="col">Event</th><th scope="col">Via</th><th scope="col">Signature</th><th scope="col">Result</th></tr></thead><tbody>${deliveries.slice(0, 12).map((d) => `<tr><td>${when(d.received_at)}</td><td>${esc(d.event)}${d.action ? `.${esc(d.action)}` : ""}<br><span class="muted">${esc(d.repo)}</span></td><td>${esc(d.via)}</td><td>${d.verified ? "Valid" : '<b class="risk">Rejected</b>'}</td><td>${esc(d.outcome)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">None yet.</p>`}
         </section>
-        <section class="panel"><h2>Appearance</h2><div class="skin-cards">${SKINS.map(([k, l]) => `<button type="button" class="skin-card" data-skin-pick="${k}" aria-pressed="${document.documentElement.dataset.skin === k}"><span class="sw sw-${k}" aria-hidden="true"></span>${l}</button>`).join("")}</div></section>
+        <section class="panel"><h2>Appearance</h2><div class="theme-cards">${THEMES.map(([k, l]) => `<button type="button" class="theme-card" data-theme-pick="${k}" aria-pressed="${document.documentElement.dataset.theme === k}"><span class="sw sw-${k}" aria-hidden="true"></span>${l}</button>`).join("")}</div></section>
       </div>`, "settings-page");
     $$("[data-set]").forEach((el) => el.addEventListener("change", async () => {
       const v = el.type === "checkbox" ? el.checked : el.value;
       await post("/api/settings", { [el.dataset.set]: v });
+      if (el.dataset.set === "backend") pollHealth();
     }));
-    $$(".skin-card").forEach((b) => b.addEventListener("click", () => { setSkin(b.dataset.skinPick); $$(".skin-card").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
+    $$(".theme-card").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themePick)));
     $("#sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Checking…"; await post("/api/sync").catch(() => {}); route(); });
   }
+
+  // Helpers the workspace tab (workspace.js) builds on.
+  window.LGTM = { $, $$, esc, get, post, secs, ago, when, plural, short, enc, page, view, S, I, stageLabel, conclusionBadge };
 
   // ---------------------------------------------------------------- boot
   async function loadMe() { S.me = await get("/api/me"); }
 
   async function boot() {
-    let skin = new URLSearchParams(location.search).get("skin");
-    try { skin = skin || localStorage.getItem("lgtm-skin"); } catch (e) { /* private window */ }
-    document.documentElement.dataset.skin = skin || "ledger";
+    // index.html already set data-theme before first paint; setTheme (in shell) syncs the toggle and the editor.
     await loadMe();
     shell();
     await pollHealth();
@@ -686,5 +813,24 @@
 
   window.addEventListener("hashchange", () => { route(); const v = view(); if (v) v.focus({ preventScroll: true }); window.scrollTo(0, 0); });
   setInterval(pollHealth, 5000);
+
+  // If the dashboard's own files change on disk (a new version), say so instead of running stale code.
+  const FILES = ["/app.js", "/workspace.js", "/shop.js", "/landing.js", "/base.css"];
+  let stamps = null;
+  async function checkVersion() {
+    try {
+      const now = await Promise.all(FILES.map((f) => fetch(f, { method: "HEAD", cache: "no-store" }).then((r) => r.headers.get("Last-Modified") || "")));
+      if (!stamps) { stamps = now; return; }
+      if (now.join() !== stamps.join() && !document.getElementById("update-bar")) {
+        const bar = document.createElement("div");
+        bar.id = "update-bar";
+        bar.innerHTML = `<span>LGTM was updated. Reload to use the latest version.</span><button type="button" class="btn primary">Reload</button>`;
+        bar.querySelector("button").addEventListener("click", () => location.reload());
+        document.body.appendChild(bar);
+      }
+    } catch (e) { /* server restarting */ }
+  }
+  checkVersion();
+  setInterval(checkVersion, 10000);
   boot();
 })();

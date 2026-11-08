@@ -50,6 +50,9 @@ _out = sys.stdout
 sys.stdout = sys.stderr  # stray prints from libraries must not corrupt the event stream
 
 
+JUDGE_LABEL = "Kev judge"
+
+
 def emit(event_type: str, /, **fields) -> None:
     """Write one event; progress reporting must never break the review, so it cannot raise."""
     try:
@@ -171,7 +174,7 @@ def install_hooks() -> None:
     original_judge = pipeline_mod.judge_candidates
 
     def judge_candidates(findings, *a, **k):
-        _safely(P.stage, "judge", f"Kev judge on {len(findings)} candidate(s)")
+        _safely(P.stage, "judge", f"{JUDGE_LABEL} on {len(findings)} candidate(s)")
         out = original_judge(findings, *a, **k)
         for f in out:
             _safely(emit, "verdict", finding_id=f.finding_id, file=f.file, line=f.line, cwe=f.cwe_id,
@@ -231,6 +234,8 @@ def main() -> int:
     parser.add_argument("--backend", default="gpu", choices=["gpu", "bedrock"])
     parser.add_argument("--bedrock-model", default="global.anthropic.claude-sonnet-4-6")
     parser.add_argument("--bedrock-budget", type=float, default=None)
+    parser.add_argument("--judge-endpoint", default=None, help="evidence judge URL (default: config, Kev on 127.0.0.1:8008)")
+    parser.add_argument("--judge-name", default="Kev judge")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -263,6 +268,10 @@ def main() -> int:
         config.bedrock_run_label = f"demo:{row['id']}"
         if args.bedrock_budget is not None:
             config.bedrock_budget_usd = args.bedrock_budget
+    global JUDGE_LABEL
+    JUDGE_LABEL = args.judge_name
+    if args.judge_endpoint:
+        config.judge_endpoint = args.judge_endpoint
     emit("meta", row=row, mode=args.mode, model=config.ollama_model, backend=args.backend)
     install_hooks()
 
@@ -277,6 +286,7 @@ def main() -> int:
         record.update(rpr.score(row, record))
     record["title"] = record.get("title") or row["title"]
     record["backend"] = args.backend
+    record["judge"] = args.judge_name
     record = ft.scrub(record, SCRUB)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")

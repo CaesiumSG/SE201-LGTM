@@ -240,7 +240,10 @@ def authorize_url(redirect_uri: str, state: str) -> str:
     app = load_app()
     if not app:
         raise RuntimeError("the GitHub App is not set up yet")
-    q = urllib.parse.urlencode({"client_id": app["client_id"], "redirect_uri": redirect_uri, "state": state})
+    # prompt=select_account makes GitHub show its account picker every time instead of
+    # silently signing in with the browser's current session (useful when recording a demo).
+    q = urllib.parse.urlencode({"client_id": app["client_id"], "redirect_uri": redirect_uri, "state": state,
+                                "prompt": "select_account"})
     return f"{WEB}/login/oauth/authorize?{q}"
 
 

@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS deliveries (
   via TEXT, verified INTEGER, outcome TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS finding_briefs (key TEXT PRIMARY KEY, body TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, pr_number INTEGER, head_sha TEXT, run_id TEXT, finding_key TEXT,
+  path TEXT, start_line INTEGER, end_line INTEGER, replacement TEXT, created_at TEXT
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -58,7 +63,8 @@ DEFAULT_SETTINGS = {
     "block_on": "high",
     "request_changes": True,     # post the review as "Request changes" when the check fails
     "inline_comments": True,
-    "backend": "gpu",            # gpu (Qwen + Kev on the cluster) or bedrock (Claude + Kev)
+    "backend": "gpu",            # reviewer: gpu (Qwen on the cluster) or bedrock (Claude)
+    "judge": "kev",              # evidence judge: kev (Kev-4B on :8008, this Mac or the GPU job) or claude (stand-in on :8009)
     "poll_seconds": 30,
     "auto_review": True,
 }
@@ -79,6 +85,10 @@ class Store:
         with self.lock:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.executescript(SCHEMA)
+            try:   # which judge decided a run (added after the first demos)
+                self.db.execute("ALTER TABLE runs ADD COLUMN judge TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # -- generic helpers ---------------------------------------------------
     def q(self, sql: str, args: tuple | list = ()) -> list[dict]:
@@ -130,7 +140,9 @@ class Store:
                 self.q("SELECT body FROM events WHERE run_id=? AND seq>=? ORDER BY seq", (run_id, start))]
 
     def pending_for(self, repo: str, pr_number: int, head_sha: str) -> dict | None:
-        """A run for this exact commit that is queued, running or done (so it is not reviewed twice)."""
+        """A run for this exact commit that is queued, running, done, cancelled or failed, so the webhook and the poller
+        do not review it again on their own. Cancelling must stick; a failed review is re-run on purpose (GitHub's
+        Re-run button or the dashboard), which goes through ``enqueue(force=True)`` and skips this check."""
         return self.one("SELECT * FROM runs WHERE repo=? AND pr_number=? AND head_sha=? AND source='github' "
-                        "AND status IN ('queued','running','completed') ORDER BY created_at DESC LIMIT 1",
+                        "AND status IN ('queued','running','completed','cancelled','failed') ORDER BY created_at DESC LIMIT 1",
                         (repo, pr_number, head_sha))
