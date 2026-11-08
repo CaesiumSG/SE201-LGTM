@@ -134,7 +134,7 @@
           <ol class="dm-steps-line">${["Order placed", "Shipped", "Delivered"].map((l, i) => `<li class="${i <= at ? "done" : ""}"><span></span>${l}</li>`).join("")}</ol>
           <div class="dm-track-body">
             <ul class="dm-items">${items.map((x) => `<li><span style="background:${x.bg}">${art(x, 44)}</span><div><b>${esc(x.name)}</b><small>${esc(x.kind)}</small></div></li>`).join("")}</ul>
-            <dl><dt>Customer</dt><dd>${esc(cap(PEOPLE[o.user_id] || o.user_id))}</dd><dt>Ships to</dt><dd class="dm-addr">${esc(o.shipping_address)}</dd></dl>
+            <dl class="${leak ? "dm-leaked" : ""}"><dt>Customer</dt><dd>${esc(cap(PEOPLE[o.user_id] || o.user_id))}</dd><dt>Ships to</dt><dd class="dm-addr">${esc(o.shipping_address)}</dd></dl>
           </div></div>`;
     }
 
