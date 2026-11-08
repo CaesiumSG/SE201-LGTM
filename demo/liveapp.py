@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -59,6 +60,20 @@ class LiveApps:
             except subprocess.TimeoutExpired:
                 p.kill()
 
+    @staticmethod
+    def _free_port(cfg: dict) -> None:
+        """Stop an app left running by an earlier dashboard process (it lost the handle when it restarted),
+        so a restart never talks to stale code. Only our own launcher is stopped, never another program."""
+        pids = subprocess.run(["lsof", "-t", f"-iTCP:{cfg['port']}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.split()
+        for pid in pids:
+            cmd = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout
+            if Path(cfg["launcher"]).name in cmd:
+                subprocess.run(["kill", pid], capture_output=True)
+        for _ in range(20):
+            if not subprocess.run(["lsof", "-t", f"-iTCP:{cfg['port']}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.strip():
+                return
+            time.sleep(0.25)
+
     def start(self, repo: str) -> dict:
         """(Re)start the app from the workspace's current files, with fresh demo data."""
         cfg = APPS.get(repo)
@@ -72,6 +87,7 @@ class LiveApps:
             raise LiveAppError("Open the repository in the workspace first.", 409)
         with self.lock:
             self.stop(repo)
+            self._free_port(cfg)
             log = DATA / f"{name}.log"
             DATA.mkdir(parents=True, exist_ok=True)
             fh = open(log, "w", encoding="utf-8")
@@ -112,6 +128,10 @@ class LiveApps:
             parsed = json.loads(raw or b"null")
         except ValueError:
             parsed = raw.decode("utf-8", "replace")[:2000]
+        if status >= 500:   # say why the app crashed: the last exception line in its log
+            crash = next((ln.strip() for ln in reversed(self.log(repo).splitlines())
+                          if re.match(r"^[\w.]+(Error|Exception)\b", ln.strip())), "")
+            parsed = {"error": "the app crashed", "crash": crash[:300]}
         return {"status": status, "body": parsed, "ms": round((time.monotonic() - started) * 1000)}
 
     def log(self, repo: str) -> str:

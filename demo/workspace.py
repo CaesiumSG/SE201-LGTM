@@ -26,6 +26,10 @@ PRESETS_FILE = HERE / "workspace_presets.json"
 META_FILE = ROOT / "meta.json"   # what each workspace was opened at and pushed to, kept across server restarts
 LEDGER = Path.home() / ".lgtm" / "bedrock-spend.jsonl"
 MODEL = "global.anthropic.claude-sonnet-4-6"
+# "Write it live": a small local coding model writes the task on this machine's GPU, with nothing scripted.
+WRITER_URL = os.environ.get("LGTM_WRITER_URL", "http://127.0.0.1:11434")
+# llama3.2 (3B) writes a file in about 5 seconds; like a hurried junior, it often skips the ownership check.
+WRITER_MODEL = os.environ.get("LGTM_WRITER_MODEL", "llama3.2:latest")
 PRICE_IN, PRICE_OUT, PRICE_SAFETY = 3.00, 15.00, 1.10   # USD per million tokens, as in lgtm.agents.bedrock_llm
 MAX_FILE = 400_000
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -274,9 +278,9 @@ class Workspace:
         return {"files": files}
 
     # ------------------------------------------------------------------ push
-    def push(self, repo: str, branch: str, message: str, title: str, login: str, how: str) -> dict:
+    def push(self, repo: str, branch: str, message: str, title: str, login: str, how: str, preset_id: str = "") -> dict:
         result = {}
-        for ev in self.push_stream(repo, branch, message, title, login, how):
+        for ev in self.push_stream(repo, branch, message, title, login, how, preset_id):
             if ev["type"] == "done":
                 result = ev["result"]
         return result
@@ -293,7 +297,7 @@ class Workspace:
             raise WorkspaceError(f"{shown[0]} {shown[1]} failed: {out[-300:]}", 502)
         return out
 
-    def push_stream(self, repo: str, branch: str, message: str, title: str, login: str, how: str):
+    def push_stream(self, repo: str, branch: str, message: str, title: str, login: str, how: str, preset_id: str = ""):
         """Commit, push and open (or update) the pull request, yielding each command and its output as it runs.
 
         Checks happen before the first event, so a refused push raises WorkspaceError straight away."""
@@ -322,11 +326,11 @@ class Workspace:
                     raise WorkspaceError(f"Push to a new branch, not {default}.")
                 if self.git(d, "ls-remote", "--heads", "origin", branch, auth=True).strip():
                     raise WorkspaceError(f"A branch called {branch} already exists on GitHub. Pick another name.", 409)
-            return (yield from self._push_steps(d, repo, default, branch, again, message, title, how, meta))
+            return (yield from self._push_steps(d, repo, default, branch, again, message, title, how, meta, preset_id))
         finally:
             lock.release()
 
-    def _push_steps(self, d, repo, default, branch, again, message, title, how, meta):
+    def _push_steps(self, d, repo, default, branch, again, message, title, how, meta, preset_id=""):
         gh = gh_bin()
         cred = self._cred()
         if not again:
@@ -342,10 +346,15 @@ class Workspace:
             yield {"type": "cmd", "cmd": f"gh pr view {branch} --json url"}
             yield {"type": "out", "text": f"{pr['url']}  (already open: this push updates it)", "ok": True, "seconds": 0}
         else:
-            body = ("Opened from the LGTM demo workspace. "
-                    + ("The change was written by Claude from a developer's request." if how == "model"
-                       else "The change replays a recorded commit, typed out in the workspace editor." if how == "replay"
-                       else "The change was written in the workspace editor."))
+            written = ""
+            if how == "replay" and preset_id:   # a replayed change reads as the real pull request it was
+                written = next((p.get("pr_body", "") for p in self.presets(repo) if p["id"] == preset_id), "")
+            if how == "live" and preset_id:     # written live by the local model from the task's request
+                ask = next((p.get("ask", "") for p in self.presets(repo) if p["id"] == preset_id), "")
+                written = f"{ask}\n\nWritten live in the LGTM demo workspace by a local coding model ({WRITER_MODEL})."
+            body = written or ("Opened from the LGTM demo workspace. "
+                               + ("The change was written by Claude from a developer's request." if how == "model"
+                                  else "The change was written in the workspace editor."))
             pr_title = (title or message.splitlines()[0])[:200]
             out = yield from self._run(d, ["gh", "pr", "create", "--base", default, "--head", branch, "--title", pr_title],
                                        [gh, "pr", "create", "--repo", repo, "--base", default, "--head", branch, "--title", pr_title, "--body", body])
@@ -358,13 +367,7 @@ class Workspace:
         return result
 
     # ------------------------------------------------------------------ AI assistant (Claude on Bedrock)
-    def generate(self, repo: str, path: str, prompt: str, key: str | None, budget: float):
-        """Yield events: text deltas of the complete new file, then done (with the spend) or error."""
-        if not key:
-            raise WorkspaceError("No Bedrock key found in .env, so the assistant cannot call Claude.", 503)
-        spent = ledger_total()
-        if spent >= budget:
-            raise WorkspaceError(f"The Bedrock spend cap is reached (${spent:.2f} of ${budget:.2f}).", 402)
+    def _prompt(self, repo: str, path: str, prompt: str) -> tuple[str, str]:
         d = self.dir(repo)
         f = self.read(repo, path)
         if f.get("content") is None:
@@ -378,21 +381,32 @@ class Workspace:
                   "explanation and no Markdown fences. Keep the file's existing style and leave unrelated code unchanged.")
         user = (f"Repository: {repo}\nFiles in the repository:\n{listing}\n\nFile to change: {path}\n<file>\n{f['content']}\n</file>\n\n"
                 f"Request: {prompt.strip()[:2000]}")
-        import anthropic
+        return system, user
 
-        client = anthropic.AnthropicBedrock(api_key=key, aws_region="us-east-1", timeout=180, max_retries=2)
-        started = time.monotonic()
-        with client.messages.stream(model=MODEL, max_tokens=12000, system=system,
-                                    messages=[{"role": "user", "content": user}]) as stream:
-            for text in stream.text_stream:
-                yield {"type": "text", "delta": text}
-            final = stream.get_final_message()
-        usd = (final.usage.input_tokens * PRICE_IN + final.usage.output_tokens * PRICE_OUT) / 1_000_000 * PRICE_SAFETY
-        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": MODEL, "usd": round(usd, 6),
-                 "input": final.usage.input_tokens, "output": final.usage.output_tokens,
-                 "seconds": round(time.monotonic() - started, 2), "run": f"demo:workspace:{repo}"}
-        with _LEDGER_LOCK:
-            LEDGER.parent.mkdir(parents=True, exist_ok=True)
-            with LEDGER.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry) + "\n")
-        yield {"type": "done", "usd": round(usd, 4), "stop": final.stop_reason}
+    def write_live(self, repo: str, path: str, prompt: str):
+        """Yield events: text deltas of the complete new file from the local coding model, then done."""
+        import urllib.error
+        import urllib.request
+
+        system, user = self._prompt(repo, path, prompt)
+        body = {"model": WRITER_MODEL, "stream": True, "options": {"temperature": 0.7, "num_ctx": 8192},
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        req = urllib.request.Request(WRITER_URL.rstrip("/") + "/api/chat", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+        except (urllib.error.URLError, OSError) as exc:
+            raise WorkspaceError(f"The local coding model ({WRITER_MODEL}) is not running: start Ollama, or use Replay. ({exc})", 503) from exc
+        with resp:
+            for raw in resp:
+                if not raw.strip():
+                    continue
+                ev = json.loads(raw)
+                if ev.get("error"):
+                    raise WorkspaceError(f"The local coding model failed: {ev['error']}", 502)
+                piece = (ev.get("message") or {}).get("content") or ""
+                if piece:
+                    yield {"type": "text", "delta": piece}
+                if ev.get("done"):
+                    break
+        yield {"type": "done", "model": WRITER_MODEL}

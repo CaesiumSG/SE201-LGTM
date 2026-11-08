@@ -494,6 +494,7 @@
         <div class="feed">
           <h2>${st.done ? "Finished" : st.error ? "Stopped" : active ? "Working" : "Activity"} <span class="muted">${secs(st.t)}, ${plural(st.tools, "tool call")}</span></h2>
           ${st.error ? `<p class="notice warn">${esc(st.error)}</p>` : ""}
+          ${st.posting && !st.done && !st.error ? `<p class="notice"><span class="pulse"></span> Analysis finished. Writing fixes and posting the review to GitHub…</p>` : ""}
           ${st.done ? `<p class="notice ${st.done.n_flagged ? "risk" : "ok"}">${st.done.n_flagged ? `${plural(st.done.n_flagged, "security bug")} reported on the pull request.` : "No security bugs: the check passed."} <a href="#/runs/${enc(id)}/${st.done.n_flagged ? "findings" : "changes"}">See the results</a></p>` : ""}
           ${st.verdicts.length ? `<ul class="verdicts">${st.verdicts.map((v) => `<li class="${v.kev_verdict === "real" && v.supported ? "real" : "dropped"}"><b>${v.kev_verdict === "real" && v.supported ? "Confirmed" : "Dropped"}</b> ${esc(cweName(v.cwe))} <code>${esc(v.file)}:${v.line}</code><span class="muted">${v.supported ? `judge: ${esc(v.kev_verdict || "–")}` : "evidence did not check out"}</span></li>`).join("")}</ul>` : ""}
           <ol class="agents">${st.agents.slice().reverse().slice(0, 12).map((a) => `<li><div class="ag-head"><b>${esc(AGENTS[a.agent] || a.agent)}</b> <span class="muted">${esc(a.section && a.section !== a.agent ? a.section : "")}</span></div>
@@ -512,7 +513,8 @@
       else if (ev.type === "agent") st.agents.push({ agent: ev.agent, section: ev.section, tools: [] });
       else if (ev.type === "tool") { (st.agents[st.agents.length - 1] || st.agents[st.agents.push({ agent: ev.agent, section: "", tools: [] }) - 1]).tools.push(ev); st.tools++; }
       else if (ev.type === "verdict") st.verdicts.push(ev);
-      else if (ev.type === "done") st.done = ev;
+      else if (ev.type === "done" && ev.conclusion) st.done = ev;   // LGTM's result; the pipeline's own "done" (no count yet) is not it
+      else if (ev.type === "done") st.posting = true;
       else if (ev.type === "error") st.error = ev.msg;
       if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; draw(); }); }
     };

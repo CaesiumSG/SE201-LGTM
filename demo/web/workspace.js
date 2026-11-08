@@ -30,6 +30,7 @@
     spark: sv('<path d="M12 4.5 13.8 10.2 19.5 12l-5.7 1.8L12 19.5l-1.8-5.7L4.5 12l5.7-1.8z"/>'),
     play: sv('<path d="M8 5.5v13l10-6.5z"/>'),
     chev: sv('<path d="m9 6 6 6-6 6"/>'),
+    ff: sv('<path d="M5 6l7 6-7 6zM13 6l7 6-7 6z"/>'),
     ext: sv('<path d="M14 5h5v5M19 5l-8 8M17 14v5H5V7h5"/>'),
     x: sv('<path d="M7 7l10 10M17 7 7 17"/>'),
     file: sv('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
@@ -84,20 +85,18 @@
         <div class="ide-bar">
           <label class="ide-repo"><span class="sr-only">Repository</span><select id="ws-repo">${repos.map((r) => `<option value="${esc(r.repo)}" ${r.repo === repo ? "selected" : ""}>${esc(r.repo)}</option>`).join("")}</select></label>
           <span class="ide-branch" id="ws-branch"></span>
+          ${(() => { const src = W.presets.find((x) => x.upstream) || {}; const up = src.upstream; const target = up || repo; const tip = up ? (src.upstream_about || "Open the original project on GitHub") : "Open this repository on GitHub"; return `<a class="btn ide-orig" id="ws-orig" href="https://github.com/${esc(target)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(tip)}" data-tip="${esc(tip)}">${IC.ext}<span>${up ? "Original repo" : "Repo on GitHub"}</span></a>`; })()}
           ${W.hasApp ? `<div class="ide-mode" role="tablist" aria-label="View"><button type="button" role="tab" data-mode="code" aria-selected="${W.mode === "code"}">Code</button><button type="button" role="tab" data-mode="app" aria-selected="${W.mode === "app"}">App</button></div>` : ""}
           <span class="ide-fill"></span>
           <span class="ide-dim" id="ws-who"></span>
           <button type="button" class="btn" id="ws-reset">Start over</button>
         </div>
         <div class="ide-ai">
-          <span class="ide-ai-tag">${IC.spark}AI</span>
+          <span class="ide-ai-tag" id="ws-tag">${IC.spark}<span>AI</span></span>
           ${W.presets.length ? `<label class="sr-only" for="ws-task">Recorded change to replay</label>
-            <select id="ws-task">${W.presets.map((p) => `<option value="${esc(p.id)}" ${p.id === W.task ? "selected" : ""}>${esc(p.title)}${p.realworld ? " (real-world)" : ""}</option>`).join("")}</select>
-            <button type="button" class="btn primary" id="ws-play">${IC.play}<span>Write it live</span></button>
+            <select id="ws-task">${W.presets.map((p) => `<option value="${esc(p.id)}" ${p.id === W.task ? "selected" : ""}>${p.realworld ? "Real PR · " : ""}${esc(p.title)}</option>`).join("")}</select>
+            <button type="button" class="btn primary" id="ws-play">${IC.play}<span id="ws-play-label">Write it live</span></button>
             <span class="ide-or">or</span>` : ""}
-          <label class="sr-only" for="ws-prompt">Ask Claude to change the open file</label>
-          <input id="ws-prompt" type="text" placeholder="Ask Claude to change this file…" autocomplete="off">
-          <button type="button" class="btn" id="ws-gen">Ask Claude</button>
         </div>
         <div class="ide-note" id="ws-note" aria-live="polite"></div>
         <div class="ide-main">
@@ -156,9 +155,10 @@
     const task = $("#ws-task");
     if (task) task.addEventListener("change", () => { W.task = task.value; renderNote(); });
     const play = $("#ws-play");
-    if (play) play.addEventListener("click", () => runTask(W.task));
-    $("#ws-gen").addEventListener("click", generate);
-    $("#ws-prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); generate(); } });
+    if (play) play.addEventListener("click", () => {
+      const p = W.presets.find((x) => x.id === W.task);
+      return p && !p.realworld ? writeLive(W.task) : runTask(W.task);
+    });
     const onKey = (e) => {
       if (!$("#ide")) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") { e.preventDefault(); W.side = "files"; renderSide(); const q = $("#ws-q"); if (q) q.focus(); }
@@ -171,9 +171,34 @@
   function renderNote() {
     if (W.animating) return;
     const p = W.presets.find((x) => x.id === W.task);
-    note(p ? `<span class="ide-ask"><span class="ide-tagl">Task</span>${esc(p.ask)}</span><span class="ide-expect"><span class="ide-tagl">LGTM should find</span>${esc(p.expect)}</span>` : "");
+    const real = !!(p && p.realworld);
+    const tag = $("#ws-tag span"), label = $("#ws-play-label");
+    if (tag) tag.textContent = real ? "Real PR" : "AI";
+    if (label) label.textContent = real ? "Replay this PR" : "Write it live";
+    if (!p) return note("");
+    if (!real) return note(`<span class="ide-ask"><span class="ide-tagl">Task</span>${esc(p.ask)}</span><span class="ide-dim">Written live by a local coding model, nothing scripted. <button type="button" class="linkish" id="ws-replay">Replay the prepared change instead</button></span>`), wireReplay();
+    const link = (url, text) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)} ↗</a>`;
+    note(`<span class="ide-ask"><span class="ide-tagl">Real ${esc(p.kind || "PR")}</span><span>${esc(p.author)} ${p.kind === "commit" ? "committed" : "merged"} “${esc(p.title)}” into ${esc(p.project)} on ${esc(p.merged)}. ${p.original_url ? link(p.original_url, "See the original") : ""}</span></span>`
+      + `<span class="ide-ask"><span class="ide-tagl">Found later</span><span>Published as a security advisory on ${esc(p.advisory_date)}. ${p.advisory_url ? link(p.advisory_url, p.advisory) : esc(p.advisory)}</span></span>`);
+  }
+  function wireReplay() {
+    const b = $("#ws-replay");
+    if (b) b.addEventListener("click", () => runTask(W.task));
   }
   function note(html) { const el = $("#ws-note"); if (el) el.innerHTML = html; }
+  // The line shown while a replay types: the Fast forward button is built once and stays put at the left;
+  // only the text beside it changes from file to file.
+  function writing(html) {
+    const el = $("#ws-note");
+    if (!el) return;
+    let txt = el.querySelector(".ide-writing");
+    if (!txt) {
+      el.innerHTML = `<button type="button" class="btn ide-ff" id="ws-skip" title="Finish the replay instantly">${IC.ff}<span>Fast forward</span></button><span class="pulse"></span><span class="ide-writing"></span>`;
+      el.querySelector("#ws-skip").addEventListener("click", () => (W.skip = true));
+      txt = el.querySelector(".ide-writing");
+    }
+    txt.innerHTML = html;
+  }
 
   function ask(title, body, ok) {
     return new Promise((resolve) => {
@@ -386,27 +411,34 @@
     const script = r.script;
     await refreshTree();
     await play(script.steps);
-    W.commit = { branch: script.branch, message: script.message, title: script.title, how: "replay" };
+    W.commit = { branch: script.branch, message: script.message, title: script.title, how: "replay", preset: id };
     setBusy(false);
     W.side = "changes";
     renderSide();
     await refreshState();
-    note(`<span class="good">Wrote ${L().plural(script.steps.length, "file")}. Check the changes on the left, then commit and push.</span>`);
+    note(`<span class="good">${preset && preset.realworld ? `Replayed ${esc(preset.author)}'s change: ${L().plural(script.steps.length, "file")}. Check the changes on the left, then commit and push to open it as a pull request for LGTM to review.` : `Wrote ${L().plural(script.steps.length, "file")}. Check the changes on the left, then commit and push.`}</span>`);
   }
 
   async function play(steps) {
     const monaco = window.monaco;
     W.skip = false;
     const total = steps.reduce((a, s) => a + lineDiff(s.before.split("\n"), s.after.split("\n")).reduce((b, h) => b + h.lines.join("\n").length, 0), 0);
-    const perFrame = Math.max(1, Math.ceil(total / (60 * 20)));   // at most about 20 seconds of typing at 60 fps
+    const perFrame = Math.max(1, Math.ceil(total / (60 * 20)));   // at most about 20 seconds of typing at 60 fps; "Fast forward" skips to the end
     let n = 0;
-    for (const step of steps) {
+    for (let idx = 0; idx < steps.length; idx++) {
+      const step = steps[idx];
       if (!W.editor) return;
+      if (W.skip && idx > 0) {   // "Fast forward": write every remaining file at once instead of opening each one
+        const rest = steps.slice(idx);
+        note(`<span class="pulse"></span><span>Applying the other ${L().plural(rest.length, "file")}…</span>`);
+        await Promise.all(rest.map((x) => L().post("/api/ws/file", { repo: W.repo, path: x.path, content: x.after, deleted: !!x.deleted })));
+        await refreshState();
+        return;
+      }
       n++;
       await openFile(step.path, { focus: false, content: step.before });
       const model = W.models.get(step.path).model;
-      note(`<span class="pulse"></span><span>Writing <b>${esc(base(step.path))}</b>${steps.length > 1 ? ` (${n} of ${steps.length})` : ""}</span><button type="button" class="ide-link" id="ws-skip">Skip typing</button>`);
-      const sk = $("#ws-skip"); if (sk) sk.addEventListener("click", () => (W.skip = true));
+      writing(`Writing <b>${esc(base(step.path))}</b>${steps.length > 1 ? ` (${n} of ${steps.length})` : ""}`);
       const added = [];
       if (!W.skip && !step.deleted) {
         let offset = 0;
@@ -504,36 +536,46 @@
     return hunks;
   }
 
-  // ---------------------------------------------------------------- the assistant: Claude on Bedrock
-  async function generate() {
-    if (W.animating) return;
-    const input = $("#ws-prompt");
-    const prompt = input.value.trim();
-    const path = W.active;
-    if (!path) { note(`<span class="bad">Open the file you want Claude to change first.</span>`); return; }
-    if (!prompt) { input.focus(); note(`<span class="bad">Tell Claude what to write.</span>`); return; }
-    const entry = W.models.get(path);
-    if (entry.readonly) { note(`<span class="bad">This file cannot be edited here.</span>`); return; }
-    if (W.editor.getModel() !== entry.model) showFile(path);
-    const before = entry.model.getValue();
+  // ---------------------------------------------------------------- the assistant: a local model, live
+  // The task's request goes to a small coding model on this machine; its file streams into the editor as it is
+  // written. Nothing is scripted: the model may write safe code, and the review then passes.
+  async function writeLive(id) {
+    if (W.animating || !id) return;
+    const preset = W.presets.find((p) => p.id === id);
+    const st = W.st || {};
+    if (st.changed && st.changed.length && !(await ask("Start from a clean copy?", "Your current edits in the workspace will be discarded.", "Discard and write it"))) return;
     setBusy(true);
-    note(`<span class="pulse"></span>Claude is reading <b>${esc(base(path))}</b>…`);
-    let text = "", usd = null, error = null, pending = false;
+    note(`<span class="pulse"></span>Getting ready…`);
+    let r;
     try {
-      const res = await fetch("/api/ws/generate", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: W.repo, path, prompt }) });
+      r = await L().post("/api/ws/open", { repo: W.repo, preset: id });
+    } catch (e) { setBusy(false); note(`<span class="bad">${esc(e.message)}</span>`); return; }
+    resetEditorState(); W.editor.setModel(null); clearPR();
+    await refreshTree();
+    const step = r.script.steps[0];
+    const path = step.path, before = step.before;
+    await openFile(path, { focus: false, content: before });
+    const entry = W.models.get(path);
+    const tail = before.split("\n");
+    let text = "", model = "", error = null, pending = false;
+    // Small models sometimes wrap the file in the <file> tags of the prompt or in a Markdown fence.
+    const clean = (t) => t.replace(/^\s*<file>\n?/, "").replace(/^\s*```[\w-]*\n/, "").replace(/\n?<\/file>\s*$/, "\n").replace(/\n```\s*$/, "\n");
+    const draw = () => {   // what is written so far, then the rest of the old file below it
+      pending = false;
+      if (!W.editor) return;
+      const lines = clean(text).split("\n");
+      entry.model.setValue(lines.concat(tail.slice(lines.length)).join("\n"));
+      W.editor.revealLineInCenterIfOutsideViewport(lines.length);
+      W.editor.setPosition({ lineNumber: lines.length, column: lines[lines.length - 1].length + 1 });
+    };
+    writing(`Reading <b>${esc(base(path))}</b>…`);
+    try {
+      const res = await fetch("/api/ws/generate", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: W.repo, path, prompt: preset.ask, engine: "local" }) });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `${res.status} ${res.statusText}`);
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
-      const draw = () => {
-        pending = false;
-        if (!W.editor) return;
-        entry.model.setValue(text);
-        const last = entry.model.getLineCount();
-        W.editor.revealLine(last);
-        W.editor.setPosition({ lineNumber: last, column: entry.model.getLineMaxColumn(last) });
-      };
-      note(`<span class="pulse"></span>Claude is writing <b>${esc(base(path))}</b>`);
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -543,8 +585,11 @@
           const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
           if (!line.trim()) continue;
           const ev = JSON.parse(line);
-          if (ev.type === "text") { text += ev.delta; if (!pending) { pending = true; requestAnimationFrame(draw); } }
-          else if (ev.type === "done") usd = ev.usd;
+          if (ev.type === "text") {
+            if (!text) writing(`Writing <b>${esc(base(path))}</b> live`);
+            text += ev.delta;
+            if (!pending && !W.skip) { pending = true; requestAnimationFrame(draw); }
+          } else if (ev.type === "done") model = ev.model || "";
           else if (ev.type === "error") error = ev.msg;
         }
       }
@@ -552,26 +597,32 @@
     } catch (e) {
       if (W.editor) entry.model.setValue(before);
       setBusy(false);
-      note(`<span class="bad">${esc(e.message)}</span>`);
+      note(`<span class="bad">${esc(e.message)}</span> <button type="button" class="linkish" id="ws-replay">Replay the prepared change instead</button>`);
+      wireReplay();
       return;
     }
-    let final = text.replace(/^\s*```[\w-]*\n/, "").replace(/\n```\s*$/, "\n");
+    let final = clean(text);
     if (before.endsWith("\n")) final = final.replace(/\s+$/, "") + "\n";   // keep the file's final newline
     entry.model.setValue(final);
     const changes = changedRanges(before, final);
     decorate(path, changes);
     await L().post("/api/ws/file", { repo: W.repo, path, content: final });
-    const first = prompt.split("\n")[0].replace(/[.\s]+$/, "");
-    W.commit = { branch: `lgtm-demo/ai-${stamp()}`, message: first.length > 72 ? first.slice(0, 69) + "…" : first, title: "", how: "model" };
+    W.commit = { branch: `${r.script.branch}-${stamp()}`, message: r.script.message, title: r.script.title, how: "live", preset: id };
     setBusy(false);
+    W.side = "changes";
+    renderSide();
     await refreshState();
-    note(changes.length ? `<span class="good">Claude changed ${L().plural(changes.reduce((a, [x, y]) => a + y - x + 1, 0), "line")}${usd != null ? ` for $${usd.toFixed(2)}` : ""}. Check the changes, then commit and push.</span>` : `<span class="ide-dim">Claude left the file unchanged.</span>`);
+    if (!changes.length) {
+      note(`<span class="ide-dim">The model left the file unchanged. Try again, or</span> <button type="button" class="linkish" id="ws-replay">replay the prepared change</button>`);
+      return wireReplay();
+    }
+    note(`<span class="good">${esc(model || "The model")} wrote ${L().plural(changes.reduce((a, [x, y]) => a + y - x + 1, 0), "line")} live. Check the changes on the left, then commit and push for LGTM to review.</span>`);
   }
 
   function setBusy(on) {
     W.animating = on;
     if (W.editor) W.editor.updateOptions({ readOnly: on || !!(W.active && W.models.get(W.active) && W.models.get(W.active).readonly) });
-    $$("#ws-play, #ws-gen, #ws-reset, #ws-push, #ws-task, #ws-prompt, #ws-repo").forEach((b) => (b.disabled = on));
+    $$("#ws-play, #ws-reset, #ws-push, #ws-task, #ws-repo").forEach((b) => (b.disabled = on));
   }
 
   // ---------------------------------------------------------------- changes: diff, commit and push
@@ -636,7 +687,7 @@
     let result = null;
     try {
       const res = await fetch("/api/ws/push", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo: W.repo, branch, message: msg, title: (W.commit && W.commit.title) || msg, how: W.commit ? W.commit.how : "manual" }) });
+        body: JSON.stringify({ repo: W.repo, branch, message: msg, title: (W.commit && W.commit.title) || msg, how: W.commit ? W.commit.how : "manual", preset: W.commit && W.commit.preset ? W.commit.preset : "" }) });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `${res.status} ${res.statusText}`);
       // The server runs each command as soon as it can; the terminal types them out in order, with their real output.
       const events = [];
@@ -701,10 +752,10 @@
         if (!document.body.contains(row)) return;
         into.textContent = cmd.slice(0, i);
         this.scroll();
-        await new Promise((r) => setTimeout(r, cmd[i - 1] === " " ? 18 : 13 + Math.random() * 10));   // brisk: about three times the earlier pace
+        await new Promise((r) => setTimeout(r, cmd[i - 1] === " " ? 9 : 6.5 + Math.random() * 5));   // brisk: about six times the earlier pace
       }
       row.querySelector(".term-caret").remove();
-      await new Promise((r) => setTimeout(r, 220));
+      await new Promise((r) => setTimeout(r, 110));
       const m = cmd.match(/^git checkout -b (\S+)/);
       if (m) this.branch = m[1];
     },
@@ -847,7 +898,8 @@
     }
     const r = await go();
     W.app.log.unshift({ method, path: path.length > 70 ? path.slice(0, 67) + "…" : path, status: r.status, ms: r.ms, who: persona });
-    W.app.log = W.app.log.slice(0, 6);
+    W.app.log = W.app.log.slice(0, 4);
+    const addr = $("#app-path"); if (addr) addr.textContent = path;
     drawLog();
     return r;
   }
@@ -870,45 +922,46 @@
   const art = (p, size = 120) => `<svg viewBox="0 0 120 120" width="${size}" height="${size}" aria-hidden="true">${ART[p.art](p.c1, p.c2)}</svg>`;
   const money = (n) => `$${Number(n || 0).toFixed(2)}`;
 
+  // One screen, no scrolling: a small browser with three products, then either the customer's orders or the
+  // staff tools, and (when LGTM blocked this code) the exploit panel beside it.
+  const SHOWN = ["house", "matcha", "mug"], SHOWN_PERSONAS = ["alice", "maria", "root"], ADDRESS = "1 Raffles Place, #10-01";
+
   function renderApp(st) {
     const el = $("#ws-app");
-    const who = PERSONAS.find((p) => p[0] === W.app.persona);
-    const role = who[2];
+    const who = PERSONAS.find((p) => p[0] === W.app.persona) || PERSONAS[0];
+    const role = who[2], staff = role !== "customer";
     const search = has("GET /users/search"), detail = has("GET /orders/<int:order_id>");
     const attackHtml = attacks(W.app.found, search, detail);   // empty unless LGTM's review of this code flagged a bug
-    W.app.cart = W.app.cart || {};
     W.app.bought = W.app.bought || {};
+    const n = st.changed ? st.changed.length : 0;
+    const last = W.app.log[0];
     el.innerHTML = `
       <div class="app-bar">
         <span class="app-dot"></span><span class="app-url">shoply.test</span>
-        <span class="ide-dim">Running the code in your workspace${st.branch ? ` (${esc(st.branch)})` : ""}${st.changed && st.changed.length ? `, ${st.changed.length} change${st.changed.length === 1 ? "" : "s"} not yet pushed` : ""}. Demo data resets on restart.</span>
+        <span class="ide-dim">Running ${st.branch ? esc(st.branch) : "your workspace"}${n ? ` · ${n} change${n === 1 ? "" : "s"} not yet pushed` : ""}</span>
         <span class="ide-fill"></span>
         <button type="button" class="btn" id="app-restart">Restart with the latest code</button>
       </div>
-      <div class="app-grid ${attackHtml ? "" : "solo"}">
-        <div class="shop">
-          <header class="shop-nav">
-            <span class="shop-logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h12v5a6 6 0 0 1-6 6h0a6 6 0 0 1-6-6z" fill="currentColor"/><path d="M17 10h1.5a2.5 2.5 0 0 1 0 5H17" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 3c0 2 2 2 2 4M13 3c0 2 2 2 2 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Shoply</span>
-            <span class="ide-fill"></span>
-            <label class="shop-who"><span class="ide-dim">Signed in as</span><select id="app-persona">${PERSONAS.map(([id, name, r]) => `<option value="${id}" ${id === W.app.persona ? "selected" : ""}>${name} (${r})</option>`).join("")}</select></label>
-            <button type="button" class="shop-cart-btn" id="app-cart-btn">Cart <b id="app-cart-n">0</b></button>
-          </header>
-          <section class="shop-hero">
-            <div><h2>Small-batch coffee and tea, roasted in Singapore.</h2><p>Free delivery over $40. Order by 2pm and it ships today.</p></div>
-            <div class="shop-hero-art">${art(PRODUCTS[0], 96)}${art(PRODUCTS[4], 96)}${art(PRODUCTS[2], 96)}</div>
-          </section>
-          <section class="shop-grid">${PRODUCTS.map((p) => `<article class="prod">
-              <div class="prod-art" style="background:${p.bg}">${art(p)}</div>
-              <div class="prod-b"><h3>${esc(p.name)}</h3><p class="ide-dim">${esc(p.kind)}</p>
-                <div class="prod-f"><b>${money(p.price)}</b><button type="button" class="btn" data-add="${p.id}">Add to cart</button></div></div></article>`).join("")}</section>
-          <section class="shop-cart" id="app-cart"></section>
-          <section class="shop-sec"><h3>My orders</h3><div id="app-mine" class="ide-dim">Loading…</div>
-            ${detail ? `<form class="app-inline" id="app-track"><input name="id" type="number" min="1" placeholder="Order number" required><button class="btn" type="submit">Track an order</button></form><div id="app-track-out"></div>` : ""}</section>
-          ${role !== "customer" ? `<section class="shop-sec staff"><h3>Staff dashboard <span class="tag">${esc(role)}</span></h3>
-            ${search ? `<form class="app-inline" id="app-search"><input name="q" placeholder="Find a customer by name" autocomplete="off"><button class="btn" type="submit">Search</button></form>` : `<p class="ide-dim">No customer search yet. It appears here once the code has one.</p>`}
-            <h4>Customers</h4><div id="app-users" class="ide-dim">Loading…</div>
-            <h4>All orders</h4><div id="app-all" class="ide-dim">Loading…</div>
-            ${role === "admin" ? `<h4>Store stats</h4><div id="app-stats" class="ide-dim">Loading…</div>` : ""}</section>` : ""}
+      <div class="sh2 ${attackHtml ? "" : "solo"}">
+        <div class="sh2-main">
+          <div class="sh2-seg"><span>Signed in as</span>${PERSONAS.filter((p) => SHOWN_PERSONAS.includes(p[0])).map(([id, name, r]) => `<button type="button" data-as="${id}" aria-pressed="${id === W.app.persona}">${esc(name)}<em>${esc(r)}</em></button>`).join("")}</div>
+          <div class="sh2-browser">
+            <div class="sh2-url"><span aria-hidden="true">🔒</span><span class="host">shoply.test</span><span class="path" id="app-path">${esc(last ? last.path : "/")}</span></div>
+            <nav class="sh2-nav"><b class="sh2-logo">☕ Shoply</b><span class="sh2-toast" id="app-toast" aria-live="polite"></span><span class="me">Hi, ${esc(who[1])}</span></nav>
+            <div class="sh2-body">
+              ${staff ? "" : `<div class="sh2-prods">${SHOWN.map((id) => PRODUCTS.find((p) => p.id === id)).map((p) => `<div class="sh2-prod">
+                <div class="sh2-art" style="background:${p.bg}">${art(p, 108)}</div>
+                <div><b>${esc(p.name)}</b><span class="ide-dim">${money(p.price)}</span></div>
+                <button type="button" class="btn" data-buy="${p.id}">Buy</button></div>`).join("")}</div>`}
+              ${staff ? `<section class="sh2-sec"><h3>Staff dashboard <span class="tag">${esc(role)}</span></h3>
+                ${search ? `<form class="app-inline" id="app-search"><input name="q" placeholder="Find a customer by name" autocomplete="off"><button class="btn" type="submit">Search</button></form>` : `<p class="ide-dim">No customer search yet. It appears here once the code has one.</p>`}
+                <div id="app-users" class="ide-dim">Loading…</div>
+                <div id="app-all" class="ide-dim"></div>
+                ${role === "admin" ? `<div id="app-stats" class="ide-dim"></div>` : ""}</section>`
+              : `<section class="sh2-sec"><h3>My orders</h3><div id="app-mine" class="ide-dim">Loading…</div>
+                ${detail ? `<form class="app-inline" id="app-track"><input name="id" type="number" min="1" placeholder="Look up an order number" required><button class="btn" type="submit">Track</button></form><div id="app-track-out"></div>` : ""}</section>`}
+            </div>
+          </div>
         </div>
         ${attackHtml ? `<aside class="app-side">
           <section class="app-attack">${attackHtml}</section>
@@ -916,38 +969,28 @@
         </aside>` : ""}
       </div>`;
     $("#app-restart").addEventListener("click", async () => { await refreshState(); startApp(); });
-    $("#app-persona").addEventListener("change", (e) => { W.app.persona = e.target.value; renderApp(W.st || st); });
-    $$("[data-add]").forEach((b) => b.addEventListener("click", () => { W.app.cart[b.dataset.add] = (W.app.cart[b.dataset.add] || 0) + 1; drawCart(); b.textContent = "Added"; setTimeout(() => (b.textContent = "Add to cart"), 900); }));
-    $("#app-cart-btn").addEventListener("click", () => $("#app-cart").scrollIntoView({ behavior: "smooth", block: "center" }));
+    $$("[data-as]").forEach((b) => b.addEventListener("click", () => { W.app.persona = b.dataset.as; renderApp(W.st || st); }));
+    $$("[data-buy]").forEach((b) => b.addEventListener("click", () => buy(b.dataset.buy)));
     const tr = $("#app-track");
     if (tr) tr.addEventListener("submit", async (e) => { e.preventDefault(); const r = await call("GET", `/orders/${+new FormData(e.target).get("id")}`); $("#app-track-out").innerHTML = r.status === 200 ? orderCard(r.body, true) : `<p class="bad">${esc((r.body && r.body.error) || r.status)}</p>`; });
     const se = $("#app-search");
     if (se) se.addEventListener("submit", async (e) => { e.preventDefault(); await runSearch(new FormData(e.target).get("q")); });
     $$("[data-attack]").forEach((b) => b.addEventListener("click", () => runAttack(b.dataset.attack)));
-    drawCart();
     drawLog();
     loadData();
   }
 
-  function drawCart() {
-    const el = $("#app-cart");
-    if (!el) return;
-    const items = Object.entries(W.app.cart).filter(([, n]) => n > 0).map(([id, n]) => ({ ...PRODUCTS.find((p) => p.id === id), n }));
-    const total = items.reduce((a, p) => a + p.price * p.n, 0);
-    $("#app-cart-n").textContent = items.reduce((a, p) => a + p.n, 0);
-    el.innerHTML = items.length ? `<h3>Your cart</h3>
-      <ul class="cart">${items.map((p) => `<li><span class="cart-art" style="background:${p.bg}">${art(p, 40)}</span><span>${esc(p.name)} <span class="ide-dim">× ${p.n}</span></span><b>${money(p.price * p.n)}</b><button type="button" class="ide-link" data-rm="${p.id}">Remove</button></li>`).join("")}</ul>
-      <form class="app-inline" id="app-checkout"><input name="address" placeholder="Shipping address" required value="${esc(W.app.address || "")}"><button class="btn primary" type="submit">Pay ${money(total)}</button></form>`
-      : `<p class="ide-dim">Your cart is empty. Add something above.</p>`;
-    el.querySelectorAll("[data-rm]").forEach((b) => b.addEventListener("click", () => { W.app.cart[b.dataset.rm] = 0; drawCart(); }));
-    const co = $("#app-checkout");
-    if (co) co.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const address = new FormData(co).get("address");
-      W.app.address = address;
-      const r = await call("POST", "/orders", { total: Math.round(total * 100) / 100, shipping_address: address });
-      if (r.status === 201 && r.body) { W.app.bought[r.body.id] = items.map((p) => `${p.name} × ${p.n}`).join(", "); W.app.cart = {}; drawCart(); loadData(); }
-    });
+  // One click buys one item (the API stores the order's total and address, which is all it needs).
+  async function buy(id) {
+    const p = PRODUCTS.find((x) => x.id === id);
+    const r = await call("POST", "/orders", { total: p.price, shipping_address: W.app.address || ADDRESS });
+    const toast = $("#app-toast");
+    if (r.status === 201 && r.body) {
+      W.app.bought[r.body.id] = p.name;
+      if (toast) { toast.textContent = `Ordered ${p.name}`; setTimeout(() => { if (toast.isConnected) toast.textContent = ""; }, 2200); }
+      loadData();
+    } else if (toast) toast.textContent = `Could not order (${r.status})`;
+    const path = $("#app-path"); if (path) path.textContent = "/orders";
   }
 
   function orderCard(o, full) {
@@ -955,25 +998,30 @@
     return `<div class="order"><div><b>Order #${esc(o.id)}</b><span class="ide-dim">${esc(what)}</span>${full ? `<span class="ide-dim">Ship to ${esc(o.shipping_address)} · customer #${esc(o.user_id)}</span>` : ""}</div><span class="pill ${esc(o.status)}">${esc(o.status)}</span><b>${money(o.total)}</b></div>`;
   }
 
-  function table(rows, cols) {
+  // A small table; long lists are cut to `max` rows so the page never needs scrolling. Hashes and emails show in red.
+  function table(rows, cols, max = 4, title = "", labels = {}) {
     if (!Array.isArray(rows) || !rows.length) return `<p class="ide-dim">Nothing here.</p>`;
     cols = cols || Object.keys(rows[0]);
-    return `<table class="app-table"><thead><tr>${cols.map((c) => `<th>${esc(c.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(typeof r[c] === "number" && c === "total" ? money(r[c]) : r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    const shown = rows.slice(0, max), more = rows.length - shown.length;
+    const cell = (r, c) => { const v = r[c]; const bad = /^[0-9a-f]{64}$/.test(String(v)) || /^[^\s@]+@[^\s@]+$/.test(String(v)); return `<td${bad ? ' class="leakcell"' : ""}>${esc(typeof v === "number" && c === "total" ? money(v) : v)}</td>`; };
+    return `${title ? `<h4 class="sh2-h4">${esc(title)}</h4>` : ""}<table class="app-table"><thead><tr>${cols.map((c) => `<th>${esc(labels[c] || c.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${shown.map((r) => `<tr>${cols.map((c) => cell(r, c)).join("")}</tr>`).join("")}</tbody></table>${more > 0 ? `<p class="ide-dim sh2-more">+ ${more} more</p>` : ""}`;
   }
 
   async function loadData() {
     const put = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
     const mine = await call("GET", "/orders/mine");
-    put("#app-mine", mine.status === 200 ? (mine.body.length ? mine.body.map((o) => orderCard(o)).join("") : `<p class="ide-dim">No orders yet.</p>`) : `<p class="bad">${esc(mine.status)}</p>`);
-    if ($("#app-users")) { const u = await call("GET", "/users"); put("#app-users", u.status === 200 ? table(u.body, ["id", "username", "role"]) : `<p class="bad">${esc((u.body && u.body.error) || u.status)}</p>`); }
-    if ($("#app-all")) { const a = await call("GET", "/orders/all"); put("#app-all", a.status === 200 ? table(a.body, ["id", "user_id", "status", "total"]) : `<p class="bad">${esc((a.body && a.body.error) || a.status)}</p>`); }
-    if ($("#app-stats")) { const s2 = await call("GET", "/admin/stats"); put("#app-stats", s2.status === 200 ? `<pre class="app-json">${esc(JSON.stringify(s2.body, null, 2))}</pre>` : `<p class="bad">${esc(s2.status)}</p>`); }
+    const latest = (rows, n) => [...rows].sort((a, b) => b.id - a.id).slice(0, n);   // newest first, a few rows so everything fits on one screen
+    put("#app-mine", mine.status === 200 ? (mine.body.length ? latest(mine.body, 2).map((o) => orderCard(o)).join("") + (mine.body.length > 2 ? `<p class="ide-dim sh2-more">+ ${mine.body.length - 2} older</p>` : "") : `<p class="ide-dim">No orders yet.</p>`) : `<p class="bad">${esc(mine.status)}</p>`);
+    if ($("#app-users")) { const u = await call("GET", "/users"); put("#app-users", u.status === 200 ? table(u.body, ["id", "username", "role"], 4, "Customers") : `<p class="bad">${esc((u.body && u.body.error) || u.status)}</p>`); }
+    if ($("#app-all")) { const a = await call("GET", "/orders/all"); put("#app-all", a.status === 200 ? table(latest(a.body, 99), ["id", "user_id", "status", "total"], 2, "Latest orders") : `<p class="bad">${esc((a.body && a.body.error) || a.status)}</p>`); }
+    if ($("#app-stats")) { const s2 = await call("GET", "/admin/stats"); put("#app-stats", s2.status === 200 ? `<h4 class="sh2-h4">Store stats</h4><code class="sh2-stats">${esc(JSON.stringify(s2.body))}</code>` : `<p class="bad">${esc(s2.status)}</p>`); }
   }
 
   async function runSearch(q) {
     const r = await call("GET", `/users/search?name=${encodeURIComponent(q || "")}`);
     const el = $("#app-users");
-    if (el) el.innerHTML = r.status === 200 ? table(r.body, Object.keys((r.body || [])[0] || { id: 1, username: 1, role: 1 })) : `<p class="bad">${esc((r.body && r.body.error) || r.status)}</p>`;
+    if (el) el.innerHTML = r.status === 200 ? table(r.body, Object.keys((r.body || [])[0] || { id: 1, username: 1, role: 1 }), 4, "Customers", Array.isArray(r.body) && r.body.some((x) => Object.values(x).some((v) => /^[0-9a-f]{64}$/.test(String(v)))) ? { username: "email", role: "password hash" } : {}) : r.status >= 500 ? `<p class="bad">The search crashed (error ${esc(r.status)})${r.body && r.body.crash ? `: <code>${esc(r.body.crash)}</code>` : ""}</p>`
+      : `<p class="bad">${esc((r.body && r.body.error) || r.status)}</p>`;
     return r;
   }
 
@@ -1001,36 +1049,60 @@
     const head = (f) => `<p class="atk-found"><span class="atk-flag">LGTM blocked this code</span>Its review of pull request #${esc(found.pr.number)} (commit ${esc((found.run.head_sha || "").slice(0, 7))}) found <b>${esc(CWE_NAMES[f.cwe] || f.cwe)}</b> at <code>${esc(f.file)}:${esc(f.line)}</code>, confirmed by the ${judge}. <a href="#/runs/${enc(found.run.id)}/findings">Open the review</a></p>`;
     const out = [];
     if (sqli && search) out.push(`<div class="atk">${head(sqli)}
-      <p>See what an attacker can do with it. Maria, a manager, searches for this instead of a name: it closes the quote and asks the database for every user's email and password hash.</p>
+      <p>Maria is a manager: she may see usernames and roles, never anyone's email or password hash. Instead of a name she types this into the search. It ends the name early and asks the database for every user's email and password hash.</p>
       <code class="atk-in">${esc(SQLI)}</code>
       <button type="button" class="btn primary" data-attack="sqli">Run the attack</button>
       <div class="atk-out" id="atk-sqli"></div></div>`);
     if (idor && detail) out.push(`<div class="atk">${head(idor)}
-      <p>See what an attacker can do with it. Alice, a customer, asks for order #3, which belongs to Bob.</p>
+      <p>Alice is a customer: she may see only her own orders. She asks for order #3, which belongs to Bob.</p>
       <button type="button" class="btn primary" data-attack="idor">Run the attack</button>
       <div class="atk-out" id="atk-idor"></div></div>`);
     return out.length ? `<h3>Exploit what LGTM found</h3>${out.join("")}` : "";
   }
 
   async function runAttack(kind) {
+    const out = $(`#atk-${kind}`);
+    if (out) out.innerHTML = `<p class="ide-dim"><span class="pulse"></span>Running…</p>`;
+    try {
+      await attackSteps(kind);
+    } catch (e) {
+      const o = $(`#atk-${kind}`);
+      if (o) o.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+      const res = $(kind === "sqli" ? "#app-users" : "#app-track-out");
+      if (res && /Loading/.test(res.textContent)) res.innerHTML = "";
+    }
+  }
+  async function attackSteps(kind) {
     if (kind === "sqli") {
       W.app.persona = "maria"; renderApp(W.st || {});
       await new Promise((r) => setTimeout(r, 50));
       const box = $("#app-search input"); if (box) box.value = SQLI;
       const r = await runSearch(SQLI);
       const leaked = Array.isArray(r.body) ? r.body.filter((x) => Object.values(x).some((v) => /^[0-9a-f]{64}$/.test(String(v)) || /@/.test(String(v)))) : [];
+      const box2 = $("#app-users"); if (leaked.length && box2) box2.insertAdjacentHTML("afterbegin", `<div class="leak">⚠ A name search just returned <b>every user's email and password hash</b>, including the admin's.</div>`);
       $("#atk-sqli").innerHTML = leaked.length
         ? `<p class="atk-bad">Leaked ${leaked.length} users' emails and password hashes, including the admin's. This is the bug LGTM blocked.</p>`
-        : r.status === 200 ? `<p class="atk-good">Blocked. The search treated the attack as plain text and found no one. This is the fixed code.</p>` : `<p class="ide-dim">The app answered ${esc(r.status)}.</p>`;
+        : r.status === 200 ? `<p class="atk-good">Blocked. The search treated the attack as plain text and found no one. This is the fixed code.</p>`
+        : crashed(r, "search");
     } else if (kind === "idor") {
       W.app.persona = "alice"; renderApp(W.st || {});
       await new Promise((r) => setTimeout(r, 50));
       const r = await call("GET", "/orders/3", undefined, "alice");
-      const out = $("#app-track-out"); if (out) out.innerHTML = r.status === 200 ? orderCard(r.body, true) : "";
-      $("#atk-idor").innerHTML = r.status === 200 && r.body && r.body.user_id !== 1
+      const stolen = r.status === 200 && r.body && r.body.user_id !== 1;
+      const out = $("#app-track-out"); if (out) out.innerHTML = r.status === 200 ? `${stolen ? `<div class="leak">⚠ You're signed in as <b>Alice</b>, but this is <b>another customer's</b> order, with their home address.</div>` : ""}${orderCard(r.body, true)}` : "";
+      const path = $("#app-path"); if (path) path.textContent = "/orders/3";
+      $("#atk-idor").innerHTML = stolen
         ? `<p class="atk-bad">Alice can read Bob's order, including his home address. This is the bug LGTM blocked.</p>`
-        : `<p class="atk-good">Blocked: the app answered ${esc(r.status)}. Only the owner (or an admin) can see an order.</p>`;
+        : r.status >= 500 ? crashed(r, "order page")
+        : `<p class="atk-good">Blocked: the app said no (${esc(r.status)}). Only the owner (or an admin) can see an order.</p>`;
     }
+  }
+
+  // The app crashed instead of answering: nothing leaked, and the attack cannot show anything on this code.
+  function crashed(r, what) {
+    const why = r.body && r.body.crash;
+    return `<p class="atk-meh"><b>Nothing leaked: the ${what} crashed</b> (error ${esc(r.status)}) before it could answer${why ? `: <code>${esc(why)}</code>` : "."}</p>
+      <p class="ide-dim">The code under review has another bug that breaks this endpoint, so the attack cannot run against it. Fix that bug, or replay the prepared change, to see the attack.</p>`;
   }
 
   function drawLog() {

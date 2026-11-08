@@ -698,7 +698,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(WS.write(repo, body.get("path", ""), str(body.get("content") or ""), bool(body.get("deleted"))))
             if path == "/api/ws/push":
                 gen = WS.push_stream(repo, body.get("branch", ""), body.get("message", ""), body.get("title", ""),
-                                     sess["login"], body.get("how", ""))
+                                     sess["login"], body.get("how", ""), str(body.get("preset") or ""))
                 return self.ndjson(gen)
             if path == "/api/ws/generate":
                 return self.ws_generate(repo, body)
@@ -727,8 +727,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write((json.dumps({"type": "error", "msg": gh.redact(str(exc))[:400]}) + "\n").encode())
 
     def ws_generate(self, repo: str, body: dict):
-        """Stream Claude's rewrite of one file as newline-delimited JSON events."""
-        gen = WS.generate(repo, body.get("path", ""), body.get("prompt", ""), ENGINE.bedrock_key, ENGINE.bedrock_budget)
+        """Stream the local model's rewrite of one file as newline-delimited JSON events."""
+        gen = WS.write_live(repo, body.get("path", ""), body.get("prompt", ""))
         try:
             first = next(gen)
         except workspace.WorkspaceError:
