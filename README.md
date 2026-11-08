@@ -85,8 +85,8 @@ model/deploy/up.sh
 ## Usage
 
 ```bash
-# Index the target repo's documentation (security policy, API spec, README)
-lgtm index --repo /path/to/repo
+# Index the docs committed on the base branch (security policy, API spec, README)
+lgtm index --repo /path/to/repo --ref main
 
 # Review a PR (diff of pr-branch against base-branch)
 lgtm review --repo /path/to/repo --base main --pr feature-branch \
@@ -114,7 +114,8 @@ unsupported and not judged candidates, supported first.
 
 Exit code of `lgtm review`: 1 if any candidate is supported and the judge's
 verdict for it is not `not_real`, or the `llm-only` baseline
-reports a vulnerable finding; otherwise 2 if any candidate is not judged or any agent errored;
+reports a vulnerable finding; otherwise 2 if any candidate is not judged, any agent errored,
+or the PR changes a policy document and `fail_on_policy_change` is on (see [Policy index](#policy-index));
 otherwise 0 (CI-friendly). A supported candidate with verdict `not_real` is
 not a vulnerability: it is listed as "not real" in the reports and does not
 set exit code 1.
@@ -176,9 +177,26 @@ the benchmark records:
 
 ### Policy index
 
+The base branch's docs are the security policy. A PR cannot change the policy
+it is reviewed against:
+
+- `lgtm index --ref <commit>` (default `HEAD`) reads the `.md`, `.txt` and
+  `.rst` files committed at that commit, never the working tree, and records
+  the commit in the index. Uncommitted and untracked docs are not indexed.
+- `lgtm review` uses the index only when it was built from the base commit.
+  Otherwise it warns, prints the `lgtm index` command to run, and reviews with
+  code evidence only. `policy_index` in `report.json` is `ok`, `missing` or
+  `stale:<commit the index was built from>`.
+- A PR that adds, edits, renames or deletes any of those docs is listed under
+  "Policy Documents Changed: Needs Human Review" in `report.md` and in
+  `policy_docs_changed` in `report.json`. This does not change the exit code
+  unless `fail_on_policy_change` is set to `true` in the config file; then it
+  sets exit code 2 when nothing is supported. The review itself still reads
+  the base versions.
+
 The policy index is stored in `.lgtm/chroma` inside the reviewed repository.
 Deleting that directory also deletes the index, so run
-`lgtm index --repo /path/to/repo` again before the next review. Indexing
+`lgtm index --repo /path/to/repo --ref <base>` again before the next review. Indexing
 replaces only the policy collection (`lgtm_docs`); LGTM does not clean up
 other collections automatically. Config keys that no longer exist
 are ignored with an `Ignoring unknown config keys` warning.

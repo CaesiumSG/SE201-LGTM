@@ -1,8 +1,12 @@
 """Index project documentation into ChromaDB for policy retrieval.
 
-Finds ``.md``/``.txt``/``.rst`` files in a repository (security policies,
-API specs, READMEs), splits them into chunks with line-range metadata, and
-stores them in a persistent ChromaDB collection.
+Finds ``.md``/``.txt``/``.rst`` files committed at one commit (security
+policies, API specs, READMEs), splits them into chunks with line-range
+metadata, and stores them in a persistent ChromaDB collection.
+
+Docs are read from a commit, never from the working tree, and the collection
+records that commit. A review uses the index only when it was built from the
+PR's base commit, so a PR cannot change the policy it is reviewed against.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lgtm.config import LGTMConfig
+from lgtm.diff.git_diff import GitError, list_files_at_ref, read_file_at_ref, resolve_commit
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,9 @@ SKIP_DIRS = {
     "build",
 }
 
+# Collection metadata key holding the commit the docs were read from
+COMMIT_KEY = "lgtm_commit"
+
 # Approximation: 1 token ~= 4 characters of English text
 CHARS_PER_TOKEN = 4
 
@@ -42,19 +50,14 @@ class DocChunk:
     content: str
 
 
-def find_doc_files(
-    repo: str | Path, extensions: tuple[str, ...] = (".md", ".txt", ".rst")
-) -> list[Path]:
-    """Recursively find documentation files in a repository."""
-    repo = Path(repo)
-    docs: list[Path] = []
-    for path in sorted(repo.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in extensions:
-            continue
-        if any(part in SKIP_DIRS for part in path.relative_to(repo).parts):
-            continue
-        docs.append(path)
-    return docs
+def is_doc_path(
+    path: str, extensions: tuple[str, ...] = (".md", ".txt", ".rst")
+) -> bool:
+    """Whether a repo-relative path is a documentation file LGTM indexes."""
+    parts = path.replace("\\", "/").split("/")
+    if any(part in SKIP_DIRS for part in parts[:-1]):
+        return False
+    return Path(parts[-1]).suffix.lower() in extensions
 
 
 def chunk_document(
@@ -110,14 +113,13 @@ def chunk_document(
 
 
 def _chunk_files(
-    repo: Path, files: list[Path], config: LGTMConfig
+    repo: Path, commit: str, files: list[str], config: LGTMConfig
 ) -> list[DocChunk]:
     chunks: list[DocChunk] = []
-    for path in files:
-        rel = str(path.relative_to(repo))
+    for rel in files:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
+            text = read_file_at_ref(repo, commit, rel, config.git_timeout)
+        except GitError as exc:
             logger.warning("Skipping unreadable file %s: %s", rel, exc)
             continue
         file_chunks = chunk_document(
@@ -128,13 +130,17 @@ def _chunk_files(
     return chunks
 
 
-def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
+def _replace_collection(
+    client, name: str, chunks: list[DocChunk], commit: str
+) -> None:
     """Drop and recreate a collection (idempotent re-index)."""
     try:
         client.delete_collection(name)
     except Exception:  # noqa: BLE001 - collection may not exist yet
         pass
-    collection = client.create_collection(name, metadata={"hnsw:space": "cosine"})
+    collection = client.create_collection(
+        name, metadata={"hnsw:space": "cosine", COMMIT_KEY: commit}
+    )
     # Chroma refuses an add() larger than the backend's max batch size (5461
     # on SQLite builds with a 32766 variable limit), so a big repo's chunks
     # must go in several calls. What is indexed is unchanged.
@@ -158,25 +164,34 @@ def _replace_collection(client, name: str, chunks: list[DocChunk]) -> None:
         )
 
 
-def index_repo_docs(repo: str | Path, config: LGTMConfig | None = None) -> int:
+def index_repo_docs(
+    repo: str | Path, config: LGTMConfig | None = None, ref: str = "HEAD"
+) -> int:
+    """Index the docs committed at ``ref``; uncommitted files are left out."""
     import chromadb
 
     config = config or LGTMConfig()
     repo = Path(repo).resolve()
+    commit = resolve_commit(repo, ref, config.git_timeout)
     persist_dir = config.chroma_dir_for(repo)
     persist_dir.mkdir(parents=True, exist_ok=True)
 
-    doc_files = find_doc_files(repo, config.doc_extensions)
-    logger.info("Found %d documentation files to index", len(doc_files))
-    doc_chunks = _chunk_files(repo, doc_files, config)
+    doc_files = [
+        p
+        for p in list_files_at_ref(repo, commit, config.git_timeout)
+        if is_doc_path(p, config.doc_extensions)
+    ]
+    logger.info("Found %d documentation files at %s", len(doc_files), commit[:12])
+    doc_chunks = _chunk_files(repo, commit, doc_files, config)
 
     client = chromadb.PersistentClient(path=str(persist_dir))
-    _replace_collection(client, config.chroma_collection, doc_chunks)
+    _replace_collection(client, config.chroma_collection, doc_chunks, commit)
 
     logger.info(
-        "Indexed %d doc chunks from %d files into %s",
+        "Indexed %d doc chunks from %d files at %s into %s",
         len(doc_chunks),
         len(doc_files),
+        commit[:12],
         persist_dir,
     )
     return len(doc_chunks)

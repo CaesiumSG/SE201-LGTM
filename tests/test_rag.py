@@ -6,31 +6,129 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from lgtm.config import LGTMConfig
-from lgtm.rag.indexer import chunk_document, find_doc_files, index_repo_docs
+from lgtm.diff.git_diff import GitError
+from lgtm.rag import indexer as indexer_mod
+from lgtm.rag.indexer import COMMIT_KEY, chunk_document, index_repo_docs, is_doc_path
 from lgtm.rag.retriever import PolicyRetriever, RetrievedChunk
+from tests.conftest import git
 
 
-class TestFindDocFiles:
-    def test_finds_md_txt_rst(self, tmp_path):
-        (tmp_path / "README.md").write_text("readme")
-        (tmp_path / "notes.txt").write_text("notes")
-        (tmp_path / "spec.rst").write_text("spec")
-        (tmp_path / "code.py").write_text("x = 1")
-        sub = tmp_path / "docs"
-        sub.mkdir()
-        (sub / "policy.md").write_text("policy")
-        found = {p.name for p in find_doc_files(tmp_path)}
-        assert found == {"README.md", "notes.txt", "spec.rst", "policy.md"}
+class TestIsDocPath:
+    @pytest.mark.parametrize(
+        "path", ["README.md", "notes.txt", "spec.rst", "docs/policy.md", "docs/POLICY.MD"]
+    )
+    def test_doc_extensions_are_docs(self, path):
+        assert is_doc_path(path)
 
-    def test_skips_hidden_and_vendor_dirs(self, tmp_path):
-        for skip in (".git", "node_modules", ".lgtm"):
-            d = tmp_path / skip
-            d.mkdir()
-            (d / "x.md").write_text("hidden")
-        (tmp_path / "ok.md").write_text("ok")
-        found = {p.name for p in find_doc_files(tmp_path)}
-        assert found == {"ok.md"}
+    @pytest.mark.parametrize(
+        "path", ["code.py", ".git/x.md", "node_modules/a/x.md", ".lgtm/x.md", "a/.venv/x.md"]
+    )
+    def test_code_and_skipped_dirs_are_not_docs(self, path):
+        assert not is_doc_path(path)
+
+
+def _commit_all(repo, message="docs"):
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+class _RecordingClient:
+    """Fake Chroma client that keeps the last created collection."""
+
+    def __init__(self):
+        self.collection = None
+
+    def delete_collection(self, name):
+        pass
+
+    def get_max_batch_size(self):
+        return 5461
+
+    def create_collection(self, name, metadata=None):
+        client = self
+
+        class Collection:
+            def __init__(self):
+                self.metadata = metadata
+                self.documents = []
+                self.sources = []
+
+            def add(self, ids, documents, metadatas):
+                self.documents.extend(documents)
+                self.sources.extend(m["source"] for m in metadatas)
+
+        self.collection = Collection()
+        return client.collection
+
+
+@pytest.fixture
+def recording_chroma(monkeypatch):
+    client = _RecordingClient()
+    monkeypatch.setitem(
+        sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client)
+    )
+    return client
+
+
+class TestIndexFromCommit:
+    """The index holds the docs of one commit, never the working tree."""
+
+    def test_index_records_the_commit_it_read(self, git_repo, recording_chroma):
+        head = git(git_repo, "rev-parse", "HEAD").strip()
+        index_repo_docs(git_repo, LGTMConfig())
+        assert recording_chroma.collection.metadata[COMMIT_KEY] == head
+
+    def test_ref_indexes_the_base_while_the_pr_is_checked_out(
+        self, git_repo, recording_chroma
+    ):
+        base = git(git_repo, "rev-parse", "main").strip()
+        git(git_repo, "checkout", "-q", "pr")
+        (git_repo / "policy.md").write_text("Everyone may delete users.\n", encoding="utf-8")
+        _commit_all(git_repo, "PR rewrites the policy")
+
+        index_repo_docs(git_repo, LGTMConfig(), ref="main")
+
+        text = "\n".join(recording_chroma.collection.documents)
+        assert "Only admins may delete users." in text
+        assert "Everyone may delete users." not in text
+        assert recording_chroma.collection.metadata[COMMIT_KEY] == base
+
+    def test_uncommitted_and_untracked_docs_are_not_indexed(
+        self, git_repo, recording_chroma
+    ):
+        (git_repo / "policy.md").write_text("Edited but not committed.\n", encoding="utf-8")
+        (git_repo / "new.md").write_text("Never committed.\n", encoding="utf-8")
+
+        index_repo_docs(git_repo, LGTMConfig())
+
+        text = "\n".join(recording_chroma.collection.documents)
+        assert "Only admins may delete users." in text
+        assert "not committed" not in text
+        assert "Never committed" not in text
+        assert recording_chroma.collection.sources == ["policy.md"]
+
+    def test_an_unreadable_doc_is_skipped_and_the_rest_are_indexed(
+        self, git_repo, recording_chroma, monkeypatch, caplog
+    ):
+        (git_repo / "broken.md").write_text("Cannot be read.\n", encoding="utf-8")
+        _commit_all(git_repo, "add a doc that will fail to read")
+        real_read = indexer_mod.read_file_at_ref
+
+        def read(repo, ref, path, timeout=60):
+            if path == "broken.md":
+                raise GitError("git failed (exit 128): show broken.md")
+            return real_read(repo, ref, path, timeout)
+
+        monkeypatch.setattr(indexer_mod, "read_file_at_ref", read)
+
+        index_repo_docs(git_repo, LGTMConfig())
+
+        assert recording_chroma.collection.sources == ["policy.md"]
+        assert "Skipping unreadable file broken.md" in caplog.text
 
 
 class TestChunkDocument:
@@ -116,10 +214,14 @@ def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
         sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client)
     )
 
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "user.email", "t@t.local")
+    git(tmp_path, "config", "user.name", "T")
     (tmp_path / "app.py").write_text("def authorize(): pass", encoding="utf-8")
     (tmp_path / "policy.md").write_text(
         "Admin access\nrequires approval.", encoding="utf-8"
     )
+    _commit_all(tmp_path)
     config = LGTMConfig(rag_chunk_size=2, rag_chunk_overlap=0)
     assert index_repo_docs(tmp_path, config) == 2
     assert [record[0] for record in client.collections["lgtm_docs"].records.values()] == [
@@ -135,6 +237,7 @@ def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
     assert stale.records == stale_records
 
     (tmp_path / "policy.md").write_text(" \n\t", encoding="utf-8")
+    _commit_all(tmp_path, "blank policy")
     assert index_repo_docs(tmp_path, config) == 0
     assert client.collections["lgtm_code"] is stale
     assert stale.metadata == stale_metadata
@@ -177,7 +280,7 @@ class TestReplaceCollectionBatching:
         from lgtm.rag.indexer import _replace_collection
 
         client = self._Client(limit=4)
-        _replace_collection(client, "code", self._chunks(10))
+        _replace_collection(client, "code", self._chunks(10), "c0ffee")
         sizes = [len(b) for b in client.collection.batches]
         assert max(sizes) <= 4
         assert sum(sizes) == 10
@@ -186,7 +289,7 @@ class TestReplaceCollectionBatching:
         from lgtm.rag.indexer import _replace_collection
 
         client = self._Client(limit=3)
-        _replace_collection(client, "code", self._chunks(7))
+        _replace_collection(client, "code", self._chunks(7), "c0ffee")
         flat = [i for batch in client.collection.batches for i in batch]
         assert flat == [f"id{i}" for i in range(7)]
 
@@ -194,7 +297,7 @@ class TestReplaceCollectionBatching:
         from lgtm.rag.indexer import _replace_collection
 
         client = self._Client(limit=5461)
-        _replace_collection(client, "docs", self._chunks(5))
+        _replace_collection(client, "docs", self._chunks(5), "c0ffee")
         assert len(client.collection.batches) == 1
 
 

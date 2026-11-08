@@ -25,6 +25,7 @@ from lgtm.agents.tools import read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
 from lgtm.diff.sanitizer import sanitize_source
+from lgtm.rag.indexer import is_doc_path
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,12 @@ class EvidenceValidator:
                 )
                 self._file_cache[path] = content.splitlines()
             except GitError:
-                # Fall back to the working tree (useful for docs not in git yet)
+                if is_doc_path(path, self.config.doc_extensions):
+                    # Docs are policy: only the committed base version counts, never
+                    # the working tree, which in CI is usually the PR's checkout.
+                    self._file_cache[path] = None
+                    return None
+                # Fall back to the working tree for code files
                 fs_path = self.repo / path
                 try:
                     if fs_path.resolve().is_relative_to(self.repo) and fs_path.is_file():
