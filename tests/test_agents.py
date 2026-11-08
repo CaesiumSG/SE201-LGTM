@@ -8,16 +8,27 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
-from lgtm.agents.base import extract_json_object, parse_agent_output, run_tool_loop
+from lgtm.agents.sast_triage import SASTTriageAgent
+from lgtm.agents.base import (
+    RunRecord,
+    answer_until_parsed,
+    extract_json_object,
+    fill_record,
+    parse_agent_output,
+    run_tool_loop,
+)
 from lgtm.agents.tools import AgentToolbox
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import LineChange
+from lgtm.graph.snapshot import resolve_refs
 from lgtm.review.sections import HunkRef, Section
+from lgtm.sast.semgrep_runner import SemgrepFinding
 
 
 class TestToolbox:
@@ -128,21 +139,21 @@ class TestParseAgentOutput:
         ```"""
         f = parse_agent_output(text, "fallback-id")
         assert f.finding_id == "f1"
-        assert f.verdict == "vulnerable"
-        assert f.confidence == 0.9
+        assert not f.verdict
+        assert not hasattr(f, "confidence")
         assert len(f.evidence) == 2
         assert f.evidence[1].type == "policy"
 
     def test_malformed_output_degrades_gracefully(self):
         f = parse_agent_output("I think it's fine lol", "f2", default_cwe="CWE-89")
-        assert f.verdict == "insufficient_evidence"
+        assert not f.verdict
         assert f.finding_id == "f2"
         assert f.cwe_id == "CWE-89"
 
-    def test_invalid_verdict_normalized(self):
+    def test_model_verdict_and_confidence_are_ignored(self):
         f = parse_agent_output('{"verdict": "exploitable!!", "confidence": 5}', "f3")
-        assert f.verdict == "insufficient_evidence"
-        assert f.confidence == 1.0  # clamped
+        assert not f.verdict
+        assert not hasattr(f, "confidence")
 
     def test_int_lines_coerced(self):
         f = parse_agent_output(
@@ -290,11 +301,11 @@ class TestReviewSection:
     def test_each_finding_is_numbered_and_carries_its_own_fields(self, git_repo):
         llm = _FakeLLM([_reply(
             _finding(verdict="vulnerable", cwe_id="CWE-639", line=11),
-            _finding(verdict="possible", cwe_id="CWE-862", confidence=0.4, line=12),
+            _finding(cwe_id="CWE-862", line=12),
         )])
         out = _review(git_repo, llm)
         assert [f.finding_id for f in out] == ["authz:s1:1", "authz:s1:2"]
-        assert [f.verdict for f in out] == ["vulnerable", "possible"]
+        assert not any(f.verdict for f in out)
         assert [f.cwe_id for f in out] == ["CWE-639", "CWE-862"]
         assert [f.line for f in out] == [11, 12]
         assert all(f.category == "authz" and f.agent == "authz_reviewer" for f in out)
@@ -307,7 +318,6 @@ class TestReviewSection:
     )
     def test_zero_or_only_safe_findings_report_no_issue(self, git_repo, findings):
         out = _review(git_repo, _FakeLLM([_reply(*findings)]))
-        assert all(f.verdict == "safe" for f in out)
         assert not any(f.finding_id.endswith(":failed") for f in out)
 
     def test_empty_file_falls_back_to_the_first_section_file(self, git_repo):
@@ -366,16 +376,8 @@ class TestReviewSection:
         assert out[0].line == 20
 
     @staticmethod
-    def _assert_unparsable_failure(out):
-        assert len(out) == 1
-        failed = out[0]
-        assert failed.finding_id == "authz:s1:failed"
-        assert failed.verdict == "insufficient_evidence"
-        assert failed.cwe_id == "CWE-862"
-        assert failed.confidence == 0.0
-        assert failed.explanation == (
-            "Section review returned no parsable findings for app.py lines 10-12"
-        )
+    def _assert_no_candidates(out):
+        assert out == []
 
     @pytest.mark.parametrize("token", ["1e999", "Infinity"])
     def test_non_finite_evidence_line_yields_the_unparsable_failure_finding(
@@ -385,23 +387,24 @@ class TestReviewSection:
         reply = json.dumps({"findings": [_finding(verdict="possible", evidence=[evidence])]})
         reply = reply.replace('"@@"', token)
         assert not isinstance(json.loads(reply)["findings"][0]["evidence"][0]["lines"][0], str)
-        self._assert_unparsable_failure(_review(git_repo, _FakeLLM([_ai_message(reply)])))
+        self._assert_no_candidates(_review(git_repo, _AlwaysLLM(content=reply)))
 
     @pytest.mark.parametrize("evidence", [5, True], ids=["int", "bool"])
     def test_non_iterable_evidence_yields_the_unparsable_failure_finding(
         self, git_repo, evidence
     ):
-        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=evidence))]))
-        self._assert_unparsable_failure(out)
+        out = _review(git_repo, _AlwaysLLM(content=_reply(_finding(evidence=evidence)).content))
+        self._assert_no_candidates(out)
 
     @pytest.mark.parametrize("lines", [[0, 0], [-3, -3], [2**31, 2**31]], ids=["zero", "negative", "huge"])
-    def test_invalid_evidence_line_citation_reaches_the_validator_unchanged(
+    def test_invalid_evidence_line_citation_keeps_the_candidate_unsupported_after_the_retry_budget(
         self, git_repo, lines
     ):
         evidence = {"type": "code", "file": "app.py", "lines": lines, "content": "a = 1"}
-        out = _review(git_repo, _FakeLLM([_reply(_finding(evidence=[evidence]))]))
-        assert [f.finding_id for f in out] == ["authz:s1:1"]
-        assert list(out[0].evidence[0].lines) == lines
+        llm = _SequenceLLM(_reply(_finding(evidence=[evidence])).content)
+        [candidate] = _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo))
+        assert candidate.supported is False
+        assert llm.calls == 4
 
     def test_budget_is_restored_for_each_section_after_an_investigator_override(self, git_repo):
         config = LGTMConfig()
@@ -425,42 +428,148 @@ class TestReviewSection:
             used.append(out[0].tool_calls_used)
         assert used == [1, 1]
 
-    def test_llm_exception_yields_one_failed_insufficient_evidence_finding(self, git_repo):
-        llm = _AlwaysLLM(exc=RuntimeError("boom"))
-        out = _review(git_repo, llm, llm_retries=0)
-        assert len(out) == 1
-        failed = out[0]
-        assert failed.finding_id == "authz:s1:failed"
-        assert failed.verdict == "insufficient_evidence"
-        assert failed.cwe_id == "CWE-862"
-        assert failed.confidence == 0.0
-        assert failed.explanation == "Section review failed for app.py lines 10-12: boom"
-        assert failed.category == "authz" and failed.agent == "authz_reviewer"
+    def test_llm_exception_yields_no_candidate_and_does_not_raise(self, git_repo):
+        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), llm_retries=0)
+        assert out == []
 
-    def test_failed_message_names_every_file_in_section_order(self, git_repo):
-        section = _section([_hunk("orders.py", start=5), _hunk("refunds.py", start=40)])
-        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
-        text = out[0].explanation
-        assert text.index("orders.py") < text.index("refunds.py")
-        assert text.endswith(": boom")
+    def test_unparsable_reply_yields_no_candidate_and_does_not_raise(self, git_repo):
+        out = _review(git_repo, _AlwaysLLM(content="The change looks fine to me."))
+        assert out == []
 
-    def test_failed_message_uses_old_side_lines_for_deletion_only_sections(self, git_repo):
-        section = _section([_hunk(start=20, lines=("x", "y"), deletion=True)])
-        out = _review(git_repo, _AlwaysLLM(exc=RuntimeError("boom")), section, llm_retries=0)
-        assert out[0].explanation == "Section review failed for app.py lines 20-21: boom"
 
-    def test_unparsable_reply_yields_one_failed_insufficient_evidence_finding(self, git_repo):
-        llm = _AlwaysLLM(content="The change looks fine to me.")
-        out = _review(git_repo, llm)
-        assert len(out) == 1
-        failed = out[0]
-        assert failed.finding_id == "authz:s1:failed"
-        assert failed.verdict == "insufficient_evidence"
-        assert failed.cwe_id == "CWE-862"
-        assert failed.confidence == 0.0
-        assert failed.explanation == (
-            "Section review returned no parsable findings for app.py lines 10-12"
+class _SequenceLLM:
+    """Replays replies in order, repeating the last one; counts model calls."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        reply = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
+        return _ai_message(reply)
+
+
+NO_RETRY_CONFIG = dict(llm_retries=0, max_answer_reasks=0)
+UNPARSABLE = "The change looks fine to me."
+SEMGREP_HIT = SemgrepFinding(
+    rule_id="py.sqli.fstring", path="app.py", start_line=6, end_line=6,
+    message="SQL built from user input", severity="ERROR", cwe=["CWE-89"],
+    matched_code="cursor.execute(f\"...\")",
+)
+PR_SQL_LINE = "cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")"
+CODE_ITEM = {
+    "type": "code", "file": "app.py", "lines": [6, 6], "content": PR_SQL_LINE, "snapshot": "pr",
+}
+POLICY_ITEM = {"type": "policy", "source": "policy.md", "content": "Only admins may delete users."}
+
+
+def _snapshot_toolbox(git_repo, config=None):
+    return AgentToolbox(
+        git_repo, "main", None, config or LGTMConfig(),
+        shas=resolve_refs(git_repo, "main", "pr"),
+    )
+
+
+def _authz_candidates(git_repo, llm):
+    config = LGTMConfig(**NO_RETRY_CONFIG)
+    return _review(git_repo, llm, toolbox=_snapshot_toolbox(git_repo, config), **NO_RETRY_CONFIG)
+
+
+def _triage_candidate(git_repo, llm):
+    config = LGTMConfig(**NO_RETRY_CONFIG)
+    agent = SASTTriageAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+    return agent.triage(SEMGREP_HIT, None)
+
+
+def _triage_reply(**fields):
+    return json.dumps({
+        "verdict": "vulnerable", "confidence": 0.9, "cwe_id": "CWE-89",
+        "explanation": "f-string reaches execute", "evidence": [CODE_ITEM, POLICY_ITEM],
+        **fields,
+    })
+
+
+def _assert_structured_candidate(candidate, *, cwe, claim):
+    assert candidate.cwe_id == cwe
+    assert candidate.explanation == claim
+    code, policy = candidate.evidence
+    assert (code.type, code.file, list(code.lines), code.content, code.snapshot) == (
+        "code", "app.py", [6, 6], PR_SQL_LINE, "pr",
+    )
+    assert (policy.type, policy.source) == ("policy", "policy.md")
+    assert not candidate.verdict
+    assert "confidence" not in candidate.model_dump()
+    assert not candidate.severity
+    assert candidate.provenance_confidence is None and candidate.judged is False
+    assert code.grounded_in_pr is None
+
+
+class TestCandidateContract:
+    def test_authz_candidate_carries_claim_cwe_and_provenance_with_no_verdict_or_confidence(
+        self, git_repo
+    ):
+        raw = _finding(evidence=[CODE_ITEM, POLICY_ITEM], explanation="no ownership check")
+        [candidate] = _authz_candidates(git_repo, _SequenceLLM(_reply(raw).content))
+        _assert_structured_candidate(candidate, cwe="CWE-639", claim="no ownership check")
+
+    def test_sast_candidate_carries_the_same_fields_plus_semgrep_rule_severity_and_message(
+        self, git_repo
+    ):
+        candidate = _triage_candidate(git_repo, _SequenceLLM(_triage_reply()))
+        _assert_structured_candidate(
+            candidate, cwe="CWE-89", claim="f-string reaches execute"
         )
+        assert (candidate.semgrep_rule_id, candidate.semgrep_severity, candidate.semgrep_message) == (
+            SEMGREP_HIT.rule_id, SEMGREP_HIT.severity, SEMGREP_HIT.message,
+        )
+
+    def test_candidate_without_any_model_verdict_or_confidence_is_still_emitted(self, git_repo):
+        raw = {k: v for k, v in _finding().items() if k not in ("verdict", "confidence")}
+        [candidate] = _authz_candidates(git_repo, _SequenceLLM(_reply(raw).content))
+        assert candidate.cwe_id == "CWE-639" and not candidate.verdict
+
+
+class TestUnparsableAnswerRetry:
+    GOOD_AUTHZ = _reply(_finding(explanation="from the retry")).content
+    GOOD_TRIAGE = _triage_reply(explanation="from the retry")
+
+    @pytest.mark.parametrize("agent", ["authz", "triage"])
+    def test_an_answer_that_never_parses_is_attempted_four_times_and_raises_nothing(
+        self, git_repo, agent
+    ):
+        llm = _SequenceLLM(UNPARSABLE)
+        if agent == "authz":
+            _authz_candidates(git_repo, llm)
+        else:
+            _triage_candidate(git_repo, llm)
+        assert llm.calls == 4
+
+    @pytest.mark.parametrize("unparsable_attempts", [1, 2, 3])
+    def test_authz_uses_the_candidates_of_the_first_attempt_that_parses(
+        self, git_repo, unparsable_attempts
+    ):
+        llm = _SequenceLLM(*[UNPARSABLE] * unparsable_attempts, self.GOOD_AUTHZ)
+        out = _authz_candidates(git_repo, llm)
+        assert [f.explanation for f in out] == ["from the retry"]
+        assert llm.calls == unparsable_attempts + 1
+
+    @pytest.mark.parametrize("unparsable_attempts", [1, 2, 3])
+    def test_triage_uses_the_candidate_of_the_first_attempt_that_parses(
+        self, git_repo, unparsable_attempts
+    ):
+        llm = _SequenceLLM(*[UNPARSABLE] * unparsable_attempts, self.GOOD_TRIAGE)
+        candidate = _triage_candidate(git_repo, llm)
+        assert candidate.explanation == "from the retry"
+        assert llm.calls == unparsable_attempts + 1
+
+    def test_a_parsable_first_answer_is_not_retried(self, git_repo):
+        llm = _SequenceLLM(self.GOOD_AUTHZ)
+        _authz_candidates(git_repo, llm)
+        assert llm.calls == 1
 
 
 class TestTextToolCalls:
@@ -631,7 +740,7 @@ class TestToolInputValidation:
         out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
         assert out == OK
         assert llm.channels == ["bound", "bound", "bound", "unbound"]
-        assert "Produce your final JSON verdict NOW" in llm.seen[3][-1].content
+        assert "Produce your final JSON answer NOW" in llm.seen[3][-1].content
         assert "Invalid tool input (1 of 3)" in caplog.text
         assert "(3 of 3)" in caplog.text
 
@@ -663,7 +772,7 @@ class TestToolInputValidation:
         assert [m.tool_call_id for m in tool_messages] == ["c1", "c2", "c3"]
         assert prompt[-4:-1] == tool_messages
         assert _kind(prompt[-1]) == "HumanMessage"
-        assert "Produce your final JSON verdict NOW" in prompt[-1].content
+        assert "Produce your final JSON answer NOW" in prompt[-1].content
 
     def test_valid_call_after_invalid_still_executes(self, git_repo):
         toolbox = AgentToolbox(git_repo, "main")
@@ -783,3 +892,908 @@ def test_real_chat_ollama_accepts_our_kwargs():
 
     llm = build_llm(LGTMConfig(ollama_model="m"))  # no network: construction only
     assert llm.num_predict == 2048
+
+
+BASE_DEF_LINE = "def get_user(cursor, user_id):"
+GOOD_PR = CODE_ITEM
+GOOD_BASE = {
+    "type": "code", "file": "app.py", "lines": [1, 1], "content": BASE_DEF_LINE, "snapshot": "base",
+}
+UNRESOLVED = {
+    "file missing": {**GOOD_PR, "file": "nope.py"},
+    "lines out of range": {**GOOD_PR, "lines": [90, 91]},
+    "snippet mismatch": {**GOOD_PR, "content": "os.system(user_input)"},
+    "snippet only in other snapshot": {**GOOD_PR, "snapshot": "base"},
+}
+BAD = pytest.mark.parametrize("bad", list(UNRESOLVED.values()), ids=list(UNRESOLVED))
+
+
+def _authz_agent(git_repo, llm):
+    config = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    return AuthzReviewerAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+
+
+def _triage_agent(git_repo, llm):
+    config = LGTMConfig(llm_retries=0, max_answer_reasks=0)
+    return SASTTriageAgent(_snapshot_toolbox(git_repo, config), config, llm=llm)
+
+
+def _authz_reply(*findings):
+    return _reply(*findings).content
+
+
+def _warnings(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+
+class TestUnresolvedReferenceReask:
+    @BAD
+    def test_authz_reasks_inside_the_parse_budget_and_uses_the_first_resolving_attempt(
+        self, git_repo, bad
+    ):
+        llm = _SequenceLLM(
+            _authz_reply(_finding(explanation="first", evidence=[bad])),
+            _authz_reply(_finding(explanation="second", evidence=[GOOD_PR])),
+        )
+        agent = _authz_agent(git_repo, llm)
+        out = agent.review_section(_section())
+        assert [f.explanation for f in out] == ["second"]
+        assert [e.content for e in out[0].evidence] == [PR_SQL_LINE]
+        assert llm.calls == 2 and agent.errors == []
+
+    @BAD
+    def test_triage_reasks_inside_the_parse_budget_and_uses_the_first_resolving_attempt(
+        self, git_repo, bad
+    ):
+        llm = _SequenceLLM(
+            _triage_reply(explanation="first", evidence=[bad]),
+            _triage_reply(explanation="second", evidence=[GOOD_PR]),
+        )
+        agent = _triage_agent(git_repo, llm)
+        candidate = agent.triage(SEMGREP_HIT, None)
+        assert candidate.explanation == "second"
+        assert llm.calls == 2 and agent.errors == []
+
+    def test_resolving_references_on_both_snapshots_are_not_reasked(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, GOOD_BASE])))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+        assert len(out) == 1 and len(out[0].evidence) == 2 and llm.calls == 1
+
+    def test_unresolved_references_never_exceed_the_unparsable_answer_budget(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[UNRESOLVED["file missing"]])))
+        _authz_agent(git_repo, llm).review_section(_section())
+        assert llm.calls == 4
+
+    def test_triage_unresolved_references_never_exceed_the_unparsable_answer_budget(
+        self, git_repo
+    ):
+        llm = _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        _triage_agent(git_repo, llm).triage(SEMGREP_HIT, None)
+        assert llm.calls == 4
+
+
+class TestUnresolvedReferencesAfterBudget:
+    @BAD
+    def test_authz_keeps_every_cited_item_and_marks_the_candidate_not_supported(self, git_repo, bad):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad, GOOD_PR, GOOD_BASE])))
+        agent = _authz_agent(git_repo, llm)
+        [candidate] = agent.review_section(_section())
+        assert [(e.file, e.snapshot) for e in candidate.evidence] == [
+            (bad["file"], bad["snapshot"]), ("app.py", "pr"), ("app.py", "base"),
+        ]
+        assert candidate.supported is False
+        assert llm.calls == 4 and agent.errors == []
+
+    @BAD
+    def test_triage_keeps_every_cited_item_and_marks_the_candidate_not_supported(self, git_repo, bad):
+        llm = _SequenceLLM(_triage_reply(evidence=[bad, GOOD_PR]))
+        agent = _triage_agent(git_repo, llm)
+        candidate = agent.triage(SEMGREP_HIT, None)
+        assert [(e.file, e.snapshot) for e in candidate.evidence] == [
+            (bad["file"], bad["snapshot"]), ("app.py", "pr"),
+        ]
+        assert candidate.supported is False
+        assert llm.calls == 4 and agent.errors == []
+
+    @BAD
+    def test_authz_candidate_with_no_valid_code_item_is_kept_unsupported_and_logged_not_errored(
+        self, git_repo, bad, caplog
+    ):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[bad])))
+        agent = _authz_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            [candidate] = agent.review_section(_section())
+        assert candidate.supported is False
+        assert any("s1" in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_unresolved_and_grounded_candidates_of_the_section_are_both_reported(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(
+            _finding(explanation="invented", evidence=[UNRESOLVED["file missing"]]),
+            _finding(explanation="grounded", evidence=[GOOD_PR]),
+        ))
+        agent = _authz_agent(git_repo, llm)
+        out = agent.review_section(_section())
+        by_claim = {f.explanation: f for f in out}
+        assert set(by_claim) == {"invented", "grounded"}
+        assert by_claim["invented"].supported is False
+        assert by_claim["grounded"].supported is not False
+        assert agent.errors == []
+
+    @BAD
+    def test_triage_candidate_with_no_valid_code_item_is_kept_unsupported_and_logged_not_errored(
+        self, git_repo, bad, caplog
+    ):
+        llm = _SequenceLLM(_triage_reply(evidence=[bad]))
+        agent = _triage_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            candidate = agent.triage(SEMGREP_HIT, None)
+        assert candidate is not None and candidate.supported is False
+        assert any(SEMGREP_HIT.finding_id in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_an_unsupported_triage_candidate_does_not_stop_the_next_hit(self, git_repo):
+        agent = _triage_agent(
+            git_repo, _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        )
+        assert agent.triage(SEMGREP_HIT, None).supported is False
+        agent.llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR]))
+        assert agent.triage(SEMGREP_HIT, None) is not None
+
+    def test_unparsable_replies_after_the_budget_remain_the_only_agent_errors(self, git_repo):
+        agent = _authz_agent(git_repo, _SequenceLLM(UNPARSABLE))
+        assert agent.review_section(_section()) == []
+        assert [e["source"] for e in agent.errors] == ["s1"]
+        triage = _triage_agent(git_repo, _SequenceLLM(UNPARSABLE))
+        assert triage.triage(SEMGREP_HIT, None) is None
+        assert [e["source"] for e in triage.errors] == [SEMGREP_HIT.finding_id]
+
+
+class TestGuardrailExemptions:
+    def test_policy_items_are_not_checked_for_resolution(self, git_repo):
+        ghost_policy = {"type": "policy", "source": "missing-policy.md", "content": "nothing"}
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, ghost_policy])))
+        [candidate] = _authz_agent(git_repo, llm).review_section(_section())
+        assert [e.type for e in candidate.evidence] == ["code", "policy"]
+        assert llm.calls == 1
+
+    def test_candidate_citing_no_code_is_not_reasked_or_dropped(self, git_repo):
+        policy_only = {"type": "policy", "source": "policy.md", "content": "x"}
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[policy_only]), _finding(evidence=[])))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+        assert len(out) == 2 and llm.calls == 1
+
+
+BASE_SHA, PR_SHA = "a" * 40, "b" * 40
+
+
+def _function(name, tag):
+    """A function whose changed line sits more than three lines from both ends."""
+    lines = [f"def {name}():", f'    top = "{tag}_TOP"']
+    lines += [f"    before_{i} = {i}" for i in range(10)]
+    lines += [f'    target = "{tag}_TARGET"']
+    lines += [f"    after_{i} = {i}" for i in range(10)]
+    lines += [f'    bottom = "{tag}_BOTTOM"', "    return None", ""]
+    return lines
+
+
+def _padding():
+    return [f"def pad_{i}(): return {i}" for i in range(14)]
+
+
+def _target_line(lines, tag):
+    return next(n for n, text in enumerate(lines, 1) if f"{tag}_TARGET" in text)
+
+
+def _change_hunk(lines, target, kind, file="app.py"):
+    """Hunk around line ``target`` of ``lines`` with three context lines on each side.
+
+    ``lines`` is the base file for a removal and the PR file for an addition.
+    """
+    before = [(n, lines[n - 1]) for n in range(target - 3, target)]
+    after = [(n, lines[n - 1]) for n in range(target + 1, target + 4)]
+    changes = [LineChange("context", text, n, n) for n, text in before]
+    if kind == "del":
+        changes.append(LineChange("del", lines[target - 1], target, None))
+        changes += [LineChange("context", text, n, n - 1) for n, text in after]
+        old_count, new_count = 7, 6
+    else:
+        changes.append(LineChange("add", lines[target - 1], None, target))
+        changes += [LineChange("context", text, n, n) for n, text in after]
+        old_count, new_count = 6, 7
+    return HunkRef(
+        hunk_id=f"{file}#{target}", file=file, old_start=target - 3, old_count=old_count,
+        new_start=target - 3, new_count=new_count,
+        change="delete" if kind == "del" else "add", changes=changes,
+    )
+
+
+@pytest.fixture
+def snapshots(monkeypatch):
+    """Committed file contents per snapshot SHA, served through the toolbox's git runner."""
+    files: dict[tuple[str, str], str] = {}
+
+    def fake_run_git(repo, args, timeout):
+        if args[:2] == ["cat-file", "blob"]:
+            sha, _, rel = args[2].partition(":")
+            if (sha, rel) in files:
+                return subprocess.CompletedProcess(args, 0, stdout=files[(sha, rel)], stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr("lgtm.agents.tools.run_git", fake_run_git)
+
+    def put(base=None, pr=None, path="app.py"):
+        for sha, lines in ((BASE_SHA, base), (PR_SHA, pr)):
+            if lines is not None:
+                files[(sha, path)] = "\n".join(lines) + "\n"
+
+    return put
+
+
+def _initial_input(section, tmp_path, reply=None, config=None):
+    config = config or LGTMConfig()
+    toolbox = AgentToolbox(
+        tmp_path, "main", None, config, shas={"base": BASE_SHA, "pr": PR_SHA}
+    )
+    llm = _RecordingLLM([reply or _reply()])
+    agent = AuthzReviewerAgent(toolbox, config, llm=llm)
+    findings = agent.review_section(section)
+    text = "\n".join(str(getattr(m, "content", "")) for m in llm.seen[0])
+    return text, findings, agent
+
+
+class TestEnclosingDefinitionInInitialInput:
+    def test_removed_only_hunk_brings_the_whole_enclosing_function_from_the_base_snapshot(
+        self, snapshots, tmp_path
+    ):
+        base = _function("delete_thread", "DEL") + _function("neighbour", "NEAR")
+        target = _target_line(base, "DEL")
+        pr = _padding() + [line for n, line in enumerate(base, 1) if n != target]
+        snapshots(base=base, pr=pr)
+        section = _section([_change_hunk(base, target, "del")])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        assert "DEL_TOP" in text and "DEL_BOTTOM" in text
+        assert "NEAR_TOP" not in text and "NEAR_BOTTOM" not in text
+
+    def test_added_hunk_brings_the_whole_enclosing_function_from_the_pr_snapshot(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("add_thread", "ADD") + _function("neighbour", "NEAR")
+        target = _target_line(pr, "ADD")
+        base = _padding() + [line for n, line in enumerate(pr, 1) if n != target]
+        snapshots(base=base, pr=pr)
+        section = _section([_change_hunk(pr, target, "add")])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        assert "ADD_TOP" in text and "ADD_BOTTOM" in text
+        assert "NEAR_TOP" not in text and "NEAR_BOTTOM" not in text
+
+    def test_each_hunk_of_a_section_brings_its_own_enclosing_function(self, snapshots, tmp_path):
+        pr = (
+            _function("first", "ONE") + _function("untouched", "MID") + _function("last", "TWO")
+        )
+        snapshots(base=_padding(), pr=pr)
+        section = _section([
+            _change_hunk(pr, _target_line(pr, "ONE"), "add"),
+            _change_hunk(pr, _target_line(pr, "TWO"), "add"),
+        ])
+
+        text, _, _ = _initial_input(section, tmp_path)
+
+        for tag in ("ONE", "TWO"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+        assert "MID_TOP" not in text and "MID_BOTTOM" not in text
+
+    def test_one_hunk_removing_from_one_function_and_adding_to_another_brings_both(
+        self, snapshots, tmp_path
+    ):
+        base = _function("view", "DEL") + _function("other", "OTH")
+        removed = _target_line(base, "DEL")
+        kept = [line for n, line in enumerate(base, 1) if n != removed]
+        other_def = next(n for n, line in enumerate(kept, 1) if line.startswith("def other"))
+        added = "    extra = 1"
+        pr = kept[:other_def] + [added] + kept[other_def:]
+        snapshots(base=base, pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#mixed", file="app.py", old_start=removed, old_count=2,
+            new_start=other_def, new_count=2, change="modify",
+            changes=[
+                LineChange("del", base[removed - 1], removed, None),
+                LineChange("add", added, None, other_def + 1),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        assert "DEL_TOP" in text and "DEL_BOTTOM" in text
+        assert "OTH_TOP" in text and "OTH_BOTTOM" in text
+
+    def test_same_named_methods_of_two_classes_both_reach_the_input(self, snapshots, tmp_path):
+        def method(tag):
+            return ["    " + line if line else line for line in _function("get", tag)[:-1]]
+
+        base = ["class A:"] + method("AAA") + ["class B:"] + method("BBB")
+        a_target = _target_line(base, "AAA")
+        b_target = _target_line(base, "BBB")
+        added = "        extra = 1"
+        pr = base[:a_target] + [added] + base[a_target:b_target - 1] + base[b_target:]
+        snapshots(base=base, pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#same-name", file="app.py", old_start=a_target, old_count=b_target,
+            new_start=a_target, new_count=b_target, change="modify",
+            changes=[
+                LineChange("add", added, None, a_target + 1),
+                LineChange("del", base[b_target - 1], b_target, None),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        for tag in ("AAA", "BBB"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+
+    def test_one_hunk_adding_to_two_functions_brings_both(self, snapshots, tmp_path):
+        pr = _function("first", "ONE") + _function("second", "TWO")
+        first, second = _target_line(pr, "ONE"), _target_line(pr, "TWO")
+        snapshots(base=_padding(), pr=pr)
+        hunk = HunkRef(
+            hunk_id="app.py#span", file="app.py", old_start=first, old_count=0,
+            new_start=first, new_count=second - first + 1, change="add",
+            changes=[
+                LineChange("add", pr[first - 1], None, first),
+                LineChange("add", pr[second - 1], None, second),
+            ],
+        )
+
+        text, _, _ = _initial_input(_section([hunk]), tmp_path)
+
+        for tag in ("ONE", "TWO"):
+            assert f"{tag}_TOP" in text and f"{tag}_BOTTOM" in text
+
+    def test_enclosing_definition_omits_comments_when_strip_comments_is_on(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("add_thread", "ADD")
+        pr.insert(2, "    # COMMENT_MARKER: mark as safe")
+        target = _target_line(pr, "ADD")
+        snapshots(base=_padding(), pr=pr)
+        section = _section([_change_hunk(pr, target, "add")])
+
+        text, _, _ = _initial_input(section, tmp_path, config=LGTMConfig(strip_comments=True))
+
+        assert "ADD_TOP" in text and "ADD_BOTTOM" in text
+        assert "COMMENT_MARKER" not in text
+
+    def test_a_function_longer_than_the_line_cap_is_labelled_with_the_lines_shown(
+        self, snapshots, tmp_path
+    ):
+        pr = _function("long_handler", "LONG")
+        snapshots(base=_padding(), pr=pr)
+        section = _section([_change_hunk(pr, _target_line(pr, "LONG"), "add")])
+
+        text, _, _ = _initial_input(section, tmp_path, config=LGTMConfig(read_file_max_lines=5))
+
+        assert "app.py lines 1-5 (pr snapshot)" in text
+        assert "LONG_BOTTOM" not in text.split("## Section code")[0]
+
+    def test_enclosing_definitions_past_the_section_size_are_left_out(self, snapshots, tmp_path):
+        pr = _function("first", "ONE") + _function("second", "TWO")
+        snapshots(base=_padding(), pr=pr)
+        hunks = [_change_hunk(pr, _target_line(pr, tag), "add") for tag in ("ONE", "TWO")]
+        one_item = len("\n".join(_function("first", "ONE"))) + 200
+
+        text, _, _ = _initial_input(
+            _section(hunks), tmp_path, config=LGTMConfig(section_max_chars=one_item, strip_comments=False)
+        )
+
+        enclosing = text.split("## Section code")[0]
+        assert "ONE_BOTTOM" in enclosing
+        assert "TWO_TOP" not in enclosing
+
+    def test_hunk_outside_any_function_is_still_reviewed(self, snapshots, tmp_path):
+        pr = [f"SETTING_{i} = {i}" for i in range(20)] + _function("later", "LATE")
+        snapshots(base=_padding(), pr=pr)
+        hunk = _change_hunk(pr, 10, "add")
+
+        text, findings, agent = _initial_input(
+            _section([hunk]), tmp_path, reply=_reply(_finding(line=10))
+        )
+
+        assert "SETTING_9" in text
+        assert "LATE_TOP" not in text
+        assert [f.line for f in findings] == [10]
+        assert agent.errors == []
+
+    def test_unreadable_snapshot_file_does_not_stop_the_review(self, snapshots, tmp_path):
+        pr = _function("add_thread", "ADD")
+        hunk = _change_hunk(pr, _target_line(pr, "ADD"), "add")
+
+        text, findings, agent = _initial_input(
+            _section([hunk]), tmp_path, reply=_reply(_finding())
+        )
+
+        assert "ADD_TARGET" in text
+        assert len(findings) == 1
+        assert agent.errors == []
+
+
+class TestDeletionOnlyNonSecurityChange:
+    def test_removing_non_security_code_yields_no_finding_and_no_review_error(
+        self, snapshots, tmp_path
+    ):
+        base = _function("format_banner", "BANNER")
+        target = _target_line(base, "BANNER")
+        snapshots(base=base, pr=[line for n, line in enumerate(base, 1) if n != target])
+        section = _section([_change_hunk(base, target, "del")])
+
+        text, findings, agent = _initial_input(section, tmp_path)
+
+        assert "-" + base[target - 1] in text
+        assert findings == []
+        assert agent.errors == []
+
+
+class TestFillRecordToolCallBudget:
+    @pytest.mark.parametrize(
+        ("calls", "expected"), [(2, None), (3, None), (4, "tool_calls")]
+    )
+    def test_limit_hit_only_when_calls_exceed_budget(self, calls, expected):
+        toolbox = SimpleNamespace(
+            call_log=[{"name": "read_file"} for _ in range(calls)],
+            budget=3,
+            steps_exhausted=False,
+        )
+        record = RunRecord(section="s")
+
+        fill_record(record, toolbox, "{}")
+
+        assert record.limit_hit == expected
+
+
+class TestAnswerUntilParsedStop:
+    @staticmethod
+    def _run(stop, parses=()):
+        asked = []
+        outcomes = iter(parses)
+
+        def ask():
+            asked.append(1)
+            return "raw"
+
+        result = answer_until_parsed(ask, lambda raw: next(outcomes, None), stop)
+        return result, len(asked)
+
+    def test_a_stop_after_the_first_failed_parse_ends_the_retries(self):
+        assert self._run(lambda: True) == (None, 1)
+
+    def test_without_a_stop_every_attempt_is_made(self):
+        assert self._run(lambda: False) == (None, 4)
+
+    def test_stop_is_not_consulted_before_the_first_ask_and_never_discards_a_parse(self):
+        assert self._run(lambda: True, parses=["ok"]) == ("ok", 1)
+
+    def test_stop_that_turns_true_after_the_second_failure_ends_at_two_asks(self):
+        checks = []
+
+        def stop():
+            checks.append(1)
+            return len(checks) >= 2
+
+        assert self._run(stop) == (None, 2)
+
+
+class _ToolThenUnparsableLLM:
+    """First turn calls read_file; every later turn is an unparsable answer."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            return _ai_message(
+                "", tool_calls=[{"name": "read_file", "args": {"path": "app.py"}, "id": "c1"}]
+            )
+        return _ai_message(UNPARSABLE)
+
+
+class TestBudgetSpentStopsTheAnswerRetries:
+    CONFIG = dict(NO_RETRY_CONFIG, max_tool_calls=1)
+
+    def _toolbox(self, git_repo):
+        return _snapshot_toolbox(git_repo, LGTMConfig(**self.CONFIG))
+
+    def test_authz_does_not_rerun_the_loop_after_the_budget_is_spent(self, git_repo):
+        llm = _ToolThenUnparsableLLM()
+        out = _review(git_repo, llm, toolbox=self._toolbox(git_repo), **self.CONFIG)
+        assert not out
+        assert llm.calls == 2  # one bound turn plus the forced final answer
+
+    def test_sast_triage_does_not_rerun_the_loop_after_the_budget_is_spent(self, git_repo):
+        llm = _ToolThenUnparsableLLM()
+        config = LGTMConfig(**self.CONFIG)
+        agent = SASTTriageAgent(self._toolbox(git_repo), config, llm=llm)
+        assert agent.triage(SEMGREP_HIT, None) is None
+        assert llm.calls == 2
+
+
+class TestLimitHitOutcomes:
+    @staticmethod
+    def _loop(git_repo, replies, **config):
+        toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig(**config))
+        llm = _FakeLLM(replies)
+        out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
+        record = RunRecord(section="s")
+        fill_record(record, toolbox, out)
+        return record, toolbox
+
+    @staticmethod
+    def _read(call_id):
+        return _ai_message(
+            "", tool_calls=[{"name": "read_file", "args": {"path": "app.py"}, "id": call_id}]
+        )
+
+    def test_a_budget_stop_records_tool_calls_and_marks_the_toolbox_budget_spent(self, git_repo):
+        record, toolbox = self._loop(
+            git_repo, [self._read("c1"), _ai_message('{"verdict": "safe"}')], max_tool_calls=1
+        )
+        assert record.limit_hit == "tool_calls"
+        assert toolbox.budget_spent is True
+
+    def test_the_iteration_cap_records_steps(self, git_repo):
+        record, toolbox = self._loop(
+            git_repo,
+            [self._read("c1"), self._read("c2"), _ai_message('{"verdict": "safe"}')],
+            max_agent_iterations=2, max_tool_calls=10,
+        )
+        assert record.limit_hit == "steps"
+        assert toolbox.budget_spent is False
+
+    def test_an_answer_within_budget_and_steps_records_no_limit(self, git_repo):
+        record, _ = self._loop(
+            git_repo, [self._read("c1"), _ai_message('{"verdict": "safe"}')], max_tool_calls=5
+        )
+        assert record.limit_hit is None
+
+
+class TestListContentParts:
+    PAYLOAD = json.dumps({
+        "finding_id": "f9", "cwe_id": "CWE-639", "explanation": "no ownership check",
+        "evidence": [],
+    })
+
+    def test_finding_json_split_across_text_parts_parses(self):
+        mid = self.PAYLOAD.index(",") + 1
+        parts = [{"type": "text", "text": self.PAYLOAD[:mid]}, {"type": "text", "text": self.PAYLOAD[mid:]}]
+        answer = run_tool_loop(_AlwaysLLM(parts), [], "sys", "user", LGTMConfig(**NO_RETRY_CONFIG))
+        finding = parse_agent_output(answer, "fallback")
+
+        assert (finding.finding_id, finding.cwe_id) == ("f9", "CWE-639")
+        assert finding.explanation == "no ownership check"
+
+    def test_parse_agent_output_joins_list_parts_with_newlines(self):
+        parts = [{"type": "text", "text": "Analysis follows."}, {"type": "text", "text": self.PAYLOAD}]
+
+        finding = parse_agent_output(parts, "fallback")
+
+        assert finding.finding_id == "f9"
+
+    def test_authz_review_parses_findings_split_across_parts(self, git_repo):
+        raw = json.dumps({"findings": [_finding(explanation="split answer")]})
+        cut = raw.index(",") + 1
+        parts = [{"type": "text", "text": raw[:cut]}, {"type": "text", "text": raw[cut:]}]
+        out = _review(git_repo, _AlwaysLLM(parts), **NO_RETRY_CONFIG)
+        assert [f.explanation for f in out] == ["split answer"]
+
+
+class _PromptRecordingLLM(_SequenceLLM):
+    def __init__(self, *replies):
+        super().__init__(*replies)
+        self.prompts = []
+
+    def invoke(self, messages):
+        self.prompts.append("\n".join(str(m.content) for m in messages))
+        return super().invoke(messages)
+
+
+def _all_unresolved_reply(**fields):
+    return _authz_reply(_finding(evidence=[UNRESOLVED["file missing"]], **fields))
+
+
+class TestUnresolvedCandidatesAreKeptUnsupported:
+    def test_authz_candidate_with_no_resolving_evidence_comes_back_marked_not_supported(
+        self, git_repo, caplog
+    ):
+        llm = _SequenceLLM(_all_unresolved_reply(explanation="invented citation"))
+        agent = _authz_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            out = agent.review_section(_section())
+
+        assert [f.explanation for f in out] == ["invented citation"]
+        assert out[0].supported is False
+        assert any("s1" in m or "authz" in m for m in _warnings(caplog))
+        assert agent.errors == []
+
+    def test_every_unresolved_candidate_is_kept_and_marked_not_supported(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(
+            _finding(explanation="invented one", evidence=[UNRESOLVED["file missing"]]),
+            _finding(explanation="invented two", evidence=[UNRESOLVED["snippet mismatch"]]),
+        ))
+        out = _authz_agent(git_repo, llm).review_section(_section())
+
+        assert sorted(f.explanation for f in out) == ["invented one", "invented two"]
+        assert [f.supported for f in out] == [False, False]
+
+    def test_triage_candidate_with_no_resolving_evidence_comes_back_marked_not_supported(
+        self, git_repo, caplog
+    ):
+        llm = _SequenceLLM(_triage_reply(explanation="invented", evidence=[UNRESOLVED["file missing"]]))
+        agent = _triage_agent(git_repo, llm)
+        with caplog.at_level(logging.WARNING):
+            candidate = agent.triage(SEMGREP_HIT, None)
+
+        assert candidate is not None and candidate.explanation == "invented"
+        assert candidate.supported is False
+        assert any(SEMGREP_HIT.finding_id in m for m in _warnings(caplog))
+
+
+class TestMismatchReaskNamesTheCitation:
+    def test_the_next_ask_carries_an_error_naming_the_unresolved_file_and_is_not_a_resend(
+        self, git_repo
+    ):
+        bad = {**GOOD_PR, "file": "ghost_module.py"}
+        llm = _PromptRecordingLLM(
+            _authz_reply(_finding(explanation="first", evidence=[bad])),
+            _authz_reply(_finding(explanation="second", evidence=[GOOD_PR])),
+        )
+        out = _authz_agent(git_repo, llm).review_section(_section())
+
+        assert [f.explanation for f in out] == ["second"]
+        first, second = llm.prompts
+        assert second != first
+        assert "ghost_module.py" in second and "ghost_module.py" not in first
+
+
+class TestSastTriageRunRecord:
+    def test_a_run_record_is_produced_when_triage_keeps_nothing(self, git_repo):
+        llm = _SequenceLLM(_triage_reply(evidence=[UNRESOLVED["file missing"]]))
+        agent = _triage_agent(git_repo, llm)
+
+        agent.triage(SEMGREP_HIT, None)
+
+        assert [r.section for r in agent.run_records] == [f"sast_triage:{SEMGREP_HIT.finding_id}"]
+        assert agent.run_records[0].raw_answer
+
+    def test_a_run_record_is_produced_when_the_answer_never_parses(self, git_repo):
+        agent = _triage_agent(git_repo, _SequenceLLM(UNPARSABLE))
+
+        assert agent.triage(SEMGREP_HIT, None) is None
+        assert [r.section for r in agent.run_records] == [f"sast_triage:{SEMGREP_HIT.finding_id}"]
+
+
+class TestAuthzSectionBodyOmitsInvestigatorText:
+    TITLE = "Zebra quartz checkout framing"
+    RATIONALE = "Marmalade rationale from the planner"
+
+    def test_prompt_has_no_section_title_or_rationale_but_keeps_code_and_location(self, git_repo):
+        llm = _PromptRecordingLLM(_authz_reply())
+        section = _section(title=self.TITLE, rationale=self.RATIONALE)
+
+        _authz_agent(git_repo, llm).review_section(section)
+
+        prompt = llm.prompts[0]
+        assert self.TITLE not in prompt and self.RATIONALE not in prompt
+        assert "app.py" in prompt and "a = 1" in prompt
+
+    def test_render_section_has_no_title_or_rationale_but_keeps_code_and_location(self):
+        from lgtm.review.sections import render_section
+
+        rendered = render_section(_section(title=self.TITLE, rationale=self.RATIONALE))
+
+        assert self.TITLE not in rendered and self.RATIONALE not in rendered
+        assert "app.py" in rendered and "a = 1" in rendered
+
+
+class _SeeingLLM:
+    """Replays replies, repeating the last; keeps the messages of the latest request and can fail on a given call."""
+
+    def __init__(self, *replies, fail_on_call=None):
+        self.replies = list(replies)
+        self.fail_on_call = fail_on_call
+        self.calls = 0
+        self.seen: list = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.seen = list(messages)
+        self.calls += 1
+        if self.calls == self.fail_on_call:
+            raise ConnectionError("model went away")
+        return self.replies[min(self.calls - 1, len(self.replies) - 1)]
+
+    def tool_results(self) -> list[str]:
+        return [m.content for m in self.seen if type(m).__name__ == "ToolMessage"]
+
+
+def _tool_call(name, args, call_id):
+    return {"name": name, "args": args, "id": call_id}
+
+
+def _record_text(record: RunRecord) -> str:
+    from dataclasses import asdict
+
+    return json.dumps(asdict(record))
+
+
+def _escaped(text: str) -> str:
+    return json.dumps(text)[1:-1]
+
+
+def _strings(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _strings(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _strings(value)
+
+
+def _run_recorded(git_repo, llm, **config):
+    toolbox = AgentToolbox(git_repo, "main", None, LGTMConfig(**config))
+    out = run_tool_loop(llm, toolbox.build_tools(), "sys", "user", toolbox.config)
+    record = RunRecord(section="s")
+    fill_record(record, toolbox, out)
+    return record
+
+
+FINAL = _ai_message('{"verdict": "safe"}')
+
+
+class TestRunRecordHoldsTheTurns:
+    def test_assistant_text_and_tool_results_appear_in_the_order_they_happened(self, git_repo):
+        llm = _SeeingLLM(
+            _ai_message("TURN_ONE_TEXT", [_tool_call("read_file", {"path": "app.py"}, "c1")]),
+            _ai_message("TURN_TWO_TEXT", [_tool_call("read_file", {"path": "policy.md"}, "c2")]),
+            FINAL,
+        )
+
+        record = _run_recorded(git_repo, llm)
+
+        first, second = llm.tool_results()
+        assert first != second
+        text = _record_text(record)
+        marks = [text.find(_escaped(p)) for p in ("TURN_ONE_TEXT", first, "TURN_TWO_TEXT", second)]
+        assert -1 not in marks
+        assert marks == sorted(set(marks))
+
+    def test_a_record_with_turns_is_plain_json(self, git_repo):
+        llm = _SeeingLLM(_ai_message("T", [_tool_call("read_file", {"path": "app.py"}, "c1")]), FINAL)
+
+        record = _run_recorded(git_repo, llm)
+
+        assert json.loads(_record_text(record))["section"] == "s"
+
+    @pytest.mark.parametrize(
+        ("calls", "config"),
+        [
+            pytest.param([_tool_call("read_file", {}, "c1")], {}, id="invalid-arguments"),
+            pytest.param([_tool_call("no_such_tool", {"x": 1}, "c1")], {}, id="unknown-tool"),
+            pytest.param(
+                [_tool_call("read_file", {"path": "app.py"}, "c1"), _tool_call("read_file", {"path": "app.py"}, "c2")],
+                {"max_tool_calls": 1},
+                id="over-budget",
+            ),
+        ],
+    )
+    def test_a_refused_call_keeps_the_outcome_the_agent_saw(self, git_repo, calls, config):
+        llm = _SeeingLLM(_ai_message("", calls), FINAL)
+
+        record = _run_recorded(git_repo, llm, **config)
+
+        seen = llm.tool_results()
+        assert len(seen) == len(calls)
+        text = _record_text(record)
+        for result in seen:
+            assert _escaped(result) in text
+        assert calls[-1]["name"] in text
+
+    def test_a_tool_result_over_the_output_cap_is_stored_as_the_agent_saw_it(self, git_repo):
+        (git_repo / "big.txt").write_text("".join(f"needle {n} " + "x" * 600 + "\n" for n in range(40)))
+        subprocess.run(["git", "-C", str(git_repo), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(git_repo), "commit", "-q", "-m", "big"], check=True, capture_output=True
+        )
+        llm = _SeeingLLM(_ai_message("", [_tool_call("grep_repo", {"pattern": "needle"}, "c1")]), FINAL)
+
+        record = _run_recorded(git_repo, llm)
+
+        [seen] = llm.tool_results()
+        assert len(seen) < 40 * 600
+        stored = list(_strings(json.loads(_record_text(record))))
+        assert seen in stored
+        assert max(map(len, stored)) <= len(seen)
+
+    def test_a_run_that_dies_mid_loop_keeps_the_turns_and_results_gathered_so_far(self, git_repo):
+        llm = _SeeingLLM(
+            _ai_message("BEFORE_THE_FAILURE", [_tool_call("read_file", {"path": "app.py"}, "c1")]),
+            fail_on_call=2,
+        )
+        agent = _triage_agent(git_repo, llm)
+
+        assert agent.triage(SEMGREP_HIT, None) is None
+
+        [record] = agent.run_records
+        [result] = llm.tool_results()
+        text = _record_text(record)
+        assert "BEFORE_THE_FAILURE" in text
+        assert _escaped(result) in text
+        assert agent.errors
+
+
+class _OptionsLLM:
+    """Records the keyword options every model call carries and every model copy requested."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.seen: list[list] = []
+        self.kwargs: list[dict] = []
+        self.copies: list[dict] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def model_copy(self, update=None, **kwargs):
+        self.copies.append(dict(update or {}))
+        return self
+
+    def invoke(self, messages, **kwargs):
+        self.seen.append(list(messages))
+        self.kwargs.append(kwargs)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return _ai_message(reply) if isinstance(reply, str) else reply
+
+
+class TestDefaultAnswerPathUnchanged:
+    CUT_AFTER_NESTED = '{"findings": [{"id": "a"}, {"id": "b", "tit'
+
+    def test_extraction_still_returns_the_first_nested_object_of_a_cut_reply(self):
+        assert extract_json_object(self.CUT_AFTER_NESTED) == {"id": "a"}
+
+    def test_cut_reply_with_a_complete_nested_object_is_accepted_without_reask(self):
+        llm = _OptionsLLM(self.CUT_AFTER_NESTED)
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == self.CUT_AFTER_NESTED
+        assert len(llm.seen) == 1
+
+    def test_reask_uses_the_shared_instruction_and_no_model_options(self):
+        from lgtm.agents import registry
+
+        llm = _OptionsLLM("not json", OK)
+        out = run_tool_loop(llm, [], "sys", "user", LGTMConfig())
+        assert out == OK
+        assert llm.seen[1][-1].content == registry.entry("shared.reask")
+        assert llm.kwargs == [{}, {}]
+        assert llm.copies == []
+
+    def test_forced_final_uses_the_shared_instruction_and_no_model_options(self, git_repo):
+        from lgtm.agents import registry
+
+        toolbox = AgentToolbox(git_repo, "main")
+        llm = _OptionsLLM(_call("read_file", {"path": "app.py"}), OK)
+        out = run_tool_loop(
+            llm, toolbox.build_tools(), "sys", "user", LGTMConfig(max_agent_iterations=1)
+        )
+        assert out == OK
+        assert llm.seen[1][-1].content == registry.entry("shared.forced_final")
+        assert llm.kwargs == [{}, {}]
+        assert llm.copies == []

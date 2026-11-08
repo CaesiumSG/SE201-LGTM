@@ -1,0 +1,474 @@
+{
+  "id": "authz_14_vulnerable",
+  "category": "authz",
+  "split": "eval",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 79.0,
+  "est_tokens": 937,
+  "findings": [
+    {
+      "finding_id": "authz:admin-audit-role-removal:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The PR removes the @require_role(\"admin\") decorator from the audit_log view (app/routes/admin.py:33), leaving only @admin_bp.route(\"/audit\"). This endpoint is registered under url_prefix=\"/admin\" (app/__init__.py:23), so it is an /admin endpoint. Policy \u00a74 requires every /admin endpoint to require the admin role via @require_role(\"admin\"). The removed decorator was the sole enforcement: require_role (app/auth.py:69-85) is the only mechanism that authenticates the bearer token and checks the role, and there is no global before_request/after_request hook or other check in the view. As a result, GET /admin/audit is now reachable by any unauthenticated caller and returns sensitive audit data (user_id, action) for all users, violating the admin-only access rule.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/admin.py",
+          "lines": [
+            32,
+            44
+          ],
+          "source": null,
+          "content": "@admin_bp.route(\"/audit\", methods=[\"GET\"])\ndef audit_log():\n    \"\"\"Most recent audit log entries.\"\"\"\n    session = get_session()\n    events = (\n        session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\n    )\n    return jsonify(\n        [\n            {\"id\": e.id, \"user_id\": e.user_id, \"action\": e.action}\n            for e in events\n        ]\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "app/__init__.py",
+          "lines": [
+            23,
+            23
+          ],
+          "source": null,
+          "content": "    app.register_blueprint(admin_bp, url_prefix=\"/admin\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "## 4. Admin panel\n- Every endpoint under `/admin` requires the **admin** role, enforced with `@require_role(\"admin\")`.\n- There are NO alternative access paths to admin functionality: no debug headers, no secret query parameters, no IP allowlists.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "api-spec.md",
+          "content": "| `/admin/audit` | GET | admin only |",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the @require_role(\"admin\") decorator on the audit_log view so the endpoint enforces authentication and the admin role, e.g.:\n\n@admin_bp.route(\"/audit\", methods=[\"GET\"])\n@require_role(\"admin\")\ndef audit_log():\n    ...",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8501,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "app/routes/admin.py",
+      "line": 33,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1083
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "admin endpoints require admin role require_role"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def require_role",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 40,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "admin_bp|admin/audit",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 1,
+            "end_line": 40,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "before_request|after_request|g\\.current_user",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "audit_log|/audit",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 70,
+            "end_line": 95,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "audit_log|AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "audit",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog\\(",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "AuditLog",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"admin-audit-role-removal\",\n      \"title\": \"Removal of @require_role(\\\"admin\\\") from the /admin/audit endpoint\",\n      \"rationale\": \"The single hunk deletes the @require_role(\\\"admin\\\") decorator from the audit_log() view (app/routes/admin.py#0). This is the only access-control change in the PR and it directly weakens authorization on an admin-only endpoint. The endpoint is registered under the /admin blueprint (app/__init__.py:23, url_prefix=\\\"/admin\\\"), so it is an admin-panel endpoint. The module docstring (app/routes/admin.py:3-5) and security-policy.md \u00a74 both state that EVERY endpoint under /admin requires the admin role via @require_role(\\\"admin\\\") with no exceptions, and api-spec.md lists /admin/audit as \\\"admin only\\\". The require_role decorator (app/auth.py:69-85) is the only enforcement mechanism \u2014 it returns 401/403 and sets g.current_user; there is no before_request hook or other fallback (grep for before_request/after_request found none). Removing it leaves the endpoint with no authentication or role check at all, exposing the audit log (AuditLog rows: user_id, action) to any caller. This is a clear authorization regression and the sole concern in the diff, so it forms one section.\",\n      \"hunks\": [\"app/routes/admin.py#0\"],\n      \"context\": [\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"audit_log\", \"start_line\": 32, \"end_line\": 45, \"snapshot\": \"base\", \"why\": \"Base version shows the @require_role(\\\"admin\\\") decorator on line 33 that the PR removes; the view returns AuditLog entries (user_id, action).\"},\n        {\"path\": \"app/routes/admin.py\", \"symbol\": \"audit_log\", \"start_line\": 32, \"end_line\": 44, \"snapshot\": \"pr\", \"why\": \"PR version shows the decorator is gone; only @admin_bp.route(\\\"/audit\\\") remains, leaving the endpoint unauthenticated.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"The removed decorator is the sole enforcement of the admin role; it returns 401/403 and sets g.current_user. No other mechanism enforces it.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 19, \"end_line\": 23, \"snapshot\": \"base\", \"why\": \"Confirms admin_bp is registered with url_prefix=\\\"/admin\\\", making /admin/audit an admin-panel endpoint covered by policy \u00a74.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"AuditLog\", \"start_line\": 78, \"end_line\": 84, \"snapshot\": \"base\", \"why\": \"The data exposed by the endpoint (user_id, action, created_at) \u2014 sensitive audit information now reachable without authorization.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "admin-audit-role-removal",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "before_request|after_request|g\\.current_user",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 70,
+            "end_line": 90,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The PR removes the @require_role(\\\"admin\\\") decorator from the audit_log view (app/routes/admin.py:33), leaving only @admin_bp.route(\\\"/audit\\\"). This endpoint is registered under url_prefix=\\\"/admin\\\" (app/__init__.py:23), so it is an /admin endpoint. Policy \u00a74 requires every /admin endpoint to require the admin role via @require_role(\\\"admin\\\"). The removed decorator was the sole enforcement: require_role (app/auth.py:69-85) is the only mechanism that authenticates the bearer token and checks the role, and there is no global before_request/after_request hook or other check in the view. As a result, GET /admin/audit is now reachable by any unauthenticated caller and returns sensitive audit data (user_id, action) for all users, violating the admin-only access rule.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"app/routes/admin.py\", \"lines\": [32, 44], \"content\": \"@admin_bp.route(\\\"/audit\\\", methods=[\\\"GET\\\"])\\ndef audit_log():\\n    \\\"\\\"\\\"Most recent audit log entries.\\\"\\\"\\\"\\n    session = get_session()\\n    events = (\\n        session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()\\n    )\\n    return jsonify(\\n        [\\n            {\\\"id\\\": e.id, \\\"user_id\\\": e.user_id, \\\"action\\\": e.action}\\n            for e in events\\n        ]\\n    )\"},\n        {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [69, 85], \"content\": \"def require_role(minimum_role: str):\\n    \\\"\\\"\\\"Require at least the given role (user < manager < admin).\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            user = get_current_user()\\n            if user is None:\\n                return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\\n                return jsonify({\\\"error\\\": \\\"insufficient role\\\"}), 403\\n            g.current_user = user\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n        {\"type\": \"code\", \"file\": \"app/__init__.py\", \"lines\": [23, 23], \"content\": \"    app.register_blueprint(admin_bp, url_prefix=\\\"/admin\\\")\"},\n        {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"## 4. Admin panel\\n- Every endpoint under `/admin` requires the **admin** role, enforced with `@require_role(\\\"admin\\\")`.\\n- There are NO alternative access paths to admin functionality: no debug headers, no secret query parameters, no IP allowlists.\"},\n        {\"type\": \"policy\", \"source\": \"api-spec.md\", \"content\": \"| `/admin/audit` | GET | admin only |\"}\n      ],\n      \"suggested_fix\": \"Restore the @require_role(\\\"admin\\\") decorator on the audit_log view so the endpoint enforces authentication and the admin role, e.g.:\\n\\n@admin_bp.route(\\\"/audit\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"admin\\\")\\ndef audit_log():\\n    ...\",\n      \"file\": \"app/routes/admin.py\",\n      \"line\": 33\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "fad2d2f312efabf8ce236f11822e1f2b8b6cdccb",
+    "pr_sha": "ed579ca7adfd5419a5a4752a7742f1d85cb9fa91",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/admin.py",
+  "vulnerable_locations": [
+    {
+      "file": "app/routes/admin.py",
+      "old_range": [
+        33,
+        33
+      ],
+      "new_range": null
+    }
+  ],
+  "diff_shape": "removed_auth_decorator",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 1,
+    "hunks_assigned": 1,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "admin-audit-role-removal",
+        "origin": "investigator",
+        "title": "Removal of @require_role(\"admin\") from the /admin/audit endpoint",
+        "files": [
+          "app/routes/admin.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/admin.py#0",
+            "file": "app/routes/admin.py",
+            "old_start": 30,
+            "old_count": 7,
+            "new_start": 30,
+            "new_count": 6,
+            "change": "delete"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:admin-audit-role-removal:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.0,
+  "base_sha": "fad2d2f312efabf8ce236f11822e1f2b8b6cdccb",
+  "pr_sha": "ed579ca7adfd5419a5a4752a7742f1d85cb9fa91",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "admin-audit-role-removal"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

@@ -109,7 +109,7 @@ def _locator(path):
 def render_read(label, sha, path, start, end, body, max_chars=8000):
     header = f"[READ snapshot={_field(label,20)} sha={_field(sha,40)} path={_locator(path)} lines={start}-{end}]"
     numbered = "\n".join(f"{start + i}: {line}" for i, line in enumerate(_body(body).splitlines()))
-    return _cap(header, numbered, "[END READ]", min(8000, max_chars))[0]
+    return _cap(header, numbered, "[END READ]", max_chars)[0]
 
 
 def render_grep(label, sha, pattern, body, max_chars=8000):

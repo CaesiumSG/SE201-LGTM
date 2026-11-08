@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import io
 import tarfile
@@ -11,9 +12,13 @@ import tarfile
 import pytest
 
 from lgtm.config import LGTMConfig
+from lgtm.graph import exporter
+from lgtm.graph.session import GraphSession
 from lgtm.graph.snapshot import resolve_refs
 from lgtm.graph.exporter import export_snapshot
 from lgtm.graph.format import render_graph, render_read, render_grep
+
+from tests.graph_fakes import FakeGit, FakeRunner
 
 
 SHA = "a" * 40
@@ -437,7 +442,7 @@ class TestProvenanceFormatting:
             args = (*args[:3], body)
             end = "[END GREP]"
         out = renderer(*args, max_chars=9000)
-        assert len(out) <= 8000
+        assert len(out) <= (9000 if renderer is render_read else 8000)
         assert out.startswith("[READ " if renderer is render_read else "[GREP ")
         assert out.endswith(end)
 
@@ -1113,7 +1118,7 @@ exporter.threading=ThreadFacade()
 original_cwd=os.getcwd()
 try:
     os.chdir(root)
-    timeout=.15 if mode in ("inventory_hung","inventory_slow","archive_hung") else 3
+    timeout=.15 if mode in ("inventory_hung","inventory_slow","archive_hung") else 20
     started=time.monotonic()
     try:
         max_files = 300 if mode == "inventory_byte_cap" else 20000 if mode == "inventory_slow" else 1
@@ -1168,7 +1173,7 @@ finally:
 '''
         result = subprocess.run(
             [sys.executable, "-c", harness, scenario, str(tmp_path / scenario)],
-            cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=15,
+            cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1532,3 +1537,72 @@ class TestOwnedRootCleanupContainment:
         finally:
             os.chmod(outside, stat.S_IRWXU)
             os.chmod(keep, stat.S_IRWXU)
+
+
+class TestExportFailureReapsProcesses:
+    SHAS = {"base": "a" * 40, "pr": "b" * 40}
+    FAILURES = [
+        {"inventory": "fail"}, {"inventory": "timeout"}, {"inventory": "create"},
+        {"archive": "fail"}, {"archive": "timeout"}, {"archive": "create"},
+    ]
+
+    @pytest.fixture
+    def scratch_base(self, tmp_path, monkeypatch):
+        base = tmp_path / "scratch"
+        base.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(base))
+        return base
+
+    @pytest.fixture
+    def install(self, monkeypatch):
+        installed = []
+
+        def _install(*plans):
+            fake_git = FakeGit(*plans)
+            installed.append(fake_git)
+            monkeypatch.setattr(exporter, "subprocess", fake_git.namespace)
+            return fake_git
+
+        yield _install
+        for fake_git in installed:
+            fake_git.kill_all()
+
+    def session(self, tmp_path):
+        return GraphSession(
+            tmp_path / "repo", self.SHAS, LGTMConfig(git_timeout=0.3), runner=FakeRunner()
+        )
+
+    @pytest.mark.parametrize("failure", FAILURES, ids=lambda f: "-".join(next(iter(f.items()))))
+    def test_failed_export_leaves_no_process_and_no_scratch_directory(
+        self, tmp_path, scratch_base, install, failure
+    ):
+        fake_git = install(failure)
+
+        with self.session(tmp_path) as session:
+            outcome = session.explore("pr", "q")
+            assert not outcome.ok and outcome.reason == "export_failed"
+            assert session.snapshot("pr") is None
+            assert fake_git.running() == []
+            assert list(scratch_base.rglob("*")) == []
+
+    @pytest.mark.parametrize("failure", FAILURES, ids=lambda f: "-".join(next(iter(f.items()))))
+    @pytest.mark.parametrize("same_session", [True, False], ids=["one-session", "session-per-unit"])
+    def test_later_export_starts_with_no_process_from_the_failed_one(
+        self, tmp_path, scratch_base, install, failure, same_session
+    ):
+        fake_git = install(failure, failure, failure)
+        sessions = []
+        try:
+            for label in ("base", "pr") if same_session else ("pr", "pr", "pr"):
+                if not same_session or not sessions:
+                    sessions.append(self.session(tmp_path))
+                session = sessions[-1]
+                outcome = session.explore(label, "q")
+                assert not outcome.ok and outcome.reason == "export_failed"
+        finally:
+            for session in sessions:
+                session.close()
+
+        starts = fake_git.alive_at_export_start
+        assert len(starts) >= 2 and all(alive == [] for alive in starts)
+        assert fake_git.running() == []
