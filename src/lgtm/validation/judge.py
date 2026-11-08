@@ -251,6 +251,19 @@ def http_judge(config: LGTMConfig) -> JudgeCall:
     return call
 
 
+def _has_cited_source(finding: AgentFinding, read_code: Callable[[EvidenceItem], str]) -> bool:
+    """Whether any cited policy text or readable code would reach the judge."""
+    for item in finding.evidence:
+        if item.type == "policy":
+            return True
+        try:
+            if read_code(item):
+                return True
+        except Exception:  # noqa: BLE001 - an unreadable item is not a source
+            continue
+    return False
+
+
 def judge_candidates(
     findings: list[AgentFinding],
     read_code: Callable[[EvidenceItem], str],
@@ -273,7 +286,7 @@ def judge_candidates(
         finding.judged = False
         finding.not_judged_reason = ""
         finding.unsupported_reason = ""
-        if not finding.evidence:
+        if not _has_cited_source(finding, read_code):
             finding.supported = False
             finding.judged = True
             finding.unsupported_reason = REASON_NO_CITED_SOURCE

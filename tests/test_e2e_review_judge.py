@@ -164,7 +164,7 @@ def test_review_completes_with_candidates_not_judged_and_the_unparsable_agent_er
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
-def test_review_keeps_unresolvable_references_logs_them_and_sends_the_candidate_to_the_judge_without_an_agent_error(
+def test_review_keeps_unresolvable_references_logs_them_and_judges_only_candidates_with_readable_code_without_an_agent_error(
     repo, tmp_path, monkeypatch, start_kev, caplog
 ):
     kev = start_kev(lambda request: _kev_reply(request, False, 0.5))
@@ -195,9 +195,11 @@ def test_review_keeps_unresolvable_references_logs_them_and_sends_the_candidate_
     assert "Agent Errors" not in markdown
     assert any("unsupported" in r.getMessage() for r in caplog.records)
 
-    assert len(kev.requests) == 4
+    assert found[CLAIM_DROPPED]["unsupported_reason"] == "no-cited-source"
+
+    assert len(kev.requests) == 3
     sent = json.dumps([r.body for r in kev.requests])
-    assert CLAIM_DROPPED in sent
+    assert CLAIM_DROPPED not in sent
 
 
 @pytest.mark.usefixtures("one_semgrep_hit")
