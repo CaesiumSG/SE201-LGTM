@@ -347,8 +347,11 @@ class Engine:
             self.store.update("runs", run_id, status="cancelled", finished_at=now(),
                               latency=round(time.time() - started, 1))
             self._emit(run_id, {"type": "error", "msg": "review cancelled"})
-            self._complete_check(self.store.run(run_id), "cancelled", "Review cancelled",
-                                 "The review was cancelled from the LGTM dashboard.")
+            try:   # the run stays cancelled even if GitHub can't be told
+                self._complete_check(self.store.run(run_id), "cancelled", "Review cancelled",
+                                     "The review was cancelled from the LGTM dashboard.")
+            except Exception as exc:  # noqa: BLE001
+                self._log_note(run_id, gh.redact(f"marking the check run as cancelled did not work: {exc}"))
             return
         if code != 0 or not out.is_file():
             raise RuntimeError(f"the review process exited with code {code}")
