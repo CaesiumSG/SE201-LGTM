@@ -76,7 +76,7 @@
         </section>
 
         <section class="land-caught" aria-labelledby="caught-h">
-          <h2 id="caught-h">Proven on real vulnerabilities</h2>
+          <h2 id="caught-h">Proven on real vulnerabilities in real open-source repositories</h2>
           <p class="caught-sub">We ran LGTM on the pull requests that introduced 17 published security advisories. It flagged ${CASES.length}.</p>
           <ul class="cases">${CASES.map(caseCard).join("")}</ul>
         </section>
