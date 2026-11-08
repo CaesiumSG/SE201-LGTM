@@ -259,9 +259,75 @@ def run_log(sess: dict, run_id: str) -> str:
         return "This run was imported from the benchmark results; its process log was not kept.\n"
     path = reviews.RUN_FILES / f"{run_id}.log"
     text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    text = transcript(run, STORE.events(run_id, 0), text)
     for needle in (str(reviews.CLONES), str(Path.home())):
         text = text.replace(needle, "<cache>")
-    return gh.redact(text[-400_000:])
+    return gh.redact(text[-2_000_000:])
+
+
+def transcript(run: dict, events: list[dict], process_log: str) -> str:
+    """Every event of a review (stages, agents, tool calls, verdicts, result) and the process log, merged in time order.
+
+    One line each: ``HH:MM:SS  KIND     message``. The process log holds the pipeline's log lines and LGTM's own
+    notes; the events repeat the pipeline's log lines, so those are taken from the file only."""
+    try:
+        t0 = datetime.datetime.fromisoformat(run.get("started_at") or run["created_at"])
+    except (TypeError, ValueError, KeyError):
+        t0 = datetime.datetime.now()
+    # Align the events' clock (seconds since the runner started) with the process log's wall clock, using the first
+    # pipeline log line, which appears in both.
+    first_log = next((e for e in events if e.get("type") == "log" and isinstance(e.get("t"), (int, float))), None)
+    m0 = re.match(r"(\d\d):(\d\d):(\d\d) ", process_log)
+    if first_log and m0:
+        t0 = t0.replace(hour=int(m0.group(1)), minute=int(m0.group(2)), second=int(m0.group(3)), microsecond=0) \
+            - datetime.timedelta(seconds=float(first_log["t"]))
+    clock = lambda t: (t0 + datetime.timedelta(seconds=float(t or 0))).strftime("%H:%M:%S")
+    def args_of(a: dict) -> str:
+        if not a:
+            return ""
+        if a.get("path"):
+            return a["path"] + (f":{a['start_line']}-{a['end_line']}" if a.get("start_line") else "")
+        if a.get("pattern"):
+            return f"/{a['pattern']}/" + (f" in {a['file_glob']}" if a.get("file_glob") else "")
+        return str(a.get("query") or " ".join(str(v) for v in a.values()))[:160]
+    rows, last_t = [], 0.0
+    for i, e in enumerate(events):
+        t = e.get("t", last_t)
+        last_t = t if isinstance(t, (int, float)) else last_t
+        kind, msg = e.get("type"), None
+        if kind == "accepted":
+            msg = ("REVIEW  ", f"started: {e.get('repo')} #{e.get('pr')} \"{e.get('title')}\" (reviewer: {e.get('backend')})")
+        elif kind == "meta":
+            msg = ("REVIEW  ", f"mode {e.get('mode')}, model {e.get('model')}")
+        elif kind == "stage":
+            mark = {"start": "▶", "done": "✓", "skipped": "–"}.get(e.get("status"), e.get("status"))
+            msg = ("STAGE   ", f"{mark} {e.get('stage')}" + (f": {e['detail']}" if e.get("detail") else ""))
+        elif kind == "info":
+            msg = ("INFO    ", f"[{e.get('stage')}] {e.get('detail')}")
+        elif kind == "agent":
+            msg = ("AGENT   ", f"{e.get('agent')}" + (f" · {e['section']}" if e.get("section") else ""))
+        elif kind == "tool":
+            msg = ("TOOL    ", f"  {e.get('tool')} {args_of(e.get('args') or {})}")
+        elif kind == "verdict":
+            msg = ("VERDICT ", f"{e.get('cwe')} {e.get('file')}:{e.get('line')}: evidence {'holds' if e.get('supported') else 'does not hold'}, "
+                               f"judge says {e.get('kev_verdict') or 'nothing'}" + (f" ({e['kev_severity']})" if e.get("kev_severity") else ""))
+        elif kind == "done" and e.get("conclusion"):
+            msg = ("RESULT  ", f"{e['conclusion']}: {e.get('n_flagged', 0)} finding(s) reported in {e.get('latency_seconds')}s")
+        elif kind == "done":
+            msg = ("RESULT  ", f"pipeline finished: {e.get('n_findings')} candidate(s)" + (f", error: {e['error']}" if e.get("error") else ""))
+        elif kind == "error":
+            msg = ("ERROR   ", e.get("msg", ""))
+        if msg:
+            rows.append((clock(t), 0, i, f"{clock(t)}  {msg[0]} {msg[1]}"))
+    for j, line in enumerate(process_log.splitlines()):
+        m = re.match(r"(\d\d:\d\d:\d\d) ([\w-]+:?)\s+(.*)", line)
+        if m:
+            level = "LGTM" if m.group(2).endswith(":") else {"WARNING": "WARN"}.get(m.group(2), m.group(2))
+            rows.append((m.group(1), 1, j, f"{m.group(1)}  {level:<8} {m.group(3)}"))
+        elif line.strip():
+            rows.append((rows[-1][0] if rows else "00:00:00", 1, j, f"          {line}"))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    return "\n".join(r[3] for r in rows) + "\n"
 
 
 def list_findings(sess: dict, q: dict) -> list[dict]:

@@ -595,10 +595,38 @@
       <ol class="calls">${run.calls.map((c) => `<li><details><summary><span class="tool-kind ${c.kind}">${esc(TOOLS[c.kind] || c.tool)}</span> <code>${esc(argSummary(c.tool, c.args))}</code><span class="muted right">${c.result_chars.toLocaleString()} chars</span></summary><pre><code>${esc(c.result)}${c.result_chars > c.result.length ? "\n…" : ""}</code></pre></details></li>`).join("")}</ol></details></li>`).join("")}</ol>`;
   }
 
+  // The full transcript of a review, terminal style: every line, scrollable, refreshed while the review runs.
   async function logTab(box, id) {
     box.innerHTML = `<p class="muted">Loading the log…</p>`;
-    const text = await fetch(`/api/runs/${enc(id)}/log`).then((r) => r.text());
-    box.innerHTML = `<pre class="log"><code>${esc(text || "No log lines yet.")}</code></pre>`;
+    let wrap = (() => { try { return localStorage.getItem("lgtm-log-wrap") === "1"; } catch (e) { return false; } })();
+    let last = "";
+    const kindOf = (l) => { const k = (l.slice(10, 18).trim() || "").toLowerCase(); return ["warn", "error", "verdict", "result", "stage", "agent", "tool"].includes(k) ? k : ""; };
+    const draw = (text, follow) => {
+      const lines = (text || "").replace(/\n$/, "").split("\n").filter((l, i, a) => l || a.length > 1);
+      const term = $(".term", box);
+      const atEnd = term ? term.scrollTop + term.clientHeight >= term.scrollHeight - 8 : false;
+      box.innerHTML = `<div class="termlog">
+          <div class="term-bar"><span>${plural(lines.length, "line")}</span>
+            <button type="button" class="btn" data-a="top">Start</button><button type="button" class="btn" data-a="end">End</button>
+            <button type="button" class="btn" data-a="wrap" aria-pressed="${wrap}">Wrap lines</button><button type="button" class="btn" data-a="copy">Copy</button></div>
+          <div class="term ${wrap ? "wrap" : ""}" tabindex="0" aria-label="Review log">${lines.length ? lines.map((l, i) => `<div class="tl ${kindOf(l)}"><span class="tn">${i + 1}</span><span class="tx">${esc(l)}</span></div>`).join("") : '<div class="tl"><span class="tx">No log lines yet.</span></div>'}</div></div>`;
+      const t = $(".term", box);
+      if (follow || atEnd) t.scrollTop = t.scrollHeight;
+      box.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", async () => {
+        const a = b.dataset.a;
+        if (a === "top") t.scrollTop = 0;
+        if (a === "end") t.scrollTop = t.scrollHeight;
+        if (a === "wrap") { wrap = !wrap; try { localStorage.setItem("lgtm-log-wrap", wrap ? "1" : "0"); } catch (e) { /* private window */ } draw(last, false); }
+        if (a === "copy") { try { await navigator.clipboard.writeText(last); b.textContent = "Copied"; } catch (e) { b.textContent = "Copy failed"; } }
+      }));
+    };
+    const load = async (follow) => {
+      const text = await fetch(`/api/runs/${enc(id)}/log`).then((r) => r.text());
+      if (text !== last) { last = text; draw(text, follow); }
+    };
+    await load(false);
+    const run = await get(`/api/runs/${enc(id)}`).then((d) => d.run).catch(() => null);
+    if (run && (run.status === "queued" || run.status === "running")) S.timers.push(setInterval(() => load(true), 3000));
   }
 
   // ---------------------------------------------------------------- findings inbox
