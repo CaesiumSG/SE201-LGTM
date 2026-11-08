@@ -302,11 +302,12 @@ def answer_until_resolved(
     toolbox: Any,
 ) -> list[AgentFinding] | None:
     """Like ``answer_until_parsed``, but an answer citing code that does not resolve at the
-    toolbox snapshots counts as a parse failure.
+    toolbox snapshots, or policy text not found in its document, counts as a parse failure.
 
     ``ask`` may take one optional argument: after such a failure it receives the re-ask text
-    naming the unresolved citations. After the budget the last such answer is returned whole;
-    candidates with unresolved items are marked unsupported (logged). None means no answer parsed.
+    naming the unresolved citations. After the budget the last such answer is returned without
+    its unresolved policy items; candidates with unresolved items are marked unsupported (logged).
+    None means no answer parsed.
     """
     from lgtm.validation.evidence import EvidenceValidator
 
@@ -328,8 +329,9 @@ def answer_until_resolved(
             id(f): [
                 issue
                 for i in f.evidence
-                if i.type != "policy"
-                for issue in validator.resolution_issues(i)
+                for issue in (
+                    validator.policy_issues(i) if i.type == "policy" else validator.resolution_issues(i)
+                )
             ]
             for f in findings
         }
@@ -351,9 +353,11 @@ def answer_until_resolved(
         return answer
     for f in unresolved or []:
         if id(f) in unresolved_ids:
+            # The judge receives policy text as quoted, not re-read from the document.
+            f.evidence = [i for i in f.evidence if i.type != "policy" or not validator.policy_issues(i)]
             f.supported = False
             f.unsupported_reason = UNRESOLVED_EVIDENCE_REASON
-            logger.warning("Kept candidate %s unsupported: cited code does not resolve", f.finding_id)
+            logger.warning("Kept candidate %s unsupported: cited evidence does not resolve", f.finding_id)
     return unresolved
 
 
