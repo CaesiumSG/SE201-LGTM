@@ -462,7 +462,16 @@
     if (rerun) rerun.addEventListener("click", async () => { rerun.disabled = true; rerun.textContent = "Queuing…"; const x = await post(`/api/runs/${enc(id)}/rerun`).catch((e) => ({ error: e.message })); if (x.run) location.hash = `#/runs/${enc(x.run)}`; else { rerun.textContent = x.error || "Could not queue"; } });
     const box = $("#tab");
     if (current === "live") return liveTab(box, id, active);
-    if (current === "findings") return findingsTab(box, d);
+    if (current === "findings") {
+      findingsTab(box, d);
+      if (d.result && d.result.findings.some((f) => f.flagged && !f.brief)) {   // written once, then cached
+        get(`/api/runs/${enc(id)}/briefs`).then((b) => {
+          d.result.findings.forEach((f) => { if (b[f.key]) f.brief = b[f.key]; });
+          if (document.body.contains(box)) findingsTab(box, d);
+        }).catch(() => {});
+      }
+      return;
+    }
     if (current === "changes") return changesTab(box, d);
     if (current === "trace") return traceTab(box, d);
     if (current === "log") return logTab(box, id);
@@ -514,12 +523,22 @@
     return a.query || Object.values(a).join(" ");
   }
 
+  function briefHtml(b) {
+    if (!b) return "";
+    const rows = [["Where", b.where], ["Impact", b.impact], ["Breaks", b.breaks], ["Fix", b.fix]].filter(([, v]) => v);
+    return `<div class="brief"><p class="brief-h">${rich(b.headline)}</p><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${rich(v)}</dd>`).join("")}</dl></div>`;
+  }
+  function explained(f) {
+    return f.brief ? `${briefHtml(f.brief)}<details class="full-why"><summary>Full reasoning</summary><p>${rich(f.explanation)}</p></details>`
+      : `<p>${rich(f.explanation)}</p>`;
+  }
+
   function findingCard(f, runId, opts = {}) {
     const ev = (f.evidence || []).filter((e) => e.content).slice(0, 3);
     return `<article class="finding ${f.flagged ? "" : "filtered"}" id="f-${esc(f.id)}">
       <header><span class="sev ${f.severity}">${esc(f.severity)}</span><h3>${esc(cweName(f.cwe))} <span class="muted">${esc(f.cwe || "")}</span></h3>
         <code class="loc">${esc(f.file)}:${f.line}</code></header>
-      <p>${rich(f.explanation)}</p>
+      ${f.flagged ? explained(f) : `<p>${rich(f.explanation)}</p>`}
       ${ev.length ? `<details ${opts.open ? "open" : ""}><summary>Evidence the agents cited (${ev.length})</summary>${ev.map((e) => `<div class="evidence"><div class="ev-head"><code>${esc(e.file || "")}${e.lines ? ":" + esc(e.lines) : ""}</code><span class="muted">${esc(e.type || "")}${e.grounded_in_pr ? ", in this change" : ""}</span></div><pre><code>${esc(e.content.trim())}</code></pre></div>`).join("")}</details>` : ""}
       ${f.suggested_fix ? `<details><summary>Suggested fix</summary><p>${rich(f.suggested_fix)}</p></details>` : ""}
       <footer><span class="judge ${f.kev_verdict === "real" ? "real" : ""}">${f.flagged ? `Confirmed by the ${S.judgeName || "Kev judge"}` : f.supported === false ? "Dropped: the cited evidence did not check out" : f.kev_verdict === "not_real" ? "Dropped by the Kev judge" : "Not reported"}</span>
@@ -545,7 +564,7 @@
   function findingsTab(box, d) {
     const fs = d.result ? d.result.findings : [];
     const flagged = fs.filter((f) => f.flagged), dropped = fs.filter((f) => !f.flagged);
-    box.innerHTML = `${flagged.length ? flagged.map((f) => findingCard(f, d.run.id, { open: true })).join("") : `<div class="empty small"><p>${d.result ? "Nothing reported on this pull request." : "Results appear here when the review finishes."}</p></div>`}
+    box.innerHTML = `${flagged.length ? flagged.map((f) => findingCard(f, d.run.id)).join("") : `<div class="empty small"><p>${d.result ? "Nothing reported on this pull request." : "Results appear here when the review finishes."}</p></div>`}
       ${dropped.length ? `<details class="dropped"><summary>${plural(dropped.length, "candidate")} LGTM checked and did not report</summary>${dropped.map((f) => findingCard(f, d.run.id)).join("")}</details>` : ""}`;
     wireTriage(box);
   }
@@ -604,10 +623,18 @@
       $$(".frows button").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.i === i)));
       $("#fdetail").innerHTML = `<header><span class="sev ${f.severity}">${esc(f.severity)}</span><h2>${esc(cweName(f.cwe))} <span class="muted">${esc(f.cwe || "")}</span></h2></header>
         <p class="fd-meta"><code>${esc(f.file)}:${f.line}</code><br>${esc(f.repo)}${f.pr_number ? ` #${f.pr_number}` : ""}: ${esc(f.pr_title || "")}</p>
-        <p>${rich(f.explanation)}</p>
+        ${explained(f)}
         ${f.note ? `<p class="muted">${esc(f.note)}</p>` : ""}
         <div class="fd-actions">${f.source === "imported" ? "" : triageButtons(f.id, f.status)}<a class="btn" href="#/runs/${enc(f.run_id)}/findings">Open the review</a></div>`;
       wireTriage($("#fdetail"), (key, next) => { f.status = next; const b = $(`.frows button[data-i="${i}"] .state`); if (b) { b.className = `state ${next}`; b.textContent = TRIAGE[next]; } });
+      if (!f.brief && f.run_id) {
+        get(`/api/runs/${enc(f.run_id)}/briefs`).then((b) => {
+          if (!b[f.id]) return;
+          f.brief = b[f.id];
+          const btn = $(`.frows button[data-i="${i}"]`);
+          if (btn && btn.getAttribute("aria-pressed") === "true") show(i);
+        }).catch(() => {});
+      }
     };
     $$(".frows button").forEach((b) => b.addEventListener("click", () => {
       show(+b.dataset.i);

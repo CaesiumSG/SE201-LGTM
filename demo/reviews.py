@@ -31,6 +31,7 @@ import uuid
 from pathlib import Path
 
 import github_app as gh
+import brief
 import results
 import suggest
 from store import DATA_DIR, SEVERITY_RANK, Store, now
@@ -580,6 +581,10 @@ class Engine:
             return
         valid = self._commentable_lines(run)
         comments, loose, taken, posted = [], [], set(), []
+        self._briefs = brief.briefs(self.store, self.bedrock_key, self.bedrock_budget,
+                                    {f"{run['id']}:{f['id']}": f for f in flagged})
+        for f in flagged:
+            f["brief"] = self._briefs.get(f"{run['id']}:{f['id']}")
         judge_url, judge_name = JUDGES.get(run.get("judge") or "kev", JUDGES["kev"])[:2]
         for f in flagged:
             line = self._snap(valid.get(f["file"] or "", set()), f["line"])
@@ -655,8 +660,12 @@ class Engine:
                       covering: dict | None = None) -> str:
         judge = {"real": f"confirmed by the {judge_name}", "uncertain": f"the {judge_name} was unsure"}.get(
             f["kev_verdict"] or "", "not judged")
-        parts = [f"{SEVERITY_ICON.get(f['severity'], '⚪')} **{f['severity'].title()} · {finding_title(f)}** · {judge}",
-                 "", self._md(f["explanation"])]
+        parts = [f"{SEVERITY_ICON.get(f['severity'], '⚪')} **{f['severity'].title()} · {finding_title(f)}** · {judge}", ""]
+        if f.get("brief"):   # readable first; the agent's full reasoning stays one click away
+            parts += [self._md(brief.markdown(f["brief"])), "", "<details><summary>Full reasoning</summary>", "",
+                      self._md(f["explanation"]), "", "</details>"]
+        else:
+            parts += [self._md(f["explanation"])]
         ev = [e for e in f["evidence"] if e.get("content")][:3]
         if ev:
             parts += ["", f"<details><summary>Evidence the agents cited ({len(ev)})</summary>", ""]

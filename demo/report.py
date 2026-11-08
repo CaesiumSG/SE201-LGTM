@@ -94,6 +94,14 @@ def code_excerpt(diff: dict | None, path: str, line, radius: int = 4) -> str:
     return ""
 
 
+def brief_html(b: dict | None) -> str:
+    if not b:
+        return ""
+    rows = [("Where", b.get("where")), ("Impact", b.get("impact")), ("Breaks", b.get("breaks")), ("Fix", b.get("fix"))]
+    return (f'<div class="brief"><p class="bh">{rich(b.get("headline"))}</p><dl>'
+            + "".join(f"<dt>{k}</dt><dd>{rich(v)}</dd>" for k, v in rows if v) + "</dl></div>")
+
+
 def report_html(detail: dict, generated: datetime.datetime | None = None) -> str:
     run = detail["run"]
     res = detail.get("result") or {}
@@ -197,7 +205,8 @@ def report_html(detail: dict, generated: datetime.datetime | None = None) -> str
                 <code>{e(f.get("file"))}:{e(f.get("line"))}</code><span>{judge}{conf}</span>
                 <span>Status: {e(TRIAGE.get(f.get("triage"), f.get("triage")))}</span></p></div>
           </header>
-          <p class="why">{rich(f.get("explanation"))}</p>
+          {brief_html(f.get("brief"))}
+          {'<h4>Full reasoning</h4>' if f.get("brief") else ''}<p class="why">{rich(f.get("explanation"))}</p>
           {f'<h4>The flagged change</h4>{excerpt}' if excerpt else ''}
           {f'<div class="fix"><h4>Suggested fix</h4><p>{rich(f.get("suggested_fix"))}</p></div>' if f.get("suggested_fix") else ''}
           {f'<h4>Evidence the agents cited</h4>{evidence(f)}' if any(x.get("content") for x in f.get("evidence") or []) else ''}
@@ -304,7 +313,12 @@ table.sum tr { break-inside: avoid; }
 .fh { display: flex; gap: 12px; align-items: flex-start; break-after: avoid; }
 .fnum { flex: none; width: 24px; height: 24px; border-radius: 50%; background: #111; color: #fff; font-weight: 700; display: grid; place-items: center; font-size: 10pt; }
 .fmeta { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 9pt; color: #444; }
-.why { margin: 10px 0 0; }
+.why { margin: 10px 0 0; color: #444; font-size: 9pt; }
+.brief { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #e3e3e3; border-radius: 6px; break-inside: avoid; }
+.brief .bh { margin: 0 0 6px; font-weight: 600; font-size: 11pt; }
+.brief dl { margin: 0; display: grid; grid-template-columns: 16mm 1fr; gap: 3px 10px; }
+.brief dt { color: #6b6b6b; font-size: 8.5pt; padding-top: 1px; }
+.brief dd { margin: 0; }
 table.code { width: 100%; border-collapse: collapse; font: 8pt/1.55 "JetBrains Mono", ui-monospace, Menlo, monospace; border: 1px solid #e3e3e3; border-radius: 4px; break-inside: avoid; }
 table.code td { padding: 0 6px; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
 table.code .ln { width: 1%; color: #999; text-align: right; white-space: nowrap; }

@@ -42,6 +42,7 @@ import github_app as gh  # noqa: E402
 import results  # noqa: E402
 import report  # noqa: E402
 import reviews  # noqa: E402
+import brief  # noqa: E402
 import claude_judge  # noqa: E402
 import liveapp  # noqa: E402
 import workspace  # noqa: E402
@@ -230,13 +231,23 @@ def run_detail(sess: dict, run_id: str) -> dict:
                                              reviews.CLONES / owner / name)
     status = {r["id"]: r["status"] for r in STORE.q("SELECT id, status FROM findings WHERE run_id=?", (run_id,))}
     if out["result"]:
+        cached = {r["key"]: json.loads(r["body"]) for r in STORE.q("SELECT key, body FROM finding_briefs WHERE key LIKE ?", (f"{run_id}:%",))}
         for f in out["result"]["findings"]:
             f["triage"] = status.get(f"{run_id}:{f['id']}")
             f["key"] = f"{run_id}:{f['id']}"
+            f["brief"] = cached.get(f["key"])
     out["other_runs"] = [run_row(r) for r in STORE.q(
         "SELECT * FROM runs WHERE repo=? AND pr_number IS ? AND id<>? ORDER BY created_at DESC LIMIT 10",
         (run["repo"], run["pr_number"], run_id))]
     return out
+
+
+def run_briefs(detail: dict) -> dict:
+    """Readable briefs for a review's reported findings, written (and cached) when missing."""
+    if not detail.get("result"):
+        return {}
+    flagged = {f["key"]: f for f in detail["result"]["findings"] if f.get("flagged")}
+    return brief.briefs(STORE, ENGINE.bedrock_key, ENGINE.bedrock_budget, flagged)
 
 
 def run_log(sess: dict, run_id: str) -> str:
@@ -486,9 +497,15 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(repo_rows(sess, q.get("source", "all")))
         if path == "/api/runs":
             return self.send_json(list_runs(sess, q))
-        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log|/report\.pdf|/report\.html)?", path)
+        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log|/report\.pdf|/report\.html|/briefs)?", path)
+        if m and m.group(2) == "/briefs":
+            return self.send_json(run_briefs(run_detail(sess, m.group(1))))
         if m and m.group(2) in ("/report.pdf", "/report.html"):
             detail = run_detail(sess, m.group(1))
+            for k, b in run_briefs(detail).items():
+                for f in detail["result"]["findings"]:
+                    if f["key"] == k:
+                        f["brief"] = b
             page = report.report_html(detail)
             if m.group(2) == "/report.html":
                 return self.send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
