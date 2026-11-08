@@ -27,14 +27,13 @@ def build_toolbox(item: dict, ctx) -> AgentToolbox:
 
 
 @cache
-def _kept_sast_hits() -> dict[str, list[SemgrepFinding]]:
-    """Semgrep hits the sast-sqli labels keep, per case: the stand-in for SAST triage output."""
-    hits: dict[str, list[SemgrepFinding]] = {}
+def _sast_hits() -> dict[str, list[tuple[SemgrepFinding, bool]]]:
+    """Every Semgrep hit in the sast-sqli labels, per case, with its gold keep flag."""
+    hits: dict[str, list[tuple[SemgrepFinding, bool]]] = {}
     for label in json.loads(SAST_LABELS.read_text(encoding="utf-8"))["items"]:
-        if label["gold"]["keep"]:
-            fields = {k: v for k, v in label["gold_input"].items() if k != "excerpt"}
-            fields.setdefault("cwe", ["CWE-89"])
-            hits.setdefault(label["case_id"], []).append(SemgrepFinding(**fields))
+        fields = {k: v for k, v in label["gold_input"].items() if k != "excerpt"}
+        fields.setdefault("cwe", ["CWE-89"])
+        hits.setdefault(label["case_id"], []).append((SemgrepFinding(**fields), label["gold"]["keep"]))
     return hits
 
 
@@ -43,8 +42,8 @@ def run_item(item: dict, ctx) -> list[dict] | NotScored:
     toolbox = build_toolbox(item, ctx)
     if not needs_sql_review(section, toolbox):
         return NotScored("gold section has no SQL signal; the pipeline would not send it to the SQLi reviewer")
-    hits = [h for h in _kept_sast_hits().get(item["case_id"], []) if h.path in section.files]
-    notes = "\n".join(f"- {h.rule_id} at {h.path}:{h.start_line}: {h.message}" for h in hits)
+    hits = [(h, keep) for h, keep in _sast_hits().get(item["case_id"], []) if h.path in section.files]
+    notes = "\n".join(f"- {h.rule_id} at {h.path}:{h.start_line}: {h.message}" for h, _ in hits)
     agent = SQLiReviewerAgent(toolbox, ctx.config, llm=ctx.llm)
     reviewed = agent.review_section(section, notes)
     ctx.metrics.add_agent("reviewer", agent.run_records, toolbox.build_tools())
@@ -52,7 +51,7 @@ def run_item(item: dict, ctx) -> list[dict] | NotScored:
         if all(e.get("kind") == "unparsable" for e in agent.errors):
             return NotScored("; ".join(e["message"] for e in agent.errors))
         raise InfraError("; ".join(e["message"] for e in agent.errors))
-    triaged = [ReviewPipeline._sast_finding_to_agent_finding(h) for h in hits]
+    triaged = [ReviewPipeline._sast_finding_to_agent_finding(h) for h, keep in hits if keep]
     sast_evidence = [e for t in triaged for e in t.evidence]
     # Reviewer findings first: a merged group keeps the first finding's location.
     merged = [f for f in dedup_findings([*reviewed, *triaged]) if f.agent != "semgrep"]

@@ -87,7 +87,7 @@ Runs `SQLiReviewerAgent.review_section` on the gold section of each of the 10 sq
 
 A section that `needs_sql_review` rejects is `not_scored` with that reason and the agent does not run. The agent's `kind` on its error records decides the rest: all `unparsable` is `not_scored`; any other error is `error`.
 
-The Semgrep hits that `labels/sast-sqli.json` keeps for the case, passed to the reviewer as its related-SAST notes, stand in for SAST triage output. Reviewer findings and these hits go through `dedup_findings`; a reviewer finding merged with a hit is tagged `sast_also`, any other is `reviewer_only`, and hits that stay alone are not scored.
+Every Semgrep hit that `labels/sast-sqli.json` lists for the case, kept or dropped, is passed to the reviewer as its related-SAST notes, as the pipeline passes every Semgrep hit in the section's files. The kept hits stand in for SAST triage output: reviewer findings and the kept hits go through `dedup_findings`; a reviewer finding merged with a hit is tagged `sast_also`, any other is `reviewer_only`, and hits that stay alone are not scored.
 
 A finding is a hit when it is in the same file and the same enclosing function as a gold location, as the base-side range of a removed check (`old_locations`), or as a known issue on a safe case, by the same rule as authz (see Tolerant scoring). There is no line tolerance. Repeated findings at the same file and line count once.
 

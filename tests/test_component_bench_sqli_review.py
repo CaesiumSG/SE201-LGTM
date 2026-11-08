@@ -427,7 +427,7 @@ def real_finding(line, file=FILE):
     )
 
 
-def sast_run(patched, monkeypatch, hits, reviewer, files=(FILE,), notes=None):
+def sast_run(patched, monkeypatch, hits, reviewer, files=(FILE,), notes=None, dropped=()):
     class Agent(make_agent(reviewer)):
         def review_section(self, section, semgrep_notes=""):
             if notes is not None:
@@ -435,7 +435,8 @@ def sast_run(patched, monkeypatch, hits, reviewer, files=(FILE,), notes=None):
             return reviewer
 
     monkeypatch.setattr(patched, "build_section", lambda gold_input: SimpleNamespace(section_id="s", files=list(files)))
-    monkeypatch.setattr(patched, "_kept_sast_hits", lambda: {RUN_ITEM["case_id"]: hits})
+    labelled = [(h, True) for h in hits] + [(h, False) for h in dropped]
+    monkeypatch.setattr(patched, "_sast_hits", lambda: {RUN_ITEM["case_id"]: labelled})
     monkeypatch.setattr(patched, "SQLiReviewerAgent", Agent)
     return patched.run_item(RUN_ITEM, ctx())
 
@@ -469,11 +470,18 @@ def test_sast_hits_in_the_section_are_passed_to_the_reviewer_as_notes(patched, m
     assert all(part in notes[0] for part in ("r.sqli", f"{FILE}:50", "msg"))
 
 
-def test_kept_sast_hits_default_to_cwe_89_when_the_label_has_no_cwe(monkeypatch, tmp_path):
+def test_dropped_sast_hit_is_passed_as_notes_but_not_merged(patched, monkeypatch):
+    notes = []
+    out = sast_run(patched, monkeypatch, [], [real_finding(55)], notes=notes, dropped=[semgrep_hit(50, 56)])
+    assert f"{FILE}:50" in notes[0]
+    assert out == [{"file": FILE, "line": 55, "sast_also": False}]
+
+
+def test_sast_hits_default_to_cwe_89_when_the_label_has_no_cwe(monkeypatch, tmp_path):
     mod = bench("sqli_review")
     label = {
         "case_id": "c",
-        "gold": {"keep": True},
+        "gold": {"keep": False},
         "gold_input": {
             "rule_id": "r", "path": FILE, "start_line": 1, "end_line": 2, "message": "m", "severity": "ERROR",
             "excerpt": "x",
@@ -482,11 +490,12 @@ def test_kept_sast_hits_default_to_cwe_89_when_the_label_has_no_cwe(monkeypatch,
     path = tmp_path / "sast.json"
     path.write_text(json.dumps({"items": [label]}), encoding="utf-8")
     monkeypatch.setattr(mod, "SAST_LABELS", path)
-    mod._kept_sast_hits.cache_clear()
+    mod._sast_hits.cache_clear()
     try:
-        assert mod._kept_sast_hits()["c"][0].cwe == ["CWE-89"]
+        assert mod._sast_hits()["c"] == [(mod._sast_hits()["c"][0][0], False)]
+        assert mod._sast_hits()["c"][0][0].cwe == ["CWE-89"]
     finally:
-        mod._kept_sast_hits.cache_clear()
+        mod._sast_hits.cache_clear()
 
 
 def test_reviewer_error_record_without_kind_is_an_infra_error(patched, monkeypatch):
@@ -513,7 +522,7 @@ def sast_hit(start: int, end: int):
 
 def with_sast(patched, monkeypatch, hits, reviewed):
     monkeypatch.setattr(patched, "build_section", lambda gold_input: SimpleNamespace(section_id="s", files=[FILE]))
-    monkeypatch.setattr(patched, "_kept_sast_hits", lambda: {"c": hits})
+    monkeypatch.setattr(patched, "_sast_hits", lambda: {"c": [(h, True) for h in hits]})
     monkeypatch.setattr(patched, "SQLiReviewerAgent", make_agent(reviewed))
     return patched.run_item(RUN_ITEM, ctx())
 

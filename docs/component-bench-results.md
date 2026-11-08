@@ -67,7 +67,7 @@ A test unit can also end as an **error**, for example when a service timed out. 
 
 ### Setup
 
-The agents use `qwen3.8:27b` and the judge is Kev-4B. Both ran on one A40 GPU on the SCIS Origami cluster, as a Slurm batch job. The laptop reached them through SSH tunnels.
+The agents use `qwen3.8:27b` and the judge is Kev-4B. Both ran on one A40 GPU on the SCIS Origami cluster, as a Slurm batch job. The SQLi reviewer run used `qwen3.8:27b` alone on one Slurm GPU job. The laptop reached the models through SSH tunnels.
 
 ## 3. Results at a glance
 
@@ -131,7 +131,7 @@ The reviewer made 14 CodeGraph queries, 12 policy searches, 36 file reads and 23
 
 ### 4.3 SQLi reviewer
 
-**Test.** Same as authz, but for SQL injection, on the 10 SQLi cases. Each hit is also tagged with how it was found:
+**Test.** Same as authz, but for SQL injection, on the 10 SQLi cases. The reviewer's Semgrep notes list every flagged line in the section's files, decoys included, as in the pipeline. Each hit is also tagged with how it was found:
 
 - **`sast_also`:** Semgrep had already flagged that line.
 - **`reviewer_only`:** only the reviewer found it.
@@ -140,12 +140,13 @@ The reviewer made 14 CodeGraph queries, 12 policy searches, 36 file reads and 23
 
 | Hits | False alarms | Precision | Recall | F1 | Found only by the reviewer |
 | --- | --- | --- | --- | --- | --- |
-| 6 / 6 | 0 | 1.00 | 1.00 | 1.00 | 2 (postgraas, litellm) |
+| 6 / 6 | 0 | 1.00 | 1.00 | 1.00 | 1 (django) |
 
 **What it means.**
 
 - The reviewer found every injection with no false alarms.
-- It found 2 that Semgrep did not flag.
+- It found 1 that Semgrep did not flag.
+- The decoy notes drew no false alarms.
 - alerta (vulnerable) is not scored: its bug section has no SQL keywords, so the pipeline would never send it to the SQLi reviewer.
 
 ### 4.4 Kev judge
