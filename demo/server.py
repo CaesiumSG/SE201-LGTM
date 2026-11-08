@@ -46,6 +46,7 @@ import brief  # noqa: E402
 import claude_judge  # noqa: E402
 import liveapp  # noqa: E402
 import workspace  # noqa: E402
+import demo_story  # noqa: E402
 from bedrock_env import ledger_total, read_bedrock_key  # noqa: E402
 from store import SEVERITY_RANK, Store, now  # noqa: E402
 
@@ -58,6 +59,7 @@ SESSION_TTL = 8 * 3600
 TRIAGE_STATES = {"open", "confirmed", "false_positive", "accepted_risk", "fixed"}
 
 STORE: Store
+STORY: demo_story.Story
 ENGINE: reviews.Engine
 BASE_URL = "http://127.0.0.1:8765"
 SESSIONS: dict[str, dict] = {}       # in memory only: user tokens never touch the disk
@@ -597,6 +599,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(STORE.q("SELECT * FROM deliveries ORDER BY received_at DESC LIMIT 50"))
         if path.startswith("/api/ws/"):
             return self.ws_get(sess, path, q)
+        if path.startswith("/api/demo/"):
+            return self.demo_get(sess, path, q)
         raise KeyError(path)
 
     # -- POST -------------------------------------------------------------------
@@ -655,6 +659,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": True})
             if path.startswith("/api/ws/"):
                 return self.ws_post(sess, path, body)
+            if path.startswith("/api/demo/"):
+                return self.demo_post(sess, path, body)
         except KeyError:
             return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except gh.GitHubError as exc:
@@ -709,6 +715,43 @@ class Handler(SimpleHTTPRequestHandler):
                                                 body.get("token"), body.get("body")))
         except (workspace.WorkspaceError, liveapp.LiveAppError) as exc:
             return self.send_json({"error": str(exc)}, exc.status)
+        return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    # -- the guided demo (demo_story.py) ------------------------------------------
+    def demo_get(self, sess: dict, path: str, q: dict):
+        try:
+            self.ws_repo(sess, demo_story.REPO)
+            if path == "/api/demo/info":
+                return self.send_json(STORY.info())
+            if path == "/api/demo/rounds":
+                return self.send_json(STORY.rounds(int(q.get("pr", "0"))))
+            if path == "/api/demo/view":
+                return self.send_json(STORY.view(int(q.get("pr", "0")), q.get("sha", ""), q.get("path", ""), q.get("base") or None))
+            if path == "/api/demo/recorded":
+                return self.send_json(STORY.recorded() or {})
+        except (workspace.WorkspaceError, demo_story.StoryError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        raise KeyError(path)
+
+    def demo_post(self, sess: dict, path: str, body: dict):
+        try:
+            self.ws_repo(sess, demo_story.REPO)
+            if path == "/api/demo/start":
+                return self.send_json(STORY.start())
+            if path == "/api/demo/probe":
+                return self.send_json(STORY.probe(str(body.get("ref") or "draft"), int(body.get("pr") or 0) or None))
+            if path == "/api/demo/record":
+                return self.send_json(STORY.record(body))
+            if path == "/api/demo/fix":
+                return self.ndjson(STORY.fix_stream(int(body.get("pr") or 0), sess["login"]))
+            if path == "/api/demo/checkout":
+                return self.send_json({"branch": STORY.checkout(int(body.get("pr") or 0))})
+            if path == "/api/demo/close":
+                return self.send_json(STORY.close(int(body.get("pr") or 0) or None))
+        except (workspace.WorkspaceError, demo_story.StoryError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        except subprocess.CalledProcessError as exc:
+            return self.send_json({"error": gh.redact(f"{exc}")[:400]}, HTTPStatus.BAD_GATEWAY)
         return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def ndjson(self, gen):
@@ -863,7 +906,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> int:
-    global STORE, ENGINE, BASE_URL
+    global STORE, ENGINE, BASE_URL, STORY
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -872,6 +915,7 @@ def main() -> int:
     args = parser.parse_args()
     BASE_URL = f"http://127.0.0.1:{args.port}"
     STORE = Store()
+    STORY = demo_story.Story(WS, STORE)
     added = reviews.import_history(STORE)
     main_checkout = Path(subprocess.run(
         ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],

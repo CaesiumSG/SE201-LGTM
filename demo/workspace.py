@@ -349,9 +349,10 @@ class Workspace:
             written = ""
             if how == "replay" and preset_id:   # a replayed change reads as the real pull request it was
                 written = next((p.get("pr_body", "") for p in self.presets(repo) if p["id"] == preset_id), "")
-            if how == "live" and preset_id:     # written live by the local model from the task's request
+            if how in ("live", "recorded") and preset_id:     # written by the local model from the task's request
                 ask = next((p.get("ask", "") for p in self.presets(repo) if p["id"] == preset_id), "")
-                written = f"{ask}\n\nWritten live in the LGTM demo workspace by a local coding model ({WRITER_MODEL})."
+                written = f"{ask}\n\n" + (f"Written live in the LGTM demo by a local coding model ({WRITER_MODEL})." if how == "live"
+                                            else "Replayed from a recorded earlier run of the local coding model in the LGTM demo.")
             body = written or ("Opened from the LGTM demo workspace. "
                                + ("The change was written by Claude from a developer's request." if how == "model"
                                   else "The change was written in the workspace editor."))

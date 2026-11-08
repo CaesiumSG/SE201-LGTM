@@ -68,6 +68,7 @@
 
   // ---------------------------------------------------------------- icons (inline, stroke)
   const I = {
+    play: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.2 8.8v6.4l5-3.2z" fill="currentColor"/></svg>',
     logo: '<img class="mascot brand-owl" src="/assets/mascot/owl.webp" alt="" width="720" height="672">',
     overview: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm10 7h6V11h-6zM4 20h6v-4H4zm10-12h6V4h-6z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     pr: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 8.2v7.6M18 15.8V9a3 3 0 0 0-3-3h-4m2-2.5L10.5 6 13 8.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
@@ -79,7 +80,7 @@
     gh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
   };
   const NAV = [
-    ["overview", "Overview", I.overview], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr],
+    ["overview", "Overview", I.overview], ["demo", "Live demo", I.play], ["workspace", "Workspace", I.code], ["runs", "Pull requests", I.pr],
     ["repos", "Repositories", I.repo], ["settings", "Settings", I.gear],
   ];
 
@@ -194,7 +195,7 @@
     const signedIn = S.me && S.me.user;
     if (name === "onboarding") { setNav(""); return onboarding(); }
     if (!signedIn || name === "signin") { setNav(""); return signin(query); }
-    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage, workspace: (a, q) => window.LGTMWorkspace(a, q) };
+    const views = { "": overview, overview, runs: args.length ? runPage : runsPage, findings: findingsPage, repos: args.length ? repoPage : reposPage, accuracy: accuracyPage, settings: settingsPage, workspace: (a, q) => window.LGTMWorkspace(a, q), demo: (a, q) => window.LGTMDemo(a, q) };
     const fn = views[name] || overview;
     setNav({ "": "overview", accuracy: "overview", findings: "runs" }[name] ?? name);   // Accuracy lives in Overview, Findings in Pull requests
     try {
@@ -814,7 +815,7 @@
   setInterval(pollHealth, 5000);
 
   // If the dashboard's own files change on disk (a new version), say so instead of running stale code.
-  const FILES = ["/app.js", "/workspace.js", "/landing.js", "/base.css"];
+  const FILES = ["/app.js", "/workspace.js", "/demo.js", "/landing.js", "/base.css"];
   let stamps = null;
   async function checkVersion() {
     try {
