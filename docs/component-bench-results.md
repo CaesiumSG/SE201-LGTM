@@ -87,7 +87,7 @@ The agents use `qwen3.8:27b` and the judge is Kev-4B. Both ran on one A40 GPU on
 - **Gold line:** the real injection, which should be **kept**.
 - **Decoy ("distractor") line:** a similar-looking SQL line that is actually safe, which should be **dropped**.
 
-The agent investigates with its tools and returns an explanation plus quoted evidence. That is checked and passed to Kev, exactly as in production. The finding is **kept** if Kev says it is supported. If the agent cites no evidence at all, it is dropped without asking Kev.
+The agent investigates with its tools and returns an explanation plus quoted evidence. That is checked and passed to Kev, exactly as in production. The finding is **kept** if Kev says it is supported and does not judge it not real. If the agent cites no evidence at all, it is dropped without asking Kev.
 
 **How it is scored.** Only the final keep/drop decision is scored. The triage agent gives no verdict of its own by design: its prompt says Kev decides.
 

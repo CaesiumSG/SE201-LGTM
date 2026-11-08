@@ -62,11 +62,11 @@ class UnreachableLLM:
         raise ConnectionError("model endpoint unreachable")
 
 
-def judge_answer(supported="yes"):
+def judge_answer(supported="yes", verdict="vulnerable"):
     return {
         judge_mod.QUESTION_SUPPORT: supported,
         judge_mod.QUESTION_CONFIDENCE: 0.9,
-        judge_mod.QUESTION_VERDICT: "vulnerable",
+        judge_mod.QUESTION_VERDICT: verdict,
         judge_mod.QUESTION_SEVERITY: "high",
     }
 
@@ -353,6 +353,13 @@ def test_unit_records_triage_explanation_and_judge_decision(bench_env):
 def test_the_judge_decision_is_scored_against_the_label(bench_env, gold_keep, judge_supported, correct):
     result, _ = two_stage(bench_env, KEEP_REPLY, judge_supported, gold_keep=gold_keep)
     assert result.unit["scores"]["correct"] == correct
+
+
+def test_a_supported_hit_judged_not_real_is_dropped(bench_env):
+    judge = FakeJudge(judge_answer("yes", verdict="not_real"))
+    result = bench_env.run("sast-sqli", llm=PromptLLM(KEEP_REPLY), judge=judge, gold_keep=False)
+    assert result.unit["stages"]["judge"]["decision"] == "drop"
+    assert result.unit["scores"]["correct"] == 1.0
 
 
 @pytest.mark.parametrize("gold_keep", [True, False])

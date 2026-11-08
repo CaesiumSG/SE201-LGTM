@@ -60,7 +60,7 @@ def run_item(item, ctx):
         if not result.judged:
             raise InfraError(f"judge did not answer: {result.not_judged_reason}")
         stages["judge"] = {
-            "decision": "keep" if result.supported is True else "drop",
+            "decision": "keep" if result.supported is True and result.kev_verdict != "not_real" else "drop",
             "explanation": _judge_explanation(result),
         }
     else:
