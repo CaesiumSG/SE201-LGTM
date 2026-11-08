@@ -3,7 +3,7 @@
 
 Standard library plus PyJWT. One process serves:
 
-    /                         the dashboard (demo/web), three skins over one app
+    /                         the dashboard (demo/web), light and dark themes over one app
     /auth/login, /auth/callback, /auth/logout     Sign in with GitHub (the app's OAuth)
     /github/manifest/callback  end of the App Manifest flow: stores the app's credentials
     /github/installed          GitHub sends the user here after installing the app
@@ -25,20 +25,28 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from collections import Counter, defaultdict
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import github_app as gh  # noqa: E402
 import results  # noqa: E402
+import report  # noqa: E402
 import reviews  # noqa: E402
+import brief  # noqa: E402
+import claude_judge  # noqa: E402
+import liveapp  # noqa: E402
+import workspace  # noqa: E402
+import demo_story  # noqa: E402
 from bedrock_env import ledger_total, read_bedrock_key  # noqa: E402
 from store import SEVERITY_RANK, Store, now  # noqa: E402
 
@@ -51,11 +59,14 @@ SESSION_TTL = 8 * 3600
 TRIAGE_STATES = {"open", "confirmed", "false_positive", "accepted_risk", "fixed"}
 
 STORE: Store
+STORY: demo_story.Story
 ENGINE: reviews.Engine
 BASE_URL = "http://127.0.0.1:8765"
 SESSIONS: dict[str, dict] = {}       # in memory only: user tokens never touch the disk
 OAUTH_STATES: dict[str, float] = {}
 MANIFEST_STATES: dict[str, float] = {}
+WS = workspace.Workspace()
+APPS = liveapp.LiveApps(workspace.ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +183,7 @@ def run_row(r: dict) -> dict:
         "id", "source", "repo", "pr_number", "pr_title", "pr_url", "author", "author_avatar", "head_sha", "base_sha",
         "head_ref", "base_ref", "trigger", "status", "conclusion", "verdict", "n_flagged", "n_candidates",
         "severity_max", "stage", "check_url", "review_url", "created_at", "started_at", "finished_at", "latency",
-        "backend", "model", "error", "imported_dataset", "outcome", "expected", "advisory", "merged")}
+        "backend", "model", "error", "imported_dataset", "outcome", "expected", "advisory", "merged", "judge")}
     out["ts"] = time.mktime(time.strptime(r["created_at"][:19], "%Y-%m-%dT%H:%M:%S")) if r.get("created_at") else 0
     return out
 
@@ -222,13 +233,23 @@ def run_detail(sess: dict, run_id: str) -> dict:
                                              reviews.CLONES / owner / name)
     status = {r["id"]: r["status"] for r in STORE.q("SELECT id, status FROM findings WHERE run_id=?", (run_id,))}
     if out["result"]:
+        cached = {r["key"]: json.loads(r["body"]) for r in STORE.q("SELECT key, body FROM finding_briefs WHERE key LIKE ?", (f"{run_id}:%",))}
         for f in out["result"]["findings"]:
             f["triage"] = status.get(f"{run_id}:{f['id']}")
             f["key"] = f"{run_id}:{f['id']}"
+            f["brief"] = cached.get(f["key"])
     out["other_runs"] = [run_row(r) for r in STORE.q(
         "SELECT * FROM runs WHERE repo=? AND pr_number IS ? AND id<>? ORDER BY created_at DESC LIMIT 10",
         (run["repo"], run["pr_number"], run_id))]
     return out
+
+
+def run_briefs(detail: dict) -> dict:
+    """Readable briefs for a review's reported findings, written (and cached) when missing."""
+    if not detail.get("result"):
+        return {}
+    flagged = {f["key"]: f for f in detail["result"]["findings"] if f.get("flagged")}
+    return brief.briefs(STORE, ENGINE.bedrock_key, ENGINE.bedrock_budget, flagged)
 
 
 def run_log(sess: dict, run_id: str) -> str:
@@ -240,9 +261,75 @@ def run_log(sess: dict, run_id: str) -> str:
         return "This run was imported from the benchmark results; its process log was not kept.\n"
     path = reviews.RUN_FILES / f"{run_id}.log"
     text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    text = transcript(run, STORE.events(run_id, 0), text)
     for needle in (str(reviews.CLONES), str(Path.home())):
         text = text.replace(needle, "<cache>")
-    return gh.redact(text[-400_000:])
+    return gh.redact(text[-2_000_000:])
+
+
+def transcript(run: dict, events: list[dict], process_log: str) -> str:
+    """Every event of a review (stages, agents, tool calls, verdicts, result) and the process log, merged in time order.
+
+    One line each: ``HH:MM:SS  KIND     message``. The process log holds the pipeline's log lines and LGTM's own
+    notes; the events repeat the pipeline's log lines, so those are taken from the file only."""
+    try:
+        t0 = datetime.datetime.fromisoformat(run.get("started_at") or run["created_at"])
+    except (TypeError, ValueError, KeyError):
+        t0 = datetime.datetime.now()
+    # Align the events' clock (seconds since the runner started) with the process log's wall clock, using the first
+    # pipeline log line, which appears in both.
+    first_log = next((e for e in events if e.get("type") == "log" and isinstance(e.get("t"), (int, float))), None)
+    m0 = re.match(r"(\d\d):(\d\d):(\d\d) ", process_log)
+    if first_log and m0:
+        t0 = t0.replace(hour=int(m0.group(1)), minute=int(m0.group(2)), second=int(m0.group(3)), microsecond=0) \
+            - datetime.timedelta(seconds=float(first_log["t"]))
+    clock = lambda t: (t0 + datetime.timedelta(seconds=float(t or 0))).strftime("%H:%M:%S")
+    def args_of(a: dict) -> str:
+        if not a:
+            return ""
+        if a.get("path"):
+            return a["path"] + (f":{a['start_line']}-{a['end_line']}" if a.get("start_line") else "")
+        if a.get("pattern"):
+            return f"/{a['pattern']}/" + (f" in {a['file_glob']}" if a.get("file_glob") else "")
+        return str(a.get("query") or " ".join(str(v) for v in a.values()))[:160]
+    rows, last_t = [], 0.0
+    for i, e in enumerate(events):
+        t = e.get("t", last_t)
+        last_t = t if isinstance(t, (int, float)) else last_t
+        kind, msg = e.get("type"), None
+        if kind == "accepted":
+            msg = ("REVIEW  ", f"started: {e.get('repo')} #{e.get('pr')} \"{e.get('title')}\" (reviewer: {e.get('backend')})")
+        elif kind == "meta":
+            msg = ("REVIEW  ", f"mode {e.get('mode')}, model {e.get('model')}")
+        elif kind == "stage":
+            mark = {"start": "▶", "done": "✓", "skipped": "–"}.get(e.get("status"), e.get("status"))
+            msg = ("STAGE   ", f"{mark} {e.get('stage')}" + (f": {e['detail']}" if e.get("detail") else ""))
+        elif kind == "info":
+            msg = ("INFO    ", f"[{e.get('stage')}] {e.get('detail')}")
+        elif kind == "agent":
+            msg = ("AGENT   ", f"{e.get('agent')}" + (f" · {e['section']}" if e.get("section") else ""))
+        elif kind == "tool":
+            msg = ("TOOL    ", f"  {e.get('tool')} {args_of(e.get('args') or {})}")
+        elif kind == "verdict":
+            msg = ("VERDICT ", f"{e.get('cwe')} {e.get('file')}:{e.get('line')}: evidence {'holds' if e.get('supported') else 'does not hold'}, "
+                               f"judge says {e.get('kev_verdict') or 'nothing'}" + (f" ({e['kev_severity']})" if e.get("kev_severity") else ""))
+        elif kind == "done" and e.get("conclusion"):
+            msg = ("RESULT  ", f"{e['conclusion']}: {e.get('n_flagged', 0)} finding(s) reported in {e.get('latency_seconds')}s")
+        elif kind == "done":
+            msg = ("RESULT  ", f"pipeline finished: {e.get('n_findings')} candidate(s)" + (f", error: {e['error']}" if e.get("error") else ""))
+        elif kind == "error":
+            msg = ("ERROR   ", e.get("msg", ""))
+        if msg:
+            rows.append((clock(t), 0, i, f"{clock(t)}  {msg[0]} {msg[1]}"))
+    for j, line in enumerate(process_log.splitlines()):
+        m = re.match(r"(\d\d:\d\d:\d\d) ([\w-]+:?)\s+(.*)", line)
+        if m:
+            level = "LGTM" if m.group(2).endswith(":") else {"WARNING": "WARN"}.get(m.group(2), m.group(2))
+            rows.append((m.group(1), 1, j, f"{m.group(1)}  {level:<8} {m.group(3)}"))
+        elif line.strip():
+            rows.append((rows[-1][0] if rows else "00:00:00", 1, j, f"          {line}"))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    return "\n".join(r[3] for r in rows) + "\n"
 
 
 def list_findings(sess: dict, q: dict) -> list[dict]:
@@ -281,10 +368,66 @@ def accuracy() -> dict:
     return {"sets": sets}
 
 
+GPU_MODEL = "qwen3.8:27b"
+_GPU_CACHE: dict = {"at": 0.0, "value": None}
+_GPU_LOCK = threading.Lock()
+
+
+def _probe(addr, path: str, connect_cmd: str, check) -> dict:
+    """Ask the server behind a tunnel for real: an open local port alone only means ssh is listening."""
+    if not results_port(addr):
+        return {"ok": False, "state": "no_tunnel", "detail": f"Tunnel not open. Start the GPU job and run {connect_cmd}."}
+    try:
+        with urllib.request.urlopen(f"http://{addr[0]}:{addr[1]}{path}", timeout=2.5) as resp:
+            data = json.loads(resp.read() or b"{}")
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "code", None)
+        why = f"answered HTTP {reason}" if reason else "is not answering"
+        return {"ok": False, "state": "no_server",
+                "detail": f"Tunnel is open but the GPU job {why}: the job may have ended or still be loading."}
+    return check(data)
+
+
+def _check_qwen(data: dict) -> dict:
+    names = [m.get("name") or m.get("model") for m in data.get("models", [])]
+    if GPU_MODEL not in names:
+        return {"ok": False, "state": "no_model", "detail": f"GPU server is up but {GPU_MODEL} is not loaded."}
+    return {"ok": True, "state": "ok", "detail": f"Qwen 3.8 27B answering on the GPU job ({GPU_MODEL})."}
+
+
+def _check_kev(data: dict) -> dict:
+    if not (data.get("data") or data.get("models")):   # OpenAI-style "data", or the System One server's "models"
+        return {"ok": False, "state": "no_model", "detail": "Kev server is up but lists no model."}
+    return {"ok": True, "state": "ok", "detail": "Kev-4B judge answering on 127.0.0.1:8008 (this Mac or the GPU job)."}
+
+
+def _check_claude_judge(data: dict) -> dict:
+    if not data.get("ready"):
+        return {"ok": False, "state": "no_key", "detail": "Claude judge needs a Bedrock key in .env."}
+    return {"ok": True, "state": "ok", "detail": "Claude on Bedrock answering as the judge (a stand-in, not Kev)."}
+
+
+def gpu_status() -> dict:
+    with _GPU_LOCK:
+        if _GPU_CACHE["value"] is None or time.time() - _GPU_CACHE["at"] > 4:
+            _GPU_CACHE["value"] = {
+                "reviewer": _probe(OLLAMA, "/api/tags", "model/deploy/connect.sh <job>", _check_qwen),
+                "judge": _probe(KEV, "/v1/models", "model/deploy/kev-connect.sh <job>", _check_kev),
+                "checked_at": now(),
+            }
+            _GPU_CACHE["at"] = time.time()
+        return _GPU_CACHE["value"]
+
+
 def health() -> dict:
     app = gh.public_app_info()
+    gpu = dict(gpu_status())
+    judge_kind = STORE.settings().get("judge", "kev")
+    if judge_kind == "claude":
+        gpu["judge"] = _probe(("127.0.0.1", claude_judge.PORT), "/v1/models", "the LGTM server", _check_claude_judge)
     return {
-        "reviewer": results_port(OLLAMA), "judge": results_port(KEV), "bedrock": bool(ENGINE.bedrock_key),
+        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "judge_kind": judge_kind, "bedrock": bool(ENGINE.bedrock_key),
+        "gpu": gpu, "backend": STORE.settings().get("backend", "gpu"),
         "app": app, "relay": {**ENGINE.relay_state, "configured": bool(gh.load_relay())},
         "poll": ENGINE.poll_state, "queue": ENGINE.queue.qsize(), "current": ENGINE.current,
         "installations": STORE.q("SELECT * FROM installations WHERE removed=0"),
@@ -326,6 +469,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_bytes(self, body: bytes, ctype: str, download: str | None = None):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -413,7 +565,23 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(repo_rows(sess, q.get("source", "all")))
         if path == "/api/runs":
             return self.send_json(list_runs(sess, q))
-        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log)?", path)
+        m = re.fullmatch(r"/api/runs/([\w-]+)(/events|/log|/report\.pdf|/report\.html|/briefs)?", path)
+        if m and m.group(2) == "/briefs":
+            return self.send_json(run_briefs(run_detail(sess, m.group(1))))
+        if m and m.group(2) in ("/report.pdf", "/report.html"):
+            detail = run_detail(sess, m.group(1))
+            for k, b in run_briefs(detail).items():
+                for f in detail["result"]["findings"]:
+                    if f["key"] == k:
+                        f["brief"] = b
+            page = report.report_html(detail)
+            if m.group(2) == "/report.html":
+                return self.send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
+            try:
+                pdf = report.report_pdf(page)
+            except Exception as exc:  # noqa: BLE001 - fall back to the printable page
+                return self.send_json({"error": str(exc)[:300]}, HTTPStatus.BAD_GATEWAY)
+            return self.send_bytes(pdf, "application/pdf", report.filename(detail["run"]))
         if m:
             if m.group(2) == "/events":
                 run_detail(sess, m.group(1))  # access check
@@ -429,6 +597,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(STORE.settings())
         if path == "/api/deliveries":
             return self.send_json(STORE.q("SELECT * FROM deliveries ORDER BY received_at DESC LIMIT 50"))
+        if path.startswith("/api/ws/"):
+            return self.ws_get(sess, path, q)
+        if path.startswith("/api/demo/"):
+            return self.demo_get(sess, path, q)
         raise KeyError(path)
 
     # -- POST -------------------------------------------------------------------
@@ -459,7 +631,7 @@ class Handler(SimpleHTTPRequestHandler):
             m = re.fullmatch(r"/api/findings/(.+)", path)
             if m:
                 where, args = scope_sql(sess)
-                row = STORE.one(f"SELECT * FROM findings WHERE id=? AND {where}", [m.group(1), *args])
+                row = STORE.one(f"SELECT * FROM findings WHERE id=? AND {where}", [unquote(m.group(1)), *args])   # ids hold ":" and "/"
                 if not row or body.get("status") not in TRIAGE_STATES:
                     return self.send_json({"error": "bad request"}, HTTPStatus.BAD_REQUEST)
                 STORE.update("findings", row["id"], status=body["status"], note=str(body.get("note") or "")[:500],
@@ -473,6 +645,10 @@ class Handler(SimpleHTTPRequestHandler):
                 STORE.update("repos", repo["id"], enabled=1 if body.get("enabled") else 0)
                 return self.send_json({"ok": True})
             if path == "/api/settings":
+                if "backend" in body and body["backend"] not in ("gpu", "bedrock"):
+                    return self.send_json({"error": "backend must be gpu or bedrock"}, HTTPStatus.BAD_REQUEST)
+                if "judge" in body and body["judge"] not in ("kev", "claude"):
+                    return self.send_json({"error": "judge must be kev or claude"}, HTTPStatus.BAD_REQUEST)
                 for k, v in body.items():
                     STORE.set_setting(k, v)
                 return self.send_json(STORE.settings())
@@ -481,11 +657,146 @@ class Handler(SimpleHTTPRequestHandler):
                 ENGINE.poll_once()
                 sess["scoped_at"] = 0
                 return self.send_json({"ok": True})
+            if path.startswith("/api/ws/"):
+                return self.ws_post(sess, path, body)
+            if path.startswith("/api/demo/"):
+                return self.demo_post(sess, path, body)
         except KeyError:
             return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except gh.GitHubError as exc:
             return self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    # -- workspace (demo IDE) ----------------------------------------------------
+    @staticmethod
+    def ws_repo(sess: dict, repo: str) -> str:
+        if repo not in sess.get("repos", set()):
+            raise workspace.WorkspaceError("Connect this repository to LGTM first.", 404)
+        return repo
+
+    def ws_get(self, sess: dict, path: str, q: dict):
+        try:
+            if path == "/api/ws/presets":
+                return self.send_json([p for p in WS.presets() if p["repo"] in sess.get("repos", set())])
+            if path == "/api/ws/apps":
+                return self.send_json(sorted(r for r in liveapp.APPS if r in sess.get("repos", set())))
+            repo = self.ws_repo(sess, q.get("repo", ""))
+            if path == "/api/ws/state":
+                return self.send_json(WS.state(repo))
+            if path == "/api/ws/tree":
+                return self.send_json(WS.tree(repo))
+            if path == "/api/ws/file":
+                return self.send_json(WS.read(repo, q.get("path", "")))
+            if path == "/api/ws/search":
+                return self.send_json(WS.search(repo, q.get("q", "")))
+            if path == "/api/ws/diff":
+                return self.send_json(WS.diff(repo))
+        except workspace.WorkspaceError as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        raise KeyError(path)
+
+    def ws_post(self, sess: dict, path: str, body: dict):
+        try:
+            repo = self.ws_repo(sess, body.get("repo", ""))
+            if path == "/api/ws/open":
+                return self.send_json(WS.open(repo, body.get("preset") or None))
+            if path == "/api/ws/file":
+                return self.send_json(WS.write(repo, body.get("path", ""), str(body.get("content") or ""), bool(body.get("deleted"))))
+            if path == "/api/ws/push":
+                gen = WS.push_stream(repo, body.get("branch", ""), body.get("message", ""), body.get("title", ""),
+                                     sess["login"], body.get("how", ""), str(body.get("preset") or ""))
+                return self.ndjson(gen)
+            if path == "/api/ws/generate":
+                return self.ws_generate(repo, body)
+            if path == "/api/ws/app/start":
+                return self.send_json(APPS.start(repo))
+            if path == "/api/ws/app/call":
+                return self.send_json(APPS.call(repo, str(body.get("method") or "GET"), str(body.get("path") or "/"),
+                                                body.get("token"), body.get("body")))
+        except (workspace.WorkspaceError, liveapp.LiveAppError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    # -- the guided demo (demo_story.py) ------------------------------------------
+    def demo_get(self, sess: dict, path: str, q: dict):
+        try:
+            self.ws_repo(sess, demo_story.REPO)
+            if path == "/api/demo/info":
+                return self.send_json(STORY.info())
+            if path == "/api/demo/rounds":
+                return self.send_json(STORY.rounds(int(q.get("pr", "0"))))
+            if path == "/api/demo/view":
+                return self.send_json(STORY.view(int(q.get("pr", "0")), q.get("sha", ""), q.get("path", ""), q.get("base") or None))
+            if path == "/api/demo/files":
+                return self.send_json(STORY.files())
+            if path == "/api/demo/recorded":
+                return self.send_json(STORY.recorded() or {})
+        except (workspace.WorkspaceError, demo_story.StoryError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        raise KeyError(path)
+
+    def demo_post(self, sess: dict, path: str, body: dict):
+        try:
+            self.ws_repo(sess, demo_story.REPO)
+            if path == "/api/demo/start":
+                return self.send_json(STORY.start())
+            if path == "/api/demo/probe":
+                return self.send_json(STORY.probe(str(body.get("ref") or "draft"), int(body.get("pr") or 0) or None))
+            if path == "/api/demo/record":
+                return self.send_json(STORY.record(body))
+            if path == "/api/demo/fix":
+                return self.ndjson(STORY.fix_stream(int(body.get("pr") or 0), sess["login"]))
+            if path == "/api/demo/shop":
+                return self.send_json(STORY.shop(str(body.get("ref") or "main"), int(body.get("pr") or 0) or None, body.get("as") or None,
+                                                 str(body.get("path") or "/"), str(body.get("method") or "GET"), body.get("json"),
+                                                 bool(body.get("reset"))))
+            if path == "/api/demo/checkout":
+                return self.send_json({"branch": STORY.checkout(int(body.get("pr") or 0))})
+            if path == "/api/demo/close":
+                return self.send_json(STORY.close(int(body.get("pr") or 0) or None))
+        except (workspace.WorkspaceError, demo_story.StoryError) as exc:
+            return self.send_json({"error": str(exc)}, exc.status)
+        except subprocess.CalledProcessError as exc:
+            return self.send_json({"error": gh.redact(f"{exc}")[:400]}, HTTPStatus.BAD_GATEWAY)
+        return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def ndjson(self, gen):
+        """Stream a generator's events as newline-delimited JSON; errors before the first event are a normal error reply."""
+        first = next(gen)   # WorkspaceError here is answered by the caller as JSON
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+        try:
+            self.wfile.write((json.dumps(first) + "\n").encode()); self.wfile.flush()
+            for event in gen:
+                self.wfile.write((json.dumps(event) + "\n").encode()); self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:  # noqa: BLE001 - the terminal shows the failure
+            self.wfile.write((json.dumps({"type": "error", "msg": gh.redact(str(exc))[:400]}) + "\n").encode())
+
+    def ws_generate(self, repo: str, body: dict):
+        """Stream the local model's rewrite of one file as newline-delimited JSON events."""
+        gen = WS.write_live(repo, body.get("path", ""), body.get("prompt", ""))
+        try:
+            first = next(gen)
+        except workspace.WorkspaceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the model call failed before streaming
+            return self.send_json({"error": gh.redact(f"The assistant could not start: {exc}")[:400]}, HTTPStatus.BAD_GATEWAY)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+        try:
+            for event in [first]:
+                self.wfile.write((json.dumps(event) + "\n").encode())
+            for event in gen:
+                self.wfile.write((json.dumps(event) + "\n").encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:  # noqa: BLE001 - report mid-stream failures to the editor
+            self.wfile.write((json.dumps({"type": "error", "msg": gh.redact(str(exc))[:400]}) + "\n").encode())
 
     # -- GitHub App -----------------------------------------------------------
     def manifest_form(self, name: str) -> dict:
@@ -601,7 +912,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> int:
-    global STORE, ENGINE, BASE_URL
+    global STORE, ENGINE, BASE_URL, STORY
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -610,6 +921,7 @@ def main() -> int:
     args = parser.parse_args()
     BASE_URL = f"http://127.0.0.1:{args.port}"
     STORE = Store()
+    STORY = demo_story.Story(WS, STORE)
     added = reviews.import_history(STORE)
     main_checkout = Path(subprocess.run(
         ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -618,6 +930,7 @@ def main() -> int:
     budget = ledger_total() + args.bedrock_allowance
     ENGINE = reviews.Engine(STORE, sys.executable, BASE_URL, key, budget)
     ENGINE.start(args.port)
+    claude_judge.serve(key, budget)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     app = gh.public_app_info()
