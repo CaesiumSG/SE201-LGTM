@@ -9,32 +9,51 @@ LGTM runs as a real GitHub App owned by `cyberjj999`. When a pull request is ope
 5. posts a **pull-request review** with inline comments on the flagged lines (request changes when the check fails),
 6. stores the run, its findings, agent trace and log in SQLite for the dashboard.
 
-The dashboard (http://127.0.0.1:8765/) has sign in with GitHub, onboarding, an org overview, a pull-request feed with live progress, a findings inbox, per-repository pages, the benchmark accuracy page and settings. Three skins sit over the same app: **Ledger** (Vercel-like), **Night shift** (Linear-like) and **Console** (Datadog/Snyk-like). Switch them in the header or under Settings → Appearance.
+The dashboard (http://127.0.0.1:8765/) has sign in with GitHub, onboarding, an org overview, a pull-request feed with live progress, a findings inbox, per-repository pages, the benchmark accuracy page, settings, and the **Workspace**, where you write code, push it and watch LGTM review it. Light and dark themes: the moon button in the header, or Settings → Appearance.
 
 The benchmark runs appear in the history as **Imported from benchmark**: those reviews ran on cached clones of public projects, and LGTM was never installed on those repositories.
 
+## The demo in one minute
+
+The story: **an AI coding assistant writes a feature with a security bug, and LGTM catches it before it merges.**
+
+1. **Workspace → shoply-demo**: pick the task *"Customers want to track one order. Add GET /orders/<id> that returns its details."* and press **Write it live**. A small local model (llama3.2 via Ollama) writes the endpoint into the editor in about 6 seconds. Nothing is scripted: the model writes it fresh every time, and on this request it left out the ownership check in 6 of 6 trials.
+2. **App tab**: shoply's storefront running the code in the workspace as it is now. Sign in as **Bob**, open *Track an order*, enter **1**: Bob sees **Alice's** order and home address (highlighted in red). On `main` the same page says there is no order tracking yet.
+3. **Commit, push and open a pull request** (the terminal shows the real `git` and `gh` commands). GitHub sends the PR to LGTM.
+4. **LGTM reviews it** (about a minute): the check fails and an inline comment on the new endpoint explains the bug (insecure direct object reference, CWE-639), what an attacker can do, the policy rule it breaks (`security-policy.md` §3) and the fix. When its judge confirms a fix, the comment also has GitHub's **Commit suggestion** button.
+5. **The fix**: commit LGTM's suggestion (or write the ownership check) and push. LGTM passes the new commit; back in the App tab, Bob now gets *"This order belongs to another customer."*
+
+The second shoply task, *"Add user search"*, shows SQL injection in the app (as **Maria**, *Find a customer* returns every user's email and password hash), but only with **Replay the prepared change instead**: written live, the models produced safe search code in 18 of 18 trials, and LGTM correctly passes it.
+
 ## Before presenting (about 10 minutes)
 
-1. **VPN on**, then start the GPU job (Qwen reviewer and Kev judge) from the main checkout:
+1. **The judge and the writer, on this laptop** (no VPN or GPU job needed). The header's GPU / API switch picks the reviewer: **API** reviews with Claude on Bedrock.
 
    ```bash
-   cd /Users/lyejiajun/projects/se201-lgtm
-   model/deploy/judged-up.sh 2:30:00        # prints the job id
-   model/deploy/connect.sh <job>            # Qwen on 127.0.0.1:11435; keep it running
-   model/deploy/kev-connect.sh <job>        # Kev judge on 127.0.0.1:8008; keep it running
+   cd ~/projects/kev && uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --device auto --port 8008   # Kev judge; keep it running
+   ollama serve        # if Ollama is not already running; `ollama pull llama3.2` once
    ```
 
-2. **Start LGTM** from the repository root (the webhook relay and the polling fallback start with it):
+   Check Kev answers before pushing (`curl -s 127.0.0.1:8008/v1/models`): with the judge down, a review cannot confirm anything. Settings → Judge can switch to the Claude stand-in judge instead.
+
+   To review on the GPU instead (VPN on, from the main checkout): `model/deploy/judged-up.sh 2:30:00`, then `model/deploy/connect.sh <job>` (Qwen on 127.0.0.1:11435) and `model/deploy/kev-connect.sh <job>` (Kev on 127.0.0.1:8008), and `model/deploy/down.sh <job>` afterwards.
+
+2. **Reset the demo** so no rehearsal is left over: it closes open `demo/` pull requests on the demo repositories (without merging) and resets the workspaces to `main`. It prints its plan first; add `--apply` to do it.
+
+   ```bash
+   python3 demo/reset_demo.py            # the plan
+   python3 demo/reset_demo.py --apply    # do it
+   ```
+
+3. **Start LGTM** from the repository root (the webhook relay and the polling fallback start with it):
 
    ```bash
    /Users/lyejiajun/projects/se201-lgtm/.venv/bin/python demo/server.py
    ```
 
-3. Open http://127.0.0.1:8765/ and **sign in with GitHub**. The status dots in the header should show Reviewer, Judge and Webhooks all green. If Webhooks is amber, the relay is down; polling still picks up new PRs within 30 seconds.
+4. Open http://127.0.0.1:8765/ and **sign in with GitHub** (GitHub shows its account picker: Continue). The status dots in the header should show Reviewer, Judge and Webhooks all green. If Webhooks is amber, the relay is down; polling still picks up new PRs within 30 seconds. Restarting the server signs you out, so don't restart it mid-recording.
 
-4. After the demo: `model/deploy/down.sh <job>`.
-
-## The live demo
+## The demo repositories
 
 - **Demo repository** `cyberjj999/shoply-demo` (public): a small Flask shop. Three branches are ready to open as PRs:
   - `feature/user-search`: user search built with an f-string SQL query (SQL injection, CWE-89),
@@ -55,7 +74,7 @@ Rules for anything posted to GitHub from the replay: no links to the upstream pr
 
 - **Write it live**: for the shoply tasks, a small local coding model (`llama3.2` via Ollama; `LGTM_WRITER_MODEL` to change it) writes the file from the task's request, streamed into the editor in about 6 seconds. Nothing is scripted. On "Add GET /orders/<id>" it skipped the ownership check in 6 of 6 trials (a real IDOR); on the user search it wrote safe ORM code every time, so that review passes. "Replay the prepared change instead" types the prepared commit.
 - **Scripted tasks** (`workspace_presets.json`) replay a real commit into the editor, typed out live: the three shoply features (two bugs and a safe change, plus the paged-orders fix as a follow-up pushed to the same pull request) and the 2016 taiga-back change later published as CVE-2025-62367. A task resets the editor to the commit before the change; the result is byte-for-byte the original commit.
-- **Ask Claude** rewrites the open file from a free-text request, streamed into the editor (Claude Sonnet on Bedrock, a few cents a request, on the shared spend ledger).
+- **App tab** (shoply only): the storefront running the code in the workspace as it is right now (or `main`, to compare), so a feature's bug shows as what it lets a user do. Sign in as Alice, Bob, Maria (manager) or nobody; buy things (a real `POST /orders`), see your orders, track an order, and as staff see every order and search customers. Every page with data is a real request to shoply running that code (`web/shop.js`, served through `demo_story.py`). The catalogue and the seed orders' contents are drawn by the storefront, since shoply's API stores only an order's total and address.
 - **Commit, push and open a pull request** is real: it commits, pushes a new branch and opens the pull request with the `gh` CLI, as the GitHub account `gh` is signed in as (only when that is also who is signed in to the dashboard). It never force-pushes or pushes to the default branch. Pushing again from the same branch updates the pull request. The panel then follows LGTM's review of that commit and links to the pull request, the check run and the live review.
 
 To replay another published advisory, create a private replay repository the way taiga-back-replay was made, connect it, and add an entry with its `base` (the commit before the change) and `source` (the change) to `workspace_presets.json`. Never add live-hunt leads.
@@ -92,9 +111,16 @@ demo/
   results.py       stored benchmark results, normalised (verdict, findings, trace, diff)
   live_runner.py   one pipeline run in a subprocess, streaming @@EVT progress lines
   bedrock_env.py   Bedrock key and spend ledger (the reviewer can run on Claude, capped at +USD 10)
-  workspace.py     the Workspace tab: working clones, files, search, scripted replays, Claude, commit and push
+  workspace.py     the Workspace tab: working clones, files, search, scripted replays, the local writer, commit and push
   workspace_presets.json  the scripted tasks (real commits to replay)
-  web/             the dashboard: index.html, app.js, workspace.js, base.css, skins/{ledger,nightshift,console}.css, setup.html
+  demo_story.py    the App tab's shop (any version of shoply, on demand) and request probes
+  liveapp.py, apps/shoply_launcher.py   run shoply from a working copy with fresh demo data
+  claude_judge.py  the Claude stand-in for the Kev judge (same questions, port 8009)
+  suggest.py       committable fixes, checked by the judge before they are offered
+  brief.py         the short readable brief on each finding
+  report.py        the PDF report of a review
+  reset_demo.py    close rehearsal PRs and reset the workspaces before a recording
+  web/             the dashboard: index.html, app.js, workspace.js, shop.js, landing.js, base.css, theme.css, setup.html
   .secrets/ .data/ .runs/   git-ignored: credentials, database and clones, earlier demo runs
 ```
 
