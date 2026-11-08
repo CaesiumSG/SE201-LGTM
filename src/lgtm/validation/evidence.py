@@ -284,25 +284,24 @@ class EvidenceValidator:
     def resolves(self, item: EvidenceItem) -> bool:
         return not self.resolution_issues(item)
 
-    def _validate_policy_item(self, item: EvidenceItem) -> list[str]:
-        issues: list[str] = []
-        source = item.source or item.file
+    def policy_issues(self, item: EvidenceItem) -> list[str]:
+        """Why a policy item's document or quoted text is not in the base branch or the PR snapshot."""
+        # Retrieved chunks carry Windows-separated paths and a "[path:start-end]" header.
+        source = (item.source or item.file or "").strip().strip("[]").replace("\\", "/")
         if not source:
-            issues.append("policy evidence has no source document")
-            return issues
+            return ["policy evidence has no source document"]
         source_path = self._resolve_path(source)
-        lines = self._read_base_file(source_path)
-        if lines is None:
-            issues.append(f"cited policy document does not exist: {source_path}")
-            return issues
-        if item.content.strip():
-            whole = _normalize("\n".join(lines))
-            if not self._snippet_in_text(item.content, whole):
-                issues.append(
-                    f"cited policy text not found in {source_path}: "
-                    f"{item.content[:80]!r}"
-                )
-        return issues
+        versions = [self._read_base_file(source_path)]
+        if self._shas is not None and "pr" in self._shas:
+            versions.append(self._snapshot_lines("pr", source_path))
+        versions = [lines for lines in versions if lines is not None]
+        if not versions:
+            return [f"cited policy document does not exist: {source_path}"]
+        if item.content.strip() and not any(
+            self._snippet_in_text(item.content, _normalize("\n".join(lines))) for lines in versions
+        ):
+            return [f"cited policy text not found in {source_path}: {item.content[:80]!r}"]
+        return []
 
     # ------------------------------------------------------------------
     def _grounds_pr(self, item: EvidenceItem, issues: list[str]) -> bool:

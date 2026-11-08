@@ -17,6 +17,7 @@ from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.sast_triage import SASTTriageAgent
 from lgtm.agents.sqli_reviewer import SQLiReviewerAgent
 from lgtm.agents.base import (
+    UNRESOLVED_EVIDENCE_REASON,
     RunRecord,
     answer_until_parsed,
     extract_json_object,
@@ -1095,16 +1096,8 @@ class TestAgentErrorKind:
 
 
 class TestGuardrailExemptions:
-    def test_policy_items_are_not_checked_for_resolution(self, git_repo):
-        ghost_policy = {"type": "policy", "source": "missing-policy.md", "content": "nothing"}
-        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, ghost_policy])))
-        [candidate] = _authz_agent(git_repo, llm).review_section(_section())
-        assert [e.type for e in candidate.evidence] == ["code", "policy"]
-        assert llm.calls == 1
-
     def test_candidate_citing_no_code_is_not_reasked_or_dropped(self, git_repo):
-        policy_only = {"type": "policy", "source": "policy.md", "content": "x"}
-        llm = _SequenceLLM(_authz_reply(_finding(evidence=[policy_only]), _finding(evidence=[])))
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[POLICY_ITEM]), _finding(evidence=[])))
         out = _authz_agent(git_repo, llm).review_section(_section())
         assert len(out) == 2 and llm.calls == 1
 
@@ -1842,3 +1835,43 @@ class TestDefaultAnswerPathUnchanged:
         assert llm.seen[1][-1].content == registry.entry("shared.forced_final")
         assert llm.kwargs == [{}, {}]
         assert llm.copies == []
+
+
+UNFOUNDED_POLICY = {
+    "invented file": {**POLICY_ITEM, "source": "security_policy.md"},
+    "invented rule": {**POLICY_ITEM, "content": "Users may delete only their own orders."},
+}
+BAD_POLICY = pytest.mark.parametrize(
+    "bad", list(UNFOUNDED_POLICY.values()), ids=list(UNFOUNDED_POLICY)
+)
+
+
+class TestUnfoundedPolicyCitation:
+    @BAD_POLICY
+    def test_authz_reasks_with_the_issue_named_and_uses_the_corrected_answer(self, git_repo, bad):
+        llm = _SequenceLLM(
+            _authz_reply(_finding(explanation="first", evidence=[GOOD_PR, bad])),
+            _authz_reply(_finding(explanation="second", evidence=[GOOD_PR, POLICY_ITEM])),
+        )
+        prompts = []
+        invoke = llm.invoke
+        llm.invoke = lambda messages: (prompts.append(str(messages)), invoke(messages))[1]
+        agent = _authz_agent(git_repo, llm)
+        out = agent.review_section(_section())
+        assert [f.explanation for f in out] == ["second"]
+        assert llm.calls == 2 and agent.errors == []
+        assert "cited policy" in prompts[1] and "cited policy" not in prompts[0]
+
+    @BAD_POLICY
+    def test_triage_candidate_is_kept_unsupported_after_the_budget(self, git_repo, bad):
+        llm = _SequenceLLM(_triage_reply(evidence=[GOOD_PR, bad]))
+        agent = _triage_agent(git_repo, llm)
+        candidate = agent.triage(SEMGREP_HIT, None)
+        assert candidate.supported is False
+        assert candidate.unsupported_reason == UNRESOLVED_EVIDENCE_REASON
+        assert llm.calls == 4 and agent.errors == []
+
+    def test_quoted_policy_from_the_document_is_not_reasked(self, git_repo):
+        llm = _SequenceLLM(_authz_reply(_finding(evidence=[GOOD_PR, POLICY_ITEM])))
+        [candidate] = _authz_agent(git_repo, llm).review_section(_section())
+        assert candidate.supported is None and llm.calls == 1
