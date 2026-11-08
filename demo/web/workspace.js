@@ -19,7 +19,7 @@
   const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
   const stamp = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; };
   const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-  const dark = () => document.documentElement.dataset.skin === "nightshift";
+  const dark = () => document.documentElement.dataset.theme === "dark";
   const base = (p) => p.split("/").pop();
   const dirOf = (p) => p.split("/").slice(0, -1).join("/");
 

@@ -1,67 +1,66 @@
-// LGTM landing page (signed out): a looping, animated pull request shows what LGTM does, then how a review
+// LGTM landing page (signed out): what LGTM is, how it fits into a pull request in three steps, how a review
 // works and what it has caught. Uses helpers from app.js (window.LGTM).
 (function () {
   "use strict";
 
   const L = () => window.LGTM;
   const GH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
-  const SHIELD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4 5.5v6.2c0 4.6 3.3 8.5 8 9.8 4.7-1.3 8-5.2 8-9.8V5.5z" fill="currentColor"/><path d="m8.5 12.2 2.4 2.4 4.8-5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const OWL = (cls = "") => `<img class="mascot ${cls}" src="/assets/mascot/owl.webp" alt="" width="720" height="672" decoding="async">`;
+  // Line-art for steps 1 and 2 of "how it works" (step 3 is the owl).
+  const ART_AI = '<svg viewBox="0 0 120 120" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="60" cy="9" r="4" fill="currentColor"/><path d="M60 13v10"/><rect x="31" y="23" width="58" height="36" rx="14"/><rect x="24" y="35" width="7" height="13" rx="3.5"/><rect x="89" y="35" width="7" height="13" rx="3.5"/><rect x="38" y="31" width="44" height="20" rx="10" fill="currentColor" stroke="none"/><circle cx="52" cy="41" r="3.6" fill="var(--bg)" stroke="none"/><circle cx="68" cy="41" r="3.6" fill="var(--bg)" stroke="none"/><rect x="22" y="66" width="76" height="46" rx="10"/><path d="M50 83l-9 8 9 8M70 83l9 8-9 8M63 81l-6 20"/><circle cx="76" cy="73" r="1.2" fill="currentColor"/><circle cx="82" cy="73" r="1.2" fill="currentColor"/><circle cx="88" cy="73" r="1.2" fill="currentColor"/></svg>';
+  const ART_PR = `<svg viewBox="0 0 120 120" aria-hidden="true"><g transform="translate(8 4) scale(6.5)">${GH.replace(/^<svg[^>]*>/, "").replace("</svg>", "")}</g><circle cx="90" cy="96" r="25" fill="var(--bg)"/><g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><circle cx="79" cy="82" r="5.5"/><circle cx="79" cy="109" r="5.5"/><circle cx="103" cy="109" r="5.5"/><path d="M79 87.5v16M103 103.5V95a8 8 0 0 0-8-8h-5"/><path d="m93 81 -4 6 4 6"/></g></svg>`;
 
-  // The pull request in the demo. Line 64 is typed in live; the fix replaces it.
-  const LINES = [
-    [58, ""],
-    [59, '<k>@users_bp</k>.route(<s>"/search"</s>, methods=[<s>"GET"</s>])'],
-    [60, '<k>@require_role</k>(<s>"manager"</s>)'],
-    [61, '<k>def</k> <f>search_users</f>():'],
-    [62, '    name = request.args.get(<s>"name"</s>, <s>""</s>)'],
-    [63, "    rows = session.execute("],
-    [64, null],
-    [65, "    )"],
-    [66, "    <k>return</k> jsonify([<f>dict</f>(r._mapping) <k>for</k> r <k>in</k> rows])"],
+  // The held-out advisories LGTM flagged (docs/real-prs-eval.md; final run: benchmark/runs/final-2026-11).
+  // `file` is where the flagged finding sat; null means it flagged the pull request but in a different file than the advisory names.
+  const SQL = "SQL injection", AUTHZ = "Missing access check", IDOR = "Insecure direct object reference";
+  const CASES = [
+    ["django/django", 91498, SQL, "CVE-2026-1207", "GHSA-mwm9-4648-f68q", "A raster lookup's band index went straight into PostGIS SQL.", "django/contrib/gis/db/backends/postgis/operations.py"],
+    ["collerek/ormar", 1799, SQL, "CVE-2026-26198", "GHSA-xxh2-68g9-8jqr", "The min() and max() aggregates trusted the column name they were given.", "ormar/queryset/actions/select_action.py"],
+    ["alerta/alerta", 2535, SQL, "CVE-2026-34400", "GHSA-8prr-286p-4w7j", "Search terms were formatted into the alerts WHERE clause.", "alerta/database/backends/postgres/parser.py"],
+    ["taigaio/taiga-back", 858, SQL, "CVE-2025-62367", "GHSA-chm9-9wwq-xffj", "The ?epic= parameter was formatted into a raw SQL subquery.", "taiga/projects/userstories/utils.py"],
+    ["rucio/rucio", 324, SQL, "CVE-2026-29090", "GHSA-6j7p-qjhg-9947", "Dataset search filters were formatted into raw Postgres SQL.", "lib/rucio/core/did_meta_plugins/filter_engine.py"],
+    ["rucio/rucio", 324, SQL, "CVE-2026-29080", "GHSA-vjr5-c9qv-hgm3", "The Oracle JSON filter built its query the same way.", "lib/rucio/core/did_meta_plugins/filter_engine.py"],
+    ["piccolo-orm/piccolo", 1951, SQL, "CVE-2023-47128", "GHSA-xq59-7jf3-rjc6", "Savepoint names were interpolated into SAVEPOINT statements.", "piccolo/engine/postgres.py", true],
+    ["django-cms/django-cms", 10680, AUTHZ, "CVE-2026-54624", "GHSA-vgxm-h9gx-h9w7", "A new structure endpoint dropped the page permission check.", "cms/views.py"],
+    ["khoj-ai/khoj", 37977, IDOR, "CVE-2024-52294", "GHSA-hq4h-w933-jm6c", "Any signed-in user could cancel anyone's subscription by passing their email.", "src/khoj/routers/subscription.py"],
+    ["getsentry/sentry", 45706, IDOR, "CVE-2024-45606", "GHSA-v345-w9f2-mpm5", "Alert rules in other organizations could be muted.", "src/sentry/api/endpoints/rule_snooze.py"],
+    ["getsentry/sentry", 45706, IDOR, "CVE-2024-45605", "GHSA-54m3-95j9-v89j", "Anyone could delete another user's notification settings.", "src/sentry/api/endpoints/user_notification_options_detail.py"],
+    ["goauthentik/authentik", 26228, AUTHZ, null, "GHSA-hmrg-vpp4-gj88", "New event-stream handlers skipped the permission check on the existing one.", "authentik/enterprise/providers/ssf/views/stream.py"],
+    ["makeplane/plane", 61959, IDOR, "CVE-2026-39374", "GHSA-4q54-h4x9-m329", "Any project member could change the dates of any issue on the instance.", "apiserver/plane/app/views/issue/base.py"],
+    ["openedx/openedx-platform", 8218, AUTHZ, "CVE-2026-97702", "GHSA-95xv-3c54-c3pw", "A support endpoint let any learner look up other accounts.", "lms/djangoapps/support/rest_api/v1/views.py", true],
+    ["paperless-ngx/paperless-ngx", 47676, AUTHZ, null, "GHSA-96jx-fj7m-qh6x", "Global search showed other users' mail accounts and rules.", null],
   ];
-  const BAD = `        text(f"SELECT * FROM users WHERE username LIKE '%{name}%'")`;
-  const FIX = [`        text("SELECT * FROM users WHERE username LIKE :q"),`, `        {"q": f"%{name}%"},`];
-  const STEPS = ["Developer pushes", "LGTM reviews", "Finding on the line", "Fix clears the block"];
-  const STAGES = ["Reading the diff", "Investigator follows name into the query", "SQL-injection reviewer", "Checking the cited evidence", "Kev judge"];
+  const stars = (n) => (n >= 10000 ? Math.round(n / 1000) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+  const caseCard = ([repo, n, kind, cve, ghsa, what, file, weak]) => {
+    const { esc } = L();
+    return `<li class="case">
+      <div class="case-top"><b>${esc(repo)}</b><span class="case-stars" title="GitHub stars">&#9733; ${stars(n)}</span></div>
+      <p class="case-what">${esc(what)}</p>
+      <p class="case-kind"><span>${esc(kind)}</span>${weak ? '<span class="case-weak" title="Weaker evidence: see the note below">weaker case</span>' : ""}<a href="https://github.com/advisories/${ghsa}" target="_blank" rel="noopener">${cve || ghsa}</a></p>
+      <p class="case-hit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3.2 3.2L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${file ? `Flagged in <code>${esc(file)}</code>` : "Flagged in the pull request that introduced it"}</span></p>
+    </li>`;
+  };
 
   window.LGTMLanding = function landing(query) {
-    const { page, esc, S } = L();
+    const { page, S } = L();
     const app = S.me && S.me.app;
     const err = query.get("error");
     const signIn = app ? `<a class="btn primary" href="/auth/login">${GH}<span>Sign in with GitHub</span></a>` : `<a class="btn primary" href="/setup.html">${GH}<span>Create the GitHub App</span></a>`;
     page(`
       <div class="land">
         <section class="land-hero">
-          <div class="land-copy">
-            <h1>Security review on every pull request, with proof.</h1>
-            <p class="lede">LGTM's agents read each change the way a security engineer would. They follow untrusted input into the code, check it against your access rules, and only block a merge when they can cite the lines that prove the bug.</p>
-            ${err ? `<p class="notice warn">${err === "expired" ? "That sign-in link expired. Sign in again." : "GitHub did not grant access. Sign in again."}</p>` : ""}
-            <div class="actions">${signIn}<a class="btn" href="#/onboarding">How setup works</a></div>
-            <p class="land-fine">Installs on the repositories you choose. Reads code, writes checks and reviews, nothing else.</p>
-          </div>
-          <div class="land-stage">
-            <figure class="pr" id="pr-demo" aria-label="Example: LGTM blocks a pull request with SQL injection, then passes it after the fix">
-              <div class="pr-chrome" aria-hidden="true"><span class="pr-dots"><i></i><i></i><i></i></span><span class="pr-url">github.com/acme/shop/pull/42</span></div>
-              <div class="pr-head">
-                <p class="pr-title">Add user search for the support dashboard <span>#42</span></p>
-                <p class="pr-meta"><span class="pr-state">Open</span><span><b>dev</b> wants to merge into <code>main</code></span></p>
-              </div>
-              <div class="pr-file">
-                <div class="pr-file-h"><code>app/routes/users.py</code><span class="pr-plus">+8</span></div>
-                <div class="pr-code" id="pr-code"></div>
-                <div class="pr-comment" id="pr-comment">
-                  <div class="pr-comment-h"><span class="pr-bot">${SHIELD}</span><b>lgtm-security-review</b><span class="pr-bot-tag">bot</span><span class="pr-comment-state" id="pr-cstate"></span></div>
-                  <p><span class="pr-sev">High</span> <b>SQL injection (CWE-89)</b>, confirmed by the Kev judge.</p>
-                  <p class="pr-why"><code>name</code> comes straight from <code>request.args</code> and is formatted into the query. Pass it as a bound parameter.</p>
-                </div>
-              </div>
-              <div class="pr-checks">
-                <div class="pr-check" id="pr-check"><span class="pr-ci" aria-hidden="true"></span><b>LGTM security review</b><span class="pr-check-t" id="pr-check-t"></span></div>
-                <div class="pr-merge" id="pr-merge"></div>
-              </div>
-            </figure>
-            <ol class="land-steps" id="pr-steps" aria-hidden="true">${STEPS.map((s, i) => `<li data-step="${i}"><span>${i + 1}</span>${esc(s)}</li>`).join("")}</ol>
-          </div>
+          ${OWL("hero-owl")}
+          <h1>LGTM: your AI security reviewer on every pull request.</h1>
+          ${err ? `<p class="notice warn">${err === "expired" ? "That sign-in link expired. Sign in again." : "GitHub did not grant access. Sign in again."}</p>` : ""}
+          <div class="actions">${signIn}</div>
+        </section>
+
+        <section class="land-how" aria-label="How LGTM works">
+          <ol class="how">
+            <li><div class="how-t"><span class="how-n">1</span><div><b>Developer uses AI to add new features</b><span>New features in a big repository</span></div></div><div class="how-art">${ART_AI}</div></li>
+            <li><div class="how-t"><span class="how-n">2</span><div><b>Pull request opens</b><span>The diff and SECURITY.md go to LGTM</span></div></div><div class="how-art">${ART_PR}</div></li>
+            <li><div class="how-t"><span class="how-n">3</span><div><b>LGTM reviews and verifies</b><span>Flags the flaw and suggests a fix the developer can accept</span></div></div><div class="how-art how-owl"><img class="mascot" src="/assets/mascot/owl.webp" alt="LGTM, the owl mascot, giving a thumbs up" width="720" height="672" decoding="async"></div></li>
+          </ol>
         </section>
 
         <section class="land-flow" aria-labelledby="flow-h">
@@ -76,91 +75,18 @@
           </ol>
         </section>
 
-        <section class="land-proof" aria-label="What LGTM has caught">
-          <div><p class="proof-big">CVE-2025-62367</p><p>We replayed taiga-back's 2016 change as a pull request. LGTM blocked it at <code>utils.py</code> line 147, the advisory's own location.</p></div>
-          <div><p class="proof-big">Proof or silence</p><p>A finding reaches your pull request only if the code it cites exists and the judge agrees it proves the bug. Everything else is dropped.</p></div>
-          <div><p class="proof-big">Fix, push, unblocked</p><p>Push the fix and LGTM reviews the new commit, marks the finding fixed and dismisses its own block.</p></div>
+        <section class="land-caught" aria-labelledby="caught-h">
+          <h2 id="caught-h">Proven on real vulnerabilities</h2>
+          <p class="caught-sub">We ran LGTM on the pull requests that introduced 17 published security advisories. It flagged ${CASES.length}.</p>
+          <ul class="cases">${CASES.map(caseCard).join("")}</ul>
+          <p class="caught-note">The 17 were chosen after the reviewer was written and run once, so none were tuned on. LGTM missed django's order_by change and Read the Docs' team filter, and raised one false alarm on a fix commit. Piccolo's flaw needs a developer-supplied name and Open edX's impact is limited to account lookup, so we count those two as weaker evidence.</p>
         </section>
 
         <section class="land-cta">
+          ${OWL("cta-owl")}
           <p>Install it on one repository and open a pull request.</p>
           <div class="actions">${signIn}</div>
         </section>
       </div>`, "landing");
-    runDemo();
   };
-
-  // ---------------------------------------------------------------- the animated pull request
-  function runDemo() {
-    const { S, esc } = L();
-    const code = document.getElementById("pr-code");
-    if (!code) return;
-    const fig = document.getElementById("pr-demo");
-    const comment = document.getElementById("pr-comment"), cstate = document.getElementById("pr-cstate");
-    const check = document.getElementById("pr-check"), checkT = document.getElementById("pr-check-t"), merge = document.getElementById("pr-merge");
-    const steps = Array.from(document.querySelectorAll("#pr-steps li"));
-    let alive = true;
-    const timers = [];
-    S.leave.push(() => { alive = false; timers.forEach(clearTimeout); });
-    const wait = (ms) => new Promise((r) => timers.push(setTimeout(r, ms)));
-    const hl = (s) => esc(s)
-      .replace(/\b(f?)&quot;(.*?)&quot;/g, (m, f, body) => `${f ? '<span class="tk">f</span>' : ""}<span class="ts">&quot;${body}&quot;</span>`)
-      .replace(/\btext(?=\()/g, '<span class="tf">text</span>');
-    const line = (n, html, cls = "add") => `<div class="l ${cls}" data-n="${n}"><span class="n">${n}</span><span class="m">${cls === "del" ? "−" : cls === "add" ? "+" : " "}</span><span class="c">${html}</span></div>`;
-    const render = (mid, shift = 0) => {   // shift: lines below the change move down when the fix adds one
-      code.innerHTML = LINES.map(([n, html]) => (n === 64 ? mid : n === 58 ? line(58, "", "ctx") : line(n > 64 ? n + shift : n, html))).join("")
-        .replace(/<k>/g, '<span class="tk">').replace(/<\/k>/g, "</span>").replace(/<s>/g, '<span class="ts">').replace(/<\/s>/g, "</span>").replace(/<f>/g, '<span class="tf">').replace(/<\/f>/g, "</span>");
-    };
-    const setCheck = (state, text) => { check.dataset.state = state; checkT.textContent = text; };
-    const setMerge = (state, text) => { merge.dataset.state = state; merge.textContent = text; };
-    const setStep = (i) => steps.forEach((s, j) => { s.classList.toggle("on", j === i); s.classList.toggle("done", j < i); });
-
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) {
-      render(line(64, hl(BAD), "add flag"));
-      comment.classList.add("show"); cstate.textContent = "";
-      setCheck("fail", "1 security finding"); setMerge("blocked", "Merging is blocked: the required check failed");
-      setStep(2);
-      return;
-    }
-
-    const loop = async () => {
-      while (alive) {
-        // 1. the developer's change is typed in
-        fig.dataset.phase = "push"; setStep(0);
-        comment.classList.remove("show", "resolved"); cstate.textContent = "";
-        setCheck("wait", "Queued"); setMerge("wait", "Some checks haven't completed yet");
-        render(line(64, "", "add typing"));
-        const target = code.querySelector('[data-n="64"] .c');
-        for (let i = 1; i <= BAD.length && alive; i += 2) { target.innerHTML = hl(BAD.slice(0, i)); await wait(22); }
-        target.parentElement.classList.remove("typing");
-        await wait(500);
-        // 2. LGTM reviews it
-        setStep(1); fig.dataset.phase = "review";
-        for (const st of STAGES) { if (!alive) return; setCheck("run", `In progress: ${st}`); await wait(950); }
-        // 3. the finding lands on the line
-        setStep(2); fig.dataset.phase = "found";
-        code.querySelector('[data-n="64"]').classList.add("flag");
-        setCheck("fail", "Failed: 1 security finding"); setMerge("blocked", "Merging is blocked: the required check failed");
-        await wait(250);
-        comment.classList.add("show");
-        await wait(4200);
-        // 4. the fix is pushed and clears the block
-        setStep(3); fig.dataset.phase = "fix";
-        render(line(64, hl(BAD), "del") + line(64, "", "add typing fix") + line(65, "", "add fix"), 1);
-        const a = code.querySelectorAll(".l.fix .c");
-        cstate.textContent = "";
-        for (let k = 0; k < FIX.length && alive; k++) {
-          for (let i = 1; i <= FIX[k].length && alive; i += 2) { a[k].innerHTML = hl(FIX[k].slice(0, i)); await wait(18); }
-        }
-        code.querySelectorAll(".typing").forEach((x) => x.classList.remove("typing"));
-        setCheck("run", "In progress: reviewing the new commit"); setMerge("wait", "Some checks haven't completed yet");
-        await wait(1800);
-        comment.classList.add("resolved"); cstate.textContent = "Fixed";
-        setCheck("pass", "Passed: no security findings"); setMerge("ok", "All checks have passed");
-        await wait(4200);
-      }
-    };
-    loop();
-  }
 })();

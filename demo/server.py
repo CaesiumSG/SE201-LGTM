@@ -3,7 +3,7 @@
 
 Standard library plus PyJWT. One process serves:
 
-    /                         the dashboard (demo/web), three skins over one app
+    /                         the dashboard (demo/web), light and dark themes over one app
     /auth/login, /auth/callback, /auth/logout     Sign in with GitHub (the app's OAuth)
     /github/manifest/callback  end of the App Manifest flow: stores the app's credentials
     /github/installed          GitHub sends the user here after installing the app

@@ -1,4 +1,4 @@
-// LGTM dashboard: one app, three skins (web/skins/*.css). Plain JS, hash routes, no build step.
+// LGTM dashboard: one app, a light and a dark theme (web/theme.css). Plain JS, hash routes, no build step.
 (function () {
   "use strict";
 
@@ -68,7 +68,7 @@
 
   // ---------------------------------------------------------------- icons (inline, stroke)
   const I = {
-    logo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4 5.5v6.2c0 4.6 3.3 8.5 8 9.8 4.7-1.3 8-5.2 8-9.8V5.5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8.5 12.2 2.4 2.4 4.8-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    logo: '<img class="mascot brand-owl" src="/assets/mascot/owl.webp" alt="" width="720" height="672">',
     overview: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm10 7h6V11h-6zM4 20h6v-4H4zm10-12h6V4h-6z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     pr: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 8.2v7.6M18 15.8V9a3 3 0 0 0-3-3h-4m2-2.5L10.5 6 13 8.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
     inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13.5 6.5 5h11L20 13.5V19H4zm0 0h4.5l1.5 2.5h4l1.5-2.5H20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
@@ -85,14 +85,16 @@
 
   // ---------------------------------------------------------------- state
   const S = { me: null, health: null, live: null, timers: [], leave: [] };
-  const SKINS = [["ledger", "Ledger"], ["nightshift", "Night shift"], ["console", "Console"]];
+  const THEMES = [["light", "Light"], ["dark", "Dark"]];
+  const THEME_ICON = '<svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.6 6.6 0 0 0 10.2 10.2z"/></svg><svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>';
 
-  function setSkin(name) {
-    if (!SKINS.some(([k]) => k === name)) name = "ledger";
-    document.documentElement.dataset.skin = name;
-    $("#skin-css").href = `/skins/${name}.css`;
-    try { localStorage.setItem("lgtm-skin", name); } catch (e) { /* private window */ }
-    $$("[data-skin-pick]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skinPick === name)));
+  function setTheme(name) {
+    if (name !== "dark") name = "light";
+    document.documentElement.dataset.theme = name;
+    try { localStorage.setItem("lgtm-theme", name); } catch (e) { /* private window */ }
+    $$("[data-theme-pick]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePick === name)));
+    $$(".theme-toggle").forEach((b) => { b.setAttribute("aria-label", name === "dark" ? "Switch to light mode" : "Switch to dark mode"); b.title = b.getAttribute("aria-label"); });
+    try { if (window.monaco) window.monaco.editor.setTheme(name === "dark" ? "lgtm-dark" : "lgtm-light"); } catch (e) { /* editor not loaded yet */ }
   }
 
   // ---------------------------------------------------------------- shell
@@ -114,20 +116,20 @@
           <nav class="tabs" aria-label="Main">${navLinks}</nav>
           <div class="top-right">
             <span class="status-top" id="status-top"></span>
-            <div class="skin-pick" role="group" aria-label="Skin">${SKINS.map(([k, l]) => `<button type="button" data-skin-pick="${k}" aria-pressed="false">${l}</button>`).join("")}</div>
+            <button class="theme-toggle" type="button">${THEME_ICON}</button>
             ${u ? `<button class="user" type="button" id="signout" title="Sign out ${esc(u.login)}"><img src="${esc(u.avatar)}&s=48" alt=""><span>${esc(u.login)}</span></button>` : ""}
           </div>
         </header>
         <main id="view" tabindex="-1"></main>
       </div>`;
-    $$("[data-skin-pick]").forEach((b) => b.addEventListener("click", () => setSkin(b.dataset.skinPick)));
+    $$(".theme-toggle").forEach((b) => b.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")));
     ["#status-top", "#status-side"].forEach((sel) => {
       const el = $(sel);
       if (el) el.addEventListener("click", (e) => { const b = e.target.closest("[data-backend]"); if (b && !b.disabled) setBackend(b.dataset.backend); });
     });
     const so = $("#signout");
     if (so) so.addEventListener("click", async () => { await fetch("/auth/logout", { method: "POST" }); location.hash = "#/signin"; boot(); });
-    setSkin(document.documentElement.dataset.skin);
+    setTheme(document.documentElement.dataset.theme);
     renderStatus();
   }
 
@@ -781,14 +783,14 @@
           <h3>Recent deliveries</h3>
           ${deliveries.length ? `<div class="table-wrap"><table class="table small"><thead><tr><th scope="col">Received</th><th scope="col">Event</th><th scope="col">Via</th><th scope="col">Signature</th><th scope="col">Result</th></tr></thead><tbody>${deliveries.slice(0, 12).map((d) => `<tr><td>${when(d.received_at)}</td><td>${esc(d.event)}${d.action ? `.${esc(d.action)}` : ""}<br><span class="muted">${esc(d.repo)}</span></td><td>${esc(d.via)}</td><td>${d.verified ? "Valid" : '<b class="risk">Rejected</b>'}</td><td>${esc(d.outcome)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">None yet.</p>`}
         </section>
-        <section class="panel"><h2>Appearance</h2><div class="skin-cards">${SKINS.map(([k, l]) => `<button type="button" class="skin-card" data-skin-pick="${k}" aria-pressed="${document.documentElement.dataset.skin === k}"><span class="sw sw-${k}" aria-hidden="true"></span>${l}</button>`).join("")}</div></section>
+        <section class="panel"><h2>Appearance</h2><div class="theme-cards">${THEMES.map(([k, l]) => `<button type="button" class="theme-card" data-theme-pick="${k}" aria-pressed="${document.documentElement.dataset.theme === k}"><span class="sw sw-${k}" aria-hidden="true"></span>${l}</button>`).join("")}</div></section>
       </div>`, "settings-page");
     $$("[data-set]").forEach((el) => el.addEventListener("change", async () => {
       const v = el.type === "checkbox" ? el.checked : el.value;
       await post("/api/settings", { [el.dataset.set]: v });
       if (el.dataset.set === "backend") pollHealth();
     }));
-    $$(".skin-card").forEach((b) => b.addEventListener("click", () => { setSkin(b.dataset.skinPick); $$(".skin-card").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
+    $$(".theme-card").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themePick)));
     $("#sync").addEventListener("click", async (e) => { e.target.disabled = true; e.target.textContent = "Checking…"; await post("/api/sync").catch(() => {}); route(); });
   }
 
@@ -799,9 +801,7 @@
   async function loadMe() { S.me = await get("/api/me"); }
 
   async function boot() {
-    let skin = new URLSearchParams(location.search).get("skin");
-    try { skin = skin || localStorage.getItem("lgtm-skin"); } catch (e) { /* private window */ }
-    document.documentElement.dataset.skin = skin || "ledger";
+    // index.html already set data-theme before first paint; setTheme (in shell) syncs the toggle and the editor.
     await loadMe();
     shell();
     await pollHealth();
