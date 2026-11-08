@@ -216,6 +216,12 @@ def _section_items(raw: str) -> list[dict] | None:
 
 
 class AuthzReviewerAgent:
+    # Subclasses review the same sections for another flaw class with their own prompts.
+    PROMPTS = "authz_reviewer"
+    AGENT = "authz_reviewer"
+    CATEGORY = "authz"
+    DEFAULT_CWE = "CWE-862"
+
     def __init__(
         self,
         toolbox: AgentToolbox,
@@ -238,13 +244,13 @@ class AuthzReviewerAgent:
         tool_info = prompt_parts.tool_guidance(self.toolbox)
         policy_context = self._policy_context(
             registry.render(
-                "authz_reviewer.policy_query",
+                f"{self.PROMPTS}.policy_query",
                 title=section.title,
                 files=" ".join(section.files),
             )
         )
         system = registry.render(
-            "authz_reviewer.system_prompt",
+            f"{self.PROMPTS}.system_prompt",
             tool_section=prompt_parts.render_tool_section(tool_info),
             max_tool_calls=tool_info.max_tool_calls,
         )
@@ -258,13 +264,13 @@ class AuthzReviewerAgent:
             section_text=render_section(section),
         )
         user = registry.render(
-            "authz_reviewer.user_prompt",
+            f"{self.PROMPTS}.user_prompt",
             untrusted=prompt_parts.untrusted_block(
-                section_body, registry.entry("authz_reviewer.untrusted_label")
+                section_body, registry.entry(f"{self.PROMPTS}.untrusted_label")
             ),
             sibling_notice=_sibling_notice(section),
             policy_context=policy_context[:POLICY_EXCERPT_CHARS],
-            guidance=ROLE_GUIDANCE if self.config.authz_role_guidance else "",
+            guidance=self._guidance(),
             max_tool_calls=tool_info.max_tool_calls,
         )
 
@@ -284,9 +290,11 @@ class AuthzReviewerAgent:
                 return None
             findings: list[AgentFinding] = []
             for n, item in enumerate(items, 1):
-                finding_id = f"authz:{section.section_id}:{n}"
+                finding_id = f"{self.CATEGORY}:{section.section_id}:{n}"
                 try:
-                    finding = parse_agent_output(json.dumps(item), finding_id, default_cwe="CWE-862")
+                    finding = parse_agent_output(
+                        json.dumps(item), finding_id, default_cwe=self.DEFAULT_CWE
+                    )
                 except (TypeError, ValueError, OverflowError):
                     return None
                 finding.finding_id = finding_id
@@ -299,8 +307,8 @@ class AuthzReviewerAgent:
                 )
             return findings
 
-        logger.info("Authz section review: %s", section.section_id)
-        record = RunRecord(section.section_id, turns=self.toolbox.turns)
+        logger.info("%s section review: %s", self.CATEGORY.capitalize(), section.section_id)
+        record = RunRecord(self._record_name(section), turns=self.toolbox.turns)
         self.run_records.append(record)
         try:
             findings = answer_until_resolved(
@@ -315,15 +323,25 @@ class AuthzReviewerAgent:
                 self.toolbox,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error("Authz section review failed for %s: %s", section.section_id, exc)
+            logger.error(
+                "%s section review failed for %s: %s", self.CATEGORY, section.section_id, exc
+            )
             message = registry.render("authz_reviewer.failed_explanation", where=where, error=exc)
         else:
             if findings is not None:
                 return findings
-            logger.warning("Authz section review for %s had no parsable findings", section.section_id)
+            logger.warning(
+                "%s section review for %s had no parsable findings", self.CATEGORY, section.section_id
+            )
             message = registry.render("authz_reviewer.unparsable_explanation", where=where)
         self.errors.append({"source": section.section_id, "message": message})
         return []
+
+    def _record_name(self, section: Section) -> str:
+        return section.section_id
+
+    def _guidance(self) -> str:
+        return ROLE_GUIDANCE if self.config.authz_role_guidance else ""
 
     def _policy_context(self, query: str) -> str:
         if self.toolbox.retriever is None:
@@ -335,8 +353,8 @@ class AuthzReviewerAgent:
             return registry.entry("authz_reviewer.policy_unavailable")
 
     def _stamp(self, finding: AgentFinding, file: str, line: int) -> AgentFinding:
-        finding.category = "authz"
-        finding.agent = "authz_reviewer"
+        finding.category = self.CATEGORY
+        finding.agent = self.AGENT
         finding.file = file
         finding.line = line
         finding.tool_calls_used = self.toolbox.calls_used
