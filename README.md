@@ -17,6 +17,14 @@ LGTM does two jobs:
 
 Every other vulnerability class is out of scope.
 
+## Demo
+
+LGTM also runs as a real **GitHub App with a dashboard** (`demo/`). In the demo, an AI coding assistant (a small local
+model) writes a feature for a demo shop and leaves out an ownership check; the dashboard's App tab shows what that lets
+a customer do (read another customer's order and address); the pull request goes to GitHub, and LGTM's review blocks
+it with an inline comment, the policy rule it breaks and a fix. Real-world replays show the same on published
+advisories (taiga-back, wagtail, authentik). Runbook, setup and the demo script: [demo/README.md](demo/README.md).
+
 ## Architecture
 
 ```
