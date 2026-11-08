@@ -27,7 +27,8 @@
   let D = null;
 
   const fresh = () => ({ info: null, step: 0, pr: null, file: { path: FILES[0][0], content: "", added: [], comments: [], tag: "main" },
-    ai: null, probe: null, data: null, term: [], busy: null, error: null, prove: null, fix: null, timer: null });
+    ai: null, probe: null, data: null, term: [], busy: null, error: null, prove: null, fix: null, timer: null,
+    view: "code", shop: { as: "alice", path: "/orders/mine", version: null, resp: null, loading: false, key: "" } });
 
   window.LGTMDemo = async function demo(args, query) {
     D = fresh();
@@ -40,8 +41,10 @@
         <aside class="dm-guide"><div id="dm-guide"><p class="muted"><span class="pulse"></span> Loading…</p></div>
           <div class="dm-nav"><button type="button" class="btn" id="dm-back">← Back</button><button type="button" class="btn primary" id="dm-next">Next →</button></div></aside>
         <section class="dm-ide" aria-label="Code">
-          <div class="dm-bar"><span class="dm-dots"><i></i><i></i><i></i></span><b>shoply-demo</b><span class="dm-file" id="dm-file"></span><span class="dm-tag" id="dm-tag"></span></div>
+          <div class="dm-bar"><span class="dm-dots"><i></i><i></i><i></i></span><b>shoply-demo</b><span class="dm-file" id="dm-file"></span><span class="dm-tag" id="dm-tag"></span>
+            <div class="dm-views" role="tablist" aria-label="View"><button type="button" role="tab" data-view="code" aria-selected="true">Code</button><button type="button" role="tab" data-view="shop" aria-selected="false">Shop</button></div></div>
           <div class="dm-code" id="dm-code" tabindex="0"></div>
+          <div class="dm-shop" id="dm-shop" hidden></div>
           <div class="dm-term" id="dm-term" hidden></div>
         </section>
       </div></section>`;
@@ -93,7 +96,7 @@
     $("#dm-back").hidden = D.step === 0;
     $("#dm-next").hidden = D.step === 4;
     $("#dm-next").disabled = !reachable(D.step + 1) || !!D.busy;
-    drawCode(); drawTerm();
+    drawCode(); drawTerm(); drawView();
   }
 
   const prUrl = () => (D.data && D.data.pr && D.data.pr.url) || `https://github.com/${D.info.repo}/pull/${D.pr}`;
@@ -142,6 +145,7 @@
       }
       return `<h2>The AI wrote the feature</h2>${chat}
         <p>It requires a login and returns the order. Looks fine at a glance. We sent it real requests:</p>${rows}
+        <p><button type="button" class="btn" data-act="shopleak">See it in the shop: Alice opens order #3</button></p>
         <p>The developer doesn't know that, commits it as it is and opens a pull request.</p>
         <button type="button" class="btn primary big" data-act="push" ${D.busy ? "disabled" : ""}>Commit and open a PR</button>`;
     },
@@ -216,6 +220,7 @@
           <tbody>${v.bug.probes.map((p, i) => `<tr><th>${esc(p.what)}</th>${cols.map(([k]) => cell(k, v[k].probes[i])).join("")}</tr>`).join("")}</tbody></table>
         ${v.bug.outcome === "vulnerable" ? `<p>With the AI's code, Alice opened <code>/orders/3</code> and got Bob's order, with his address: <i>${esc((v.bug.probes[1].body || {}).shipping_address || "")}</i>.</p>` : ""}
         ${fixWorks ? `<p>With the fix, that request is refused, and Bob still sees his own order.</p>` : ""}
+        <p><button type="button" class="btn" data-act="shopleak" data-version="pr">Alice on order #3, with the AI's code</button> <button type="button" class="btn" data-act="shopleak" data-version="fixed">With the fix</button></p>
         ${closeBtn}`;
     },
   };
@@ -307,6 +312,106 @@
     return added.find((n) => /@\w+\.route\(|^\s*def /.test(lines[n - 1] || "")) || added[0];
   }
 
+  // ---------------------------------------------------------------- the Shop view
+  const PEOPLE = { 1: "alice", 2: "bob", 3: "carol", 4: "dave", 5: "maria", 6: "root" };
+  const IDS = { alice: 1, bob: 2, maria: 5 };
+  const ACCOUNTS = [["alice", "customer"], ["bob", "customer"], ["maria", "manager"], ["", "signed out"]];
+  const cap = (x) => x ? x[0].toUpperCase() + x.slice(1) : "";
+
+  // Which code the shop runs: what this step is about, unless another version was picked.
+  function versions() {
+    const out = [["main", "main", "main"]];
+    if (D.ai && D.ai.done && !D.pr) out.push(["draft", "AI's code", "draft"]);
+    if (D.pr && first()) out.push(["pr", `PR #${D.pr}`, first().sha]);
+    if (D.data && D.data.rounds.length > 1) out.push(["fixed", "PR + fix", latest().sha]);
+    return out;
+  }
+  function shopVersion() {
+    const vs = versions(), has = (v) => vs.some(([x]) => x === v);
+    if (D.shop.version && has(D.shop.version)) return D.shop.version;
+    if (D.step === 1) return has("draft") ? "draft" : has("pr") ? "pr" : "main";
+    if (D.step === 2) return has("pr") ? "pr" : "main";
+    if (D.step >= 3) return has("fixed") ? "fixed" : has("pr") ? "pr" : "main";
+    return "main";
+  }
+  const shopRef = () => (versions().find(([v]) => v === shopVersion()) || [, , "main"])[2];
+  const versionLabel = (v) => ({ main: "running main", draft: "running the AI's code (not committed)", pr: `running PR #${D.pr} as the AI wrote it`, fixed: `running PR #${D.pr} with the fix` })[v];
+
+  function drawView() {
+    const shop = D.view === "shop";
+    $$("[data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === D.view)));
+    const code = $("#dm-code"), sh = $("#dm-shop");
+    if (!code || !sh) return;
+    code.hidden = shop; sh.hidden = !shop;
+    $("#dm-file").textContent = shop ? `shop · ${versionLabel(shopVersion())}` : D.file.path || "";
+    $("#dm-tag").textContent = shop ? "" : D.file.tag || "";
+    if (shop) {
+      if (D.pr && !D.data) return drawShop();   // the PR's versions are not known yet: don't start main by mistake
+      const key = [shopRef(), D.pr].join("|");
+      if (key !== D.shop.key && !D.shop.loading) loadShop(); else drawShop();
+    }
+  }
+
+  async function loadShop() {
+    D.shop.key = [shopRef(), D.pr].join("|");
+    D.shop.loading = true; drawShop();
+    const path = D.shop.path;
+    const out = await L().post("/api/demo/shop", { ref: shopRef(), pr: D.pr, as: D.shop.as, path }).catch((e) => ({ status: 0, error: e.message }));
+    out.path = path;
+    D.shop.loading = false; D.shop.resp = out;
+    drawView();
+  }
+
+  function drawShop() {
+    const el = $("#dm-shop");
+    if (!el) return;
+    const me = D.shop.as, v = shopVersion(), mine = me === "bob" ? 3 : 1;
+    const nav = [["/orders/mine", "My orders"], [`/orders/${mine}`, "Track an order"], ["/orders/all", "All orders"], [`/users/${IDS[me] || 1}`, "My account"]];
+    const tries = v === "main" ? [["alice", "/orders/3", "As Alice, open order #3"], ["maria", "/orders/all", "As Maria (manager), see every order"]]
+      : [["alice", "/orders/3", "As Alice, open Bob's order: /orders/3"], ["bob", "/orders/3", "As Bob, open his own order #3"], ["", "/orders/3", "Signed out, open order #3"]];
+    el.innerHTML = `
+      <div class="dm-shopbar">
+        <div class="dm-seg"><span>Signed in as</span>${ACCOUNTS.map(([id, role]) => `<button type="button" data-as="${id}" aria-pressed="${(id || null) === (me || null)}">${esc(cap(id) || "Nobody")}<em>${role}</em></button>`).join("")}</div>
+        <div class="dm-seg"><span>Running</span>${versions().map(([id, label]) => `<button type="button" data-version="${id}" aria-pressed="${id === v}">${esc(label)}</button>`).join("")}</div>
+      </div>
+      <div class="dm-browser">
+        <form class="dm-url" id="dm-url"><span>🔒 shoply.test</span><input id="dm-url-in" value="${esc(D.shop.path)}" spellcheck="false" aria-label="Address"><button type="submit" class="btn">Go</button></form>
+        <nav class="dm-snav"><b>☕ Shoply</b>${nav.map(([path, label]) => `<button type="button" data-goto="${esc(path)}" class="${D.shop.path === path ? "on" : ""}">${label}</button>`).join("")}
+          <span class="me">${me ? `Hi, ${esc(cap(me))}` : "Not signed in"}</span></nav>
+        <div class="dm-spage ${D.shop.loading ? "loading" : ""}">${D.shop.loading && !D.shop.resp ? `<p class="muted"><span class="pulse"></span> Starting the shop…</p>` : pageHtml(D.shop.resp)}</div>
+      </div>
+      <div class="dm-try"><span>Try</span>${tries.map(([as, path, label]) => `<button type="button" class="linkish" data-goto="${esc(path)}" data-goas="${as}">${esc(label)}</button>`).join("")}</div>`;
+    const form = $("#dm-url", el);
+    form.addEventListener("submit", (e) => { e.preventDefault(); const val = $("#dm-url-in", el).value.trim(); D.shop.path = val.startsWith("/") ? val : "/" + val; loadShop(); });
+  }
+
+  function pageHtml(r) {
+    if (!r) return "";
+    const path = r.path || "", me = D.shop.as, v = shopVersion();
+    const blocked = (icon, title, text) => `<div class="dm-blocked"><div class="big">${icon}</div><h3>${title}</h3><p>${text}</p><code>HTTP ${esc(r.status || "–")}</code></div>`;
+    if (!r.status) return blocked("💥", "The shop does not start", esc(r.crash || r.error || ""));
+    if (r.status === 401) return blocked("🔑", "Please sign in", "This page is only for signed-in customers.");
+    if (r.status === 403) return blocked("🚫", "You can't see this page", path === "/orders/all" ? "It's for managers only." : "It belongs to another customer.");
+    if (r.status === 404) return blocked("🔍", "Page not found", /^\/orders\/\d+$/.test(path) && v === "main"
+      ? "There's no order tracking page in this version of the shop yet: it's the feature the developer asks the AI for." : "Nothing lives at this address.");
+    if (r.status >= 500) return blocked("💥", "The shop crashed", esc(r.crash || "Internal server error"));
+    const d = r.data;
+    const table = (rows, who) => rows.length ? `<table class="dm-stable"><tr><th>Order</th>${who ? "<th>Customer</th>" : ""}<th>Status</th><th>Total</th><th>Ships to</th></tr>
+      ${rows.map((o) => `<tr><td>#${esc(o.id)}</td>${who ? `<td>${esc(cap(PEOPLE[o.user_id] || o.user_id))}</td>` : ""}<td><span class="dm-pill ${esc(o.status)}">${esc(o.status)}</span></td><td>$${Number(o.total).toFixed(2)}</td><td>${esc(o.shipping_address)}</td></tr>`).join("")}</table>` : "<p>No orders yet.</p>";
+    if (path === "/orders/mine" && Array.isArray(d)) return `<h3>My orders</h3>${table(d, false)}`;
+    if (path === "/orders/all" && Array.isArray(d)) return `<h3>Every customer's orders</h3>${table(d, true)}`;
+    if (/^\/orders\/\d+$/.test(path) && d && d.shipping_address !== undefined) {
+      const theirs = !me || IDS[me] !== d.user_id;
+      return `${theirs ? `<div class="dm-leak">⚠ You're signed in as <b>${esc(cap(me) || "nobody")}</b>, but this is <b>${esc(cap(PEOPLE[d.user_id]))}</b>'s order, with their home address.</div>` : ""}
+        <div class="dm-order"><h3>Order #${esc(d.id)} <span class="dm-pill ${esc(d.status)}">${esc(d.status)}</span></h3>
+          <dl><dt>Customer</dt><dd>${esc(cap(PEOPLE[d.user_id] || d.user_id))}</dd><dt>Total</dt><dd>$${Number(d.total).toFixed(2)}</dd><dt>Ships to</dt><dd>${esc(d.shipping_address)}</dd></dl></div>`;
+    }
+    if (/^\/users\/\d+$/.test(path) && d && d.username) {
+      return `<div class="dm-order"><h3>${esc(cap(d.username))}</h3><dl><dt>Role</dt><dd>${esc(d.role)}</dd>${d.email ? `<dt>Email</dt><dd>${esc(d.email)}</dd>` : ""}</dl></div>`;
+    }
+    return `<pre class="dm-json">${esc(JSON.stringify(d, null, 2))}</pre>`;
+  }
+
   // ---------------------------------------------------------------- following LGTM
   async function refresh() {
     if (!D.pr) return;
@@ -330,7 +435,17 @@
     const g = e.target.closest("[data-go]");
     if (g) return go(+g.dataset.go);
     const f = e.target.closest("[data-file]");
-    if (f) { await showFile(f.dataset.file); drawCode(); return; }
+    if (f) { await showFile(f.dataset.file); D.view = "code"; drawView(); drawCode(); return; }
+    const vw = e.target.closest("[data-view]");
+    if (vw) { D.view = vw.dataset.view; drawView(); return; }
+    const sh = e.target.closest("[data-as], [data-version], [data-goto]");
+    if (sh) {
+      if (sh.dataset.version) D.shop.version = sh.dataset.version;
+      if (sh.dataset.goas !== undefined) D.shop.as = sh.dataset.goas || null;
+      else if (sh.dataset.as !== undefined) D.shop.as = sh.dataset.as || null;
+      if (sh.dataset.goto) D.shop.path = sh.dataset.goto;
+      return loadShop();
+    }
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
@@ -344,6 +459,7 @@
       else if (act === "fixpush") await fixPush();
       else if (act === "prove") await prove();
       else if (act === "reset") await reset();
+      else if (act === "shopleak") { D.view = "shop"; D.shop.version = b.dataset.version || null; D.shop.as = "alice"; D.shop.path = "/orders/3"; await loadShop(); }
       else if (act === "backup") { D.pr = D.info.backup_pr; D.ai = null; D.probe = null; D.prove = null; D.term = []; await refresh(); go(2); }
     } catch (err) { D.busy = null; D.error = err.message; render(); }
   }

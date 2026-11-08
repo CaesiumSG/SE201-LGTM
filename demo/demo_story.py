@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ import workspace
 
 REPO = "cyberjj999/shoply-demo"
 PRESET = "shoply-order-details"
+SHOP_PORT = 8793                       # the Shop view's shop
 PROBE_PORT = 8792                      # the probe's own shop, apart from App mode's (8791)
 HERE = Path(__file__).resolve().parent
 RECORDED = HERE / ".data" / "demo" / "recorded.json"
@@ -42,6 +44,8 @@ class Story:
     def __init__(self, ws: workspace.Workspace, store):
         self.ws, self.store = ws, store
         self.probe_lock = threading.Lock()
+        self.shop_lock = threading.Lock()
+        self._shop: dict | None = None
         self._pr_cache: dict[int, tuple[float, dict]] = {}
 
     # ------------------------------------------------------------------ what the page needs to start
@@ -168,6 +172,71 @@ class Story:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    # ------------------------------------------------------------------ the Shop view: browse the shop as any version
+    def shop(self, ref: str, pr: int | None, who: str | None, path: str, method: str = "GET", body=None, reset: bool = False) -> dict:
+        """One request to the shop running ``ref`` ("main", "draft" or a commit), as ``who`` (or signed out).
+
+        The shop for a version keeps running (with its data) until another version is asked for or ``reset``."""
+        if not path.startswith("/") or method not in ("GET", "POST", "PUT", "DELETE"):
+            raise StoryError("Bad request")
+        with self.shop_lock:
+            d = self.ws.dir(REPO)
+            if ref == "main":
+                key = self.ws.git(d, "rev-parse", f"origin/{self.ws.default_branch(d)}").strip()
+            elif ref == "draft":
+                key = "draft:" + self.ws.git(d, "stash", "create", check=False).strip() + ":" + self.ws.git(d, "rev-parse", "HEAD").strip()
+            else:
+                key = ref
+            sv = self._shop
+            if reset or not sv or sv["key"] != key or sv["proc"].poll() is not None:
+                self._shop_stop()
+                tmp = tempfile.mkdtemp(prefix="lgtm-shop-")
+                src = Path(tmp) / "src"
+                if ref == "draft":
+                    src = d
+                else:
+                    if pr and ref != "main":
+                        self.ws.git(d, "fetch", "--quiet", "origin", f"+refs/pull/{pr}/head:refs/remotes/pr/{pr}", auth=True, check=False)
+                        self.ws.have(d, key)
+                    src.mkdir()
+                    arc = subprocess.run(["git", "-C", str(d), "archive", key], capture_output=True, check=True).stdout
+                    subprocess.run(["tar", "-x", "-C", str(src)], input=arc, check=True)
+                liveapp.LiveApps._free_port({"launcher": HERE / "apps" / "shoply_launcher.py", "port": SHOP_PORT})
+                log = Path(tmp) / "shop.log"
+                env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
+                env.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+                with open(log, "w", encoding="utf-8") as fh:
+                    proc = subprocess.Popen([str(liveapp.VENV_PY), str(HERE / "apps" / "shoply_launcher.py"), str(src),
+                                             str(Path(tmp) / "data"), str(SHOP_PORT)],
+                                            cwd=tmp, stdout=fh, stderr=subprocess.STDOUT, env=env)
+                self._shop = sv = {"key": key, "proc": proc, "tmp": tmp, "log": log, "tokens": {}}
+                if not _wait(SHOP_PORT) or proc.poll() is not None:
+                    tail = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-4:]
+                    self._shop_stop()
+                    return {"status": 0, "error": "The shop does not start with this code.", "crash": " ".join(tail)[-300:]}
+            token = None
+            if who:
+                token = sv["tokens"].get(who)
+                if not token:
+                    token = (_req("POST", "/login", body={"username": who, "password": "demo"}, port=SHOP_PORT)[1] or {}).get("token")
+                    sv["tokens"][who] = token
+            status, data = _req(method, path, token=token, body=body, port=SHOP_PORT)
+            out = {"status": status, "data": [_trim(x) for x in data] if isinstance(data, list) else _trim(data)}
+            if status >= 500:
+                out["crash"] = _crash(sv["log"])
+            return out
+
+    def _shop_stop(self) -> None:
+        sv, self._shop = self._shop, None
+        if not sv:
+            return
+        sv["proc"].terminate()
+        try:
+            sv["proc"].wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            sv["proc"].kill()
+        shutil.rmtree(sv["tmp"], ignore_errors=True)
+
     # ------------------------------------------------------------------ the pull request and LGTM's rounds
     def pr_meta(self, pr: int) -> dict:
         hit = self._pr_cache.get(pr)
@@ -277,9 +346,9 @@ def _wait(port: int, timeout: float = 15) -> bool:
     return False
 
 
-def _req(method: str, path: str, token: str | None = None, body=None):
+def _req(method: str, path: str, token: str | None = None, body=None, port: int = PROBE_PORT):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"http://127.0.0.1:{PROBE_PORT}{path}", data=data, method=method,
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method,
                                  headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:

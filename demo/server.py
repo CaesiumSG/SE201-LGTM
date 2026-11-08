@@ -744,6 +744,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(STORY.record(body))
             if path == "/api/demo/fix":
                 return self.ndjson(STORY.fix_stream(int(body.get("pr") or 0), sess["login"]))
+            if path == "/api/demo/shop":
+                return self.send_json(STORY.shop(str(body.get("ref") or "main"), int(body.get("pr") or 0) or None, body.get("as") or None,
+                                                 str(body.get("path") or "/"), str(body.get("method") or "GET"), body.get("json"),
+                                                 bool(body.get("reset"))))
             if path == "/api/demo/checkout":
                 return self.send_json({"branch": STORY.checkout(int(body.get("pr") or 0))})
             if path == "/api/demo/close":
