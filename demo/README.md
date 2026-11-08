@@ -42,6 +42,8 @@ The benchmark runs appear in the history as **Imported from benchmark**: those r
   - `feature/paged-orders`: pagination with bound parameters (safe; LGTM should pass it).
 - **Real-world replay** `cyberjj999/taiga-back-replay` (private, not a fork): taiga-back as of July 2016, with the commit that introduced its epic-order SQL injection (later CVE-2025-62367) on the `epic-order` branch, under its original author. Open it as a PR and LGTM flags it; merging it shows that upstream shipped the bug.
 
+- **Recent real-world replay** `cyberjj999/wagtail-replay` (private, not a fork): wagtail as of 13 August 2026 on `main` (one snapshot commit), and on the `documents-api-v3` branch the change that upstream merged that day as PR 14490 ("Add v3 read/write API for documents", squashed from its 16 commits, original author, diff identical to upstream). It was published as a security advisory on 20 August 2026 (GHSA-c2xx-cjmh-9q8f, medium: improper restriction handling on descendant collections in the Documents and Images API). The Workspace task "Add a read/write API for documents" replays it. Install the LGTM app on this repository before presenting. This one is a published advisory, not a live-hunt lead.
+
 Open a PR from the GitHub web UI (or `gh pr create --repo cyberjj999/shoply-demo --head feature/user-search --base main --fill`). The check appears on the PR at once; a review takes about 2 to 3 minutes on the GPU. Follow it live under **Pull requests** in the dashboard.
 
 Rules for anything posted to GitHub from the replay: no links to the upstream project, no `owner/repo#N` references and no @mentions. LGTM's own posts are filtered for these automatically (`github_app.safe_markdown`).
