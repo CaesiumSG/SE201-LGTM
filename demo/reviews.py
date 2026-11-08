@@ -247,7 +247,10 @@ class Engine:
                 msg = gh.redact(f"{type(exc).__name__}: {exc}")
                 self.store.update("runs", run_id, status="failed", error=msg, finished_at=now())
                 self._emit(run_id, {"type": "error", "msg": msg})
-                self._complete_check(self.store.run(run_id), "neutral", "LGTM could not finish this review", msg)
+                try:   # GitHub is often why the review failed; telling it so must not stop the worker as well
+                    self._complete_check(self.store.run(run_id), "neutral", "LGTM could not finish this review", msg)
+                except Exception as exc2:  # noqa: BLE001
+                    self._log_note(run_id, gh.redact(f"marking the check run as failed did not work either: {exc2}"))
             finally:
                 live = self.live.get(run_id)
                 if live:

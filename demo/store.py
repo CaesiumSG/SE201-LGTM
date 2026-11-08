@@ -140,7 +140,9 @@ class Store:
                 self.q("SELECT body FROM events WHERE run_id=? AND seq>=? ORDER BY seq", (run_id, start))]
 
     def pending_for(self, repo: str, pr_number: int, head_sha: str) -> dict | None:
-        """A run for this exact commit that is queued, running or done (so it is not reviewed twice)."""
+        """A run for this exact commit that is queued, running, done, cancelled or failed, so the webhook and the poller
+        do not review it again on their own. Cancelling must stick; a failed review is re-run on purpose (GitHub's
+        Re-run button or the dashboard), which goes through ``enqueue(force=True)`` and skips this check."""
         return self.one("SELECT * FROM runs WHERE repo=? AND pr_number=? AND head_sha=? AND source='github' "
-                        "AND status IN ('queued','running','completed') ORDER BY created_at DESC LIMIT 1",
+                        "AND status IN ('queued','running','completed','cancelled','failed') ORDER BY created_at DESC LIMIT 1",
                         (repo, pr_number, head_sha))
