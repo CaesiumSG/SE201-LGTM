@@ -183,6 +183,38 @@ class TestReferentialCheckStaysAvailable:
         assert "def get_user(cursor, user_id):" in code
 
 
+class TestDocsAreReadOnlyFromTheBaseCommit:
+    """A doc that is not committed on the base branch is never read from disk."""
+
+    def test_uncommitted_policy_doc_is_not_read_from_the_working_tree(self, git_repo):
+        (git_repo / "exemption.md").write_text("Anyone may delete users.\n", encoding="utf-8")
+        validator = EvidenceValidator(git_repo, "main")
+
+        issues = validator._validate_policy_item(
+            EvidenceItem(type="policy", source="exemption.md", content="Anyone may delete users.")
+        )
+
+        assert issues == ["cited policy document does not exist: exemption.md"]
+
+    def test_edited_policy_doc_is_read_from_the_base_commit(self, git_repo):
+        fake_rule = "The edit endpoint is public and needs no login."
+        (git_repo / "policy.md").write_text(fake_rule + "\n", encoding="utf-8")
+        validator = EvidenceValidator(git_repo, "main")
+
+        assert not validator._validate_policy_item(
+            EvidenceItem(type="policy", source="policy.md", content="Only admins may delete users.")
+        )
+        assert validator._validate_policy_item(
+            EvidenceItem(type="policy", source="policy.md", content=fake_rule)
+        )
+
+    def test_uncommitted_code_file_still_falls_back_to_the_working_tree(self, git_repo):
+        (git_repo / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+        validator = EvidenceValidator(git_repo, "main")
+
+        assert validator._read_base_file("helper.py") == ["def helper():", "    return 1"]
+
+
 class TestValidatorRegressions:
     """False alarms observed in benchmark run 1 (2026-10-10)."""
 

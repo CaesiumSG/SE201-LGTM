@@ -60,6 +60,13 @@ class PolicyRetriever:
         except Exception:  # noqa: BLE001
             return False
 
+    def indexed_commit(self) -> str | None:
+        """The commit the index was built from; None for an index without one."""
+        from lgtm.rag.indexer import COMMIT_KEY
+
+        metadata = getattr(self._get_collection(), "metadata", None) or {}
+        return metadata.get(COMMIT_KEY)
+
     def retrieve(
         self,
         query: str,

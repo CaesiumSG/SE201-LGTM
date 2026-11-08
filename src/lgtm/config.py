@@ -83,6 +83,9 @@ class LGTMConfig:
     # Prompt-injection mitigations; LGTM modes only, the llm-only baseline keeps the raw diff.
     strip_comments: bool = True
     detect_prompt_injection: bool = True
+    # Exit 2 when a PR changes a doc file (.md/.txt/.rst). The report always
+    # lists changed docs; this only decides whether CI fails on them.
+    fail_on_policy_change: bool = False
 
     # RAG
     rag_chunk_size: int = 500  # approx tokens per chunk
