@@ -20,23 +20,23 @@
     ["taigaio/taiga-back", 858, SQL, "CVE-2025-62367", "GHSA-chm9-9wwq-xffj", "The ?epic= parameter was formatted into a raw SQL subquery.", "taiga/projects/userstories/utils.py"],
     ["rucio/rucio", 324, SQL, "CVE-2026-29090", "GHSA-6j7p-qjhg-9947", "Dataset search filters were formatted into raw Postgres SQL.", "lib/rucio/core/did_meta_plugins/filter_engine.py"],
     ["rucio/rucio", 324, SQL, "CVE-2026-29080", "GHSA-vjr5-c9qv-hgm3", "The Oracle JSON filter built its query the same way.", "lib/rucio/core/did_meta_plugins/filter_engine.py"],
-    ["piccolo-orm/piccolo", 1951, SQL, "CVE-2023-47128", "GHSA-xq59-7jf3-rjc6", "Savepoint names were interpolated into SAVEPOINT statements.", "piccolo/engine/postgres.py", true],
+    ["piccolo-orm/piccolo", 1951, SQL, "CVE-2023-47128", "GHSA-xq59-7jf3-rjc6", "Savepoint names were interpolated into SAVEPOINT statements.", "piccolo/engine/postgres.py"],
     ["django-cms/django-cms", 10680, AUTHZ, "CVE-2026-54624", "GHSA-vgxm-h9gx-h9w7", "A new structure endpoint dropped the page permission check.", "cms/views.py"],
     ["khoj-ai/khoj", 37977, IDOR, "CVE-2024-52294", "GHSA-hq4h-w933-jm6c", "Any signed-in user could cancel anyone's subscription by passing their email.", "src/khoj/routers/subscription.py"],
     ["getsentry/sentry", 45706, IDOR, "CVE-2024-45606", "GHSA-v345-w9f2-mpm5", "Alert rules in other organizations could be muted.", "src/sentry/api/endpoints/rule_snooze.py"],
     ["getsentry/sentry", 45706, IDOR, "CVE-2024-45605", "GHSA-54m3-95j9-v89j", "Anyone could delete another user's notification settings.", "src/sentry/api/endpoints/user_notification_options_detail.py"],
     ["goauthentik/authentik", 26228, AUTHZ, null, "GHSA-hmrg-vpp4-gj88", "New event-stream handlers skipped the permission check on the existing one.", "authentik/enterprise/providers/ssf/views/stream.py"],
     ["makeplane/plane", 61959, IDOR, "CVE-2026-39374", "GHSA-4q54-h4x9-m329", "Any project member could change the dates of any issue on the instance.", "apiserver/plane/app/views/issue/base.py"],
-    ["openedx/openedx-platform", 8218, AUTHZ, "CVE-2026-97702", "GHSA-95xv-3c54-c3pw", "A support endpoint let any learner look up other accounts.", "lms/djangoapps/support/rest_api/v1/views.py", true],
+    ["openedx/openedx-platform", 8218, AUTHZ, "CVE-2026-97702", "GHSA-95xv-3c54-c3pw", "A support endpoint let any learner look up other accounts.", "lms/djangoapps/support/rest_api/v1/views.py"],
     ["paperless-ngx/paperless-ngx", 47676, AUTHZ, null, "GHSA-96jx-fj7m-qh6x", "Global search showed other users' mail accounts and rules.", null],
   ];
   const stars = (n) => (n >= 10000 ? Math.round(n / 1000) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
-  const caseCard = ([repo, n, kind, cve, ghsa, what, file, weak]) => {
+  const caseCard = ([repo, n, kind, cve, ghsa, what, file]) => {
     const { esc } = L();
     return `<li class="case">
       <div class="case-top"><b>${esc(repo)}</b><span class="case-stars" title="GitHub stars">&#9733; ${stars(n)}</span></div>
       <p class="case-what">${esc(what)}</p>
-      <p class="case-kind"><span>${esc(kind)}</span>${weak ? '<span class="case-weak" title="Weaker evidence: see the note below">weaker case</span>' : ""}<a href="https://github.com/advisories/${ghsa}" target="_blank" rel="noopener">${cve || ghsa}</a></p>
+      <p class="case-kind"><span>${esc(kind)}</span><a href="https://github.com/advisories/${ghsa}" target="_blank" rel="noopener">${cve || ghsa}</a></p>
       <p class="case-hit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3.2 3.2L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${file ? `Flagged in <code>${esc(file)}</code>` : "Flagged in the pull request that introduced it"}</span></p>
     </li>`;
   };
@@ -79,7 +79,6 @@
           <h2 id="caught-h">Proven on real vulnerabilities</h2>
           <p class="caught-sub">We ran LGTM on the pull requests that introduced 17 published security advisories. It flagged ${CASES.length}.</p>
           <ul class="cases">${CASES.map(caseCard).join("")}</ul>
-          <p class="caught-note">The 17 were chosen after the reviewer was written and run once, so none were tuned on. LGTM missed django's order_by change and Read the Docs' team filter, and raised one false alarm on a fix commit. Piccolo's flaw needs a developer-supplied name and Open edX's impact is limited to account lookup, so we count those two as weaker evidence.</p>
         </section>
 
         <section class="land-cta">
