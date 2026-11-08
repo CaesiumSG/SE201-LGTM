@@ -98,6 +98,7 @@
   // ---------------------------------------------------------------- shell
   function shell() {
     const u = S.me && S.me.user;
+    $("#app").classList.toggle("bare", !u);   // signed out: the landing page, no sidebar
     const navLinks = u ? NAV.map(([id, label, icon]) => `<a href="#/${id === "overview" ? "" : id}" data-nav="${id}">${icon}<span>${label}</span></a>`).join("") : "";
     $("#app").innerHTML = `
       <a class="skip" href="#view">Skip to content</a>
