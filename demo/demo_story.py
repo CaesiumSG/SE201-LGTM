@@ -268,19 +268,34 @@ class Story:
         return {"pr": self.pr_meta(pr), "rounds": out}
 
     def view(self, pr: int, sha: str, path: str, base: str | None) -> dict:
-        """A file at a commit of the pull request, with the lines the pull request added."""
+        """A file at ``sha`` ("main", "draft" for the workspace's uncommitted files, or a commit), and its whole-file
+        diff against ``base`` (default: the commit before), for the editor."""
         d = self.ws.dir(REPO)
         if pr:
             self.ws.git(d, "fetch", "--quiet", "origin", f"+refs/pull/{pr}/head:refs/remotes/pr/{pr}", auth=True, check=False)
-        if sha == "main":
-            sha = f"origin/{self.ws.default_branch(d)}"
-        else:
+        main = f"origin/{self.ws.default_branch(d)}"
+        if sha == "draft":
+            f = self.ws.read(REPO, path)
+            if f.get("content") is None:
+                raise StoryError(f"{path} cannot be shown", 404)
+            diff = self.ws.git(d, "diff", "-U100000", "HEAD", "--", path, check=False)
+            return {"path": path, "sha": "draft", "content": f["content"], "diff": diff}
+        sha = main if sha == "main" else sha
+        if sha != main:
             self.ws.have(d, sha)
         text = self.ws.show(d, sha, path)
         if text is None:
             raise StoryError(f"{path} is not in commit {sha[:7]}", 404)
-        added = sorted(suggest.added_lines(self.ws.git(d, "diff", "-U0", base or f"{sha}^", sha, "--", path, check=False)))
-        return {"path": path, "sha": sha, "content": text, "added": added}
+        base = main if base == "main" else (base or f"{sha}^")
+        diff = "" if base == sha else self.ws.git(d, "diff", "-U100000", base, sha, "--", path, check=False)
+        added = sorted(suggest.added_lines(diff))
+        return {"path": path, "sha": sha, "content": text, "diff": diff, "added": added}
+
+    def files(self) -> list[str]:
+        """The repository's files on main, for the editor's explorer."""
+        d = self.ws.dir(REPO)
+        out = self.ws.git(d, "ls-tree", "-r", "--name-only", f"origin/{self.ws.default_branch(d)}")
+        return [f for f in out.splitlines() if f.endswith((".py", ".md")) and not f.endswith("__init__.py")]
 
     # ------------------------------------------------------------------ step 4: commit LGTM's fix
     def checkout(self, pr: int, data: dict | None = None) -> str:

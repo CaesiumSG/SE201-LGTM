@@ -28,7 +28,7 @@
 
   const fresh = () => ({ info: null, step: 0, pr: null, file: { path: FILES[0][0], content: "", added: [], comments: [], tag: "main" },
     ai: null, probe: null, data: null, term: [], busy: null, error: null, prove: null, fix: null, timer: null,
-    view: "code", shop: { as: "alice", path: "/", version: null, resp: null, loading: false, key: "", bought: {}, toast: null } });
+    tabs: [], files: [], view: "code", shop: { as: "alice", path: "/", version: null, resp: null, loading: false, key: "", bought: {}, toast: null } });
 
   window.LGTMDemo = async function demo(args, query) {
     D = fresh();
@@ -41,9 +41,10 @@
         <aside class="dm-guide"><div id="dm-guide"><p class="muted"><span class="pulse"></span> Loading…</p></div>
           <div class="dm-nav"><button type="button" class="btn" id="dm-back">← Back</button><button type="button" class="btn primary" id="dm-next">Next →</button></div></aside>
         <section class="dm-ide" aria-label="Code">
-          <div class="dm-bar"><span class="dm-dots"><i></i><i></i><i></i></span><b>shoply-demo</b><span class="dm-file" id="dm-file"></span><span class="dm-tag" id="dm-tag"></span>
+          <div class="dm-bar"><span class="dm-dots"><i></i><i></i><i></i></span><b>shoply-demo</b><span class="dm-branch" id="dm-branch"></span>
             <div class="dm-views" role="tablist" aria-label="View"><button type="button" role="tab" data-view="code" aria-selected="true">Code</button><button type="button" role="tab" data-view="shop" aria-selected="false">Shop</button></div></div>
-          <div class="dm-code" id="dm-code" tabindex="0"></div>
+          <div class="dm-body" id="dm-body"><nav class="dm-explorer" id="dm-explorer" aria-label="Files"></nav>
+            <div class="dm-editor"><div class="dm-tabs" id="dm-tabs" role="tablist" aria-label="Open files"></div><div class="dm-code" id="dm-code" tabindex="0"></div></div></div>
           <div class="dm-shop" id="dm-shop" hidden></div>
           <div class="dm-term" id="dm-term" hidden></div>
         </section>
@@ -58,6 +59,7 @@
       $("#dm-guide").innerHTML = `<h2>The demo is not available</h2><p class="bad">${esc(e.message)}</p><p class="muted">Connect cyberjj999/shoply-demo to LGTM first.</p>`;
       return;
     }
+    D.files = await L().get("/api/demo/files").catch(() => FILES.map(([f]) => f));
     if (D.pr) await refresh();
     if (D.step === 0 || !D.pr) await showFile(FILES[0][0]);
     go(D.pr ? D.step : Math.min(D.step, 1));
@@ -254,21 +256,75 @@
     line.replace(PY, (m, c, s, d, k, i) => { out += esc(line.slice(last, i)); out += `<span class="${c ? "tc" : s ? "ts" : d ? "td" : "tk"}">${esc(m)}</span>`; last = i + m.length; return m; });
     return out + esc(line.slice(last));
   }
+  // A file is shown as rows: {t: "ctx" | "add" | "del", n: new line number, text}.
+  const plainRows = (content) => (content || "").replace(/\n$/, "").split("\n").map((text, i) => ({ t: "ctx", n: i + 1, text }));
+  function diffRows(diff, content) {
+    if (!diff || !/^@@/m.test(diff)) return plainRows(content);
+    const rows = [];
+    let o = 0, n = 0, inHunk = false;
+    for (const line of diff.replace(/\n$/, "").split("\n")) {
+      const h = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+      if (h) { o = +h[1]; n = +h[2]; inHunk = true; continue; }
+      if (!inHunk || line.startsWith("\\")) continue;
+      if (line.startsWith("+")) rows.push({ t: "add", n: n++, text: line.slice(1) });
+      else if (line.startsWith("-")) rows.push({ t: "del", o: o++, text: line.slice(1) });
+      else { rows.push({ t: "ctx", n: n++, o: o++, text: line.slice(1) }); }
+    }
+    return rows;
+  }
+  // While a model writes: what it has written so far (new lines marked), then the rest of the old file.
+  function liveRows(text, before) {
+    const was = new Set(before.split("\n")), lines = clean(text).split("\n"), tail = before.split("\n");
+    return lines.map((l, i) => ({ t: was.has(l) || !l.trim() ? "ctx" : "add", n: i + 1, text: l, caret: i === lines.length - 1 }))
+      .concat(tail.slice(lines.length).map((l, i) => ({ t: "ctx", n: lines.length + i + 1, text: l })));
+  }
+
+  const prBranch = () => (D.data && D.data.pr && D.data.pr.headRefName) || "demo branch";
+  // Which code the editor shows: what this step is about.
+  function ctx() {
+    const n = D.data ? D.data.rounds.length : 0;
+    if (D.step === 3 && D.fix && n < 2) return { ref: "draft", tag: "the AI's fix, not committed", branch: `${prBranch()} · fix not committed` };
+    if (D.step === 0 || (!D.pr && !(D.ai && D.ai.done))) return { ref: "main", base: "main", tag: "main", branch: "main" };
+    if (!D.pr) return { ref: "draft", tag: "the AI's code, not committed", branch: "main · changes not committed" };
+    if (!first()) return { ref: "main", base: "main", tag: "main", branch: "main" };
+    if (D.step >= 3 && n > 1) return { ref: latest().sha, base: first().sha, pr: D.pr, tag: `the fix · ${short(latest().sha)}`, branch: `${prBranch()} @ ${short(latest().sha)}` };
+    return { ref: first().sha, base: first().base_sha, pr: D.pr, tag: `PR #${D.pr}`, branch: `${prBranch()} @ ${short(first().sha)}` };
+  }
+  const changedPath = () => { const r = flaggedRound(); return (r && r.findings[0] && r.findings[0].file) || (D.ai && D.ai.path) || "app/routes/orders.py"; };
+
   function drawCode() {
     const el = $("#dm-code");
     if (!el) return;
-    const f = D.file, added = new Set(f.added || []), byLine = {};
-    (f.comments || []).forEach((c) => (byLine[c.line] = byLine[c.line] || []).push(c));
-    const lines = (f.content || "").replace(/\n$/, "").split("\n");
-    el.innerHTML = lines.map((l, i) => {
-      const n = i + 1;
-      return `<div class="dl ${added.has(n) ? "add" : ""} ${byLine[n] ? "flag" : ""}" ${n === f.focus ? 'id="dm-focus"' : ""}><span class="ln">${n}</span><span class="tx">${hl(l, f.path) || " "}</span></div>${(byLine[n] || []).map(commentHtml).join("")}`;
-    }).join("") + (f.writing ? `<div class="dl"><span class="ln"></span><span class="tx"><span class="caret"></span></span></div>` : "");
-    $("#dm-file").textContent = f.path || "";
-    $("#dm-tag").textContent = f.tag || "";
-    const focus = $("#dm-focus");
-    if (f.writing) el.scrollTop = el.scrollHeight;
-    else if (focus && f.scroll) { focus.scrollIntoView({ block: "center" }); f.scroll = false; }
+    const f = D.file, c = ctx(), changed = c.ref !== "main" ? changedPath() : null;
+    // explorer: folders, files, and the file this change touches marked M
+    const files = D.files.length ? D.files : FILES.map(([x]) => x);
+    const dirs = [...new Set(files.map((x) => x.split("/").slice(0, -1).join("/")))].sort();
+    const fileBtn = (x, depth) => `<button type="button" class="dm-efile ${x === f.path ? "on" : ""}" data-file="${esc(x)}" style="padding-left:${14 + depth * 14}px">
+        <span class="dm-ficon ${x.endsWith(".md") ? "md" : "py"}">${x.endsWith(".md") ? "M↓" : "py"}</span>${esc(x.split("/").pop())}${x === changed ? '<span class="dm-badge">M</span>' : ""}</button>`;
+    $("#dm-explorer").innerHTML = `<p class="dm-ehead">Explorer</p><div class="dm-efolder">▾ shoply-demo</div>` + dirs.map((dir) => {
+      const depth = dir ? dir.split("/").length : 0;
+      return `${dir ? `<div class="dm-efolder" style="padding-left:${14 + depth * 14 - 14}px">▾ ${esc(dir.split("/").pop())}</div>` : ""}${files.filter((x) => x.split("/").slice(0, -1).join("/") === dir).map((x) => fileBtn(x, depth)).join("")}`;
+    }).join("");
+    // tabs
+    if (f.path && !D.tabs.includes(f.path)) D.tabs = [...D.tabs, f.path].slice(-4);
+    $("#dm-tabs").innerHTML = D.tabs.map((x) => `<button type="button" role="tab" class="dm-etab ${x === f.path ? "on" : ""}" data-file="${esc(x)}" aria-selected="${x === f.path}">
+        <span class="dm-ficon ${x.endsWith(".md") ? "md" : "py"}">${x.endsWith(".md") ? "M↓" : "py"}</span>${esc(x.split("/").pop())}${x === changed ? '<span class="dm-badge">M</span>' : ""}${x === f.path && f.tag ? `<em>${esc(f.tag)}</em>` : ""}</button>`).join("");
+    $("#dm-branch").textContent = c.branch;
+    // code
+    const byLine = {};
+    (f.comments || []).forEach((cm) => (byLine[cm.line] = byLine[cm.line] || []).push(cm));
+    const rows = f.rows || [];
+    const target = rows.findIndex((r) => r.t !== "del" && byLine[r.n]) >= 0 ? rows.findIndex((r) => r.t !== "del" && byLine[r.n])
+      : rows.findIndex((r) => r.t === "add" && /@\w+\.route\(|^\s*def /.test(r.text)) >= 0 ? rows.findIndex((r) => r.t === "add" && /@\w+\.route\(|^\s*def /.test(r.text))
+      : rows.findIndex((r) => r.t !== "ctx");
+    el.innerHTML = `<table class="dm-lines">${rows.map((r, i) => {
+      const live = r.t !== "del", sign = r.t === "add" ? "+" : r.t === "del" ? "−" : "";
+      return `<tr class="${r.t} ${live && byLine[r.n] ? "hit" : ""}" ${i === target ? 'id="dm-focus"' : ""}><td class="ln">${live ? r.n : ""}</td><td class="gut">${sign}</td><td class="src">${hl(r.text, f.path) || " "}${r.caret ? '<span class="caret"></span>' : ""}</td></tr>`
+        + (live ? (byLine[r.n] || []).map((cm) => `<tr class="cmt-row"><td></td><td></td><td>${commentHtml(cm)}</td></tr>`).join("") : "");
+    }).join("")}</table>`;
+    const focus = $("#dm-focus"), caret = $(".caret", el);
+    if (f.writing && caret) caret.scrollIntoView({ block: "center" });
+    else if (focus && f.scroll) { el.scrollTop = Math.max(0, focus.offsetTop - el.clientHeight / 3); f.scroll = false; }
   }
   function commentHtml(c) {
     return `<div class="dm-cmt"><p class="dm-cmt-h"><b>LGTM</b> <span class="sev ${esc(c.severity)}">${esc(c.severity)}</span> ${rt(c.headline || c.cwe)}</p>
@@ -283,28 +339,20 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  async function showFile(path) {
-    const ref = D.step === 0 || !D.pr ? "main" : null;
-    const r = await L().get(`/api/demo/view?pr=0&sha=${enc(ref || "main")}&path=${enc(path)}&base=main`).catch((e) => ({ content: `# ${e.message}`, added: [] }));
-    D.file = { path, content: r.content, added: [], comments: [], tag: "main" };
+  // A file at the code this step is about, as a whole-file diff, with LGTM's comments when they are on it.
+  async function openFile(path, focus = true) {
+    const c = ctx();
+    const v = await L().get(`/api/demo/view?pr=${c.pr || 0}&sha=${enc(c.ref)}&path=${enc(path)}${c.base ? `&base=${enc(c.base)}` : ""}`)
+      .catch((e) => ({ content: `# ${e.message}`, diff: "" }));
+    const r = first();
+    const comments = D.step === 2 && r && done(r) && path === changedPath() ? r.findings.filter((x) => x.file === path).map((x) => {
+      const sg = r.suggestions.find((y) => y.finding_key === x.key);
+      return { line: x.line, severity: x.severity, cwe: x.cwe, headline: x.brief && x.brief.headline, fix: x.brief && x.brief.fix, suggestion: sg && sg.replacement };
+    }) : [];
+    D.file = { path, rows: diffRows(v.diff, v.content), comments, tag: c.tag, scroll: focus };
   }
-
-  // The file the pull request changed, at the round this step is about, with LGTM's comments on it.
-  async function showRound() {
-    const r = D.step >= 3 && D.data.rounds.length > 1 ? latest() : first();
-    if (!r) return;
-    const rf = flaggedRound() || first();
-    const path = (rf && rf.findings[0] && rf.findings[0].file) || (D.ai && D.ai.path) || "app/routes/orders.py";
-    const base = D.step >= 3 && D.data.rounds.length > 1 ? first().sha : r.base_sha;
-    try {
-      const v = await L().get(`/api/demo/view?pr=${D.pr}&sha=${enc(r.sha)}&path=${enc(path)}${base ? `&base=${enc(base)}` : ""}`);
-      const comments = D.step === 2 && done(r) ? r.findings.filter((f) => f.file === path).map((f) => {
-        const s = r.suggestions.find((x) => x.finding_key === f.key);
-        return { line: f.line, severity: f.severity, cwe: f.cwe, headline: f.brief && f.brief.headline, fix: f.brief && f.brief.fix, suggestion: s && s.replacement };
-      }) : [];
-      D.file = { path, content: v.content, added: v.added, comments, tag: `commit ${short(r.sha)}`, focus: comments[0] ? comments[0].line : routeLine(v.content, v.added), scroll: true };
-    } catch (e) { /* GitHub unreachable: keep what is shown */ }
-  }
+  const showFile = (path) => openFile(path);
+  const showRound = () => openFile(changedPath());
 
   // The first added line that starts a route, so the editor shows the new endpoint rather than an import.
   function routeLine(text, added) {
@@ -340,11 +388,10 @@
   function drawView() {
     const shop = D.view === "shop";
     $$("[data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === D.view)));
-    const code = $("#dm-code"), sh = $("#dm-shop");
+    const code = $("#dm-body"), sh = $("#dm-shop");
     if (!code || !sh) return;
     code.hidden = shop; sh.hidden = !shop;
-    $("#dm-file").textContent = shop ? `shop · ${versionLabel(shopVersion())}` : D.file.path || "";
-    $("#dm-tag").textContent = shop ? "" : D.file.tag || "";
+    $("#dm-branch").textContent = shop ? `shop · ${versionLabel(shopVersion())}` : ctx().branch;
     if (shop) {
       if (D.pr && !D.data) return drawShop();   // the PR's versions are not known yet: don't start main by mistake
       const key = [shopRef(), D.pr].join("|");
@@ -513,7 +560,7 @@
     const g = e.target.closest("[data-go]");
     if (g) return go(+g.dataset.go);
     const f = e.target.closest("[data-file]");
-    if (f) { await showFile(f.dataset.file); D.view = "code"; drawView(); drawCode(); return; }
+    if (f) { await openFile(f.dataset.file); D.view = "code"; drawView(); drawCode(); return; }
     const vw = e.target.closest("[data-view]");
     if (vw) { D.view = vw.dataset.view; drawView(); return; }
     const sh = e.target.closest("[data-as], [data-version], [data-goto]");
@@ -551,7 +598,7 @@
     const start = await L().post("/api/demo/start", {});
     const before = start.before, tail = before.split("\n");
     D.ai = { path: start.path, text: "", times: [], model: D.info.model, replay: null };
-    D.file = { path: start.path, content: before, added: [], comments: [], tag: "the AI's code (not committed)", writing: true };
+    D.file = { path: start.path, rows: plainRows(before), comments: [], tag: `${D.info.model} is writing`, writing: true };
     render();
     const t0 = performance.now();
     let pending = false;
@@ -559,12 +606,7 @@
       D.ai.text += delta;
       if (!pending) {
         pending = true;
-        requestAnimationFrame(() => {
-          pending = false;
-          const lines = clean(D.ai.text).split("\n");
-          D.file.content = lines.concat(tail.slice(lines.length)).join("\n");
-          drawCode();
-        });
+        requestAnimationFrame(() => { pending = false; D.file.rows = liveRows(D.ai.text, before); drawCode(); });
       }
     };
     if (replay) {
@@ -579,10 +621,9 @@
     let final = clean(D.ai.text);
     if (before.endsWith("\n")) final = final.replace(/\s+$/, "") + "\n";
     await L().post("/api/ws/file", { repo: D.info.repo, path: start.path, content: final });
-    const was = new Set(before.split("\n"));
-    D.file = { path: start.path, content: final, added: final.split("\n").map((l, i) => (!was.has(l) && l.trim() ? i + 1 : 0)).filter(Boolean), comments: [], tag: "the AI's code (not committed)" };
-    D.file.focus = routeLine(final, D.file.added); D.file.scroll = true;
-    D.ai.done = true; render();
+    D.ai.done = true;
+    await openFile(start.path);
+    render();
     D.probe = await L().post("/api/demo/probe", { ref: "draft" });
     if (!replay && D.probe.outcome === "vulnerable") {
       L().post("/api/demo/record", { model: D.ai.model, path: start.path, times: D.ai.times, outcome: "vulnerable" })
@@ -628,7 +669,7 @@
     const before = head.content || "", tail = before.split("\n");
     await L().post("/api/ws/file", { repo: D.info.repo, path, content: before });
     D.fix = { prompt, path, text: "", model: D.info.model };
-    D.file = { path, content: before, added: [], comments: [], tag: "the AI's fix (not committed)", writing: true };
+    D.file = { path, rows: plainRows(before), comments: [], tag: `${D.info.model} is fixing`, writing: true };
     render();
     let pending = false;
     try {
@@ -636,17 +677,16 @@
         D.fix.text += delta;
         if (!pending) {
           pending = true;
-          requestAnimationFrame(() => { pending = false; const lines = clean(D.fix.text).split("\n"); D.file.content = lines.concat(tail.slice(lines.length)).join("\n"); drawCode(); });
+          requestAnimationFrame(() => { pending = false; D.file.rows = liveRows(D.fix.text, before); drawCode(); });
         }
       }) || D.fix.model;
     } catch (e) { D.fix.error = e.message; D.busy = null; D.file.writing = false; render(); return; }
     let final = clean(D.fix.text);
     if (before.endsWith("\n")) final = final.replace(/\s+$/, "") + "\n";
     await L().post("/api/ws/file", { repo: D.info.repo, path, content: final });
-    const was = new Set(before.split("\n"));
-    const added = final.split("\n").map((l, i) => (!was.has(l) && l.trim() ? i + 1 : 0)).filter(Boolean);
-    D.file = { path, content: final, added, comments: [], tag: "the AI's fix (not committed)", focus: added[0], scroll: true };
-    D.fix.done = true; render();
+    D.fix.done = true;
+    await openFile(path);
+    render();
     D.fix.probe = await L().post("/api/demo/probe", { ref: "draft" });
     D.busy = null; render();
   }

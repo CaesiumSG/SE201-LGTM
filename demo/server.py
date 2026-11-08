@@ -727,6 +727,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(STORY.rounds(int(q.get("pr", "0"))))
             if path == "/api/demo/view":
                 return self.send_json(STORY.view(int(q.get("pr", "0")), q.get("sha", ""), q.get("path", ""), q.get("base") or None))
+            if path == "/api/demo/files":
+                return self.send_json(STORY.files())
             if path == "/api/demo/recorded":
                 return self.send_json(STORY.recorded() or {})
         except (workspace.WorkspaceError, demo_story.StoryError) as exc:
