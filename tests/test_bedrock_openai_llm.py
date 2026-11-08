@@ -1,4 +1,6 @@
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -131,6 +133,8 @@ def test_budget_stops_before_calling(tmp_path):
 
 def test_build_llm_routes_openai_models(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-token")
+    # The anthropic package is the optional "bedrock" extra, not installed in CI: stand in for it.
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(AnthropicBedrock=lambda **kwargs: None))
     assert isinstance(build_llm(_config(tmp_path)), BedrockOpenAI)
     assert not isinstance(build_llm(_config(tmp_path, bedrock_model="global.anthropic.claude-haiku-4-5-20251001-v1:0")),
                           BedrockOpenAI)

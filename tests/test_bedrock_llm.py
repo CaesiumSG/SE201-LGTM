@@ -1,6 +1,7 @@
 """The Bedrock reviewer adapter: message mapping, pricing and the spend cap (no network)."""
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,8 @@ def test_build_llm_picks_the_bedrock_backend(tmp_path, monkeypatch):
 
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "t")
     monkeypatch.setattr(bedrock_llm, "_Shared", lambda client: _Shared(client=None))
+    # The anthropic package is the optional "bedrock" extra, not installed in CI: stand in for it.
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(AnthropicBedrock=lambda **kwargs: None))
     assert isinstance(build_llm(_config(tmp_path)), BedrockClaude)
 
 
