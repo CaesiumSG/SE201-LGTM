@@ -102,6 +102,9 @@ class GraphSession:
     def close(self) -> None:
         self._closed = True
         self._roots.clear()
+        self._remove_work()
+
+    def _remove_work(self) -> None:
         if self._work is not None:
             try:
                 _remove_owned_root(self._work)
@@ -134,6 +137,8 @@ class GraphSession:
         except Exception:
             logger.warning("graph export failed for the %s snapshot", label)
             self._latch(label, "export_failed")
+            if not self._exports:
+                self._remove_work()
             return None
         finally:
             self._export_seconds[label] += time.monotonic() - started

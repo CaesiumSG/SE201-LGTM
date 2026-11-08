@@ -89,6 +89,14 @@ class FileDiff:
             lines.extend(c.content for c in hunk.changes if c.kind == "add")
         return "\n".join(lines)
 
+    @property
+    def removed_text(self) -> str:
+        """All deleted lines joined."""
+        lines: list[str] = []
+        for hunk in self.hunks:
+            lines.extend(c.content for c in hunk.deleted_lines)
+        return "\n".join(lines)
+
     def hunk_text(self) -> str:
         """Render the diff of this file back as a unified-diff fragment."""
         out: list[str] = [f"--- a/{self.old_path or self.path}", f"+++ b/{self.path}"]

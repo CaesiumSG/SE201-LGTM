@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+import re
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from lgtm.agents import prompt_parts, registry
-from lgtm.agents.base import run_tool_loop
-from lgtm.agents.tools import AgentToolbox
+from lgtm.agents.base import (
+    FinalAnswerSpec,
+    RunRecord,
+    cut_to_fit,
+    extract_json_object,
+    fill_record,
+    final_answer_spec,
+    run_tool_loop,
+    user_prompt_budget,
+)
+from lgtm.agents.tools import AgentToolbox, EvidenceLimits, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff
 from lgtm.review.coverage import InvestigatorStatus
@@ -35,6 +45,16 @@ class InvestigatorResult:
     error: str | None
     input_mode: InputMode
     tool_calls: int
+    run_record: RunRecord = field(default_factory=lambda: RunRecord("investigator"))
+
+
+def is_sections_object(text: str) -> bool:
+    """True when the answer is one object whose top-level ``sections`` is a list."""
+    start = text.find("{")
+    if start == -1 or re.search(r"\[\s*$", text[:start]):
+        return False
+    data = extract_json_object(text[start:])
+    return isinstance(data, dict) and isinstance(data.get("sections"), list)
 
 
 def run_investigator(
@@ -43,19 +63,22 @@ def run_investigator(
     toolbox: AgentToolbox,
     llm,
 ) -> InvestigatorResult:
-    refs = [
-        _display_ref(_hunk_ref(diff, index))
-        for diff in diffs
-        if diff.path.endswith(".py")
-        for index in range(len(diff.hunks))
-    ]
+    shown = [diff for diff in diffs if diff.path.endswith(".py")]
+    refs = [_display_ref(_hunk_ref(diff, index)) for diff in shown for index in range(len(diff.hunks))]
     diff_text = render_section(_section("investigator", "investigator", "", "", refs))
     manifest_only = len(diff_text) > config.investigator_diff_chars
     input_mode: InputMode = "manifest_only" if manifest_only else "full"
 
     logger.info("Investigator: %d hunks, input %s", len(refs), input_mode)
+    toolbox.reset_budget(config.investigator_max_tool_calls)
+    record = RunRecord("investigator", turns=toolbox.turns)
     try:
-        toolbox.reset_budget(config.investigator_max_tool_calls)
+        toolbox.evidence = EvidenceLimits(
+            config.investigator_result_chars,
+            frozenset()
+            if manifest_only
+            else frozenset(p for d in shown if d.hunks and (p := relative_path(d.path)) is not None),
+        )
         tools = toolbox.build_tools()
         tool_info = prompt_parts.tool_guidance(toolbox)
         system = registry.render(
@@ -79,7 +102,32 @@ def run_investigator(
         investigator_config = replace(
             config, max_agent_iterations=config.investigator_max_iterations
         )
-        raw = run_tool_loop(llm, tools, system, user, investigator_config)
+        final = FinalAnswerSpec(
+            is_valid=is_sections_object,
+            reask="investigator.reask",
+            forced_final="investigator.forced_final",
+            options={"num_predict": config.investigator_final_output_tokens},
+        )
+        overflow = len(user) - user_prompt_budget(investigator_config, system, final)
+        if overflow > 0 and diff_section:
+            # Room for one result at the bound after a cut: whole-file reads of cut files.
+            diff_text = cut_to_fit(diff_text, max(0, len(diff_text) - overflow - config.investigator_result_chars))
+            user = registry.render(
+                "investigator.user_prompt",
+                manifest=manifest,
+                diff_section=registry.render(
+                    "investigator.diff_section", block=prompt_parts.code_fence(diff_text, "diff")
+                ),
+            )
+            toolbox.evidence.changed = frozenset(
+                p
+                for d in shown
+                if d.hunks and _wholly_shown(d, diff_text) and (p := relative_path(d.path)) is not None
+            )
+        with final_answer_spec(final):
+            raw = fill_record(
+                record, toolbox, run_tool_loop(llm, tools, system, user, investigator_config)
+            )
         proposed = parse_investigator_output(raw)
     except Exception as exc:  # noqa: BLE001 - reported through the result
         logger.warning("Investigator failed: %s", exc)
@@ -89,6 +137,7 @@ def run_investigator(
             error=str(exc) or type(exc).__name__,
             input_mode=input_mode,
             tool_calls=toolbox.calls_used,
+            run_record=record,
         )
     return InvestigatorResult(
         proposed=proposed,
@@ -96,7 +145,13 @@ def run_investigator(
         error=None,
         input_mode=input_mode,
         tool_calls=toolbox.calls_used,
+        run_record=record,
     )
+
+
+def _wholly_shown(diff: FileDiff, shown_text: str) -> bool:
+    refs = [_display_ref(_hunk_ref(diff, index)) for index in range(len(diff.hunks))]
+    return render_section(_section("investigator", "investigator", "", "", refs)) in shown_text
 
 
 def _display_ref(ref: HunkRef) -> HunkRef:

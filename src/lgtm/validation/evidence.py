@@ -7,9 +7,9 @@ Verifies that every claim an agent made is grounded in reality:
 - cited policy sources exist among the indexed documents.
 
 Code evidence labelled with a snapshot is checked only against the committed
-blob at that snapshot's frozen commit, with exact matching.
+blob at that snapshot's frozen commit, against the raw or the sanitized text.
 
-Findings get ``evidence_valid`` and a list of ``evidence_issues``.
+Validation annotates each cited code item with ``grounded_in_pr``.
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.agents.tools import read_committed_blob, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, GitError, read_file_at_ref
+from lgtm.diff.sanitizer import sanitize_source
 
 logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 0.75
-PR_GROUNDING_CAP_MARKER = (
-    "[LGTM: verdict downgraded from vulnerable to possible. The PR graph was unavailable "
-    "for this finding and no cited evidence validated against the PR snapshot or the diff.]"
-)
+
+# A quote line holding only "..." (optionally as a comment) stands for skipped lines.
+_ELISION_LINE = re.compile(r"^[ \t]*(?:#|//)?[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
 
 
 def _normalize(text: str) -> str:
@@ -95,8 +95,10 @@ class EvidenceValidator:
         self._snapshot_cache: dict[tuple[str, str], list[str] | None] = {}
         # Content added by the PR, by file — snippets may legitimately cite it.
         self._diff_added: dict[str, str] = {}
+        self._diff_removed: dict[str, str] = {}
         for fd in diffs or []:
             self._diff_added[fd.path] = _normalize(fd.added_text)
+            self._diff_removed[fd.path] = _normalize(fd.removed_text)
 
     # ------------------------------------------------------------------
     def _read_base_file(self, path: str) -> list[str] | None:
@@ -130,6 +132,10 @@ class EvidenceValidator:
         return candidates[-1]
 
     def _snippet_in_text(self, snippet: str, haystack: str) -> bool:
+        parts = [p for p in _ELISION_LINE.split(snippet) if p.strip()]
+        if len(parts) > 1:
+            # shortcut: parts are matched independently, not in order; enforce order if out-of-order quotes slip through.
+            return all(self._snippet_in_text(p, haystack) for p in parts)
         snippet_n = _normalize(snippet)
         if not snippet_n:
             return True
@@ -163,6 +169,15 @@ class EvidenceValidator:
                     return True
         return False
 
+    def _snippet_in_file(self, snippet: str, path: str, lines: list[str]) -> bool:
+        """Fuzzy match against the raw file, then, with ``strip_comments`` on, against its sanitized text."""
+        text = "\n".join(lines)
+        if self._snippet_in_text(snippet, _normalize(text)):
+            return True
+        return self.config.strip_comments and self._snippet_in_text(
+            snippet, _normalize(sanitize_source(path, text))
+        )
+
     # ------------------------------------------------------------------
     def _snapshot_lines(self, label: str, path: str) -> list[str] | None:
         key = (label, path)
@@ -178,7 +193,7 @@ class EvidenceValidator:
             return [f"snapshot '{label}' is unavailable for this review"]
         lines = self._snapshot_lines(label, item.file)
         if lines is None:
-            return [f"cited file does not exist at {label} snapshot"]
+            return [f"cited file {item.file} does not exist at {label} snapshot"]
         if item.lines is not None:
             if not _is_ordered_positive_range(item.lines):
                 return [f"invalid cited line range for {item.file} at {label} snapshot"]
@@ -189,8 +204,7 @@ class EvidenceValidator:
                     f"at {label} snapshot ({len(lines)} lines)"
                 ]
         if item.content.strip():
-            whole = _normalize("\n".join(lines))
-            if _normalize(item.content) not in whole:
+            if not self._snippet_in_file(item.content, item.file, lines):
                 return [
                     f"cited code snippet not found in {item.file} at {label} snapshot: "
                     f"{item.content[:80]!r}"
@@ -242,8 +256,7 @@ class EvidenceValidator:
                     region = _normalize("\n".join(lines[lo:hi]))
                     found = self._snippet_in_text(item.content, region)
                 if not found:
-                    whole = _normalize("\n".join(lines))
-                    found = self._snippet_in_text(item.content, whole)
+                    found = self._snippet_in_file(item.content, item.file, lines)
             if not found and in_diff:
                 found = self._snippet_in_text(item.content, self._diff_added[item.file])
             if not found:
@@ -252,6 +265,24 @@ class EvidenceValidator:
                     f"{item.content[:80]!r}"
                 )
         return issues
+
+    def resolution_issues(self, item: EvidenceItem) -> list[str]:
+        """Why a code item does not resolve at its snapshot; unlabelled items resolve at pr, then base."""
+        if self._shas is None:
+            return []
+        if item.snapshot is None and not item.snapshot_conflict:
+            issues: list[str] = []
+            for label in ("pr", "base"):
+                if label in self._shas:
+                    found = self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                    if not found:
+                        return []
+                    issues.extend(found)
+            return issues or ["no snapshot is available for this review"]
+        return self._validate_code_item(item)
+
+    def resolves(self, item: EvidenceItem) -> bool:
+        return not self.resolution_issues(item)
 
     def _validate_policy_item(self, item: EvidenceItem) -> list[str]:
         issues: list[str] = []
@@ -278,43 +309,61 @@ class EvidenceValidator:
         """Whether a code item on its own grounds a vulnerable verdict in the PR."""
         if item.type != "code" or issues or not item.content.strip():
             return False
-        if self._shas is not None and item.snapshot is not None:
-            return item.snapshot == "pr"
-        return item.file in self._diff_added and self._snippet_in_text(
-            item.content, self._diff_added[item.file]
-        )
+        labelled = self._shas is not None and item.snapshot is not None
+        if labelled and item.snapshot == "pr":
+            return True
+        if item.file not in self._diff_added:
+            return False
+        texts = [self._diff_removed[item.file]]
+        if not labelled:
+            texts.append(self._diff_added[item.file])
+        return any(self._snippet_in_text(item.content, t) for t in texts)
+
+    def _content_at_lines(self, item: EvidenceItem, label: str) -> bool:
+        lines = self._snapshot_lines(label, item.file)
+        if lines is None or not item.lines or not item.content.strip():
+            return False
+        if not _is_ordered_positive_range(item.lines):
+            return False
+        return _normalize(item.content) in _normalize("\n".join(lines[item.lines[0] - 1 : item.lines[1]]))
+
+    def read_cited_code(self, item: EvidenceItem) -> str:
+        """Code at the cited location; empty when it cannot be read."""
+        if not item.file:
+            return ""
+        lines: list[str] | None = None
+        if self._shas is None:
+            lines = self._read_base_file(self._resolve_path(item.file))
+        else:
+            labels = ["pr", "base"]
+            if item.snapshot:
+                labels = [item.snapshot]
+            elif not item.snapshot_conflict:
+                # Prefer the snapshot holding the content at the cited lines (removed or shifted code),
+                # then any snapshot where the citation validates.
+                valid = [
+                    label
+                    for label in labels
+                    if label in self._shas
+                    and not self._validate_code_item(item.model_copy(update={"snapshot": label}))
+                ]
+                labels = [label for label in valid if self._content_at_lines(item, label)] or valid or labels
+            for label in labels:
+                if label in self._shas:
+                    lines = self._snapshot_lines(label, item.file)
+                if lines is not None:
+                    break
+        if lines is None:
+            return ""
+        if item.lines is not None and _is_ordered_positive_range(item.lines):
+            lines = lines[item.lines[0] - 1 : item.lines[1]]
+        return "\n".join(lines)
 
     def validate(self, finding: AgentFinding) -> AgentFinding:
-        """Validate one finding in place and return it.
-
-        The PR-graph cap runs here, after validation, so it applies once per
-        finding however the caller reaches this method.
-        """
-        issues: list[str] = []
-        grounded = False
+        """Annotate ``grounded_in_pr`` on each cited code item in place and return the finding."""
         for item in finding.evidence:
-            if item.type == "policy":
-                item_issues = self._validate_policy_item(item)
-            else:
-                item_issues = self._validate_code_item(item)
-                grounded = grounded or self._grounds_pr(item, item_issues)
-            issues.extend(item_issues)
-
-        strong_verdict = finding.verdict in ("vulnerable", "safe")
-        if strong_verdict and not finding.evidence:
-            issues.append(
-                f"verdict '{finding.verdict}' provided without any evidence"
-            )
-
-        finding.evidence_issues = issues
-        finding.evidence_valid = not issues
-        if finding.pr_graph_ok is False and finding.verdict == "vulnerable" and not grounded:
-            finding.verdict = "possible"
-            finding.explanation = f"{finding.explanation}\n\n{PR_GROUNDING_CAP_MARKER}"
-        if issues:
-            logger.info(
-                "Evidence issues for %s: %s", finding.finding_id, "; ".join(issues)
-            )
+            if item.type != "policy":
+                item.grounded_in_pr = self._grounds_pr(item, self._validate_code_item(item))
         return finding
 
     def validate_all(self, findings: list[AgentFinding]) -> list[AgentFinding]:

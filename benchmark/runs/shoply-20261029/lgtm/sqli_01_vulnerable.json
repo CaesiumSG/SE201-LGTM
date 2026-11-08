@@ -1,0 +1,575 @@
+{
+  "id": "sqli_01_vulnerable",
+  "category": "sqli",
+  "split": "dev",
+  "expected": "vulnerable",
+  "n_findings": 2,
+  "verdicts": [
+    "vulnerable",
+    "vulnerable"
+  ],
+  "grounded": 2,
+  "grounding_rate": 1.0,
+  "latency_seconds": 130.89,
+  "est_tokens": 1741,
+  "findings": [
+    {
+      "finding_id": "lgtm-python-sqli-execute-text-call:app/routes/users.py:64",
+      "cwe_id": "CWE-89",
+      "explanation": "The new /users/search endpoint (app/routes/users.py:58-67) reads the 'name' query parameter directly from user input (line 62: name = request.args.get(\"name\", \"\")) and interpolates it into a raw SQL string via an f-string (line 65: text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\")). The value is passed to session.execute() with no bound parameters, no whitelist validation, and no sanitization. This is a classic SQL injection: an attacker with the manager role can supply a 'name' value such as \"' OR '1'='1\" or use stacked-query payloads to read, modify, or exfiltrate data. The security policy (security-policy.md \u00a75) explicitly forbids f-string interpolation of request-derived values into SQL and requires bound parameters. The @require_role(\"manager\") decorator limits who can trigger the injection but does not mitigate it \u2014 any manager account (or a compromised one) can exploit it.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            67
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/search\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef search_users():\n    \"\"\"Search users by username fragment.\"\"\"\n    name = request.args.get(\"name\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Replace the f-string interpolation with a bound parameter. Use SQLAlchemy's text() with a :name placeholder and pass the value as a separate parameter dict, e.g.:\n\n    pattern = f\"%{name}%\"\n    rows = session.execute(\n        text(\"SELECT id, username, role FROM users WHERE username LIKE :pattern\"),\n        {\"pattern\": pattern}\n    )\n\nThis ensures the database driver handles escaping and prevents SQL injection. The LIKE wildcards (%) are added in Python around the user value, which is safe because the value itself is bound, not concatenated into the SQL string.",
+      "semgrep_rule_id": "lgtm-python-sqli-execute-text-call",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Raw SQL executed through SQLAlchemy. Confirm parameters are bound, not interpolated into the query string.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9575,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 64,
+      "tool_calls_used": 3,
+      "pr_graph_ok": true,
+      "input_tokens": 930
+    },
+    {
+      "finding_id": "lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:65",
+      "cwe_id": "CWE-89",
+      "explanation": "The new /users/search endpoint (app/routes/users.py:58-67) reads the `name` query parameter directly from user input (line 62: `name = request.args.get(\"name\", \"\")`) and interpolates it into a SQLAlchemy `text()` query via an f-string (line 65: `text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\" )`). No bound parameter is used and no whitelist/validation is applied to `name`, so an attacker can inject arbitrary SQL (e.g. `name = \"%' OR '1'='1\"`). The `@require_role(\"manager\")` decorator (app/auth.py:69-85) only restricts access to manager/admin users; it does not sanitize input, so any authenticated manager can still inject. This directly violates the project's security policy, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL (CWE-89).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "app/routes/users.py",
+          "lines": [
+            58,
+            67
+          ],
+          "source": null,
+          "content": "@users_bp.route(\"/search\", methods=[\"GET\"])\n@require_role(\"manager\")\ndef search_users():\n    \"\"\"Search users by username fragment.\"\"\"\n    name = request.args.get(\"name\", \"\")\n    session = get_session()\n    rows = session.execute(\n        text(f\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\")\n    )\n    return jsonify([dict(r._mapping) for r in rows])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "app/auth.py",
+          "lines": [
+            69,
+            85
+          ],
+          "source": null,
+          "content": "def require_role(minimum_role: str):\n    \"\"\"Require at least the given role (user < manager < admin).\"\"\"\n\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            user = get_current_user()\n            if user is None:\n                return jsonify({\"error\": \"authentication required\"}), 401\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\n                return jsonify({\"error\": \"insufficient role\"}), 403\n            g.current_user = user\n            return fn(*args, **kwargs)\n\n        return wrapper\n\n    return decorator",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "security-policy.md",
+          "content": "All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Use a bound parameter instead of f-string interpolation: `text(\"SELECT id, username, role FROM users WHERE username LIKE :pattern\")` and pass `session.execute(stmt, {\"pattern\": f\"%{name}%\"})`. This lets the driver escape the value safely. Optionally also escape LIKE wildcards (`%`, `_`) in `name` if literal matching is intended.",
+      "semgrep_rule_id": "lgtm-python-sqli-sqlalchemy-text",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "SQLAlchemy text()/exec_driver_sql() with dynamic content may allow SQL injection if user input is interpolated. Verify that only bound parameters are used.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9479,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "app/routes/users.py",
+      "line": 65,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1101
+    }
+  ],
+  "run_records": [
+    {
+      "section": "sast_triage:lgtm-python-sqli-execute-text-call:app/routes/users.py:64",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 50,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection parameterized queries security policy"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "```json\n{\n  \"finding_id\": \"lgtm-python-sqli-execute-text-call:app/routes/users.py:64\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new /users/search endpoint (app/routes/users.py:58-67) reads the 'name' query parameter directly from user input (line 62: name = request.args.get(\\\"name\\\", \\\"\\\")) and interpolates it into a raw SQL string via an f-string (line 65: text(f\\\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\\\")). The value is passed to session.execute() with no bound parameters, no whitelist validation, and no sanitization. This is a classic SQL injection: an attacker with the manager role can supply a 'name' value such as \\\"' OR '1'='1\\\" or use stacked-query payloads to read, modify, or exfiltrate data. The security policy (security-policy.md \u00a75) explicitly forbids f-string interpolation of request-derived values into SQL and requires bound parameters. The @require_role(\\\"manager\\\") decorator limits who can trigger the injection but does not mitigate it \u2014 any manager account (or a compromised one) can exploit it.\",\n  \"evidence\": [\n    {\n      \"type\": \"code\",\n      \"file\": \"app/routes/users.py\",\n      \"lines\": [58, 67],\n      \"content\": \"@users_bp.route(\\\"/search\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef search_users():\\n    \\\"\\\"\\\"Search users by username fragment.\\\"\\\"\\\"\\n    name = request.args.get(\\\"name\\\", \\\"\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(f\\\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"\n    },\n    {\n      \"type\": \"policy\",\n      \"source\": \"security-policy.md\",\n      \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"\n    }\n  ],\n  \"suggested_fix\": \"Replace the f-string interpolation with a bound parameter. Use SQLAlchemy's text() with a :name placeholder and pass the value as a separate parameter dict, e.g.:\\n\\n    pattern = f\\\"%{name}%\\\"\\n    rows = session.execute(\\n        text(\\\"SELECT id, username, role FROM users WHERE username LIKE :pattern\\\"),\\n        {\\\"pattern\\\": pattern}\\n    )\\n\\nThis ensures the database driver handles escaping and prevents SQL injection. The LIKE wildcards (%) are added in Python around the user value, which is safe because the value itself is bound, not concatenated into the SQL string.\"\n}\n```",
+      "limit_hit": null
+    },
+    {
+      "section": "sast_triage:lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:65",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 50,
+            "end_line": 70,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "SQL injection bound parameters SQLAlchemy text query policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 60,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"finding_id\": \"lgtm-python-sqli-sqlalchemy-text:app/routes/users.py:65\",\n  \"cwe_id\": \"CWE-89\",\n  \"explanation\": \"The new /users/search endpoint (app/routes/users.py:58-67) reads the `name` query parameter directly from user input (line 62: `name = request.args.get(\\\"name\\\", \\\"\\\")`) and interpolates it into a SQLAlchemy `text()` query via an f-string (line 65: `text(f\\\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\\\" )`). No bound parameter is used and no whitelist/validation is applied to `name`, so an attacker can inject arbitrary SQL (e.g. `name = \\\"%' OR '1'='1\\\"`). The `@require_role(\\\"manager\\\")` decorator (app/auth.py:69-85) only restricts access to manager/admin users; it does not sanitize input, so any authenticated manager can still inject. This directly violates the project's security policy, which mandates bound parameters and forbids f-string interpolation of request-derived values into SQL (CWE-89).\",\n  \"evidence\": [\n    {\"type\": \"code\", \"file\": \"app/routes/users.py\", \"lines\": [58, 67], \"content\": \"@users_bp.route(\\\"/search\\\", methods=[\\\"GET\\\"])\\n@require_role(\\\"manager\\\")\\ndef search_users():\\n    \\\"\\\"\\\"Search users by username fragment.\\\"\\\"\\\"\\n    name = request.args.get(\\\"name\\\", \\\"\\\")\\n    session = get_session()\\n    rows = session.execute(\\n        text(f\\\"SELECT id, username, role FROM users WHERE username LIKE '%{name}%'\\\")\\n    )\\n    return jsonify([dict(r._mapping) for r in rows])\"},\n    {\"type\": \"code\", \"file\": \"app/auth.py\", \"lines\": [69, 85], \"content\": \"def require_role(minimum_role: str):\\n    \\\"\\\"\\\"Require at least the given role (user < manager < admin).\\\"\\\"\\\"\\n\\n    def decorator(fn):\\n        @functools.wraps(fn)\\n        def wrapper(*args, **kwargs):\\n            user = get_current_user()\\n            if user is None:\\n                return jsonify({\\\"error\\\": \\\"authentication required\\\"}), 401\\n            if ROLE_RANK.get(user.role, 0) < ROLE_RANK.get(minimum_role, 99):\\n                return jsonify({\\\"error\\\": \\\"insufficient role\\\"}), 403\\n            g.current_user = user\\n            return fn(*args, **kwargs)\\n\\n        return wrapper\\n\\n    return decorator\"},\n    {\"type\": \"policy\", \"source\": \"security-policy.md\", \"content\": \"All SQL statements MUST use bound parameters (SQLAlchemy `text()` with `:name` parameters, or DB-API placeholders with a separate params argument). String interpolation, f-strings, `%` formatting, `.format()`, or string concatenation of request-derived values into SQL is forbidden (CWE-89).\"}\n  ],\n  \"suggested_fix\": \"Use a bound parameter instead of f-string interpolation: `text(\\\"SELECT id, username, role FROM users WHERE username LIKE :pattern\\\")` and pass `session.execute(stmt, {\\\"pattern\\\": f\\\"%{name}%\\\"})`. This lets the driver escape the value safely. Optionally also escape LIKE wildcards (`%`, `_`) in `name` if literal matching is intended.\"\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "require_role decorator and is_owner_or_admin authorization helpers in app/auth"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "user search endpoint role requirements and SQL injection policy"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 23,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 95,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "search",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "search",
+            "file_glob": "app/routes/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users_bp|register_blueprint",
+            "file_glob": "app/main.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "users_bp",
+            "file_glob": "",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/orders.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/admin.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "LIKE",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "text\\(",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute\\(",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute\\(",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "session\\.execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute",
+            "file_glob": "app/**/*.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"user-search-endpoint\",\n      \"title\": \"New GET /users/search endpoint with manager-role gate and raw-SQL username search\",\n      \"rationale\": \"Both hunks together introduce a single new access-controlled endpoint: hunk #0 adds the `sqlalchemy.text` import that the new handler depends on, and hunk #1 adds the `search_users` route (decorated with `@require_role(\\\"manager\\\")`) that builds a raw SQL `LIKE` query by f-string-interpolating the request-derived `name` value. They are one logical change (a new user-search endpoint) and must be reviewed as a unit for both the authorization gate and the SQL construction.\",\n      \"hunks\": [\"app/routes/users.py#0\", \"app/routes/users.py#1\"],\n      \"context\": [\n        {\"path\": \"app/auth.py\", \"symbol\": \"require_role\", \"start_line\": 69, \"end_line\": 85, \"snapshot\": \"base\", \"why\": \"Authorization decorator applied to the new search_users endpoint; enforces ROLE_RANK >= manager and sets g.current_user. Confirms the endpoint is gated to manager/admin per api-spec.md.\"},\n        {\"path\": \"app/auth.py\", \"symbol\": \"ROLE_RANK\", \"start_line\": 21, \"end_line\": 21, \"snapshot\": \"base\", \"why\": \"Role hierarchy (user<manager<admin) used by require_role to decide access for the new endpoint.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"User\", \"start_line\": 23, \"end_line\": 40, \"snapshot\": \"base\", \"why\": \"The `users` table (id, username, role) that the new raw SQL query selects from; confirms the columns returned by search_users.\"},\n        {\"path\": \"app/models.py\", \"symbol\": \"get_session\", \"start_line\": 100, \"end_line\": 101, \"snapshot\": \"base\", \"why\": \"Session factory used by search_users to run session.execute(text(...)).\"},\n        {\"path\": \"app/routes/users.py\", \"symbol\": \"list_users\", \"start_line\": 19, \"end_line\": 25, \"snapshot\": \"base\", \"why\": \"Existing manager-gated user-listing endpoint; the new search endpoint mirrors its access level and returns the same user fields.\"},\n        {\"path\": \"app/__init__.py\", \"symbol\": \"create_app\", \"start_line\": 12, \"end_line\": 24, \"snapshot\": \"base\", \"why\": \"Registers users_bp under url_prefix=/users, so the new route is exposed as GET /users/search.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "user-search-endpoint",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/auth.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/models.py",
+            "start_line": 20,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/__init__.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/routes/users.py",
+            "start_line": 50,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "mode": "lgtm",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "fff069b4984bdc8974f5fe054aaa0e9f846522bb",
+    "code_dirty": true,
+    "base_sha": "7f7e7c40371c7ce273b20f8b2b560963e582281a",
+    "pr_sha": "7cd0d1c86b7075468380252a6555bf23edfebaed",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "file": "app/routes/users.py",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 24,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 2,
+    "hunks_assigned": 2,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "user-search-endpoint",
+        "origin": "investigator",
+        "title": "New GET /users/search endpoint with manager-role gate and raw-SQL username search",
+        "files": [
+          "app/routes/users.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "app/routes/users.py#0",
+            "file": "app/routes/users.py",
+            "old_start": 10,
+            "old_count": 6,
+            "new_start": 10,
+            "new_count": 8,
+            "change": "add"
+          },
+          {
+            "hunk_id": "app/routes/users.py#1",
+            "file": "app/routes/users.py",
+            "old_start": 53,
+            "old_count": 3,
+            "new_start": 55,
+            "new_count": 13,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      }
+    ]
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.3,
+  "base_sha": "7f7e7c40371c7ce273b20f8b2b560963e582281a",
+  "pr_sha": "7cd0d1c86b7075468380252a6555bf23edfebaed",
+  "sast_error": null,
+  "semgrep_findings_total": 2,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "user-search-endpoint"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}
