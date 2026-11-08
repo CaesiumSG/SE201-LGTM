@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS deliveries (
   via TEXT, verified INTEGER, outcome TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, pr_number INTEGER, head_sha TEXT, run_id TEXT, finding_key TEXT,
+  path TEXT, start_line INTEGER, end_line INTEGER, replacement TEXT, created_at TEXT
+);
 """
 
 DEFAULT_SETTINGS = {

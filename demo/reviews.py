@@ -32,6 +32,7 @@ from pathlib import Path
 
 import github_app as gh
 import results
+import suggest
 from store import DATA_DIR, SEVERITY_RANK, Store, now
 
 HERE = Path(__file__).resolve().parent
@@ -299,6 +300,9 @@ class Engine:
                 git(clone, "fetch", "--quiet", "origin", sha, env=env)
         merge_base = git(clone, "merge-base", run["head_sha"], run["base_sha"]).strip()
         self.store.update("runs", run_id, base_sha=merge_base)
+        applied = self._applied_verified_fixes(run, clone, env)
+        if applied:   # this commit only applies LGTM's own, already verified fixes: no second review
+            return self._finish_fast(run, applied, started)
         case = {"id": f"{name}-pr{n}", "repo": full, "pr": n, "title": run["pr_title"],
                 "base_commit": merge_base, "merge_commit": run["head_sha"]}
         case_file = RUN_FILES / f"{run_id}.case.json"
@@ -379,6 +383,88 @@ class Engine:
         self._emit(run_id, {"type": "done", "verdict": verdict, "conclusion": conclusion, "n_flagged": len(flagged),
                             "latency_seconds": latency, "check_url": run.get("check_url"),
                             "review_url": self.store.run(run_id).get("review_url")})
+
+    # ------------------------------------------------- verified suggestions and the fast path
+    def _record_suggestion(self, run: dict, f: dict, fix: dict) -> None:
+        self.store.x("INSERT INTO suggestions (repo, pr_number, head_sha, run_id, finding_key, path, start_line, end_line, "
+                     "replacement, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (run["repo"], run["pr_number"], run["head_sha"], run["id"], f"{run['id']}:{f['id']}", f["file"],
+                      fix["start_line"], fix["end_line"], fix["replacement"], now()))
+
+    def _applied_verified_fixes(self, run: dict, clone: Path, env: dict) -> dict | None:
+        """If this commit is exactly the previous review's verified suggestions applied (some or all of them), and they
+        cover every finding that review reported, return what was applied. Anything else gets a full review."""
+        prev = self.store.one("SELECT * FROM runs WHERE repo=? AND pr_number=? AND source='github' AND status='completed' "
+                              "AND head_sha<>? ORDER BY created_at DESC LIMIT 1", (run["repo"], run["pr_number"], run["head_sha"]))
+        if not prev or not prev.get("n_flagged"):
+            return None
+        flagged = self.store.q("SELECT * FROM findings WHERE run_id=? AND flagged=1", (prev["id"],))
+        sugg = self.store.q("SELECT * FROM suggestions WHERE run_id=?", (prev["id"],))
+        if not flagged or not sugg or {f["id"] for f in flagged} - {s["finding_key"] for s in sugg}:
+            return None
+        if subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{prev['head_sha']}^{{commit}}"], capture_output=True).returncode:
+            git(clone, "fetch", "--quiet", "origin", prev["head_sha"], env=env)
+        changed = [p for p in git(clone, "diff", "--name-only", prev["head_sha"], run["head_sha"]).splitlines() if p]
+        spans: dict[str, list] = {}
+        for s in sugg:
+            key = (s["start_line"], s["end_line"], s["replacement"])
+            if key not in spans.setdefault(s["path"], []):
+                spans[s["path"]].append(key)
+        if not changed or any(p not in spans for p in changed):
+            return None
+        applied = []
+        for path in changed:
+            old = git(clone, "show", f"{prev['head_sha']}:{path}").split("\n")
+            new = git(clone, "show", f"{run['head_sha']}:{path}").split("\n")
+            opts = sorted(spans[path], key=lambda t: -t[0])   # apply bottom-up so line numbers stay valid
+            hit = None
+            for mask in range(1, 2 ** len(opts)):
+                lines = old
+                for i, (a, b, rep) in enumerate(opts):
+                    if mask >> i & 1:
+                        lines = suggest.apply_span(lines, a, b, rep)
+                if lines == new:
+                    hit = [o for i, o in enumerate(opts) if mask >> i & 1]
+                    break
+            if hit is None:
+                return None
+            applied += [(path, a, b) for a, b, _ in hit]
+        covered = {s["finding_key"] for s in sugg if (s["path"], s["start_line"], s["end_line"]) in applied}
+        if {f["id"] for f in flagged} - covered:
+            return None   # some finding's fix was not applied: that needs a real review
+        return {"prev": prev, "findings": flagged, "applied": applied}
+
+    def _finish_fast(self, run: dict, applied: dict, started: float) -> None:
+        run_id = run["id"]
+        prev, flagged = applied["prev"], applied["findings"]
+        judge_name = JUDGES.get(prev.get("judge") or "kev", JUDGES["kev"])[1]
+        latency = round(time.time() - started, 1)
+        self._emit(run_id, {"type": "stage", "stage": "fetch", "status": "done", "detail": "this commit applies LGTM's verified fix"})
+        self.store.update("runs", run_id, status="completed", finished_at=now(), latency=latency, verdict="safe",
+                          conclusion="passed", n_flagged=0, n_candidates=0, severity_max=None, stage="done",
+                          judge=prev.get("judge"), trigger=(run.get("trigger") or "") + ":verified-fix")
+        for f in self.store.q("SELECT id, file, cwe FROM findings WHERE repo=? AND pr_number=? AND source='github' AND status='open'",
+                              (run["repo"], run["pr_number"])):
+            if any((f["file"], f["cwe"]) == (g["file"], g["cwe"]) for g in flagged):
+                self.store.update("findings", f["id"], status="fixed", updated_at=now(),
+                                  note=f"Fixed by LGTM's verified suggestion, applied in {run['head_sha'][:7]}.")
+        items = "\n".join(f"- {finding_title(dict(g))} at `{g['file']}:{g['line']}`" for g in flagged)
+        link = f"{self.base_url}/#/runs/{prev['id']}"
+        summary = (f"This commit applies exactly the fix LGTM suggested on the previous review, and nothing else. The {judge_name} "
+                   f"checked that fix before it was offered, so LGTM did not review it a second time.\n\nFixed:\n{items}\n\n"
+                   f"[The review that found it]({link})")
+        self._complete_check(self.store.run(run_id), "success", "Applied LGTM's verified fix", summary)
+        try:
+            body = (f"**The fix LGTM suggested is in, so this pull request is clear.** ✅\n\n{items}\n\n"
+                    f"<sub>The {judge_name} checked the fix before it was offered; this commit applies only that change.</sub>")
+            review = gh.as_installation(run["installation_id"], "POST", f"/repos/{run['repo']}/pulls/{run['pr_number']}/reviews",
+                                        {"commit_id": run["head_sha"], "event": "COMMENT", "body": self._md(body)})
+            self.store.update("runs", run_id, review_id=review.get("id"), review_url=review.get("html_url"))
+            self._dismiss_stale(self.store.run(run_id), review.get("id"))
+        except Exception as exc:  # noqa: BLE001 - the check already says it
+            self._log_note(run_id, gh.redact(f"posting the verified-fix review failed: {exc}"))
+        self._emit(run_id, {"type": "done", "verdict": "safe", "conclusion": "passed", "n_flagged": 0, "latency_seconds": latency,
+                            "check_url": self.store.run(run_id).get("check_url"), "review_url": self.store.run(run_id).get("review_url")})
 
     def _store_findings(self, run: dict, findings: list[dict]) -> None:
         # A newer review of the same PR supersedes the older ones: what it no longer reports is fixed.
@@ -493,11 +579,37 @@ class Engine:
         if not settings["inline_comments"]:
             return
         valid = self._commentable_lines(run)
-        comments, loose = [], []
+        comments, loose, taken, posted = [], [], set(), []
+        judge_url, judge_name = JUDGES.get(run.get("judge") or "kev", JUDGES["kev"])[:2]
         for f in flagged:
             line = self._snap(valid.get(f["file"] or "", set()), f["line"])
-            body = self._comment_body(f, link)
-            if line:
+            fix = None
+            covering = next((p for p in posted if p["path"] == f["file"] and p["start_line"] - 2 <= int(f["line"] or 0) <= p["end_line"] + 2), None)
+            if covering:   # the fix already suggested for these lines covers this finding too
+                self._record_suggestion(run, f, covering)
+            elif line and f.get("file") in self._added:
+                try:   # a one-click fix, when it can be expressed on lines this pull request added
+                    fix = suggest.suggest(self.bedrock_key, self.bedrock_budget, f["file"], self._added[f["file"]], f)
+                    if fix:   # offered only if the same judge agrees the bug is gone from the fixed code
+                        ok, why = suggest.verify(judge_url, f, f["file"], self._added[f["file"]], fix)
+                        self._log_note(run["id"], f"suggestion for {f['file']}:{f['line']}: {why}")
+                        fix = fix if ok else None
+                except Exception as exc:  # noqa: BLE001 - the prose fix still goes out
+                    self._log_note(run["id"], gh.redact(f"no committable suggestion for {f['file']}:{f['line']}: {exc}"))
+                    fix = None
+                if fix and any((f["file"], n) in taken for n in range(fix["start_line"], fix["end_line"] + 1)):
+                    fix = None   # an earlier comment already suggests a change to these lines
+            body = self._comment_body(f, link, judge_name, fix, covering)
+            if fix:
+                fix = {**fix, "path": f["file"]}
+                posted.append(fix)
+                self._record_suggestion(run, f, fix)
+                taken.update((f["file"], n) for n in range(fix["start_line"], fix["end_line"] + 1))
+                c = {"path": f["file"], "line": fix["end_line"], "side": "RIGHT", "body": body}
+                if fix["start_line"] != fix["end_line"]:
+                    c.update(start_line=fix["start_line"], start_side="RIGHT")
+                comments.append(c)
+            elif line:
                 comments.append({"path": f["file"], "line": line, "side": "RIGHT", "body": body})
             else:
                 loose.append(f"**`{f['file']}:{f['line']}`**\n\n{body}")
@@ -539,8 +651,9 @@ class Engine:
                 except gh.GitHubError as exc:
                     self._log_note(run["id"], gh.redact(f"could not dismiss review {rv['id']}: {exc}"))
 
-    def _comment_body(self, f: dict, link: str) -> str:
-        judge = {"real": "confirmed by the Kev judge", "uncertain": "the Kev judge was unsure"}.get(
+    def _comment_body(self, f: dict, link: str, judge_name: str = "Kev judge", fix: dict | None = None,
+                      covering: dict | None = None) -> str:
+        judge = {"real": f"confirmed by the {judge_name}", "uncertain": f"the {judge_name} was unsure"}.get(
             f["kev_verdict"] or "", "not judged")
         parts = [f"{SEVERITY_ICON.get(f['severity'], '⚪')} **{f['severity'].title()} · {finding_title(f)}** · {judge}",
                  "", self._md(f["explanation"])]
@@ -551,7 +664,12 @@ class Engine:
                 where = f"{e.get('file') or ''}{(':' + str(e['lines'])) if e.get('lines') else ''}"
                 parts += [f"`{where}` ({e.get('type') or 'code'})", "", "```python", e["content"].strip()[:1200], "```", ""]
             parts += ["</details>"]
-        if f.get("suggested_fix"):
+        if fix:
+            parts += ["", f"**Suggested fix**, checked by the {judge_name} before it was offered. Commit it with the button below.", "",
+                      "```suggestion", fix["replacement"], "```"]
+        elif covering:
+            parts += ["", f"**Fix:** the suggestion on lines {covering['start_line']}–{covering['end_line']} fixes this too."]
+        elif f.get("suggested_fix"):
             parts += ["", "**Suggested fix**", "", self._md(f["suggested_fix"])]
         parts += ["", f"<sub>{f['agent'] or 'reviewer'} · {f['tool_calls']} tool calls · [trace]({link})</sub>"]
         return "\n".join(parts)
@@ -560,6 +678,7 @@ class Engine:
         files = gh.paged(lambda m, p: gh.as_installation(run["installation_id"], m, p),
                          f"/repos/{run['repo']}/pulls/{run['pr_number']}/files", None)
         out: dict[str, set[int]] = {}
+        self._added = {fd["filename"]: suggest.added_lines(fd.get("patch") or "") for fd in files}
         for fd in files:
             parsed = results.parse_diff(f"diff --git a/{fd['filename']} b/{fd['filename']}\n" + (fd.get("patch") or ""))
             lines = set()
