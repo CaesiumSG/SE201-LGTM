@@ -548,7 +548,9 @@
   }
 
   function triageButtons(key, status) {
-    return `<span class="triage" data-key="${esc(key)}" role="group" aria-label="Triage">${["confirmed", "accepted_risk", "false_positive", "fixed"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}">${TRIAGE[s]}</button>`).join("")}</span>`;
+    const HELP = { confirmed: "A real bug the team will fix", accepted_risk: "A real bug the team chooses not to fix",
+      false_positive: "LGTM was wrong: this is not a bug", fixed: "Already fixed (LGTM also marks this when a later review no longer reports it)" };
+    return `<span class="triage-wrap"><span class="triage-l">Mark as</span><span class="triage" data-key="${esc(key)}" role="group" aria-label="Mark this finding as">${["confirmed", "accepted_risk", "false_positive", "fixed"].map((s) => `<button type="button" data-status="${s}" aria-pressed="${status === s}" title="${esc(HELP[s])}">${TRIAGE[s]}</button>`).join("")}</span></span>`;
   }
 
   function wireTriage(root, after) {
