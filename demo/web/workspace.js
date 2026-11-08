@@ -560,13 +560,31 @@
     let text = "", model = "", error = null, pending = false;
     // Small models sometimes wrap the file in the <file> tags of the prompt or in a Markdown fence.
     const clean = (t) => t.replace(/^\s*<file>\n?/, "").replace(/^\s*```[\w-]*\n/, "").replace(/\n?<\/file>\s*$/, "\n").replace(/\n```\s*$/, "\n");
-    const draw = () => {   // what is written so far, then the rest of the old file below it
+    // The model sends back the whole file, so it first re-types the lines it keeps. The editor stays put while it
+    // copies them and only follows the model where it writes something new (marked green as it appears).
+    const was = new Set(tail);
+    let diverged = false, lastNew = 0;
+    const draw = () => {
       pending = false;
       if (!W.editor) return;
-      const lines = clean(text).split("\n");
+      const lines = clean(text).split("\n"), full = lines.slice(0, -1);
+      if (!diverged) diverged = full.some((l, i) => l !== tail[i]);
+      if (!diverged) {
+        writing(`Copying the lines it keeps in <b>${esc(base(path))}</b> (${full.length} of ${tail.length})…`);
+        return;
+      }
       entry.model.setValue(lines.concat(tail.slice(lines.length)).join("\n"));
-      W.editor.revealLineInCenterIfOutsideViewport(lines.length);
-      W.editor.setPosition({ lineNumber: lines.length, column: lines[lines.length - 1].length + 1 });
+      const fresh = full.map((l, i) => (l.trim() && !was.has(l) ? i + 1 : 0)).filter(Boolean);
+      decorate(path, fresh.map((n) => [n, n]));
+      const cur = lines.length, curNew = lines[cur - 1].trim() && !was.has(lines[cur - 1]);
+      if (curNew || (fresh.length && fresh[fresh.length - 1] > lastNew)) {
+        lastNew = curNew ? cur : fresh[fresh.length - 1];
+        W.editor.revealLineInCenterIfOutsideViewport(lastNew);
+        W.editor.setPosition({ lineNumber: lastNew, column: (lines[lastNew - 1] || "").length + 1 });
+        writing(`Writing new code in <b>${esc(base(path))}</b>, line ${lastNew}`);
+      } else {
+        writing(`Copying the rest of <b>${esc(base(path))}</b>…`);
+      }
     };
     writing(`Reading <b>${esc(base(path))}</b>…`);
     try {
@@ -586,7 +604,6 @@
           if (!line.trim()) continue;
           const ev = JSON.parse(line);
           if (ev.type === "text") {
-            if (!text) writing(`Writing <b>${esc(base(path))}</b> live`);
             text += ev.delta;
             if (!pending && !W.skip) { pending = true; requestAnimationFrame(draw); }
           } else if (ev.type === "done") model = ev.model || "";
