@@ -607,7 +607,8 @@
     const changes = changedRanges(before, final);
     decorate(path, changes);
     await L().post("/api/ws/file", { repo: W.repo, path, content: final });
-    W.commit = { branch: `${r.script.branch}-${stamp()}`, message: r.script.message, title: r.script.title, how: "live", preset: id };
+    // The server already gives each run its own timestamped branch.
+    W.commit = { branch: r.script.branch, message: r.script.message, title: r.script.title, how: "live", preset: id };
     setBusy(false);
     W.side = "changes";
     renderSide();
