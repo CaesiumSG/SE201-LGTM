@@ -28,7 +28,7 @@
 
   const fresh = () => ({ info: null, step: 0, pr: null, file: { path: FILES[0][0], content: "", added: [], comments: [], tag: "main" },
     ai: null, probe: null, data: null, term: [], busy: null, error: null, prove: null, fix: null, timer: null,
-    view: "code", shop: { as: "alice", path: "/orders/mine", version: null, resp: null, loading: false, key: "" } });
+    view: "code", shop: { as: "alice", path: "/", version: null, resp: null, loading: false, key: "", bought: {}, toast: null } });
 
   window.LGTMDemo = async function demo(args, query) {
     D = fresh();
@@ -352,21 +352,61 @@
     }
   }
 
-  async function loadShop() {
+  // The catalogue lives in the storefront; shoply's API stores orders (a total and an address), which is all a
+  // checkout needs. The seed orders' contents are shown from ORDER_ITEMS for the same reason.
+  const PRODUCTS = [
+    { id: "house", name: "House Blend", kind: "Coffee beans, 250 g", price: 14.5, bg: "#f3e7da", art: "bag", c1: "#7a4a2a", c2: "#c98b56" },
+    { id: "ethiopia", name: "Yirgacheffe", kind: "Single-origin coffee, 250 g", price: 18, bg: "#f6efe0", art: "bag", c1: "#2f5d50", c2: "#e2b54f" },
+    { id: "matcha", name: "Ceremonial Matcha", kind: "Green tea powder, 40 g", price: 22, bg: "#e7f0dc", art: "tin", c1: "#5d8a3a", c2: "#b9d48f" },
+    { id: "earlgrey", name: "Earl Grey", kind: "Loose-leaf black tea, 100 g", price: 11, bg: "#e6e8f2", art: "tin", c1: "#3b4a7a", c2: "#a7b3dd" },
+    { id: "mug", name: "Stoneware Mug", kind: "Hand-glazed, 350 ml", price: 16, bg: "#f2e6e3", art: "mug", c1: "#b5574b", c2: "#e8b4a8" },
+    { id: "pourover", name: "Pour-over Kit", kind: "Dripper, filters and carafe", price: 34, bg: "#e8eef0", art: "kit", c1: "#3f5560", c2: "#9fb6c0" },
+  ];
+  const ART = {
+    bag: (a, b) => `<path d="M38 30h44l6 74H32z" fill="${a}"/><path d="M38 30l4-10h36l4 10z" fill="${b}"/><rect x="46" y="54" width="28" height="22" rx="3" fill="#fff" opacity=".9"/><path d="M52 62h16M52 68h10" stroke="${a}" stroke-width="2.5" stroke-linecap="round"/>`,
+    tin: (a, b) => `<rect x="36" y="34" width="48" height="68" rx="6" fill="${a}"/><rect x="34" y="28" width="52" height="12" rx="4" fill="${b}"/><circle cx="60" cy="70" r="13" fill="#fff" opacity=".9"/><path d="M54 70c4-6 8-6 12 0" stroke="${a}" stroke-width="2.5" fill="none" stroke-linecap="round"/>`,
+    mug: (a, b) => `<path d="M34 44h44v40a14 14 0 0 1-14 14H48a14 14 0 0 1-14-14z" fill="${a}"/><path d="M78 54h6a10 10 0 0 1 0 20h-6" stroke="${a}" stroke-width="6" fill="none"/><rect x="34" y="44" width="44" height="8" fill="${b}"/><path d="M48 24c0 6 6 6 6 12M60 22c0 6 6 6 6 12" stroke="${b}" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    kit: (a, b) => `<path d="M40 30h40l-12 26H52z" fill="${a}"/><rect x="56" y="56" width="8" height="8" fill="${a}"/><path d="M42 66h36l-4 36H46z" fill="${b}"/><path d="M78 74h6v14h-6" stroke="${b}" stroke-width="5" fill="none"/><path d="M58 104h4" stroke="${a}" stroke-width="3"/>`,
+  };
+  const art = (prod, size) => `<svg viewBox="0 0 120 120" width="${size}" height="${size}" style="width:${size}px;height:${size}px" aria-hidden="true">${ART[prod.art](prod.c1, prod.c2)}</svg>`;
+  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const ORDER_ITEMS = { 1: ["ethiopia", "earlgrey"], 2: ["matcha"], 3: ["pourover", "house", "mug"], 4: ["house", "mug"], 5: ["earlgrey"], 6: ["pourover", "matcha", "mug"] };
+  const ADDRESS = { alice: "12 Orchard Road, Singapore 238826", bob: "7 Marina Boulevard #22-01, Singapore 018980", maria: "50 Jurong Gateway Road, Singapore 608549" };
+  const itemsOf = (o) => (ORDER_ITEMS[o.id] || D.shop.bought[o.id] || ["house"]).map((id) => PRODUCTS.find((x) => x.id === id)).filter(Boolean);
+  const CLIENT = new Set(["/", "/track"]);   // storefront pages that need no API call
+
+  async function loadShop(method = "GET", json = null) {
     D.shop.key = [shopRef(), D.pr].join("|");
+    const path = method === "POST" ? "/orders" : D.shop.path;   // buying is POST /orders, from any page
+    if (CLIENT.has(path) && method === "GET") {
+      if (!D.shop.started) {   // start the shop for this version anyway, so the next click is quick
+        D.shop.started = D.shop.key;
+        L().post("/api/demo/shop", { ref: shopRef(), pr: D.pr, as: null, path: "/health" }).catch(() => {});
+      }
+      D.shop.resp = { status: 200, path, client: true };
+      return drawView();
+    }
     D.shop.loading = true; drawShop();
-    const path = D.shop.path;
-    const out = await L().post("/api/demo/shop", { ref: shopRef(), pr: D.pr, as: D.shop.as, path }).catch((e) => ({ status: 0, error: e.message }));
+    const out = await L().post("/api/demo/shop", { ref: shopRef(), pr: D.pr, as: D.shop.as, path, method, json }).catch((e) => ({ status: 0, error: e.message }));
     out.path = path;
-    D.shop.loading = false; D.shop.resp = out;
+    D.shop.loading = false;
+    if (method === "POST" && out.status === 201 && out.data) {
+      D.shop.toast = `Order #${out.data.id} placed: ${json.item}. On its way to ${out.data.shipping_address}.`;
+      D.shop.bought[out.data.id] = [json.id];
+      D.shop.path = "/orders/mine";
+      return loadShop();
+    }
+    if (method === "POST") D.shop.toast = out.status === 401 ? "Sign in to buy." : `The order failed (HTTP ${out.status}).`;
+    D.shop.resp = method === "POST" ? D.shop.resp : out;
     drawView();
   }
 
   function drawShop() {
     const el = $("#dm-shop");
     if (!el) return;
-    const me = D.shop.as, v = shopVersion(), mine = me === "bob" ? 3 : 1;
-    const nav = [["/orders/mine", "My orders"], [`/orders/${mine}`, "Track an order"], ["/orders/all", "All orders"], [`/users/${IDS[me] || 1}`, "My account"]];
+    D.shop.bought = D.shop.bought || {};
+    const me = D.shop.as, v = shopVersion(), staff = me === "maria";
+    const nav = [["/", "Shop"], ["/orders/mine", "My orders"], ["/track", "Track an order"], ...(staff ? [["/orders/all", "All orders"]] : []), [`/users/${IDS[me] || 1}`, "Account"]];
     const tries = v === "main" ? [["alice", "/orders/3", "As Alice, open order #3"], ["maria", "/orders/all", "As Maria (manager), see every order"]]
       : [["alice", "/orders/3", "As Alice, open Bob's order: /orders/3"], ["bob", "/orders/3", "As Bob, open his own order #3"], ["", "/orders/3", "Signed out, open order #3"]];
     el.innerHTML = `
@@ -375,39 +415,77 @@
         <div class="dm-seg"><span>Running</span>${versions().map(([id, label]) => `<button type="button" data-version="${id}" aria-pressed="${id === v}">${esc(label)}</button>`).join("")}</div>
       </div>
       <div class="dm-browser">
-        <form class="dm-url" id="dm-url"><span>🔒 shoply.test</span><input id="dm-url-in" value="${esc(D.shop.path)}" spellcheck="false" aria-label="Address"><button type="submit" class="btn">Go</button></form>
-        <nav class="dm-snav"><b>☕ Shoply</b>${nav.map(([path, label]) => `<button type="button" data-goto="${esc(path)}" class="${D.shop.path === path ? "on" : ""}">${label}</button>`).join("")}
-          <span class="me">${me ? `Hi, ${esc(cap(me))}` : "Not signed in"}</span></nav>
+        <form class="dm-url" id="dm-url"><span class="dm-lock" aria-hidden="true">🔒</span><span class="dm-host">shoply.test</span><input id="dm-url-in" value="${esc(D.shop.path)}" spellcheck="false" aria-label="Address"><button type="submit" class="btn">Go</button></form>
+        <nav class="dm-snav"><button type="button" class="dm-logo" data-goto="/"><span class="dm-mark">☕</span>Shoply<small>coffee &amp; tea</small></button>
+          <div class="dm-links">${nav.map(([path, label]) => `<button type="button" data-goto="${esc(path)}" class="${D.shop.path === path ? "on" : ""}">${label}</button>`).join("")}</div>
+          <span class="dm-me">${me ? `<span class="dm-av">${esc(cap(me)[0])}</span>${esc(cap(me))}` : "Not signed in"}</span></nav>
+        ${D.shop.toast ? `<div class="dm-toast">${esc(D.shop.toast)}</div>` : ""}
         <div class="dm-spage ${D.shop.loading ? "loading" : ""}">${D.shop.loading && !D.shop.resp ? `<p class="muted"><span class="pulse"></span> Starting the shop…</p>` : pageHtml(D.shop.resp)}</div>
       </div>
       <div class="dm-try"><span>Try</span>${tries.map(([as, path, label]) => `<button type="button" class="linkish" data-goto="${esc(path)}" data-goas="${as}">${esc(label)}</button>`).join("")}</div>`;
-    const form = $("#dm-url", el);
-    form.addEventListener("submit", (e) => { e.preventDefault(); const val = $("#dm-url-in", el).value.trim(); D.shop.path = val.startsWith("/") ? val : "/" + val; loadShop(); });
+    $("#dm-url", el).addEventListener("submit", (e) => { e.preventDefault(); const val = $("#dm-url-in", el).value.trim(); D.shop.toast = null; D.shop.path = val.startsWith("/") ? val : "/" + val; loadShop(); });
+    $$("[data-buy]", el).forEach((b) => b.addEventListener("click", () => {
+      const prod = PRODUCTS.find((x) => x.id === b.dataset.buy);
+      D.shop.toast = null;
+      loadShop("POST", { id: prod.id, item: prod.name, total: prod.price, shipping_address: ADDRESS[me] || ADDRESS.alice });
+    }));
+    const tf = $("#dm-track", el);
+    if (tf) tf.addEventListener("submit", (e) => { e.preventDefault(); const n = +new FormData(tf).get("n"); if (n) { D.shop.toast = null; D.shop.path = `/orders/${n}`; loadShop(); } });
+  }
+
+  function orderRow(o, who) {
+    const items = itemsOf(o);
+    return `<button type="button" class="dm-orow" data-goto="/orders/${esc(o.id)}">
+      <span class="dm-thumbs">${items.slice(0, 3).map((x) => `<span style="background:${x.bg}">${art(x, 34)}</span>`).join("")}</span>
+      <span class="dm-otext"><b>Order #${esc(o.id)}</b><small>${esc(items.map((x) => x.name).join(", "))}${who ? ` · ${esc(cap(PEOPLE[o.user_id] || o.user_id))}` : ""}</small></span>
+      <span class="dm-pill ${esc(o.status)}">${esc(o.status)}</span><b class="dm-amt">${money(o.total)}</b></button>`;
+  }
+
+  function trackHtml(o, leak) {
+    const steps = ["pending", "shipped", "delivered"], at = Math.max(0, steps.indexOf(o.status));
+    const items = itemsOf(o);
+    return `${leak}<div class="dm-track">
+        <div class="dm-track-head"><div><small>Order #${esc(o.id)}</small><h3>${o.status === "delivered" ? "Delivered" : o.status === "shipped" ? "On its way" : "Being packed"}</h3></div><b>${money(o.total)}</b></div>
+        <ol class="dm-steps-line">${["Order placed", "Shipped", "Delivered"].map((l, i) => `<li class="${i <= at ? "done" : ""}"><span></span>${l}</li>`).join("")}</ol>
+        <div class="dm-track-body">
+          <ul class="dm-items">${items.map((x) => `<li><span style="background:${x.bg}">${art(x, 44)}</span><div><b>${esc(x.name)}</b><small>${esc(x.kind)}</small></div></li>`).join("")}</ul>
+          <dl><dt>Customer</dt><dd>${esc(cap(PEOPLE[o.user_id] || o.user_id))}</dd><dt>Ships to</dt><dd class="dm-addr">${esc(o.shipping_address)}</dd></dl>
+        </div></div>`;
   }
 
   function pageHtml(r) {
     if (!r) return "";
     const path = r.path || "", me = D.shop.as, v = shopVersion();
     const blocked = (icon, title, text) => `<div class="dm-blocked"><div class="big">${icon}</div><h3>${title}</h3><p>${text}</p><code>HTTP ${esc(r.status || "–")}</code></div>`;
+    if (r.client && path === "/") {
+      return `<section class="dm-hero"><div><h2>Fresh coffee &amp; tea,<br>roasted in Singapore.</h2><p>Beans and leaves from small farms, packed the day they ship.</p></div><div class="dm-hero-art">${art(PRODUCTS[0], 92)}${art(PRODUCTS[2], 80)}${art(PRODUCTS[4], 86)}</div></section>
+        <div class="dm-prods">${PRODUCTS.map((x) => `<article class="dm-prod"><div class="dm-art" style="background:${x.bg}">${art(x, 96)}</div>
+          <div class="dm-pinfo"><b>${esc(x.name)}</b><small>${esc(x.kind)}</small></div>
+          <div class="dm-pbuy"><span>${money(x.price)}</span><button type="button" class="btn primary" data-buy="${x.id}" ${me ? "" : 'disabled title="Sign in to buy"'}>Add to order</button></div></article>`).join("")}</div>`;
+    }
+    if (r.client && path === "/track") {
+      return `<section class="dm-trackform"><h3>Track an order</h3><p>Enter your order number to see where it is.</p>
+        <form id="dm-track"><input name="n" type="number" min="1" placeholder="Order number, e.g. 1" required><button type="submit" class="btn primary">Track</button></form>
+        ${/^\d/.test("") ? "" : `<p class="dm-hint">This page calls <code>GET /orders/&lt;number&gt;</code>, the endpoint the developer asks the AI to write.</p>`}</section>`;
+    }
     if (!r.status) return blocked("💥", "The shop does not start", esc(r.crash || r.error || ""));
     if (r.status === 401) return blocked("🔑", "Please sign in", "This page is only for signed-in customers.");
-    if (r.status === 403) return blocked("🚫", "You can't see this page", path === "/orders/all" ? "It's for managers only." : "It belongs to another customer.");
+    if (r.status === 403) return blocked("🚫", "You can't see this page", path === "/orders/all" ? "It's for staff only." : "This order belongs to another customer.");
     if (r.status === 404) return blocked("🔍", "Page not found", /^\/orders\/\d+$/.test(path) && v === "main"
       ? "There's no order tracking page in this version of the shop yet: it's the feature the developer asks the AI for." : "Nothing lives at this address.");
     if (r.status >= 500) return blocked("💥", "The shop crashed", esc(r.crash || "Internal server error"));
     const d = r.data;
-    const table = (rows, who) => rows.length ? `<table class="dm-stable"><tr><th>Order</th>${who ? "<th>Customer</th>" : ""}<th>Status</th><th>Total</th><th>Ships to</th></tr>
-      ${rows.map((o) => `<tr><td>#${esc(o.id)}</td>${who ? `<td>${esc(cap(PEOPLE[o.user_id] || o.user_id))}</td>` : ""}<td><span class="dm-pill ${esc(o.status)}">${esc(o.status)}</span></td><td>$${Number(o.total).toFixed(2)}</td><td>${esc(o.shipping_address)}</td></tr>`).join("")}</table>` : "<p>No orders yet.</p>";
-    if (path === "/orders/mine" && Array.isArray(d)) return `<h3>My orders</h3>${table(d, false)}`;
-    if (path === "/orders/all" && Array.isArray(d)) return `<h3>Every customer's orders</h3>${table(d, true)}`;
+    if (path === "/orders/mine" && Array.isArray(d)) {
+      return `<h3 class="dm-h">My orders</h3>${d.length ? `<div class="dm-olist">${d.map((o) => orderRow(o, false)).join("")}</div>` : `<p class="muted">No orders yet. <button type="button" class="linkish" data-goto="/">Visit the shop</button></p>`}`;
+    }
+    if (path === "/orders/all" && Array.isArray(d)) return `<h3 class="dm-h">Every customer's orders <span class="dm-staff">staff</span></h3><div class="dm-olist">${d.map((o) => orderRow(o, true)).join("")}</div>`;
     if (/^\/orders\/\d+$/.test(path) && d && d.shipping_address !== undefined) {
       const theirs = !me || IDS[me] !== d.user_id;
-      return `${theirs ? `<div class="dm-leak">⚠ You're signed in as <b>${esc(cap(me) || "nobody")}</b>, but this is <b>${esc(cap(PEOPLE[d.user_id]))}</b>'s order, with their home address.</div>` : ""}
-        <div class="dm-order"><h3>Order #${esc(d.id)} <span class="dm-pill ${esc(d.status)}">${esc(d.status)}</span></h3>
-          <dl><dt>Customer</dt><dd>${esc(cap(PEOPLE[d.user_id] || d.user_id))}</dd><dt>Total</dt><dd>$${Number(d.total).toFixed(2)}</dd><dt>Ships to</dt><dd>${esc(d.shipping_address)}</dd></dl></div>`;
+      const leak = theirs && me !== "maria" ? `<div class="dm-leak"><b>⚠ This isn't ${esc(cap(me) || "your")}'s order.</b> You're signed in as <b>${esc(cap(me) || "nobody")}</b>, but this is <b>${esc(cap(PEOPLE[d.user_id]))}</b>'s order, with their home address.</div>` : "";
+      return trackHtml(d, leak);
     }
     if (/^\/users\/\d+$/.test(path) && d && d.username) {
-      return `<div class="dm-order"><h3>${esc(cap(d.username))}</h3><dl><dt>Role</dt><dd>${esc(d.role)}</dd>${d.email ? `<dt>Email</dt><dd>${esc(d.email)}</dd>` : ""}</dl></div>`;
+      return `<div class="dm-acct"><span class="dm-av big">${esc(cap(d.username)[0])}</span><div><h3>${esc(cap(d.username))}</h3><p>${esc(d.email || "")}</p><span class="dm-pill">${esc(d.role)}</span></div></div>`;
     }
     return `<pre class="dm-json">${esc(JSON.stringify(d, null, 2))}</pre>`;
   }
@@ -444,6 +522,7 @@
       if (sh.dataset.goas !== undefined) D.shop.as = sh.dataset.goas || null;
       else if (sh.dataset.as !== undefined) D.shop.as = sh.dataset.as || null;
       if (sh.dataset.goto) D.shop.path = sh.dataset.goto;
+      D.shop.toast = null;
       return loadShop();
     }
     const b = e.target.closest("[data-act]");
