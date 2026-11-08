@@ -800,7 +800,6 @@
         drawPR();
         if (W.run && !["queued", "running"].includes(W.run.status) && W.prTimer) {
           clearInterval(W.prTimer); W.prTimer = null;
-          if (W.mode === "app" && $("#ws-app") && !$("#ws-app").hidden) { W.app.found = await reviewedFindings(); renderApp(W.st || {}); }
         }
       } catch (e) { /* keep polling */ }
     };
@@ -855,9 +854,9 @@
   }
 
   // ---------------------------------------------------------------- App mode: the repository's own app, running from the workspace
-  const PERSONAS = [["alice", "Alice", "customer"], ["bob", "Bob", "customer"], ["maria", "Maria", "manager"], ["root", "Root", "admin"]];
-  const SQLI = "zzz%' UNION SELECT id, email, password_hash FROM users --";
-
+  // The shop as it behaves with the code in the workspace right now (or with main, to compare). Nothing is staged:
+  // every page is a real request to shoply running that code, so a missing ownership check shows as Bob reading
+  // Alice's order, and an injectable search as every user's password hash.
   async function setMode(mode) {
     if (mode === "app" && (W.animating || !W.hasApp)) return;
     W.mode = mode;
@@ -871,243 +870,18 @@
 
   async function startApp() {
     const el = $("#ws-app");
-    const st = W.st || {};
-    el.innerHTML = `<p class="app-wait"><span class="pulse"></span>Starting shoply from the code in your workspace…</p>`;
-    W.app.tokens = {};
-    W.app.attack = {};
-    try {
-      const r = await L().post("/api/ws/app/start", { repo: W.repo });
-      W.app.routes = r.routes || [];
-    } catch (e) {
-      el.innerHTML = `<div class="app-fail"><p class="bad"><b>The app did not start.</b></p><pre>${esc(e.message)}</pre><button type="button" class="btn" id="app-retry">Try again</button></div>`;
-      $("#app-retry").addEventListener("click", startApp);
-      return;
+    await refreshState();
+    if (!W.shop || !W.shop.el.isConnected) {
+      el.innerHTML = `<div class="dm-shop ws-shop"></div>`;
+      const root = el.firstElementChild;
+      W.shop = window.LGTMShop(root, {
+        versions: () => [["main", "main", "main"], ["code", W.pr ? `Your code · PR #${W.pr.number}` : (W.st && W.st.changed && W.st.changed.length ? "Your code (not committed)" : "Your code"), "draft"]],
+        version: () => "code",
+        pr: () => null,
+        stamp: () => JSON.stringify([W.st && W.st.head, W.st && W.st.changed]),
+      });
+      W.shop.el = root;
     }
-    W.app.log = [];
-    W.app.found = await reviewedFindings();
-    renderApp(st);
-  }
-
-  const has = (route) => W.app.routes.includes(route);
-
-  async function call(method, path, body, persona = W.app.persona) {
-    const go = async () => L().post("/api/ws/app/call", { repo: W.repo, method, path, body, token: W.app.tokens[persona] });
-    if (!W.app.tokens[persona]) {
-      const r = await L().post("/api/ws/app/call", { repo: W.repo, method: "POST", path: "/login", body: { username: persona, password: "demo" } });
-      W.app.tokens[persona] = r.body && r.body.token;
-    }
-    const r = await go();
-    W.app.log.unshift({ method, path: path.length > 70 ? path.slice(0, 67) + "…" : path, status: r.status, ms: r.ms, who: persona });
-    W.app.log = W.app.log.slice(0, 4);
-    const addr = $("#app-path"); if (addr) addr.textContent = path;
-    drawLog();
-    return r;
-  }
-
-  // The shop's catalogue lives in the storefront; shoply's API stores orders (total and address), which is all a checkout needs.
-  const PRODUCTS = [
-    { id: "house", name: "House Blend", kind: "Coffee beans, 250 g", price: 14.5, bg: "#f3e7da", art: "bag", c1: "#7a4a2a", c2: "#c98b56" },
-    { id: "ethiopia", name: "Yirgacheffe", kind: "Single-origin coffee, 250 g", price: 18, bg: "#f6efe0", art: "bag", c1: "#2f5d50", c2: "#e2b54f" },
-    { id: "matcha", name: "Ceremonial Matcha", kind: "Green tea powder, 40 g", price: 22, bg: "#e7f0dc", art: "tin", c1: "#5d8a3a", c2: "#b9d48f" },
-    { id: "earlgrey", name: "Earl Grey", kind: "Loose-leaf black tea, 100 g", price: 11, bg: "#e6e8f2", art: "tin", c1: "#3b4a7a", c2: "#a7b3dd" },
-    { id: "mug", name: "Stoneware Mug", kind: "Hand-glazed, 350 ml", price: 16, bg: "#f2e6e3", art: "mug", c1: "#b5574b", c2: "#e8b4a8" },
-    { id: "pourover", name: "Pour-over Kit", kind: "Dripper, filters and carafe", price: 34, bg: "#e8eef0", art: "kit", c1: "#3f5560", c2: "#9fb6c0" },
-  ];
-  const ART = {
-    bag: (a, b) => `<path d="M38 30h44l6 74H32z" fill="${a}"/><path d="M38 30l4-10h36l4 10z" fill="${b}"/><rect x="46" y="54" width="28" height="22" rx="3" fill="#fff" opacity=".9"/><path d="M52 62h16M52 68h10" stroke="${a}" stroke-width="2.5" stroke-linecap="round"/>`,
-    tin: (a, b) => `<rect x="36" y="34" width="48" height="68" rx="6" fill="${a}"/><rect x="34" y="28" width="52" height="12" rx="4" fill="${b}"/><circle cx="60" cy="70" r="13" fill="#fff" opacity=".9"/><path d="M54 70c4-6 8-6 12 0" stroke="${a}" stroke-width="2.5" fill="none" stroke-linecap="round"/>`,
-    mug: (a, b) => `<path d="M34 44h44v40a14 14 0 0 1-14 14H48a14 14 0 0 1-14-14z" fill="${a}"/><path d="M78 54h6a10 10 0 0 1 0 20h-6" stroke="${a}" stroke-width="6" fill="none"/><rect x="34" y="44" width="44" height="8" fill="${b}"/><path d="M48 24c0 6 6 6 6 12M60 22c0 6 6 6 6 12" stroke="${b}" stroke-width="3" fill="none" stroke-linecap="round"/>`,
-    kit: (a, b) => `<path d="M40 30h40l-12 26H52z" fill="${a}"/><rect x="56" y="56" width="8" height="8" fill="${a}"/><path d="M42 66h36l-4 36H46z" fill="${b}"/><path d="M78 74h6v14h-6" stroke="${b}" stroke-width="5" fill="none"/><path d="M58 104h4" stroke="${a}" stroke-width="3"/>`,
-  };
-  const art = (p, size = 120) => `<svg viewBox="0 0 120 120" width="${size}" height="${size}" aria-hidden="true">${ART[p.art](p.c1, p.c2)}</svg>`;
-  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
-
-  // One screen, no scrolling: a small browser with three products, then either the customer's orders or the
-  // staff tools, and (when LGTM blocked this code) the exploit panel beside it.
-  const SHOWN = ["house", "matcha", "mug"], SHOWN_PERSONAS = ["alice", "maria", "root"], ADDRESS = "1 Raffles Place, #10-01";
-
-  function renderApp(st) {
-    const el = $("#ws-app");
-    const who = PERSONAS.find((p) => p[0] === W.app.persona) || PERSONAS[0];
-    const role = who[2], staff = role !== "customer";
-    const search = has("GET /users/search"), detail = has("GET /orders/<int:order_id>");
-    const attackHtml = attacks(W.app.found, search, detail);   // empty unless LGTM's review of this code flagged a bug
-    W.app.bought = W.app.bought || {};
-    const n = st.changed ? st.changed.length : 0;
-    const last = W.app.log[0];
-    el.innerHTML = `
-      <div class="app-bar">
-        <span class="app-dot"></span><span class="app-url">shoply.test</span>
-        <span class="ide-dim">Running ${st.branch ? esc(st.branch) : "your workspace"}${n ? ` · ${n} change${n === 1 ? "" : "s"} not yet pushed` : ""}</span>
-        <span class="ide-fill"></span>
-        <button type="button" class="btn" id="app-restart">Restart with the latest code</button>
-      </div>
-      <div class="sh2 ${attackHtml ? "" : "solo"}">
-        <div class="sh2-main">
-          <div class="sh2-seg"><span>Signed in as</span>${PERSONAS.filter((p) => SHOWN_PERSONAS.includes(p[0])).map(([id, name, r]) => `<button type="button" data-as="${id}" aria-pressed="${id === W.app.persona}">${esc(name)}<em>${esc(r)}</em></button>`).join("")}</div>
-          <div class="sh2-browser">
-            <div class="sh2-url"><span aria-hidden="true">🔒</span><span class="host">shoply.test</span><span class="path" id="app-path">${esc(last ? last.path : "/")}</span></div>
-            <nav class="sh2-nav"><b class="sh2-logo">☕ Shoply</b><span class="sh2-toast" id="app-toast" aria-live="polite"></span><span class="me">Hi, ${esc(who[1])}</span></nav>
-            <div class="sh2-body">
-              ${staff ? "" : `<div class="sh2-prods">${SHOWN.map((id) => PRODUCTS.find((p) => p.id === id)).map((p) => `<div class="sh2-prod">
-                <div class="sh2-art" style="background:${p.bg}">${art(p, 108)}</div>
-                <div><b>${esc(p.name)}</b><span class="ide-dim">${money(p.price)}</span></div>
-                <button type="button" class="btn" data-buy="${p.id}">Buy</button></div>`).join("")}</div>`}
-              ${staff ? `<section class="sh2-sec"><h3>Staff dashboard <span class="tag">${esc(role)}</span></h3>
-                ${search ? `<form class="app-inline" id="app-search"><input name="q" placeholder="Find a customer by name" autocomplete="off"><button class="btn" type="submit">Search</button></form>` : `<p class="ide-dim">No customer search yet. It appears here once the code has one.</p>`}
-                <div id="app-users" class="ide-dim">Loading…</div>
-                <div id="app-all" class="ide-dim"></div>
-                ${role === "admin" ? `<div id="app-stats" class="ide-dim"></div>` : ""}</section>`
-              : `<section class="sh2-sec"><h3>My orders</h3><div id="app-mine" class="ide-dim">Loading…</div>
-                ${detail ? `<form class="app-inline" id="app-track"><input name="id" type="number" min="1" placeholder="Look up an order number" required><button class="btn" type="submit">Track</button></form><div id="app-track-out"></div>` : ""}</section>`}
-            </div>
-          </div>
-        </div>
-        ${attackHtml ? `<aside class="app-side">
-          <section class="app-attack">${attackHtml}</section>
-          <section class="app-log"><h3>Requests to shoply's API</h3><ul id="app-log"></ul></section>
-        </aside>` : ""}
-      </div>`;
-    $("#app-restart").addEventListener("click", async () => { await refreshState(); startApp(); });
-    $$("[data-as]").forEach((b) => b.addEventListener("click", () => { W.app.persona = b.dataset.as; renderApp(W.st || st); }));
-    $$("[data-buy]").forEach((b) => b.addEventListener("click", () => buy(b.dataset.buy)));
-    const tr = $("#app-track");
-    if (tr) tr.addEventListener("submit", async (e) => { e.preventDefault(); const r = await call("GET", `/orders/${+new FormData(e.target).get("id")}`); $("#app-track-out").innerHTML = r.status === 200 ? orderCard(r.body, true) : `<p class="bad">${esc((r.body && r.body.error) || r.status)}</p>`; });
-    const se = $("#app-search");
-    if (se) se.addEventListener("submit", async (e) => { e.preventDefault(); await runSearch(new FormData(e.target).get("q")); });
-    $$("[data-attack]").forEach((b) => b.addEventListener("click", () => runAttack(b.dataset.attack)));
-    drawLog();
-    loadData();
-  }
-
-  // One click buys one item (the API stores the order's total and address, which is all it needs).
-  async function buy(id) {
-    const p = PRODUCTS.find((x) => x.id === id);
-    const r = await call("POST", "/orders", { total: p.price, shipping_address: W.app.address || ADDRESS });
-    const toast = $("#app-toast");
-    if (r.status === 201 && r.body) {
-      W.app.bought[r.body.id] = p.name;
-      if (toast) { toast.textContent = `Ordered ${p.name}`; setTimeout(() => { if (toast.isConnected) toast.textContent = ""; }, 2200); }
-      loadData();
-    } else if (toast) toast.textContent = `Could not order (${r.status})`;
-    const path = $("#app-path"); if (path) path.textContent = "/orders";
-  }
-
-  function orderCard(o, full) {
-    const what = W.app.bought[o.id] || "Coffee and tea order";
-    return `<div class="order"><div><b>Order #${esc(o.id)}</b><span class="ide-dim">${esc(what)}</span>${full ? `<span class="ide-dim">Ship to ${esc(o.shipping_address)} · customer #${esc(o.user_id)}</span>` : ""}</div><span class="pill ${esc(o.status)}">${esc(o.status)}</span><b>${money(o.total)}</b></div>`;
-  }
-
-  // A small table; long lists are cut to `max` rows so the page never needs scrolling. Hashes and emails show in red.
-  function table(rows, cols, max = 4, title = "", labels = {}) {
-    if (!Array.isArray(rows) || !rows.length) return `<p class="ide-dim">Nothing here.</p>`;
-    cols = cols || Object.keys(rows[0]);
-    const shown = rows.slice(0, max), more = rows.length - shown.length;
-    const cell = (r, c) => { const v = r[c]; const bad = /^[0-9a-f]{64}$/.test(String(v)) || /^[^\s@]+@[^\s@]+$/.test(String(v)); return `<td${bad ? ' class="leakcell"' : ""}>${esc(typeof v === "number" && c === "total" ? money(v) : v)}</td>`; };
-    return `${title ? `<h4 class="sh2-h4">${esc(title)}</h4>` : ""}<table class="app-table"><thead><tr>${cols.map((c) => `<th>${esc(labels[c] || c.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${shown.map((r) => `<tr>${cols.map((c) => cell(r, c)).join("")}</tr>`).join("")}</tbody></table>${more > 0 ? `<p class="ide-dim sh2-more">+ ${more} more</p>` : ""}`;
-  }
-
-  async function loadData() {
-    const put = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
-    const mine = await call("GET", "/orders/mine");
-    const latest = (rows, n) => [...rows].sort((a, b) => b.id - a.id).slice(0, n);   // newest first, a few rows so everything fits on one screen
-    put("#app-mine", mine.status === 200 ? (mine.body.length ? latest(mine.body, 2).map((o) => orderCard(o)).join("") + (mine.body.length > 2 ? `<p class="ide-dim sh2-more">+ ${mine.body.length - 2} older</p>` : "") : `<p class="ide-dim">No orders yet.</p>`) : `<p class="bad">${esc(mine.status)}</p>`);
-    if ($("#app-users")) { const u = await call("GET", "/users"); put("#app-users", u.status === 200 ? table(u.body, ["id", "username", "role"], 4, "Customers") : `<p class="bad">${esc((u.body && u.body.error) || u.status)}</p>`); }
-    if ($("#app-all")) { const a = await call("GET", "/orders/all"); put("#app-all", a.status === 200 ? table(latest(a.body, 99), ["id", "user_id", "status", "total"], 2, "Latest orders") : `<p class="bad">${esc((a.body && a.body.error) || a.status)}</p>`); }
-    if ($("#app-stats")) { const s2 = await call("GET", "/admin/stats"); put("#app-stats", s2.status === 200 ? `<h4 class="sh2-h4">Store stats</h4><code class="sh2-stats">${esc(JSON.stringify(s2.body))}</code>` : `<p class="bad">${esc(s2.status)}</p>`); }
-  }
-
-  async function runSearch(q) {
-    const r = await call("GET", `/users/search?name=${encodeURIComponent(q || "")}`);
-    const el = $("#app-users");
-    if (el) el.innerHTML = r.status === 200 ? table(r.body, Object.keys((r.body || [])[0] || { id: 1, username: 1, role: 1 }), 4, "Customers", Array.isArray(r.body) && r.body.some((x) => Object.values(x).some((v) => /^[0-9a-f]{64}$/.test(String(v)))) ? { username: "email", role: "password hash" } : {}) : r.status >= 500 ? `<p class="bad">The search crashed (error ${esc(r.status)})${r.body && r.body.crash ? `: <code>${esc(r.body.crash)}</code>` : ""}</p>`
-      : `<p class="bad">${esc((r.body && r.body.error) || r.status)}</p>`;
-    return r;
-  }
-
-  // The flagged findings of the latest finished LGTM review of exactly the code in the workspace (its pull request and commit).
-  async function reviewedFindings() {
-    const st = await refreshState().catch(() => W.st || {});
-    if (!st || !st.pr || !st.head || (st.changed && st.changed.length)) return null;
-    try {
-      const runs = await L().get(`/api/runs?repo=${enc(W.repo)}&source=connected&limit=60`);
-      const run = runs.find((r) => r.pr_number === st.pr.number && (r.head_sha || "").startsWith(st.head) && r.status === "completed");
-      if (!run || !run.n_flagged) return null;
-      const d = await L().get(`/api/runs/${enc(run.id)}`);
-      const findings = ((d.result && d.result.findings) || []).filter((f) => f.flagged);
-      return findings.length ? { run, pr: st.pr, findings } : null;
-    } catch (e) { return null; }
-  }
-
-  // Attack panel: only for bugs LGTM actually reported on this code, and only when the running app has the endpoint.
-  function attacks(found, search, detail) {
-    if (!found) return "";
-    const CWE_NAMES = { "CWE-89": "SQL injection", "CWE-639": "Insecure direct object reference", "CWE-862": "Missing authorization", "CWE-863": "Incorrect authorization" };
-    const sqli = found.findings.find((f) => f.cwe === "CWE-89");
-    const idor = found.findings.find((f) => ["CWE-639", "CWE-862", "CWE-863", "CWE-285", "CWE-284"].includes(f.cwe) && /order/.test(f.file || ""));
-    const judge = found.run.judge === "claude" ? "Claude judge" : "Kev judge";
-    const head = (f) => `<p class="atk-found"><span class="atk-flag">LGTM blocked this code</span>Its review of pull request #${esc(found.pr.number)} (commit ${esc((found.run.head_sha || "").slice(0, 7))}) found <b>${esc(CWE_NAMES[f.cwe] || f.cwe)}</b> at <code>${esc(f.file)}:${esc(f.line)}</code>, confirmed by the ${judge}. <a href="#/runs/${enc(found.run.id)}/findings">Open the review</a></p>`;
-    const out = [];
-    if (sqli && search) out.push(`<div class="atk">${head(sqli)}
-      <p>Maria is a manager: she may see usernames and roles, never anyone's email or password hash. Instead of a name she types this into the search. It ends the name early and asks the database for every user's email and password hash.</p>
-      <code class="atk-in">${esc(SQLI)}</code>
-      <button type="button" class="btn primary" data-attack="sqli">Run the attack</button>
-      <div class="atk-out" id="atk-sqli"></div></div>`);
-    if (idor && detail) out.push(`<div class="atk">${head(idor)}
-      <p>Alice is a customer: she may see only her own orders. She asks for order #3, which belongs to Bob.</p>
-      <button type="button" class="btn primary" data-attack="idor">Run the attack</button>
-      <div class="atk-out" id="atk-idor"></div></div>`);
-    return out.length ? `<h3>Exploit what LGTM found</h3>${out.join("")}` : "";
-  }
-
-  async function runAttack(kind) {
-    const out = $(`#atk-${kind}`);
-    if (out) out.innerHTML = `<p class="ide-dim"><span class="pulse"></span>Running…</p>`;
-    try {
-      await attackSteps(kind);
-    } catch (e) {
-      const o = $(`#atk-${kind}`);
-      if (o) o.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
-      const res = $(kind === "sqli" ? "#app-users" : "#app-track-out");
-      if (res && /Loading/.test(res.textContent)) res.innerHTML = "";
-    }
-  }
-  async function attackSteps(kind) {
-    if (kind === "sqli") {
-      W.app.persona = "maria"; renderApp(W.st || {});
-      await new Promise((r) => setTimeout(r, 50));
-      const box = $("#app-search input"); if (box) box.value = SQLI;
-      const r = await runSearch(SQLI);
-      const leaked = Array.isArray(r.body) ? r.body.filter((x) => Object.values(x).some((v) => /^[0-9a-f]{64}$/.test(String(v)) || /@/.test(String(v)))) : [];
-      const box2 = $("#app-users"); if (leaked.length && box2) box2.insertAdjacentHTML("afterbegin", `<div class="leak">⚠ A name search just returned <b>every user's email and password hash</b>, including the admin's.</div>`);
-      $("#atk-sqli").innerHTML = leaked.length
-        ? `<p class="atk-bad">Leaked ${leaked.length} users' emails and password hashes, including the admin's. This is the bug LGTM blocked.</p>`
-        : r.status === 200 ? `<p class="atk-good">Blocked. The search treated the attack as plain text and found no one. This is the fixed code.</p>`
-        : crashed(r, "search");
-    } else if (kind === "idor") {
-      W.app.persona = "alice"; renderApp(W.st || {});
-      await new Promise((r) => setTimeout(r, 50));
-      const r = await call("GET", "/orders/3", undefined, "alice");
-      const stolen = r.status === 200 && r.body && r.body.user_id !== 1;
-      const out = $("#app-track-out"); if (out) out.innerHTML = r.status === 200 ? `${stolen ? `<div class="leak">⚠ You're signed in as <b>Alice</b>, but this is <b>another customer's</b> order, with their home address.</div>` : ""}${orderCard(r.body, true)}` : "";
-      const path = $("#app-path"); if (path) path.textContent = "/orders/3";
-      $("#atk-idor").innerHTML = stolen
-        ? `<p class="atk-bad">Alice can read Bob's order, including his home address. This is the bug LGTM blocked.</p>`
-        : r.status >= 500 ? crashed(r, "order page")
-        : `<p class="atk-good">Blocked: the app said no (${esc(r.status)}). Only the owner (or an admin) can see an order.</p>`;
-    }
-  }
-
-  // The app crashed instead of answering: nothing leaked, and the attack cannot show anything on this code.
-  function crashed(r, what) {
-    const why = r.body && r.body.crash;
-    return `<p class="atk-meh"><b>Nothing leaked: the ${what} crashed</b> (error ${esc(r.status)}) before it could answer${why ? `: <code>${esc(why)}</code>` : "."}</p>
-      <p class="ide-dim">The code under review has another bug that breaks this endpoint, so the attack cannot run against it. Fix that bug, or replay the prepared change, to see the attack.</p>`;
-  }
-
-  function drawLog() {
-    const el = $("#app-log");
-    if (!el) return;
-    el.innerHTML = W.app.log.length ? W.app.log.map((l) => `<li><span class="m">${esc(l.method)}</span><code>${esc(l.path)}</code><span class="s s${String(l.status)[0]}">${esc(l.status)}</span><span class="ide-dim">${esc(l.who)}</span></li>`).join("") : `<li class="ide-dim">No requests yet.</li>`;
+    W.shop.draw();
   }
 })();
