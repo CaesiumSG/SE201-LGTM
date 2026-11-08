@@ -32,35 +32,61 @@ advisories (taiga-back, wagtail, authentik). Runbook, setup and the demo script:
  PR branch  │ 1. Context building                              │
  ──────────▶│    git diff ── changed files/lines               │
  base branch│    semgrep ── CWE-89 findings in the diff        │
- ──────────▶│    ChromaDB ── security-policy / api-spec chunks │
+ ──────────▶│    ChromaDB ── policy chunks from the base commit│
+            │    sanitizer ── strip comments from LLM input    │
             └───────────────┬──────────────────────────────────┘
                             ▼
             ┌──────────────────────────────────────────────────┐
             │ 2. SAST Triage Agent (CWE-89)                    │
             │    true positive or parameterized false alarm?   │
-            │ 3. Authorization Reviewer Agent                  │
-            │    (CWE-639 / CWE-862 / CWE-863)                 │
-            │    does the change respect the documented policy?│
-            │    Tools (read-only, max 5 calls per section):   │
+            │ 3. Authorization review (CWE-639 / 862 / 863)    │
+            │    Investigator ── groups hunks into sections    │
+            │    Reviewer ── one review per section: does the  │
+            │    change respect the documented policy?         │
+            │    Tools (read-only, max 5 calls per agent run): │
             │    investigate_base_code · investigate_pr_code   │
             │    read_file · grep_repo · search_policy         │
+            │    Injection detector ── flags text aimed at     │
+            │    the reviewer                                  │
             └───────────────┬──────────────────────────────────┘
                             ▼
             ┌──────────────────────────────────────────────────┐
-            │ 4. Evidence Validator                            │
-            │    cited files/lines/snippets/policy must exist  │
+            │ 4. Validation                                    │
+            │    Evidence validator ── cited files/lines/      │
+            │    snippets/policy must exist                    │
+            │    Kev-4B judge ── does the cited code support   │
+            │    the finding?                                  │
             │ 5. Report Builder ── report.json + report.md     │
             └──────────────────────────────────────────────────┘
 ```
 
-The investigator groups the PR's changed hunks into sections. Hunks it does
-not place, and investigator failures, fall back to per-file sections. Every
-Python hunk is reviewed, including deletions. Each section gets one authz
-review that can return several findings. Overlapping duplicates are merged
-and the Kev-4B judge decides whether the cited code supports each finding.
+**Policy from the base branch.** The policy index is built from the base
+commit (`lgtm index --ref <base>`). A review checks that the index matches the
+base commit and does not use it otherwise. This stops a PR from changing the
+policy it is judged against. If the PR edits a policy doc, the report says so
+and a person needs to check it.
 
-Each candidate is reported as supported, unsupported or not judged, with
-the judge confidence, CWE, evidence citations, and a suggested fix.
+**Sections.** The investigator groups the PR's changed hunks into sections.
+Hunks it does not place, and investigator failures, fall back to per-file
+sections. Every Python hunk is reviewed, including deletions. Each section
+gets one authz review that can return several findings. With
+`authz_planner = "endpoint"`, only hunks with a route decorator are reviewed,
+one section per file, with no investigator.
+
+**Validation.** Overlapping duplicates are merged. The evidence validator
+checks every citation against the repo. Then the Kev-4B judge reads the cited
+code and decides whether it supports each finding. If the judge fails on a
+finding, the finding is marked not judged and the review goes on.
+
+**Report.** Each candidate is reported as supported, unsupported or not
+judged, with the judge confidence, CWE, evidence citations, and a suggested
+fix. The report also records a coverage table for the sections and a
+provenance record (model, code revision, sampling, budgets, flags).
+
+Exit codes: 0 means no vulnerabilities, and 1 means vulnerabilities reported.
+2 means a person needs to look: a candidate was not judged, an agent failed,
+the PR changes policy docs (only when `fail_on_policy_change` is on), or the
+review itself crashed.
 
 ## Setup
 
@@ -91,6 +117,41 @@ model/deploy/up.sh
 ```
 
 ## Usage
+
+### One command (GPU cluster)
+
+`run-lgtm.sh` runs every step for you. It installs LGTM into `.venv`, indexes
+the base branch's docs, starts a GPU job for Qwen and Kev, opens the tunnels,
+and runs the review.
+
+```bash
+./run-lgtm.sh review --repo /path/to/repo --base main --pr feature-branch
+```
+
+It needs the SCIS VPN, bash 4 or newer (`brew install bash` on macOS), and
+the one-time cluster setup in [model/README.md](model/README.md).
+
+Steps that are already done are skipped, so it is safe to run again. If you
+press Ctrl+C while it waits for the GPU job, run the same command again to
+pick up where it stopped. Any extra options are passed on to `lgtm review`.
+
+The GPU job keeps running after the review. Stop it when you are finished:
+
+```bash
+./run-lgtm.sh down     # close the tunnels and cancel the job this script started
+```
+
+Other commands:
+
+| Command | What it does |
+|---|---|
+| `./run-lgtm.sh setup` | Install LGTM into `.venv` only |
+| `./run-lgtm.sh up [HH:MM:SS]` | Start or reattach to the GPU job and open the tunnels (optional walltime) |
+| `./run-lgtm.sh status` | Show the tunnels and your cluster jobs |
+
+The exit code is the same as `lgtm review` (see [Architecture](#architecture)).
+
+### Step by step
 
 ```bash
 # Index the docs committed on the base branch (security policy, API spec, README)
@@ -379,6 +440,7 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
 ## Project layout
 
 ```
+run-lgtm.sh                 # one command: install, GPU job, tunnels, index, review
 src/lgtm/
 ├── cli.py                  # click CLI: lgtm index / lgtm review
 ├── config.py               # LGTMConfig dataclass
@@ -395,16 +457,37 @@ src/lgtm/
 ├── graph/exporter.py       # committed-snapshot export to temporary directories
 ├── graph/snapshot.py       # commit SHA resolution
 ├── graph/format.py         # tool output formatting
+├── agents/base.py          # finding schema, LLM loop, JSON parsing
+├── agents/prompts.toml     # all model-visible prompt text
+├── agents/registry.py      # loader for prompts.toml
+├── agents/prompt_parts.py  # tool guidance shared by the agent prompts
 ├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
+├── agents/investigator.py  # proposes review sections from the PR diff
 ├── agents/sast_triage.py   # CWE-89 triage agent
 ├── agents/authz_reviewer.py# CWE-639/862/863 section reviewer
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
+├── review/sections.py      # plan review sections from investigator output
+├── review/endpoints.py     # route-decorator gating (authz_planner = "endpoint")
+├── review/dedup.py         # merge findings on the same file, CWE and lines
+├── review/coverage.py      # coverage report for the scan plan
+├── review/provenance.py    # run record: model, revision, sampling, budgets, flags
 ├── validation/evidence.py  # citation validator (anti-hallucination)
+├── validation/judge.py     # Kev-4B judge for each candidate finding
+├── validation/judge_examples.py  # few-shot examples for the judge
+├── validation/cwe_criteria.py    # short per-CWE criteria shown to the judge
 └── reporting/report_builder.py  # JSON + Markdown reports
 tests/                      # unit and integration tests, no Ollama needed
-benchmark/                  # Shoply app, 52 cases, evaluate.py
+benchmark/                  # Shoply app, 52 cases, evaluate.py, guard.py
 benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
+benchmark/real_prs/         # real PRs that introduced a vulnerability, run_real_prs.py
+benchmark/field_trial/      # ordinary merged PRs from real projects, run_field_trial.py
 benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
+benchmark/kev_support/      # helpers for the Kev judge runs
+benchmark/judge_eval.py     # citation support and judge-quality measures
+benchmark/citation_export.py# export citations for blind labelling
+model/                      # SCIS GPU cluster: deploy scripts, Slurm jobs (model/README.md)
+viewer/                     # offline HTML report viewer (viewer/README.md)
+docs/                       # design notes, evaluation logs, checkpoint
 ```
 
 ## Development
