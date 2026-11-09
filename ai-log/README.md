@@ -81,16 +81,16 @@ a pull request, the test suite was run before merging (on GitHub Actions
 from 26 Oct; 3,289 passed and 1 failed at the final evaluation commit), and every number we report was copied from
 committed benchmark run files by script rather than from AI output. Not every
 change had a second reviewer: the initial implementation and the checkpoint
-documents (10–18 Oct) were pushed directly to `main`, and as of 9 Nov, 17 of
-38 merged pull requests were merged by their author without a recorded
-GitHub review.
+documents (10–18 Oct) were pushed directly to `main`, and at submission
+(10 Nov), 20 of 47 merged pull requests were merged by their author without
+a recorded GitHub review.
 Details are in each member's file in this folder.
 
 **Commit trailers.** The policy asks for an `Assisted-by` or
 `Co-Authored-By` trailer on every AI-assisted commit, and we did not do this
-consistently. As of 9 Nov, of the non-merge commits on `main`, the trailer is
-on all 89 of Lye Jia Jun's, 6 of Lee Jin Rae's 181, and none of Brian Sng's
-10, Hsu Yati Ko's 7 or Loh Kai Zhe's 17. Adding trailers now would mean
+consistently. At submission (10 Nov), of the non-merge commits on `main`,
+the trailer is on all 111 of Lye Jia Jun's, 6 of Lee Jin Rae's 182, 3 of Loh
+Kai Zhe's 20, 1 of Brian Sng's 11 and none of Hsu Yati Ko's 9. Adding trailers now would mean
 rewriting shared history, so for commits without one, the member's log in
 this folder is the record of which work was AI-assisted.
 

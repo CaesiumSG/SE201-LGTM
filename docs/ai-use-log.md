@@ -3,16 +3,18 @@
 The course allows AI tools during development but requires us to track
 their use. Each member's own log, in the format the policy asks for, is
 in [`ai-log/`](../ai-log/README.md) (one file per member). This log covers **AI used to build the project**, collated at
-team level by area of work. The LLM that LGTM runs at review time (Qwen via
-Ollama) is part of the product; its risks are covered in
+team level by area of work. The models that LGTM runs at review time (Qwen3.8 27B
+via Ollama, the Kev-4B judge, and the Bedrock models in the comparison) are
+part of the product; its risks are covered in
 [`responsible-ai.md`](responsible-ai.md).
 
 Tools used by the team: **Claude Code** (Anthropic; Opus 5.5 / Sonnet 5.5
 / Fable 5 / Fable 5.1) for most implementation and documentation, **Pi** with
 GPT-6.1-sol (and a local Qwen3.6 27B through Pi) for much of Jin Rae's
 pipeline and benchmark work, **GitHub Copilot** for the GPU model server,
-and **Google Antigravity** (Gemini Flash 3.8) for the prompt-injection
-red-teaming and the demo's `safe_markdown` tests. Not every AI-generated
+**Google Antigravity** (Gemini Flash 3.8) for the prompt-injection
+red-teaming and the demo's `safe_markdown` tests, and **ChatGPT** (Sol 6.1)
+for the wording of Kai Zhe's slides and speaking script. Not every AI-generated
 change had a second reviewer: the initial implementation and checkpoint
 documents were pushed directly to `main`, and some pull requests were merged
 by their author without a review. The team declaration in

@@ -510,7 +510,7 @@ python benchmark/real_prs/run_real_prs.py --cases-file benchmark/real_prs/heldou
 python benchmark/real_prs/run_real_prs.py --gpu-model qwen3.8-27b --modes lgtm llm-only   # development set
 ```
 
-Final results (Qwen3.8 27B, T=0; the same in all three runs):
+Final results (Qwen3.8 27B, T=0; the `lgtm` and `llm-only` rows were the same in all three runs, the other two rows ran once):
 
 | Mode | Held-out caught | Exact | SQLi exact | Authz exact | False alarms on fixes | Development set caught (exact) |
 |---|---|---|---|---|---|---|

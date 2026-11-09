@@ -130,8 +130,8 @@ Demo video: $demo_video
                           evaluation history, the source of each number on the slides,
                           and the demo video link (DEMO-VIDEO.txt).
                           Material cut from the presentation: docs/deck-numbers.md
-                          ("Extras": failure analysis, re-runs, caveats) and any
-                          technical supporting document at the top of this folder.
+                          ("Extras": failure analysis, re-runs, caveats) and the
+                          technical supporting document, docs/supporting-documentation.pdf.
 4-ai-use-disclosure/      ai-log/ (team declaration in ai-log/README.md, one log and
                           reflection per member) and the team-level summary
 EOF
