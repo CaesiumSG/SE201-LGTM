@@ -6,7 +6,7 @@ Edit only your own file.
 
 | Member | Log |
 |---|---|
-| Jayce Lye | [jayce-lye.md](jayce-lye.md) |
+| Lye Jia Jun | [lye-jia-jun.md](lye-jia-jun.md) |
 | Brian Sng | [brian-sng.md](brian-sng.md) |
 | Hsu Yati Ko | [hsu-yati-ko.md](hsu-yati-ko.md) |
 | Lee Jin Rae | [lee-jin-rae.md](lee-jin-rae.md) |
@@ -39,21 +39,52 @@ doubt, log it.
 
 ## Team declaration
 
-We used Claude Code (Anthropic; Claude Fable 5, Fable 5.1, Opus 5.5 and
-Sonnet 5.5) to generate the initial LGTM pipeline, the Shoply benchmark and
-its test suite, the real-world CVE benchmark tooling, later bug fixes, and
-drafts of our documentation; GitHub Copilot to write the Slurm and deploy
-scripts for the GPU model server; and Google Antigravity (Gemini Flash 3.8)
-for prompt-injection red-teaming and its mitigations. All AI-generated code
-went through a pull request reviewed by at least one team member, the test
-suite was run before merging, and every number we report was copied from
-committed benchmark run files rather than from AI output. Details are in
-each member's file in this folder.
+**Tools and what we used them for.**
+
+- **Claude Code** (Anthropic; Claude Fable 5, Fable 5.1, Opus 5.5 and
+  Sonnet 5.5): the initial LGTM pipeline, the Shoply benchmark and its test
+  suite, the real-world CVE and real-PR benchmark tooling, the section and
+  SQLi reviewers, later bug fixes, the demo GitHub App and dashboard, the
+  final-evaluation scripts, and drafts of our documentation.
+- **GitHub Copilot**: the Slurm job and deploy scripts for the GPU model
+  server.
+- **Google Antigravity** (Gemini Flash 3.8): prompt-injection red-teaming and
+  its mitigations, and the `safe_markdown` tests and fixes in the demo App.
+- **Evaluation material.** Claude Opus 5.5 labels benchmark findings under
+  [`docs/kev-labeling-criteria.md`](../docs/kev-labeling-criteria.md) and
+  drafted the component benchmark's gold labels, which the team has not
+  fully reviewed (we report those figures as provisional). Candidate
+  advisories for the real-PR sets were found with AI-assisted search; every
+  advisory, commit and file was then checked against GitHub. Leads from the
+  live hunt were checked against the project source by separate AI agents,
+  and we reviewed their verdicts.
+- **Slides**: the presentation deck was drafted with Claude from our
+  committed results; its figures are taken from
+  [`docs/deck-numbers.md`](../docs/deck-numbers.md), which names the run file
+  behind each one.
+
+The models LGTM itself runs at review time (Qwen3.8 27B, Kev-4B, and the
+Bedrock models in the comparison) are part of the product, not development
+tools; their risks are covered in the slides and in
+[`docs/prompt-injection.md`](../docs/prompt-injection.md).
+
+**How we checked the output.** Most AI-generated code reached `main` through
+a pull request, the test suite was run before merging (on GitHub Actions
+from 26 Oct; 3,289 tests at the final evaluation commit), and every number we report was copied from
+committed benchmark run files by script rather than from AI output. Not every
+change had a second reviewer: the initial implementation and the checkpoint
+documents (10–18 Oct) were pushed directly to `main`, and 15 of 34 merged
+pull requests were merged by their author without a recorded GitHub review.
+Details are in each member's file in this folder, and AI-assisted commits
+carry an `Assisted-by` or `Co-Authored-By` trailer.
 
 ## Final submission checklist
 
 - [ ] Every member has a file here, with entries up to the final commit
-- [ ] Team declaration above updated and copied into the final deliverables
-- [ ] Each member's reflection: what they learned about using the tools
-      effectively, where the tools were strong and weak, and what went wrong
-      and what they would do differently
+      (as of 9 Nov only Lye Jia Jun's is filled in; Brian's is in PR #34)
+- [x] Team declaration above updated (9 Nov); **each member to confirm it
+      matches their own use before submission**, then copy it into the
+      final deliverables
+- [ ] Each member's reflection, added at the end of their own file: what
+      they learned about using the tools effectively, where the tools were
+      strong and weak, and what went wrong and what they would do differently
