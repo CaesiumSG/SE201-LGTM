@@ -135,27 +135,3 @@ tests and runs that Claude Code did itself, not checks I did. Next time I
 would test against real projects earlier, inspect the failures more
 carefully myself, and independently verify more of the AI-generated code
 and results.
-# AI Use Log: Loh Kai Zhe
-
-<!--
-One entry per task in which an AI tool produced or substantially shaped
-work you submit. Add entries as you work and commit each one together
-with the work it describes. Outcome is one of: Kept, Changed, Rejected.
-Format and an example entry: docs/project-overview/your-name.md.
-Delete this comment once you have your first entry.
--->
-
-## YYYY-MM-DD · Short title of the task
-- **Tool (model):** 
-- **Files:** 
-- **Outcome:** 
-
-### What I asked for
-
-
-### How I checked it
-
-
-### What I kept or changed
-
-
