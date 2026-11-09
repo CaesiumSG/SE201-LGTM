@@ -112,7 +112,7 @@ trailer; this entry records the AI use instead.
 
 ## Reflection
 
-### What I learned about using these tools well
+### What I learned about using these tools effectively
 I learned to check what the AI writes against the code. When I did, I found
 real mistakes. The first draft of the exit codes in the README was wrong.
 I read the code myself first. I used the AI to explain parts I did not
