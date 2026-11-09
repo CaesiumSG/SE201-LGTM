@@ -45,6 +45,22 @@ class ReviewMetadata:
     agent_errors: list[dict[str, str]] = field(default_factory=list)
     changed_endpoints: int = 0
     token_usage: dict | None = None  # lgtm.usage summary; None when no meter ran
+    # "ok", "missing" or "stale:<commit the index was built from>"; None when unused
+    policy_index: str | None = None
+    # Doc files the PR changes; the reviewer reads the base versions only
+    policy_docs_changed: list[str] = field(default_factory=list)
+
+
+def _policy_index_text(state: str) -> str:
+    if state == "ok":
+        return "built from the base commit"
+    if state == "missing":
+        return "not found; the review used code evidence only"
+    commit = state.removeprefix("stale:")
+    return (
+        f"built from {commit}, not the base commit, so it was not used; "
+        "the review used code evidence only"
+    )
 
 
 class ReportBuilder:
@@ -74,6 +90,8 @@ class ReportBuilder:
                 "coverage": self.meta.coverage,
                 "agent_errors": self.meta.agent_errors,
                 "token_usage": self.meta.token_usage,
+                "policy_index": self.meta.policy_index,
+                "policy_docs_changed": self.meta.policy_docs_changed,
             },
             "stats": {
                 "total_findings": len(self.findings),
@@ -139,7 +157,23 @@ class ReportBuilder:
         )
         if self.meta.sast_error:
             add(f"- Semgrep failed: {self.meta.sast_error}")
+        if self.meta.policy_index is not None:
+            add(f"- Policy index: {_policy_index_text(self.meta.policy_index)}")
         add("")
+
+        if self.meta.policy_docs_changed:
+            add("## Policy Documents Changed: Needs Human Review")
+            add("")
+            add(
+                "This PR changes documentation that LGTM uses as the security "
+                "policy. The review used the base branch versions, so these "
+                "changes were not taken into account. A person should check "
+                "that each change is intended."
+            )
+            add("")
+            for path in self.meta.policy_docs_changed:
+                add(f"- `{path}`")
+            add("")
 
         if self.meta.agent_errors:
             add("## Agent Errors")

@@ -37,6 +37,7 @@ from lgtm.agents.sqli_reviewer import SQLiReviewerAgent, needs_sql_review
 from lgtm.agents.tools import AgentToolbox, relative_path
 from lgtm.config import LGTMConfig
 from lgtm.diff.git_diff import FileDiff, get_pr_diff
+from lgtm.rag.indexer import is_doc_path
 from lgtm.rag.retriever import PolicyRetriever
 from lgtm.review.coverage import (
     InvestigatorInput,
@@ -184,14 +185,11 @@ class ReviewPipeline:
         logger.info("PR changes %d file(s)", len(diffs))
 
         retriever: PolicyRetriever | None = None
+        policy_index: str | None = None
+        policy_docs_changed: list[str] = []
         if mode in LGTM_MODES:
-            retriever = PolicyRetriever(self.repo, self.config)
-            if not retriever.is_available():
-                logger.warning(
-                    "RAG index not found — run `lgtm index` first. "
-                    "Agents will rely on code evidence only."
-                )
-                retriever = None
+            retriever, policy_index = self._policy_retriever(base_rev)
+            policy_docs_changed = self._changed_policy_docs(scan_diffs)
 
         semgrep_total = 0
         semgrep_in_diff: list[SemgrepFinding] = []
@@ -212,6 +210,8 @@ class ReviewPipeline:
             sast_error=sast_error,
             base_sha=base_rev if shas is not None else "",
             pr_sha=pr_rev if shas is not None else "",
+            policy_index=policy_index,
+            policy_docs_changed=policy_docs_changed,
         )
 
         findings: list[AgentFinding] = []
@@ -334,6 +334,52 @@ class ReviewPipeline:
         )
 
     # ------------------------------------------------------------------
+    def _policy_retriever(self, base_rev: str) -> tuple[PolicyRetriever | None, str]:
+        """The policy index, used only when it was built from the base commit.
+
+        An index built from any other commit could hold policy text the PR
+        wrote, and the PR would then be reviewed against its own rules.
+        """
+        retriever = PolicyRetriever(self.repo, self.config)
+        if not retriever.is_available():
+            logger.warning(
+                "Policy index not found; run `lgtm index --repo %s --ref %s` first. "
+                "Agents will rely on code evidence only.",
+                self.repo,
+                base_rev,
+            )
+            return None, "missing"
+        indexed = retriever.indexed_commit()
+        if indexed != base_rev:
+            logger.warning(
+                "Policy index was built from %s, not the base commit %s, so it is "
+                "not used; run `lgtm index --repo %s --ref %s`. "
+                "Agents will rely on code evidence only.",
+                indexed or "an unknown commit",
+                base_rev,
+                self.repo,
+                base_rev,
+            )
+            return None, f"stale:{indexed or 'unknown'}"
+        return retriever, "ok"
+
+    def _changed_policy_docs(self, diffs: list[FileDiff]) -> list[str]:
+        """Doc files the PR adds, edits, renames or deletes; a human checks these."""
+        changed = sorted(
+            {
+                path
+                for d in diffs
+                for path in (d.path, d.old_path)
+                if path and is_doc_path(path, self.config.doc_extensions)
+            }
+        )
+        if changed:
+            logger.warning(
+                "PR changes policy documents (%s); they need human review",
+                ", ".join(changed),
+            )
+        return changed
+
     def _review_sections(
         self,
         scan_diffs: list[FileDiff],
