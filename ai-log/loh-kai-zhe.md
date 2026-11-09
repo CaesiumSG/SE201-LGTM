@@ -1,24 +1,140 @@
 # AI Use Log: Loh Kai Zhe
 
-<!--
-One entry per task in which an AI tool produced or substantially shaped
-work you submit. Add entries as you work and commit each one together
-with the work it describes. Outcome is one of: Kept, Changed, Rejected.
-Format and an example entry: docs/project-overview/your-name.md.
-Delete this comment once you have your first entry.
--->
+*I wrote these entries on 10 Nov from my 15 Oct commits, PRs #3 and #4,
+and my own account of how I worked. None of my 15 Oct commits has an AI
+trailer, so this file is the record of which of that work was AI-assisted:
+all of it was done with Claude Code.*
 
-## YYYY-MM-DD · Short title of the task
-- **Tool (model):** 
-- **Files:** 
-- **Outcome:** 
+## 2026-10-15 · Real-world CVE cases and fetcher
+- **Tool (model):** Claude Code (Claude Opus 5.5)
+- **Files:** benchmark/real_world/cases.json, benchmark/real_world/fetch.py, benchmark/real_world/README.md, tests/test_real_world_cases.py, .gitignore (PR #3)
+- **Outcome:** Kept
 
 ### What I asked for
-
+I gave Claude Code a more detailed version of Task 1 from
+docs/team-tasks.md, with Windows-specific instructions and six advisories
+I had already picked, with their fix commits: pyload, postgraas and alerta
+(SQL injection), and aegra, langflow and litellm (authorization). I asked it
+to verify them and build a vulnerable/safe case pair for each, plus
+fetch.py to rebuild the cases from the real repositories.
 
 ### How I checked it
-
+Claude Code checked each advisory and fix commit against GitHub. I did not
+open and verify every one myself. In the same session it ran the test
+suite (193 passed, 1 skipped) and ran fetch.py twice to confirm the second
+run gave identical SHAs. A Windows CRLF bug came up while fetch.py was being
+built. Claude fixed it with a regression test, and I did not spot it
+first. I read through the code changes and the commits Claude was making,
+and I reviewed the PR summary and the test results, including the notes on
+why alerta uses the 2026 fix and why litellm uses only two of the fix PR's
+three commits. I accepted those choices.
 
 ### What I kept or changed
+I kept the implementation as it stood after testing, including the fixes
+to the commit selection and the CRLF bug made during the session. I did not
+rewrite large sections of the code by hand.
 
+## 2026-10-15 · Access-control policies for the authz projects
+- **Tool (model):** Claude Code (Claude Opus 5.5)
+- **Files:** benchmark/real_world/policies/ (aegra.md, langflow.md, litellm.md), benchmark/real_world/fetch.py (--policies), tests/test_real_world_cases.py
+- **Outcome:** Kept
 
+### What I asked for
+Real projects don't ship a security-policy.md, and our authz agent needs
+one. I asked Claude Code to write a short access-control policy for each of
+the three authz projects using only their official documentation, not
+third-party explanations, and to build policy variants of the case branches.
+
+### How I checked it
+The policies were written after I had seen the fix diffs, but before any
+model output on those projects, and they were not changed afterwards to
+improve the results. This is disclosed in docs/real-world-eval.md. I did not
+separately review every cited docs page or edit the policies by hand.
+
+### What I kept or changed
+I kept the three policies and the --policies option as generated.
+
+## 2026-10-15 · Evaluation harness and the bugs found while running it
+- **Tool (model):** Claude Code (Claude Opus 5.5)
+- **Files:** benchmark/real_world/evaluate_real.py, tests/test_evaluate_real.py, src/lgtm/sast/semgrep_runner.py, tests/test_semgrep.py, src/lgtm/rag/indexer.py, tests/test_rag.py (PR #4)
+- **Outcome:** Kept
+
+### What I asked for
+A harness to run all 12 real-world cases in the four modes, reusing the
+synthetic benchmark's scoring functions, producing reproducible results
+and documenting the failures, without tuning anything to improve the
+scores.
+
+### How I checked it
+The runs were on my Windows laptop (RTX 3050). While running them, we hit
+two bugs: Semgrep was not found on Windows, so SAST was silently skipped,
+and Chroma rejected a batch that was too large when indexing langflow.
+Claude Code fixed both with regression tests, and the full suite then
+reported 217 passed. A third bug, a Windows encoding crash in the diff
+reader, is in a teammate's code. We chose not to change it, and documented
+the PYTHONUTF8=1 workaround and a report for its owner instead. Besides the
+tests, I read through each code change and what each commit contained before
+it went in.
+
+### What I kept or changed
+I kept the harness and both fixes. I deliberately left the diff reader
+unchanged.
+
+## 2026-10-15 · Benchmark runs and the real-world evaluation write-up
+- **Tool (model):** Claude Code (Claude Opus 5.5)
+- **Files:** benchmark/runs/real_world/, docs/real-world-eval.md, README.md, benchmark/real_world/README.md, benchmark/runs/README.md, docs/ai-use-log.md (rows 6 and 7), PR #3 and #4 descriptions
+- **Outcome:** Kept
+
+### What I asked for
+Run the evaluation, write up the results including every failure, and draft
+the PR descriptions and my rows in the team AI use log.
+
+### How I checked it
+The metrics in the write-up were generated by script from the summary.json
+files, not retyped. The explanations of each miss and false alarm are based
+on the individual case JSON files, which Claude read in the session. I
+reviewed the reported findings, particularly the missed authorization
+vulnerabilities, but did not recalculate every metric by hand. I used the
+drafts largely as written and cannot point to specific sentences I
+rewrote. My rows in docs/ai-use-log.md were also drafted by Claude. They say
+Sonnet 5.5 was used for implementation, which I can't confirm: I used Opus
+5.5 throughout. This file is the accurate account.
+
+### What I kept or changed
+I kept the write-up, the curated runs and the PR descriptions as drafted.
+
+## 2026-11-09 · Presentation slides and speaking script
+- **Tool (model):** ChatGPT (Sol 6.1)
+- **Files:** none in the repository (my LGTM presentation slides and speaking script)
+- **Outcome:** Changed
+
+### What I asked for
+I asked ChatGPT to improve the wording of my slides and make my speaking
+script flow better.
+
+### How I checked it
+I read through its version before using it.
+
+### What I kept or changed
+I kept its improved wording and the smoother flow of the script.
+
+## Reflection
+
+### What I learned about using these tools effectively
+AI tools work best when I give them detailed requirements and clear
+constraints. But passing tests does not guarantee that the implementation
+or the evaluation is correct, so I still need to review the code and verify
+the results myself.
+
+### Where the tools were strong, and where they were weak
+Claude Code was strong at writing scripts and tests, debugging errors and
+producing documentation. It could still make wrong assumptions, and it was
+less reliable on complex security questions. LGTM itself also struggled
+with authorization vulnerabilities in real projects.
+
+### What went wrong, and what I would do differently
+We hit Windows compatibility problems, and LGTM's F1 dropped from 0.94 on
+our synthetic benchmark to 0.44 on the real-world cases. Many of my checks
+were tests and runs that Claude Code did itself. Next time I would test on
+real projects earlier, review the generated code more closely, and verify
+the results independently.
