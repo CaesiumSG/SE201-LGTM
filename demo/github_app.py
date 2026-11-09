@@ -276,7 +276,64 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
 # Text that goes to github.com
 # ---------------------------------------------------------------------------
 _WJ = "⁠"
-_CODE_SPLIT_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|``[\s\S]*?``|`[^`\n]*?`)")
+
+_FENCE_RE = re.compile(
+    r"(?m)"
+    r"^[ ]{0,3}"
+    r"(?:(`{3,})[^\n`]*\n[\s\S]*?(?:^[ ]{0,3}\1+[ ]*(?:\n|\Z)|\Z)"
+    r"|"
+    r"(~{3,})[^\n]*\n[\s\S]*?(?:^[ ]{0,3}\2+[ ]*(?:\n|\Z)|\Z))"
+)
+
+
+def _find_code_intervals(text: str) -> list[tuple[int, int]]:
+    intervals: list[tuple[int, int]] = []
+
+    for m in _FENCE_RE.finditer(text):
+        intervals.append((m.start(), m.end()))
+
+    def in_fence(p: int) -> bool:
+        return any(s <= p < e for s, e in intervals)
+
+    pos = 0
+    n = len(text)
+    while pos < n:
+        if in_fence(pos):
+            for s, e in intervals:
+                if s <= pos < e:
+                    pos = e
+                    break
+            continue
+
+        if text[pos] == "`":
+            bs_count = 0
+            k = pos - 1
+            while k >= 0 and text[k] == "\\":
+                bs_count += 1
+                k -= 1
+            if bs_count % 2 == 1:
+                pos += 1
+                continue
+
+            start_delim_start = pos
+            while pos < n and text[pos] == "`":
+                pos += 1
+            delim_len = pos - start_delim_start
+
+            next_fence = next((s for s, e in intervals if s >= pos), n)
+            blank_m = re.search(r"\n[ \t]*\n", text[pos:next_fence])
+            limit = pos + blank_m.start() if blank_m else next_fence
+
+            close_pattern = re.compile(r"(?<!`)" + re.escape("`" * delim_len) + r"(?!`)")
+            m_close = close_pattern.search(text, pos, limit)
+            if m_close:
+                intervals.append((start_delim_start, m_close.end()))
+                pos = m_close.end()
+        else:
+            pos += 1
+
+    intervals.sort(key=lambda x: x[0])
+    return intervals
 
 
 def safe_markdown(text: str, own_owner: str) -> str:
@@ -286,11 +343,22 @@ def safe_markdown(text: str, own_owner: str) -> str:
     would mention whoever owns that login. Links or ``owner/repo#123`` shorthand
     to another project would put a "mentioned this" backlink on it.
     """
-    parts = _CODE_SPLIT_RE.split(text)
+    intervals = _find_code_intervals(text)
+    if not intervals:
+        parts = [text]
+    else:
+        parts = []
+        last_idx = 0
+        for start, end in intervals:
+            parts.append(text[last_idx:start])
+            parts.append(text[start:end])
+            last_idx = end
+        parts.append(text[last_idx:])
+
     for i in range(0, len(parts), 2):
         chunk = parts[i]
 
-        # 1. Markdown link syntax: [label](url)
+        # 1. Markdown link syntax: [label](url "optional title")
         def _replace_md_link(m: re.Match) -> str:
             label, url = m.group(1), m.group(2)
             if re.match(r"^https?://(?:www\.)?github\.com/" + re.escape(own_owner) + r"/", url):
@@ -300,7 +368,7 @@ def safe_markdown(text: str, own_owner: str) -> str:
             return f"{label} (link removed)"
 
         chunk = re.sub(
-            r"\[([^\]]+)\]\((https?://(?:www\.)?github\.com/[^\s)]+)\)",
+            r"\[([^\]]+)\]\((https?://(?:www\.)?github\.com/[^\s)]+?)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)",
             _replace_md_link,
             chunk,
         )
