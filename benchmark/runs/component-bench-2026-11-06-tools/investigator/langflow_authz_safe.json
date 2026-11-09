@@ -1,0 +1,157 @@
+{
+  "case_id": "langflow_authz_safe",
+  "diff": "--- a/src/backend/base/langflow/__main__.py\n+++ b/src/backend/base/langflow/__main__.py\n@@ -887,7 +887,7 @@ def api_key(\n             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)\n             api_key = (await session.exec(stmt)).first()\n             if api_key:\n-                await delete_api_key(session, api_key.id)\n+                await delete_api_key(session, api_key.id, superuser.id)\n \n             api_key_create = ApiKeyCreate(name=\"CLI\")\n             return await create_api_key(session, api_key_create, user_id=superuser.id)\n--- a/src/backend/base/langflow/api/v1/api_key.py\n+++ b/src/backend/base/langflow/api/v1/api_key.py\n@@ -1,6 +1,6 @@\n from uuid import UUID\n \n-from fastapi import APIRouter, Depends, HTTPException, Response\n+from fastapi import APIRouter, HTTPException, Response\n \n from langflow.api.utils import CurrentActiveUser, DbSession\n from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse\n@@ -41,13 +41,14 @@ async def create_api_key_route(\n         raise HTTPException(status_code=400, detail=str(e)) from e\n \n \n-@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\n+@router.delete(\"/{api_key_id}\")\n async def delete_api_key_route(\n     api_key_id: UUID,\n     db: DbSession,\n+    current_user: CurrentActiveUser,\n ):\n     try:\n-        await delete_api_key(db, api_key_id)\n+        await delete_api_key(db, api_key_id, current_user.id)\n     except Exception as e:\n         raise HTTPException(status_code=400, detail=str(e)) from e\n     return {\"detail\": \"API Key deleted\"}\n--- a/src/backend/base/langflow/services/database/models/api_key/crud.py\n+++ b/src/backend/base/langflow/services/database/models/api_key/crud.py\n@@ -41,11 +41,14 @@ async def create_api_key(session: AsyncSession, api_key_create: ApiKeyCreate, us\n     return unmasked\n \n \n-async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n+async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n     api_key = await session.get(ApiKey, api_key_id)\n     if api_key is None:\n         msg = \"API Key not found\"\n         raise ValueError(msg)\n+    if api_key.user_id != user_id:\n+        msg = \"API Key not found\"\n+        raise ValueError(msg)\n     await session.delete(api_key)\n \n \n--- a/src/backend/tests/unit/api/v1/test_api_key.py\n+++ b/src/backend/tests/unit/api/v1/test_api_key.py\n@@ -62,3 +62,66 @@ async def test_save_store_api_key(client: AsyncClient, logged_in_headers):\n     assert response.status_code == status.HTTP_200_OK\n     assert isinstance(result, dict), \"The result must be a dictionary\"\n     assert \"detail\" in result, \"The dictionary must contain a key called 'detail'\"\n+\n+\n+async def test_delete_api_key_route_unauthorized(client: AsyncClient, logged_in_headers, active_user):\n+    \"\"\"Test that users cannot delete API keys belonging to other users.\"\"\"\n+    # Import required modules\n+    from langflow.services.auth.utils import get_password_hash\n+    from langflow.services.database.models.user.model import User\n+    from langflow.services.deps import session_scope\n+    from sqlmodel import select\n+\n+    # Create first user's API key\n+    basic_case = {\n+        \"name\": \"test_key_user1\",\n+        \"total_uses\": 0,\n+        \"is_active\": True,\n+        \"api_key\": \"string\",\n+        \"user_id\": str(active_user.id),\n+    }\n+    response = await client.post(\"api/v1/api_key/\", json=basic_case, headers=logged_in_headers)\n+    assert response.status_code == status.HTTP_200_OK\n+    user1_api_key_id = response.json()[\"id\"]\n+\n+    # Create a second user and get their auth headers\n+    async with session_scope() as session:\n+        user2 = User(\n+            username=\"testuser2\",\n+            password=get_password_hash(\"testpassword2\"),\n+            is_active=True,\n+            is_superuser=False,\n+        )\n+        stmt = select(User).where(User.username == user2.username)\n+        existing_user = (await session.exec(stmt)).first()\n+        if not existing_user:\n+            session.add(user2)\n+            await session.flush()\n+            await session.refresh(user2)\n+        else:\n+            user2 = existing_user\n+\n+    # Login as second user\n+    login_data = {\"username\": \"testuser2\", \"password\": \"testpassword2\"}\n+    response = await client.post(\"api/v1/login\", data=login_data)\n+    assert response.status_code == status.HTTP_200_OK\n+    user2_token = response.json()[\"access_token\"]\n+    user2_headers = {\"Authorization\": f\"Bearer {user2_token}\"}\n+\n+    # Try to delete first user's API key using second user's credentials\n+    response = await client.delete(f\"api/v1/api_key/{user1_api_key_id}\", headers=user2_headers)\n+\n+    # Should fail with 400 error (API Key not found - we don't reveal it exists)\n+    assert response.status_code == status.HTTP_400_BAD_REQUEST\n+    assert \"API Key not found\" in response.json()[\"detail\"]\n+\n+    # Verify the first user's API key still exists by trying to delete it with correct credentials\n+    response = await client.delete(f\"api/v1/api_key/{user1_api_key_id}\", headers=logged_in_headers)\n+    assert response.status_code == status.HTTP_200_OK\n+    assert response.json()[\"detail\"] == \"API Key deleted\"\n+\n+    # Clean up second user\n+    async with session_scope() as session:\n+        user = await session.get(User, user2.id)\n+        if user:\n+            await session.delete(user)",
+  "sections": [
+    {
+      "id": "api-key-delete-ownership",
+      "title": "Enforce per-user ownership on API key deletion",
+      "rationale": "The CRUD function, the HTTP route, and the CLI caller are all updated together to pass the authenticated user's id and reject deletion of keys owned by another user, closing a cross-user IDOR on DELETE /api_key/{id}.",
+      "hunks": [
+        {
+          "hunk_id": "src/backend/base/langflow/services/database/models/api_key/crud.py#0",
+          "lines": [
+            "     return unmasked",
+            " ",
+            " ",
+            "-async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:",
+            "+async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:",
+            "     api_key = await session.get(ApiKey, api_key_id)",
+            "     if api_key is None:",
+            "         msg = \"API Key not found\"",
+            "         raise ValueError(msg)",
+            "+    if api_key.user_id != user_id:",
+            "+        msg = \"API Key not found\"",
+            "+        raise ValueError(msg)",
+            "     await session.delete(api_key)",
+            " ",
+            " "
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#0",
+          "lines": [
+            " from uuid import UUID",
+            " ",
+            "-from fastapi import APIRouter, Depends, HTTPException, Response",
+            "+from fastapi import APIRouter, HTTPException, Response",
+            " ",
+            " from langflow.api.utils import CurrentActiveUser, DbSession",
+            " from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse"
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#1",
+          "lines": [
+            "         raise HTTPException(status_code=400, detail=str(e)) from e",
+            " ",
+            " ",
+            "-@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])",
+            "+@router.delete(\"/{api_key_id}\")",
+            " async def delete_api_key_route(",
+            "     api_key_id: UUID,",
+            "     db: DbSession,",
+            "+    current_user: CurrentActiveUser,",
+            " ):",
+            "     try:",
+            "-        await delete_api_key(db, api_key_id)",
+            "+        await delete_api_key(db, api_key_id, current_user.id)",
+            "     except Exception as e:",
+            "         raise HTTPException(status_code=400, detail=str(e)) from e",
+            "     return {\"detail\": \"API Key deleted\"}"
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/__main__.py#0",
+          "lines": [
+            "             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)",
+            "             api_key = (await session.exec(stmt)).first()",
+            "             if api_key:",
+            "-                await delete_api_key(session, api_key.id)",
+            "+                await delete_api_key(session, api_key.id, superuser.id)",
+            " ",
+            "             api_key_create = ApiKeyCreate(name=\"CLI\")",
+            "             return await create_api_key(session, api_key_create, user_id=superuser.id)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "api-key-delete-ownership-test",
+      "title": "Regression test for cross-user API key deletion",
+      "rationale": "Adds a test that a second user cannot delete a first user's API key and that the key survives, directly exercising the new ownership guard.",
+      "hunks": [
+        {
+          "hunk_id": "src/backend/tests/unit/api/v1/test_api_key.py#0",
+          "lines": [
+            "     assert response.status_code == status.HTTP_200_OK",
+            "     assert isinstance(result, dict), \"The result must be a dictionary\"",
+            "     assert \"detail\" in result, \"The dictionary must contain a key called 'detail'\"",
+            "+",
+            "+",
+            "+async def test_delete_api_key_route_unauthorized(client: AsyncClient, logged_in_headers, active_user):",
+            "+    \"\"\"Test that users cannot delete API keys belonging to other users.\"\"\"",
+            "+    # Import required modules",
+            "+    from langflow.services.auth.utils import get_password_hash",
+            "+    from langflow.services.database.models.user.model import User",
+            "+    from langflow.services.deps import session_scope",
+            "+    from sqlmodel import select",
+            "+",
+            "+    # Create first user's API key",
+            "+    basic_case = {",
+            "+        \"name\": \"test_key_user1\",",
+            "+        \"total_uses\": 0,",
+            "+        \"is_active\": True,",
+            "+        \"api_key\": \"string\",",
+            "+        \"user_id\": str(active_user.id),",
+            "+    }",
+            "+    response = await client.post(\"api/v1/api_key/\", json=basic_case, headers=logged_in_headers)",
+            "+    assert response.status_code == status.HTTP_200_OK",
+            "+    user1_api_key_id = response.json()[\"id\"]",
+            "+",
+            "+    # Create a second user and get their auth headers",
+            "+    async with session_scope() as session:",
+            "+        user2 = User(",
+            "+            username=\"testuser2\",",
+            "+            password=get_password_hash(\"testpassword2\"),",
+            "+            is_active=True,",
+            "+            is_superuser=False,",
+            "+        )",
+            "+        stmt = select(User).where(User.username == user2.username)",
+            "+        existing_user = (await session.exec(stmt)).first()",
+            "+        if not existing_user:",
+            "+            session.add(user2)",
+            "+            await session.flush()",
+            "+            await session.refresh(user2)",
+            "+        else:",
+            "+            user2 = existing_user",
+            "+",
+            "+    # Login as second user",
+            "+    login_data = {\"username\": \"testuser2\", \"password\": \"testpassword2\"}",
+            "+    response = await client.post(\"api/v1/login\", data=login_data)",
+            "+    assert response.status_code == status.HTTP_200_OK",
+            "+    user2_token = response.json()[\"access_token\"]",
+            "+    user2_headers = {\"Authorization\": f\"Bearer {user2_token}\"}",
+            "+",
+            "+    # Try to delete first user's API key using second user's credentials",
+            "+    response = await client.delete(f\"api/v1/api_key/{user1_api_key_id}\", headers=user2_headers)",
+            "+",
+            "+    # Should fail with 400 error (API Key not found - we don't reveal it exists)",
+            "+    assert response.status_code == status.HTTP_400_BAD_REQUEST",
+            "+    assert \"API Key not found\" in response.json()[\"detail\"]",
+            "+",
+            "+    # Verify the first user's API key still exists by trying to delete it with correct credentials",
+            "+    response = await client.delete(f\"api/v1/api_key/{user1_api_key_id}\", headers=logged_in_headers)",
+            "+    assert response.status_code == status.HTTP_200_OK",
+            "+    assert response.json()[\"detail\"] == \"API Key deleted\"",
+            "+",
+            "+    # Clean up second user",
+            "+    async with session_scope() as session:",
+            "+        user = await session.get(User, user2.id)",
+            "+        if user:",
+            "+            await session.delete(user)"
+          ]
+        }
+      ]
+    }
+  ]
+}

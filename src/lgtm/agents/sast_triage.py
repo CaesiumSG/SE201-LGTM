@@ -112,10 +112,12 @@ class SASTTriageAgent:
             logger.error("SAST triage agent failed for %s: %s", finding.finding_id, exc)
             message = registry.render("sast_triage.failed_explanation", error=exc)
             kept = None
+            kind = "failed"
         else:
             message = registry.entry("shared.unparsable_explanation")
+            kind = "unparsable"
         if kept is None:
-            self.errors.append({"source": finding.finding_id, "message": message})
+            self.errors.append({"source": finding.finding_id, "kind": kind, "message": message})
             return None
         result = kept[0]
 

@@ -17,6 +17,9 @@ DOCS = [README, REAL_README, REAL_EVAL, BENCH_README]
 HELD_OUT = re.compile(r"held[- ]out", re.I)
 REAL_WORLD = re.compile(r"real[- ]world|advisor|\bCVEs?\b", re.I)
 SYNTHETIC = re.compile(r"synthetic|shoply|eval split|--split eval", re.I)
+# The real-PR benchmark (benchmark/real_prs/heldout.json) is a genuine held-out
+# set of advisories; only the 12-case real-world CVE set must not be called held out.
+REAL_PRS = re.compile(r"real PRs?\b|introduc|heldout\.json", re.I)
 NEGATED = re.compile(r"\b(not|no longer|isn't|never)\b[^.]{0,20}held|held[- ]out[^.]{0,20}\b(not|no longer)\b", re.I)
 DEV_SET = re.compile(r"development[- ]set|dev(?:elopment)? set", re.I)
 LIST_START = re.compile(r"^\s*(?:[-*+]\s|\d+\.\s|\||#)")
@@ -61,6 +64,8 @@ def _held_out_real_world_sentences(path: Path, whole_file_is_real_world: bool) -
     bad = []
     for s in _sentences(_text(path)):
         if not HELD_OUT.search(s) or SYNTHETIC.search(s) or NEGATED.search(s):
+            continue
+        if not whole_file_is_real_world and REAL_PRS.search(s):
             continue
         if whole_file_is_real_world or REAL_WORLD.search(s):
             bad.append(s.strip())

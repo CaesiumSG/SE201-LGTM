@@ -1,0 +1,79 @@
+{
+  "case_id": "langflow_authz_vulnerable",
+  "diff": "--- a/src/backend/base/langflow/__main__.py\n+++ b/src/backend/base/langflow/__main__.py\n@@ -887,7 +887,7 @@ def api_key(\n             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)\n             api_key = (await session.exec(stmt)).first()\n             if api_key:\n-                await delete_api_key(session, api_key.id, superuser.id)\n+                await delete_api_key(session, api_key.id)\n \n             api_key_create = ApiKeyCreate(name=\"CLI\")\n             return await create_api_key(session, api_key_create, user_id=superuser.id)\n--- a/src/backend/base/langflow/api/v1/api_key.py\n+++ b/src/backend/base/langflow/api/v1/api_key.py\n@@ -1,6 +1,6 @@\n from uuid import UUID\n \n-from fastapi import APIRouter, HTTPException, Response\n+from fastapi import APIRouter, Depends, HTTPException, Response\n \n from langflow.api.utils import CurrentActiveUser, DbSession\n from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse\n@@ -41,14 +41,13 @@ async def create_api_key_route(\n         raise HTTPException(status_code=400, detail=str(e)) from e\n \n \n-@router.delete(\"/{api_key_id}\")\n+@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\n async def delete_api_key_route(\n     api_key_id: UUID,\n     db: DbSession,\n-    current_user: CurrentActiveUser,\n ):\n     try:\n-        await delete_api_key(db, api_key_id, current_user.id)\n+        await delete_api_key(db, api_key_id)\n     except Exception as e:\n         raise HTTPException(status_code=400, detail=str(e)) from e\n     return {\"detail\": \"API Key deleted\"}\n--- a/src/backend/base/langflow/services/database/models/api_key/crud.py\n+++ b/src/backend/base/langflow/services/database/models/api_key/crud.py\n@@ -41,14 +41,11 @@ async def create_api_key(session: AsyncSession, api_key_create: ApiKeyCreate, us\n     return unmasked\n \n \n-async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n+async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n     api_key = await session.get(ApiKey, api_key_id)\n     if api_key is None:\n         msg = \"API Key not found\"\n         raise ValueError(msg)\n-    if api_key.user_id != user_id:\n-        msg = \"API Key not found\"\n-        raise ValueError(msg)\n     await session.delete(api_key)\n \n ",
+  "sections": [
+    {
+      "id": "remove-ownership-check",
+      "title": "Remove per-user ownership check from delete_api_key and rely on route-level auth",
+      "rationale": "The CRUD function, the API route, and the CLI caller are all changed together to drop the user_id ownership check, so any authenticated user can now delete any API key by ID.",
+      "hunks": [
+        {
+          "hunk_id": "src/backend/base/langflow/services/database/models/api_key/crud.py#0",
+          "lines": [
+            "     return unmasked",
+            " ",
+            " ",
+            "-async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:",
+            "+async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:",
+            "     api_key = await session.get(ApiKey, api_key_id)",
+            "     if api_key is None:",
+            "         msg = \"API Key not found\"",
+            "         raise ValueError(msg)",
+            "-    if api_key.user_id != user_id:",
+            "-        msg = \"API Key not found\"",
+            "-        raise ValueError(msg)",
+            "     await session.delete(api_key)",
+            " ",
+            " "
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#0",
+          "lines": [
+            " from uuid import UUID",
+            " ",
+            "-from fastapi import APIRouter, HTTPException, Response",
+            "+from fastapi import APIRouter, Depends, HTTPException, Response",
+            " ",
+            " from langflow.api.utils import CurrentActiveUser, DbSession",
+            " from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse"
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#1",
+          "lines": [
+            "         raise HTTPException(status_code=400, detail=str(e)) from e",
+            " ",
+            " ",
+            "-@router.delete(\"/{api_key_id}\")",
+            "+@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])",
+            " async def delete_api_key_route(",
+            "     api_key_id: UUID,",
+            "     db: DbSession,",
+            "-    current_user: CurrentActiveUser,",
+            " ):",
+            "     try:",
+            "-        await delete_api_key(db, api_key_id, current_user.id)",
+            "+        await delete_api_key(db, api_key_id)",
+            "     except Exception as e:",
+            "         raise HTTPException(status_code=400, detail=str(e)) from e",
+            "     return {\"detail\": \"API Key deleted\"}"
+          ]
+        },
+        {
+          "hunk_id": "src/backend/base/langflow/__main__.py#0",
+          "lines": [
+            "             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)",
+            "             api_key = (await session.exec(stmt)).first()",
+            "             if api_key:",
+            "-                await delete_api_key(session, api_key.id, superuser.id)",
+            "+                await delete_api_key(session, api_key.id)",
+            " ",
+            "             api_key_create = ApiKeyCreate(name=\"CLI\")",
+            "             return await create_api_key(session, api_key_create, user_id=superuser.id)"
+          ]
+        }
+      ]
+    }
+  ]
+}

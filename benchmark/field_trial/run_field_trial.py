@@ -44,6 +44,7 @@ from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  
 from lgtm.diff.git_diff import get_pr_diff  # noqa: E402
 from lgtm.pipeline import LGTM_MODES, ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
+from lgtm import usage  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("lgtm_bench_evaluate", BENCH / "evaluate.py")
 evaluate = importlib.util.module_from_spec(_spec)
@@ -239,6 +240,7 @@ def run_case(case: dict, mode: str, cache: Path, config: LGTMConfig) -> dict:
         "reviewer_units": sum(
             1 for r in result.run_records
             if r.section != "investigator" and not _is_triage(r)),
+        **usage.record_fields(getattr(result.meta, "token_usage", None)),
         "findings": findings,
         **evaluate.trace_fields(mode, result),
     })
@@ -285,6 +287,7 @@ def summarize(records: list[dict]) -> dict:
         "judge": ({k: sum(j[k] for j in judged) for k in ("supported", "unsupported", "not_judged")}
                   if judged else None),
         "latency_median_seconds": round(statistics.median(lat), 1) if lat else None,
+        "tokens": usage.summarize_records(ran),
         "latency_max_seconds": max(lat) if lat else None,
         "index_seconds_total": round(sum(r.get("index_seconds", 0) for r in ran), 1),
         "per_case": [

@@ -6,8 +6,10 @@ import argparse
 import importlib
 import inspect
 import json
+import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +23,8 @@ from benchmark.component_bench.outcomes import InfraError, ModelSettingMismatch,
 from benchmark.component_bench.registry import REGISTRY  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+CLONE_CACHE = ROOT / "benchmark" / "real_world" / ".cache"
+FETCH_COMMAND = "python -m benchmark.component_bench.fetch_real_prs"
 
 
 def _module(entry):
@@ -41,7 +45,36 @@ def _items(name, entry, labels_dir):
     return doc["items"], counts
 
 
-def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None):
+def _preflight(case) -> str | None:
+    """Reason a development case cannot run at its pinned revisions, or None."""
+    if not case or case.get("split") != "real_prs":
+        return None
+    project = case["repo_url"].rstrip("/").rsplit("/", 1)[-1]
+    repo = CLONE_CACHE / project
+    if not (repo / ".git").is_dir():
+        return f"clone {repo} is missing; run `{FETCH_COMMAND}`"
+    problems = []
+    for role in ("base", "pr"):
+        name = f"rw/{case['id']}/{role}"
+        found = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"refs/heads/{name}"],
+            capture_output=True, text=True,
+        )
+        if found.returncode != 0:
+            problems.append(f"branch {name} is missing")
+        elif found.stdout.strip() != case[f"{role}_ref"]:
+            problems.append(f"branch {name} is not at {case[f'{role}_ref']}")
+    if problems:
+        return f"{'; '.join(problems)} in {repo}; run `{FETCH_COMMAND}`"
+    return None
+
+
+def _graph_state(toolboxes) -> str | None:
+    states = {s for t in toolboxes for s in [t.graph_state()] if s != "ok"}
+    return ";".join(sorted(states)) or "ok" if toolboxes else None
+
+
+def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None, case=None):
     m = cost.Metrics()
     ctx = SimpleNamespace(
         config=config,
@@ -50,22 +83,43 @@ def _run_unit(mod, item, config, llm, judge, clock, results_dir, labels_dir=None
         metrics=m,
         llm=cost.RecordingLLM(llm, m) if llm is not None else None,
         judge=cost.recording_judge(judge, m) if judge is not None else None,
+        stack=ExitStack(),
+        toolboxes=[],
+        record={},
     )
     unit = {"case_id": item["case_id"], "label_id": item.get("label_id")}
     start = clock()
+    reason = _preflight(case)
+    if reason:
+        unit.update(status="error", reason=reason, scores=None, wall_time_s=clock() - start)
+        unit.update(input_tokens=0, output_tokens=0, tools={})
+        return unit
+    state = None
     try:
-        output = mod.run_item(item, ctx)
+        try:
+            output = mod.run_item(item, ctx)
+        finally:
+            state = _graph_state(ctx.toolboxes)
+        if state not in (None, "ok"):
+            raise InfraError(f"graph_state {state}")
         unit["wall_time_s"] = clock() - start
         if isinstance(output, NotScored):
             unit.update(status="not_scored", reason=output.reason, scores=None)
         else:
-            unit.update(status="scored", scores=mod.score(item, output))
+            unit.update(status="scored", scores=mod.score(item, output, **(
+                {"read_source": mod.case_reader(item)} if hasattr(mod, "case_reader") else {}
+            )))
+            unit.update(ctx.record)
             if isinstance(output, dict) and "label_ids" in output:
                 unit["label_ids"] = output["label_ids"]
             if isinstance(output, dict) and "detail" in output:
                 unit["detail"] = output["detail"]
     except InfraError as exc:
         unit.update(status="error", reason=str(exc), scores=None, wall_time_s=clock() - start)
+    finally:
+        ctx.stack.close()
+    if state is not None:
+        unit["graph_state"] = state
     unit.update(
         input_tokens=cost.total(m.input), output_tokens=cost.total(m.output), tools=m.tools
     )
@@ -86,6 +140,9 @@ def _summarize(units, labels, entry, results_dir, labels_dir=None):
                 t = tools.setdefault(agent, {}).setdefault(tool, {"calls": 0, "invalid": 0})
                 t["calls"] += n["calls"]
                 t["invalid"] += n["invalid"]
+    def total(names):
+        return sum(n["calls"] for stats in tools.values() for tool, n in stats.items() if tool in names)
+
     section = {
         "scores": {k: sum(v) / len(v) for k, v in metrics.items()},
         "units_scored": len(scored),
@@ -95,9 +152,12 @@ def _summarize(units, labels, entry, results_dir, labels_dir=None):
         "wall_time_s": sum(u["wall_time_s"] for u in units),
         "tools": tools,
     }
+    if tools:
+        section["codegraph_calls"] = total({"investigate_base_code", "investigate_pr_code"})
+        section["search_policy_calls"] = total({"search_policy"})
     for key in ("input_tokens", "output_tokens"):
-        total = cost.total(u[key] for u in units)
-        section[key] = cost.NOT_RECORDED if total is None else total
+        spent = cost.total(u[key] for u in units)
+        section[key] = cost.NOT_RECORDED if spent is None else spent
     if entry.aggregate:
         extra = {"labels_dir": labels_dir} if "labels_dir" in inspect.signature(entry.aggregate).parameters else {}
         section["aggregate"] = entry.aggregate(units, results_dir, **extra)
@@ -113,6 +173,20 @@ def _check_model_setting(results_dir: Path, setting) -> None:
             raise ModelSettingMismatch(
                 f"{path} was written under model setting {previous!r}, not {setting!r}"
             )
+
+
+def _git(*args) -> str | None:
+    try:
+        done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    except OSError:
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def _executing_commit() -> dict:
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain", "--untracked-files=no")
+    return {"commit": commit or None, "dirty": None if status is None else bool(status)}
 
 
 def run_benchmark(
@@ -136,7 +210,8 @@ def run_benchmark(
     results_dir = Path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     _check_model_setting(results_dir, model_setting)
-    summary = {"components": {}}
+    summary = {"components": {}, **_executing_commit()}
+    cases = {c["id"]: c for c in schema.load_cases()}
     for name in names:
         entry = registry[name]
         mod = _module(entry)
@@ -150,7 +225,9 @@ def run_benchmark(
         for i in items:
             key = (i["case_id"], i.get("label_id"))
             if key not in recorded:
-                recorded[key] = _run_unit(mod, i, config, llm, judge, clock, results_dir, labels_dir)
+                recorded[key] = _run_unit(
+                    mod, i, config, llm, judge, clock, results_dir, labels_dir, cases.get(i["case_id"])
+                )
             doc = {"model_setting": model_setting, "labels": labels, "units": list(recorded.values())}
             path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         units = [recorded[(i["case_id"], i.get("label_id"))] for i in items]

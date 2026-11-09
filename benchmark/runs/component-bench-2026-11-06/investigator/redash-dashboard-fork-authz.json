@@ -1,0 +1,131 @@
+{
+  "case_id": "redash-dashboard-fork-authz",
+  "diff": "--- a/client/app/pages/dashboards/components/DashboardHeader.jsx\n+++ b/client/app/pages/dashboards/components/DashboardHeader.jsx\n@@ -119,6 +119,8 @@ function DashboardMoreOptionsButton({ dashboardConfiguration }) {\n     managePermissions,\n     gridDisabled,\n     isDashboardOwnerOrAdmin,\n+    isDuplicating,\n+    duplicateDashboard,\n   } = dashboardConfiguration;\n \n   const archive = () => {\n@@ -142,6 +144,14 @@ function DashboardMoreOptionsButton({ dashboardConfiguration }) {\n           <Menu.Item className={cx({ hidden: gridDisabled })}>\n             <PlainButton onClick={() => setEditingLayout(true)}>Edit</PlainButton>\n           </Menu.Item>\n+          {!isDuplicating && dashboard.canEdit() && (\n+            <Menu.Item>\n+              <PlainButton onClick={duplicateDashboard}>\n+                Fork <i className=\"fa fa-external-link m-l-5\" aria-hidden=\"true\" />\n+                <span className=\"sr-only\">(opens in a new tab)</span>\n+              </PlainButton>\n+            </Menu.Item>\n+          )}\n           {clientConfig.showPermissionsControl && isDashboardOwnerOrAdmin && (\n             <Menu.Item>\n               <PlainButton onClick={managePermissions}>Manage Permissions</PlainButton>\n--- a/client/app/pages/dashboards/hooks/useDashboard.js\n+++ b/client/app/pages/dashboards/hooks/useDashboard.js\n@@ -15,6 +15,7 @@ import ShareDashboardDialog from \"../components/ShareDashboardDialog\";\n import useFullscreenHandler from \"../../../lib/hooks/useFullscreenHandler\";\n import useRefreshRateHandler from \"./useRefreshRateHandler\";\n import useEditModeHandler from \"./useEditModeHandler\";\n+import useDuplicateDashboard from \"./useDuplicateDashboard\";\n import { policy } from \"@/services/policy\";\n \n export { DashboardStatusEnum } from \"./useEditModeHandler\";\n@@ -53,6 +54,8 @@ function useDashboard(dashboardData) {\n     [dashboard]\n   );\n \n+  const [isDuplicating, duplicateDashboard] = useDuplicateDashboard(dashboard);\n+\n   const managePermissions = useCallback(() => {\n     const aclUrl = `api/dashboards/${dashboard.id}/acl`;\n     PermissionsEditorDialog.showModal({\n@@ -243,6 +246,8 @@ function useDashboard(dashboardData) {\n     showAddTextboxDialog,\n     showAddWidgetDialog,\n     managePermissions,\n+    isDuplicating,\n+    duplicateDashboard,\n   };\n }\n \n--- a/client/app/pages/dashboards/hooks/useDuplicateDashboard.js\n+++ b/client/app/pages/dashboards/hooks/useDuplicateDashboard.js\n@@ -0,0 +1,40 @@\n+import { noop, extend, pick } from \"lodash\";\n+import { useCallback, useState } from \"react\";\n+import url from \"url\";\n+import qs from \"query-string\";\n+import { Dashboard } from \"@/services/dashboard\";\n+\n+function keepCurrentUrlParams(targetUrl) {\n+  const currentUrlParams = qs.parse(window.location.search);\n+  targetUrl = url.parse(targetUrl);\n+  const targetUrlParams = qs.parse(targetUrl.search);\n+  return url.format(\n+    extend(pick(targetUrl, [\"protocol\", \"auth\", \"host\", \"pathname\"]), {\n+      search: qs.stringify(extend(currentUrlParams, targetUrlParams)),\n+    })\n+  );\n+}\n+\n+export default function useDuplicateDashboard(dashboard) {\n+  const [isDuplicating, setIsDuplicating] = useState(false);\n+\n+  const duplicateDashboard = useCallback(() => {\n+    // To prevent opening the same tab, name must be unique for each browser\n+    const tabName = `duplicatedDashboardTab/${Math.random().toString()}`;\n+\n+    // We should open tab here because this moment is a part of user interaction;\n+    // later browser will block such attempts\n+    const tab = window.open(\"\", tabName);\n+\n+    setIsDuplicating(true);\n+    Dashboard.fork({ id: dashboard.id })\n+      .then(newDashboard => {\n+        tab.location = keepCurrentUrlParams(newDashboard.getUrl());\n+      })\n+      .finally(() => {\n+        setIsDuplicating(false);\n+      });\n+  }, [dashboard.id]);\n+\n+  return [isDuplicating, isDuplicating ? noop : duplicateDashboard];\n+}\n--- a/client/app/services/dashboard.js\n+++ b/client/app/services/dashboard.js\n@@ -172,6 +172,7 @@ const DashboardService = {\n   favorites: params => axios.get(\"api/dashboards/favorites\", { params }).then(transformResponse),\n   favorite: ({ id }) => axios.post(`api/dashboards/${id}/favorite`),\n   unfavorite: ({ id }) => axios.delete(`api/dashboards/${id}/favorite`),\n+  fork: ({ id }) => axios.post(`api/dashboards/${id}/fork`, { id }).then(transformResponse),\n };\n \n _.extend(Dashboard, DashboardService);\n@@ -265,3 +266,7 @@ Dashboard.prototype.favorite = function favorite() {\n Dashboard.prototype.unfavorite = function unfavorite() {\n   return Dashboard.unfavorite(this);\n };\n+\n+Dashboard.prototype.getUrl = function getUrl() {\n+  return urlForDashboard(this);\n+};\n--- a/redash/handlers/api.py\n+++ b/redash/handlers/api.py\n@@ -12,6 +12,7 @@ from redash.handlers.alerts import (\n from redash.handlers.base import org_scoped_rule\n from redash.handlers.dashboards import (\n     DashboardFavoriteListResource,\n+    DashboardForkResource,\n     DashboardListResource,\n     DashboardResource,\n     DashboardShareResource,\n@@ -190,6 +191,7 @@ api.add_org_resource(\n     \"/api/dashboards/<object_id>/favorite\",\n     endpoint=\"dashboard_favorite\",\n )\n+api.add_org_resource(DashboardForkResource, \"/api/dashboards/<dashboard_id>/fork\", endpoint=\"dashboard_fork\")\n \n api.add_org_resource(MyDashboardsResource, \"/api/dashboards/my\", endpoint=\"my_dashboards\")\n \n--- a/redash/handlers/dashboards.py\n+++ b/redash/handlers/dashboards.py\n@@ -398,3 +398,16 @@ class DashboardFavoriteListResource(BaseResource):\n         )\n \n         return response\n+\n+\n+class DashboardForkResource(BaseResource):\n+    @require_permission(\"edit_dashboard\")\n+    def post(self, dashboard_id):\n+        dashboard = models.Dashboard.get_by_id_and_org(dashboard_id, self.current_org)\n+\n+        fork_dashboard = dashboard.fork(self.current_user)\n+        models.db.session.commit()\n+\n+        self.record_event({\"action\": \"fork\", \"object_id\": dashboard_id, \"object_type\": \"dashboard\"})\n+\n+        return DashboardSerializer(fork_dashboard, with_widgets=True).serialize()\n--- a/redash/models/__init__.py\n+++ b/redash/models/__init__.py\n@@ -1131,6 +1131,21 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model\n     def get_by_slug_and_org(cls, slug, org):\n         return cls.query.filter(cls.slug == slug, cls.org == org).one()\n \n+    def fork(self, user):\n+        forked_list = [\"org\", \"layout\", \"dashboard_filters_enabled\", \"tags\"]\n+\n+        kwargs = {a: getattr(self, a) for a in forked_list}\n+        forked_dashboard = Dashboard(name=\"Copy of (#{}) {}\".format(self.id, self.name), user=user, **kwargs)\n+\n+        for w in self.widgets:\n+            forked_w = w.copy(forked_dashboard.id)\n+            fw = Widget(**forked_w)\n+            db.session.add(fw)\n+\n+        forked_dashboard.slug = forked_dashboard.id\n+        db.session.add(forked_dashboard)\n+        return forked_dashboard\n+\n     @hybrid_property\n     def lowercase_name(self):\n         \"Optional property useful for sorting purposes.\"\n@@ -1190,6 +1205,15 @@ class Widget(TimestampMixin, BelongsToOrgMixin, db.Model):\n     def get_by_id_and_org(cls, object_id, org):\n         return super(Widget, cls).get_by_id_and_org(object_id, org, Dashboard)\n \n+    def copy(self, dashboard_id):\n+        return {\n+            \"options\": self.options,\n+            \"width\": self.width,\n+            \"text\": self.text,\n+            \"visualization_id\": self.visualization_id,\n+            \"dashboard_id\": dashboard_id,\n+        }\n+\n \n @generic_repr(\"id\", \"object_type\", \"object_id\", \"action\", \"user_id\", \"org_id\", \"created_at\")\n class Event(db.Model):\n--- a/tests/handlers/test_dashboards.py\n+++ b/tests/handlers/test_dashboards.py\n@@ -151,6 +151,15 @@ class TestDashboardResourcePost(BaseTestCase):\n         self.assertEqual(rv.json[\"name\"], new_name)\n \n \n+class TestDashboardForkResourcePost(BaseTestCase):\n+    def test_forks_a_dashboard(self):\n+        dashboard = self.factory.create_dashboard()\n+\n+        rv = self.make_request(\"post\", \"/api/dashboards/{}/fork\".format(dashboard.id))\n+\n+        self.assertEqual(rv.status_code, 200)\n+\n+\n class TestDashboardResourceDelete(BaseTestCase):\n     def test_delete_dashboard(self):\n         d = self.factory.create_dashboard()",
+  "sections": [
+    {
+      "id": "fork-endpoint",
+      "title": "New dashboard fork endpoint and its authorization",
+      "rationale": "The new DashboardForkResource, its route registration, and the test all implement one access-controlled action whose authorization is the key concern.",
+      "hunks": [
+        {
+          "hunk_id": "redash/handlers/dashboards.py#0",
+          "lines": [
+            "         )",
+            " ",
+            "         return response",
+            "+",
+            "+",
+            "+class DashboardForkResource(BaseResource):",
+            "+    @require_permission(\"edit_dashboard\")",
+            "+    def post(self, dashboard_id):",
+            "+        dashboard = models.Dashboard.get_by_id_and_org(dashboard_id, self.current_org)",
+            "+",
+            "+        fork_dashboard = dashboard.fork(self.current_user)",
+            "+        models.db.session.commit()",
+            "+",
+            "+        self.record_event({\"action\": \"fork\", \"object_id\": dashboard_id, \"object_type\": \"dashboard\"})",
+            "+",
+            "+        return DashboardSerializer(fork_dashboard, with_widgets=True).serialize()"
+          ]
+        },
+        {
+          "hunk_id": "redash/handlers/api.py#0",
+          "lines": [
+            " from redash.handlers.base import org_scoped_rule",
+            " from redash.handlers.dashboards import (",
+            "     DashboardFavoriteListResource,",
+            "+    DashboardForkResource,",
+            "     DashboardListResource,",
+            "     DashboardResource,",
+            "     DashboardShareResource,"
+          ]
+        },
+        {
+          "hunk_id": "redash/handlers/api.py#1",
+          "lines": [
+            "     \"/api/dashboards/<object_id>/favorite\",",
+            "     endpoint=\"dashboard_favorite\",",
+            " )",
+            "+api.add_org_resource(DashboardForkResource, \"/api/dashboards/<dashboard_id>/fork\", endpoint=\"dashboard_fork\")",
+            " ",
+            " api.add_org_resource(MyDashboardsResource, \"/api/dashboards/my\", endpoint=\"my_dashboards\")",
+            " "
+          ]
+        },
+        {
+          "hunk_id": "tests/handlers/test_dashboards.py#0",
+          "lines": [
+            "         self.assertEqual(rv.json[\"name\"], new_name)",
+            " ",
+            " ",
+            "+class TestDashboardForkResourcePost(BaseTestCase):",
+            "+    def test_forks_a_dashboard(self):",
+            "+        dashboard = self.factory.create_dashboard()",
+            "+",
+            "+        rv = self.make_request(\"post\", \"/api/dashboards/{}/fork\".format(dashboard.id))",
+            "+",
+            "+        self.assertEqual(rv.status_code, 200)",
+            "+",
+            "+",
+            " class TestDashboardResourceDelete(BaseTestCase):",
+            "     def test_delete_dashboard(self):",
+            "         d = self.factory.create_dashboard()"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fork-model",
+      "title": "Dashboard.fork and Widget.copy model logic",
+      "rationale": "These two model methods implement the data duplication the fork endpoint invokes, and they determine what data (including cross-dashboard references) is copied.",
+      "hunks": [
+        {
+          "hunk_id": "redash/models/__init__.py#0",
+          "lines": [
+            "     def get_by_slug_and_org(cls, slug, org):",
+            "         return cls.query.filter(cls.slug == slug, cls.org == org).one()",
+            " ",
+            "+    def fork(self, user):",
+            "+        forked_list = [\"org\", \"layout\", \"dashboard_filters_enabled\", \"tags\"]",
+            "+",
+            "+        kwargs = {a: getattr(self, a) for a in forked_list}",
+            "+        forked_dashboard = Dashboard(name=\"Copy of (#{}) {}\".format(self.id, self.name), user=user, **kwargs)",
+            "+",
+            "+        for w in self.widgets:",
+            "+            forked_w = w.copy(forked_dashboard.id)",
+            "+            fw = Widget(**forked_w)",
+            "+            db.session.add(fw)",
+            "+",
+            "+        forked_dashboard.slug = forked_dashboard.id",
+            "+        db.session.add(forked_dashboard)",
+            "+        return forked_dashboard",
+            "+",
+            "     @hybrid_property",
+            "     def lowercase_name(self):",
+            "         \"Optional property useful for sorting purposes.\""
+          ]
+        },
+        {
+          "hunk_id": "redash/models/__init__.py#1",
+          "lines": [
+            "     def get_by_id_and_org(cls, object_id, org):",
+            "         return super(Widget, cls).get_by_id_and_org(object_id, org, Dashboard)",
+            " ",
+            "+    def copy(self, dashboard_id):",
+            "+        return {",
+            "+            \"options\": self.options,",
+            "+            \"width\": self.width,",
+            "+            \"text\": self.text,",
+            "+            \"visualization_id\": self.visualization_id,",
+            "+            \"dashboard_id\": dashboard_id,",
+            "+        }",
+            "+",
+            " ",
+            " @generic_repr(\"id\", \"object_type\", \"object_id\", \"action\", \"user_id\", \"org_id\", \"created_at\")",
+            " class Event(db.Model):"
+          ]
+        }
+      ]
+    }
+  ]
+}

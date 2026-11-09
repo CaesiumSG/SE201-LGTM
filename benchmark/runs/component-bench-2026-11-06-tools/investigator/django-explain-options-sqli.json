@@ -1,0 +1,445 @@
+{
+  "case_id": "django-explain-options-sqli",
+  "diff": "--- a/django/db/backends/base/features.py\n+++ b/django/db/backends/base/features.py\n@@ -250,9 +250,21 @@ class BaseDatabaseFeatures:\n     # Convert CharField results from bytes to str in database functions.\n     db_functions_convert_bytes_to_str = False\n \n+    # What formats does the backend EXPLAIN syntax support?\n+    supported_explain_formats = set()\n+\n+    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\n+    # unknown kwargs are passed to QuerySet.explain()?\n+    validates_explain_options = True\n+\n     def __init__(self, connection):\n         self.connection = connection\n \n+    @cached_property\n+    def supports_explaining_query_execution(self):\n+        \"\"\"Does this backend support explaining query execution?\"\"\"\n+        return self.connection.ops.explain_prefix is not None\n+\n     @cached_property\n     def supports_transactions(self):\n         \"\"\"Confirm support for transactions.\"\"\"\n--- a/django/db/backends/base/operations.py\n+++ b/django/db/backends/base/operations.py\n@@ -45,6 +45,9 @@ class BaseDatabaseOperations:\n     UNBOUNDED_FOLLOWING = 'UNBOUNDED ' + FOLLOWING\n     CURRENT_ROW = 'CURRENT ROW'\n \n+    # Prefix for EXPLAIN queries, or None EXPLAIN isn't supported.\n+    explain_prefix = None\n+\n     def __init__(self, connection):\n         self.connection = connection\n         self._cache = None\n@@ -652,3 +655,18 @@ class BaseDatabaseOperations:\n \n     def window_frame_range_start_end(self, start=None, end=None):\n         return self.window_frame_rows_start_end(start, end)\n+\n+    def explain_query_prefix(self, format=None, **options):\n+        if not self.connection.features.supports_explaining_query_execution:\n+            raise NotSupportedError('This backend does not support explaining query execution.')\n+        if format:\n+            supported_formats = self.connection.features.supported_explain_formats\n+            normalized_format = format.upper()\n+            if normalized_format not in supported_formats:\n+                msg = '%s is not a recognized format.' % normalized_format\n+                if supported_formats:\n+                    msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))\n+                raise ValueError(msg)\n+        if options:\n+            raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n+        return self.explain_prefix\n--- a/django/db/backends/mysql/features.py\n+++ b/django/db/backends/mysql/features.py\n@@ -49,6 +49,8 @@ class DatabaseFeatures(BaseDatabaseFeatures):\n         END;\n     \"\"\"\n     db_functions_convert_bytes_to_str = True\n+    # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n+    supported_explain_formats = {'JSON', 'TEXT', 'TRADITIONAL'}\n \n     @cached_property\n     def _mysql_storage_engine(self):\n@@ -81,6 +83,11 @@ class DatabaseFeatures(BaseDatabaseFeatures):\n     def supports_over_clause(self):\n         return self.connection.mysql_version >= (8, 0, 2)\n \n+    @cached_property\n+    def needs_explain_extended(self):\n+        # EXTENDED is deprecated (and not required) in 5.7 and removed in 8.0.\n+        return self.connection.mysql_version < (5, 7)\n+\n     @cached_property\n     def supports_transactions(self):\n         \"\"\"\n--- a/django/db/backends/mysql/operations.py\n+++ b/django/db/backends/mysql/operations.py\n@@ -26,6 +26,7 @@ class DatabaseOperations(BaseDatabaseOperations):\n         'PositiveSmallIntegerField': 'unsigned integer',\n     }\n     cast_char_field_without_max_length = 'char'\n+    explain_prefix = 'EXPLAIN'\n \n     def date_extract_sql(self, lookup_type, field_name):\n         # http://dev.mysql.com/doc/mysql/en/date-and-time-functions.html\n@@ -269,3 +270,15 @@ class DatabaseOperations(BaseDatabaseOperations):\n             ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, lhs_params * 2 + rhs_params * 2\n         else:\n             return \"TIMESTAMPDIFF(MICROSECOND, %s, %s)\" % (rhs_sql, lhs_sql), rhs_params + lhs_params\n+\n+    def explain_query_prefix(self, format=None, **options):\n+        # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n+        if format and format.upper() == 'TEXT':\n+            format = 'TRADITIONAL'\n+        prefix = super().explain_query_prefix(format, **options)\n+        if format:\n+            prefix += ' FORMAT=%s' % format\n+        if self.connection.features.needs_explain_extended and format is None:\n+            # EXTENDED and FORMAT are mutually exclusive options.\n+            prefix += ' EXTENDED'\n+        return prefix\n--- a/django/db/backends/postgresql/features.py\n+++ b/django/db/backends/postgresql/features.py\n@@ -50,6 +50,8 @@ class DatabaseFeatures(BaseDatabaseFeatures):\n     $$ LANGUAGE plpgsql;\"\"\"\n     supports_over_clause = True\n     supports_aggregate_filter_clause = True\n+    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\n+    validates_explain_options = False  # A query will error on invalid options.\n \n     @cached_property\n     def is_postgresql_9_5(self):\n--- a/django/db/backends/postgresql/operations.py\n+++ b/django/db/backends/postgresql/operations.py\n@@ -7,6 +7,7 @@ from django.db.backends.base.operations import BaseDatabaseOperations\n \n class DatabaseOperations(BaseDatabaseOperations):\n     cast_char_field_without_max_length = 'varchar'\n+    explain_prefix = 'EXPLAIN'\n \n     def unification_cast_sql(self, output_field):\n         internal_type = output_field.get_internal_type()\n@@ -258,3 +259,17 @@ class DatabaseOperations(BaseDatabaseOperations):\n                 'and FOLLOWING.'\n             )\n         return start_, end_\n+\n+    def explain_query_prefix(self, format=None, **options):\n+        prefix = super().explain_query_prefix(format)\n+        extra = {}\n+        if format:\n+            extra['FORMAT'] = format\n+        if options:\n+            extra.update({\n+                name.upper(): 'true' if value else 'false'\n+                for name, value in options.items()\n+            })\n+        if extra:\n+            prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\n+        return prefix\n--- a/django/db/backends/sqlite3/operations.py\n+++ b/django/db/backends/sqlite3/operations.py\n@@ -19,6 +19,7 @@ class DatabaseOperations(BaseDatabaseOperations):\n         'DateField': 'TEXT',\n         'DateTimeField': 'TEXT',\n     }\n+    explain_prefix = 'EXPLAIN QUERY PLAN'\n \n     def bulk_batch_size(self, fields, objs):\n         \"\"\"\n--- a/django/db/models/query.py\n+++ b/django/db/models/query.py\n@@ -717,6 +717,9 @@ class QuerySet:\n         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n         self._prefetch_done = True\n \n+    def explain(self, *, format=None, **options):\n+        return self.query.explain(using=self.db, format=format, **options)\n+\n     ##################################################\n     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n     ##################################################\n--- a/django/db/models/sql/compiler.py\n+++ b/django/db/models/sql/compiler.py\n@@ -530,6 +530,12 @@ class SQLCompiler:\n                     result.append('HAVING %s' % having)\n                     params.extend(h_params)\n \n+            if self.query.explain_query:\n+                result.insert(0, self.connection.ops.explain_query_prefix(\n+                    self.query.explain_format,\n+                    **self.query.explain_options\n+                ))\n+\n             if order_by:\n                 ordering = []\n                 for _, (o_sql, o_params, _) in order_by:\n@@ -1101,6 +1107,16 @@ class SQLCompiler:\n         sql, params = self.as_sql()\n         return 'EXISTS (%s)' % sql, params\n \n+    def explain_query(self):\n+        result = list(self.execute_sql())\n+        # Some backends return 1 item tuples with strings, and others return\n+        # tuples with integers and strings. Flatten them out into strings.\n+        for row in result[0]:\n+            if not isinstance(row, str):\n+                yield ' '.join(str(c) for c in row)\n+            else:\n+                yield row\n+\n \n class SQLInsertCompiler(SQLCompiler):\n     return_id = False\n--- a/django/db/models/sql/query.py\n+++ b/django/db/models/sql/query.py\n@@ -223,6 +223,10 @@ class Query:\n \n         self._filtered_relations = {}\n \n+        self.explain_query = False\n+        self.explain_format = None\n+        self.explain_options = {}\n+\n     @property\n     def extra(self):\n         if self._extra is None:\n@@ -511,6 +515,14 @@ class Query:\n         compiler = q.get_compiler(using=using)\n         return compiler.has_results()\n \n+    def explain(self, using, format=None, **options):\n+        q = self.clone()\n+        q.explain_query = True\n+        q.explain_format = format\n+        q.explain_options = options\n+        compiler = q.get_compiler(using=using)\n+        return '\\n'.join(compiler.explain_query())\n+\n     def combine(self, rhs, connector):\n         \"\"\"\n         Merge the 'rhs' query into the current one (with any 'rhs' effects\n--- a/docs/ref/models/querysets.txt\n+++ b/docs/ref/models/querysets.txt\n@@ -2476,6 +2476,49 @@ Class method that returns an instance of :class:`~django.db.models.Manager`\n with a copy of the ``QuerySet``\u2019s methods. See\n :ref:`create-manager-with-queryset-methods` for more details.\n \n+``explain()``\n+~~~~~~~~~~~~~\n+\n+.. versionadded:: 2.1\n+\n+.. method:: explain(format=None, **options)\n+\n+Returns a string of the ``QuerySet``\u2019s execution plan, which details how the\n+database would execute the query, including any indexes or joins that would be\n+used. Knowing these details may help you improve the performance of slow\n+queries.\n+\n+For example, when using PostgreSQL::\n+\n+    >>> print(Blog.objects.filter(title='My Blog').explain())\n+    Seq Scan on blog  (cost=0.00..35.50 rows=10 width=12)\n+      Filter: (title = 'My Blog'::bpchar)\n+\n+The output differs significantly between databases.\n+\n+``explain()`` is supported by all built-in database backends except Oracle\n+because an implementation there isn't straightforward.\n+\n+The ``format`` parameter changes the output format from the databases's default,\n+usually text-based. PostgreSQL supports ``'TEXT'``, ``'JSON'``, ``'YAML'``, and\n+``'XML'``. MySQL supports ``'TEXT'`` (also called ``'TRADITIONAL'``) and\n+``'JSON'``.\n+\n+Some databases accept flags that can return more information about the query.\n+Pass these flags as keyword arguments. For example, when using PostgreSQL::\n+\n+    >>> print(Blog.objects.filter(title='My Blog').explain(verbose=True))\n+    Seq Scan on public.blog  (cost=0.00..35.50 rows=10 width=12) (actual time=0.004..0.004 rows=10 loops=1)\n+      Output: id, title\n+      Filter: (blog.title = 'My Blog'::bpchar)\n+    Planning time: 0.064 ms\n+    Execution time: 0.058 ms\n+\n+On some databases, flags may cause the query to be executed which could have\n+adverse effects on your database. For example, PostgreSQL's ``ANALYZE`` flag\n+could result in changes to data if there are triggers or if a function is\n+called, even for a ``SELECT`` query.\n+\n .. _field-lookups:\n \n ``Field`` lookups\n--- a/docs/releases/2.1.txt\n+++ b/docs/releases/2.1.txt\n@@ -236,6 +236,9 @@ Models\n   encouraged instead of :class:`~django.db.models.NullBooleanField`, which will\n   likely be deprecated in the future.\n \n+* The new :meth:`.QuerySet.explain` method displays the database's execution\n+  plan of a queryset's query.\n+\n Requests and Responses\n ~~~~~~~~~~~~~~~~~~~~~~\n \n--- a/tests/basic/tests.py\n+++ b/tests/basic/tests.py\n@@ -555,6 +555,7 @@ class ManagerTest(SimpleTestCase):\n         'only',\n         'using',\n         'exists',\n+        'explain',\n         '_insert',\n         '_update',\n         'raw',\n--- a/tests/queries/test_explain.py\n+++ b/tests/queries/test_explain.py\n@@ -0,0 +1,99 @@\n+import unittest\n+\n+from django.db import NotSupportedError, connection, transaction\n+from django.db.models import Count\n+from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature\n+from django.test.utils import CaptureQueriesContext\n+\n+from .models import Tag\n+\n+\n+@skipUnlessDBFeature('supports_explaining_query_execution')\n+class ExplainTests(TestCase):\n+\n+    def test_basic(self):\n+        querysets = [\n+            Tag.objects.filter(name='test'),\n+            Tag.objects.filter(name='test').select_related('parent'),\n+            Tag.objects.filter(name='test').prefetch_related('children'),\n+            Tag.objects.filter(name='test').annotate(Count('children')),\n+            Tag.objects.filter(name='test').values_list('name'),\n+            Tag.objects.order_by().union(Tag.objects.order_by().filter(name='test')),\n+            Tag.objects.all().select_for_update().filter(name='test'),\n+        ]\n+        supported_formats = connection.features.supported_explain_formats\n+        all_formats = (None,) + tuple(supported_formats) + tuple(f.lower() for f in supported_formats)\n+        for idx, queryset in enumerate(querysets):\n+            for format in all_formats:\n+                with self.subTest(format=format, queryset=idx):\n+                    if connection.vendor == 'mysql':\n+                        # This does a query and caches the result.\n+                        connection.features.needs_explain_extended\n+                    with self.assertNumQueries(1), CaptureQueriesContext(connection) as captured_queries:\n+                        result = queryset.explain(format=format)\n+                        self.assertTrue(captured_queries[0]['sql'].startswith(connection.ops.explain_prefix))\n+                        self.assertIsInstance(result, str)\n+                        self.assertTrue(result)\n+\n+    @skipUnlessDBFeature('validates_explain_options')\n+    def test_unknown_options(self):\n+        with self.assertRaisesMessage(ValueError, 'Unknown options: test, test2'):\n+            Tag.objects.all().explain(test=1, test2=1)\n+\n+    def test_unknown_format(self):\n+        msg = 'DOES NOT EXIST is not a recognized format.'\n+        if connection.features.supported_explain_formats:\n+            msg += ' Allowed formats: %s' % ', '.join(sorted(connection.features.supported_explain_formats))\n+        with self.assertRaisesMessage(ValueError, msg):\n+            Tag.objects.all().explain(format='does not exist')\n+\n+    @unittest.skipUnless(connection.vendor == 'postgresql', 'PostgreSQL specific')\n+    def test_postgres_options(self):\n+        qs = Tag.objects.filter(name='test')\n+        test_options = [\n+            {'COSTS': False, 'BUFFERS': True, 'ANALYZE': True},\n+            {'costs': False, 'buffers': True, 'analyze': True},\n+            {'verbose': True, 'timing': True, 'analyze': True},\n+            {'verbose': False, 'timing': False, 'analyze': True},\n+        ]\n+        if connection.pg_version >= 100000:\n+            test_options.append({'summary': True})\n+        for options in test_options:\n+            with self.subTest(**options), transaction.atomic():\n+                with CaptureQueriesContext(connection) as captured_queries:\n+                    qs.explain(format='text', **options)\n+                self.assertEqual(len(captured_queries), 1)\n+                for name, value in options.items():\n+                    option = '{} {}'.format(name.upper(), 'true' if value else 'false')\n+                    self.assertIn(option, captured_queries[0]['sql'])\n+\n+    @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL specific')\n+    def test_mysql_text_to_traditional(self):\n+        with CaptureQueriesContext(connection) as captured_queries:\n+            Tag.objects.filter(name='test').explain(format='text')\n+        self.assertEqual(len(captured_queries), 1)\n+        self.assertIn('FORMAT=TRADITIONAL', captured_queries[0]['sql'])\n+\n+    @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL < 5.7 specific')\n+    def test_mysql_extended(self):\n+        # Inner skip to avoid module level query for MySQL version.\n+        if not connection.features.needs_explain_extended:\n+            raise unittest.SkipTest('MySQL < 5.7 specific')\n+        qs = Tag.objects.filter(name='test')\n+        with CaptureQueriesContext(connection) as captured_queries:\n+            qs.explain(format='json')\n+        self.assertEqual(len(captured_queries), 1)\n+        self.assertNotIn('EXTENDED', captured_queries[0]['sql'])\n+        with CaptureQueriesContext(connection) as captured_queries:\n+            qs.explain(format='text')\n+        self.assertEqual(len(captured_queries), 1)\n+        self.assertNotIn('EXTENDED', captured_queries[0]['sql'])\n+\n+\n+@skipIfDBFeature('supports_explaining_query_execution')\n+class ExplainUnsupportedTests(TestCase):\n+\n+    def test_message(self):\n+        msg = 'This backend does not support explaining query execution.'\n+        with self.assertRaisesMessage(NotSupportedError, msg):\n+            Tag.objects.filter(name='test').explain()\n--- a/tests/runtests.py\n+++ b/tests/runtests.py\n@@ -20,6 +20,14 @@ from django.test.utils import get_runner\n from django.utils.deprecation import RemovedInDjango30Warning\n from django.utils.log import DEFAULT_LOGGING\n \n+try:\n+    import MySQLdb\n+except ImportError:\n+    pass\n+else:\n+    # Ignore informational warnings from QuerySet.explain().\n+    warnings.filterwarnings('ignore', '\\(1003, *', category=MySQLdb.Warning)\n+\n # Make deprecation warnings errors to ensure no usage of deprecated features.\n warnings.simplefilter(\"error\", RemovedInDjango30Warning)\n # Make runtime warning errors to ensure no usage of error prone patterns.",
+  "sections": [
+    {
+      "id": "explain-core",
+      "title": "Core QuerySet.explain() API and SQL compilation",
+      "rationale": "These hunks together add the public QuerySet.explain() entry point, the Query state flags, the compiler's EXPLAIN prefix injection and result flattening, and the base operations/feature contract that all backends build on.",
+      "hunks": [
+        {
+          "hunk_id": "django/db/models/query.py#0",
+          "lines": [
+            "         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)",
+            "         self._prefetch_done = True",
+            " ",
+            "+    def explain(self, *, format=None, **options):",
+            "+        return self.query.explain(using=self.db, format=format, **options)",
+            "+",
+            "     ##################################################",
+            "     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #",
+            "     ##################################################"
+          ]
+        },
+        {
+          "hunk_id": "django/db/models/sql/query.py#0",
+          "lines": [
+            " ",
+            "         self._filtered_relations = {}",
+            " ",
+            "+        self.explain_query = False",
+            "+        self.explain_format = None",
+            "+        self.explain_options = {}",
+            "+",
+            "     @property",
+            "     def extra(self):",
+            "         if self._extra is None:"
+          ]
+        },
+        {
+          "hunk_id": "django/db/models/sql/query.py#1",
+          "lines": [
+            "         compiler = q.get_compiler(using=using)",
+            "         return compiler.has_results()",
+            " ",
+            "+    def explain(self, using, format=None, **options):",
+            "+        q = self.clone()",
+            "+        q.explain_query = True",
+            "+        q.explain_format = format",
+            "+        q.explain_options = options",
+            "+        compiler = q.get_compiler(using=using)",
+            "+        return '\\n'.join(compiler.explain_query())",
+            "+",
+            "     def combine(self, rhs, connector):",
+            "         \"\"\"",
+            "         Merge the 'rhs' query into the current one (with any 'rhs' effects"
+          ]
+        },
+        {
+          "hunk_id": "django/db/models/sql/compiler.py#0",
+          "lines": [
+            "                     result.append('HAVING %s' % having)",
+            "                     params.extend(h_params)",
+            " ",
+            "+            if self.query.explain_query:",
+            "+                result.insert(0, self.connection.ops.explain_query_prefix(",
+            "+                    self.query.explain_format,",
+            "+                    **self.query.explain_options",
+            "+                ))",
+            "+",
+            "             if order_by:",
+            "                 ordering = []",
+            "                 for _, (o_sql, o_params, _) in order_by:"
+          ]
+        },
+        {
+          "hunk_id": "django/db/models/sql/compiler.py#1",
+          "lines": [
+            "         sql, params = self.as_sql()",
+            "         return 'EXISTS (%s)' % sql, params",
+            " ",
+            "+    def explain_query(self):",
+            "+        result = list(self.execute_sql())",
+            "+        # Some backends return 1 item tuples with strings, and others return",
+            "+        # tuples with integers and strings. Flatten them out into strings.",
+            "+        for row in result[0]:",
+            "+            if not isinstance(row, str):",
+            "+                yield ' '.join(str(c) for c in row)",
+            "+            else:",
+            "+                yield row",
+            "+",
+            " ",
+            " class SQLInsertCompiler(SQLCompiler):",
+            "     return_id = False"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/base/operations.py#0",
+          "lines": [
+            "     UNBOUNDED_FOLLOWING = 'UNBOUNDED ' + FOLLOWING",
+            "     CURRENT_ROW = 'CURRENT ROW'",
+            " ",
+            "+    # Prefix for EXPLAIN queries, or None EXPLAIN isn't supported.",
+            "+    explain_prefix = None",
+            "+",
+            "     def __init__(self, connection):",
+            "         self.connection = connection",
+            "         self._cache = None"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/base/operations.py#1",
+          "lines": [
+            " ",
+            "     def window_frame_range_start_end(self, start=None, end=None):",
+            "         return self.window_frame_rows_start_end(start, end)",
+            "+",
+            "+    def explain_query_prefix(self, format=None, **options):",
+            "+        if not self.connection.features.supports_explaining_query_execution:",
+            "+            raise NotSupportedError('This backend does not support explaining query execution.')",
+            "+        if format:",
+            "+            supported_formats = self.connection.features.supported_explain_formats",
+            "+            normalized_format = format.upper()",
+            "+            if normalized_format not in supported_formats:",
+            "+                msg = '%s is not a recognized format.' % normalized_format",
+            "+                if supported_formats:",
+            "+                    msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))",
+            "+                raise ValueError(msg)",
+            "+        if options:",
+            "+            raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))",
+            "+        return self.explain_prefix"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/base/features.py#0",
+          "lines": [
+            "     # Convert CharField results from bytes to str in database functions.",
+            "     db_functions_convert_bytes_to_str = False",
+            " ",
+            "+    # What formats does the backend EXPLAIN syntax support?",
+            "+    supported_explain_formats = set()",
+            "+",
+            "+    # Does DatabaseOperations.explain_query_prefix() raise ValueError if",
+            "+    # unknown kwargs are passed to QuerySet.explain()?",
+            "+    validates_explain_options = True",
+            "+",
+            "     def __init__(self, connection):",
+            "         self.connection = connection",
+            " ",
+            "+    @cached_property",
+            "+    def supports_explaining_query_execution(self):",
+            "+        \"\"\"Does this backend support explaining query execution?\"\"\"",
+            "+        return self.connection.ops.explain_prefix is not None",
+            "+",
+            "     @cached_property",
+            "     def supports_transactions(self):",
+            "         \"\"\"Confirm support for transactions.\"\"\""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explain-mysql",
+      "title": "MySQL backend EXPLAIN support",
+      "rationale": "These hunks configure MySQL's EXPLAIN prefix, supported formats, the TEXT\u2192TRADITIONAL alias, and the EXTENDED fallback for pre-5.7 versions.",
+      "hunks": [
+        {
+          "hunk_id": "django/db/backends/mysql/operations.py#0",
+          "lines": [
+            "         'PositiveSmallIntegerField': 'unsigned integer',",
+            "     }",
+            "     cast_char_field_without_max_length = 'char'",
+            "+    explain_prefix = 'EXPLAIN'",
+            " ",
+            "     def date_extract_sql(self, lookup_type, field_name):",
+            "         # http://dev.mysql.com/doc/mysql/en/date-and-time-functions.html"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/mysql/operations.py#1",
+          "lines": [
+            "             ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, lhs_params * 2 + rhs_params * 2",
+            "         else:",
+            "             return \"TIMESTAMPDIFF(MICROSECOND, %s, %s)\" % (rhs_sql, lhs_sql), rhs_params + lhs_params",
+            "+",
+            "+    def explain_query_prefix(self, format=None, **options):",
+            "+        # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.",
+            "+        if format and format.upper() == 'TEXT':",
+            "+            format = 'TRADITIONAL'",
+            "+        prefix = super().explain_query_prefix(format, **options)",
+            "+        if format:",
+            "+            prefix += ' FORMAT=%s' % format",
+            "+        if self.connection.features.needs_explain_extended and format is None:",
+            "+            # EXTENDED and FORMAT are mutually exclusive options.",
+            "+            prefix += ' EXTENDED'",
+            "+        return prefix"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/mysql/features.py#0",
+          "lines": [
+            "         END;",
+            "     \"\"\"",
+            "     db_functions_convert_bytes_to_str = True",
+            "+    # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.",
+            "+    supported_explain_formats = {'JSON', 'TEXT', 'TRADITIONAL'}",
+            " ",
+            "     @cached_property",
+            "     def _mysql_storage_engine(self):"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/mysql/features.py#1",
+          "lines": [
+            "     def supports_over_clause(self):",
+            "         return self.connection.mysql_version >= (8, 0, 2)",
+            " ",
+            "+    @cached_property",
+            "+    def needs_explain_extended(self):",
+            "+        # EXTENDED is deprecated (and not required) in 5.7 and removed in 8.0.",
+            "+        return self.connection.mysql_version < (5, 7)",
+            "+",
+            "     @cached_property",
+            "     def supports_transactions(self):",
+            "         \"\"\""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explain-postgresql",
+      "title": "PostgreSQL backend EXPLAIN support",
+      "rationale": "These hunks configure PostgreSQL's EXPLAIN prefix, supported formats, and pass-through of arbitrary EXPLAIN options (COSTS, BUFFERS, etc.).",
+      "hunks": [
+        {
+          "hunk_id": "django/db/backends/postgresql/operations.py#0",
+          "lines": [
+            " ",
+            " class DatabaseOperations(BaseDatabaseOperations):",
+            "     cast_char_field_without_max_length = 'varchar'",
+            "+    explain_prefix = 'EXPLAIN'",
+            " ",
+            "     def unification_cast_sql(self, output_field):",
+            "         internal_type = output_field.get_internal_type()"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/postgresql/operations.py#1",
+          "lines": [
+            "                 'and FOLLOWING.'",
+            "             )",
+            "         return start_, end_",
+            "+",
+            "+    def explain_query_prefix(self, format=None, **options):",
+            "+        prefix = super().explain_query_prefix(format)",
+            "+        extra = {}",
+            "+        if format:",
+            "+            extra['FORMAT'] = format",
+            "+        if options:",
+            "+            extra.update({",
+            "+                name.upper(): 'true' if value else 'false'",
+            "+                for name, value in options.items()",
+            "+            })",
+            "+        if extra:",
+            "+            prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())",
+            "+        return prefix"
+          ]
+        },
+        {
+          "hunk_id": "django/db/backends/postgresql/features.py#0",
+          "lines": [
+            "     $$ LANGUAGE plpgsql;\"\"\"",
+            "     supports_over_clause = True",
+            "     supports_aggregate_filter_clause = True",
+            "+    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}",
+            "+    validates_explain_options = False  # A query will error on invalid options.",
+            " ",
+            "     @cached_property",
+            "     def is_postgresql_9_5(self):"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explain-sqlite",
+      "title": "SQLite backend EXPLAIN support",
+      "rationale": "This hunk sets the SQLite-specific EXPLAIN QUERY PLAN prefix, enabling the base explain_query_prefix to work without format support.",
+      "hunks": [
+        {
+          "hunk_id": "django/db/backends/sqlite3/operations.py#0",
+          "lines": [
+            "         'DateField': 'TEXT',",
+            "         'DateTimeField': 'TEXT',",
+            "     }",
+            "+    explain_prefix = 'EXPLAIN QUERY PLAN'",
+            " ",
+            "     def bulk_batch_size(self, fields, objs):",
+            "         \"\"\""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explain-tests",
+      "title": "Tests for QuerySet.explain()",
+      "rationale": "These hunks add the dedicated test suite for explain(), register 'explain' in the manager proxy-methods list, and suppress MySQLdb informational warnings during tests.",
+      "hunks": [
+        {
+          "hunk_id": "tests/queries/test_explain.py#0",
+          "lines": [
+            "+import unittest",
+            "+",
+            "+from django.db import NotSupportedError, connection, transaction",
+            "+from django.db.models import Count",
+            "+from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature",
+            "+from django.test.utils import CaptureQueriesContext",
+            "+",
+            "+from .models import Tag",
+            "+",
+            "+",
+            "+@skipUnlessDBFeature('supports_explaining_query_execution')",
+            "+class ExplainTests(TestCase):",
+            "+",
+            "+    def test_basic(self):",
+            "+        querysets = [",
+            "+            Tag.objects.filter(name='test'),",
+            "+            Tag.objects.filter(name='test').select_related('parent'),",
+            "+            Tag.objects.filter(name='test').prefetch_related('children'),",
+            "+            Tag.objects.filter(name='test').annotate(Count('children')),",
+            "+            Tag.objects.filter(name='test').values_list('name'),",
+            "+            Tag.objects.order_by().union(Tag.objects.order_by().filter(name='test')),",
+            "+            Tag.objects.all().select_for_update().filter(name='test'),",
+            "+        ]",
+            "+        supported_formats = connection.features.supported_explain_formats",
+            "+        all_formats = (None,) + tuple(supported_formats) + tuple(f.lower() for f in supported_formats)",
+            "+        for idx, queryset in enumerate(querysets):",
+            "+            for format in all_formats:",
+            "+                with self.subTest(format=format, queryset=idx):",
+            "+                    if connection.vendor == 'mysql':",
+            "+                        # This does a query and caches the result.",
+            "+                        connection.features.needs_explain_extended",
+            "+                    with self.assertNumQueries(1), CaptureQueriesContext(connection) as captured_queries:",
+            "+                        result = queryset.explain(format=format)",
+            "+                        self.assertTrue(captured_queries[0]['sql'].startswith(connection.ops.explain_prefix))",
+            "+                        self.assertIsInstance(result, str)",
+            "+                        self.assertTrue(result)",
+            "+",
+            "+    @skipUnlessDBFeature('validates_explain_options')",
+            "+    def test_unknown_options(self):",
+            "+        with self.assertRaisesMessage(ValueError, 'Unknown options: test, test2'):",
+            "+            Tag.objects.all().explain(test=1, test2=1)",
+            "+",
+            "+    def test_unknown_format(self):",
+            "+        msg = 'DOES NOT EXIST is not a recognized format.'",
+            "+        if connection.features.supported_explain_formats:",
+            "+            msg += ' Allowed formats: %s' % ', '.join(sorted(connection.features.supported_explain_formats))",
+            "+        with self.assertRaisesMessage(ValueError, msg):",
+            "+            Tag.objects.all().explain(format='does not exist')",
+            "+",
+            "+    @unittest.skipUnless(connection.vendor == 'postgresql', 'PostgreSQL specific')",
+            "+    def test_postgres_options(self):",
+            "+        qs = Tag.objects.filter(name='test')",
+            "+        test_options = [",
+            "+            {'COSTS': False, 'BUFFERS': True, 'ANALYZE': True},",
+            "+            {'costs': False, 'buffers': True, 'analyze': True},",
+            "+            {'verbose': True, 'timing': True, 'analyze': True},",
+            "+            {'verbose': False, 'timing': False, 'analyze': True},",
+            "+        ]",
+            "+        if connection.pg_version >= 100000:",
+            "+            test_options.append({'summary': True})",
+            "+        for options in test_options:",
+            "+            with self.subTest(**options), transaction.atomic():",
+            "+                with CaptureQueriesContext(connection) as captured_queries:",
+            "+                    qs.explain(format='text', **options)",
+            "+                self.assertEqual(len(captured_queries), 1)",
+            "+                for name, value in options.items():",
+            "+                    option = '{} {}'.format(name.upper(), 'true' if value else 'false')",
+            "+                    self.assertIn(option, captured_queries[0]['sql'])",
+            "+",
+            "+    @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL specific')",
+            "+    def test_mysql_text_to_traditional(self):",
+            "+        with CaptureQueriesContext(connection) as captured_queries:",
+            "+            Tag.objects.filter(name='test').explain(format='text')",
+            "+        self.assertEqual(len(captured_queries), 1)",
+            "+        self.assertIn('FORMAT=TRADITIONAL', captured_queries[0]['sql'])",
+            "+",
+            "+    @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL < 5.7 specific')",
+            "+    def test_mysql_extended(self):",
+            "+        # Inner skip to avoid module level query for MySQL version.",
+            "+        if not connection.features.needs_explain_extended:",
+            "+            raise unittest.SkipTest('MySQL < 5.7 specific')",
+            "+        qs = Tag.objects.filter(name='test')",
+            "+        with CaptureQueriesContext(connection) as captured_queries:",
+            "+            qs.explain(format='json')",
+            "+        self.assertEqual(len(captured_queries), 1)",
+            "+        self.assertNotIn('EXTENDED', captured_queries[0]['sql'])",
+            "+        with CaptureQueriesContext(connection) as captured_queries:",
+            "+            qs.explain(format='text')",
+            "+        self.assertEqual(len(captured_queries), 1)",
+            "+        self.assertNotIn('EXTENDED', captured_queries[0]['sql'])",
+            "+",
+            "+",
+            "+@skipIfDBFeature('supports_explaining_query_execution')",
+            "+class ExplainUnsupportedTests(TestCase):",
+            "+",
+            "+    def test_message(self):",
+            "+        msg = 'This backend does not support explaining query execution.'",
+            "+        with self.assertRaisesMessage(NotSupportedError, msg):",
+            "+            Tag.objects.filter(name='test').explain()"
+          ]
+        },
+        {
+          "hunk_id": "tests/basic/tests.py#0",
+          "lines": [
+            "         'only',",
+            "         'using',",
+            "         'exists',",
+            "+        'explain',",
+            "         '_insert',",
+            "         '_update',",
+            "         'raw',"
+          ]
+        },
+        {
+          "hunk_id": "tests/runtests.py#0",
+          "lines": [
+            " from django.utils.deprecation import RemovedInDjango30Warning",
+            " from django.utils.log import DEFAULT_LOGGING",
+            " ",
+            "+try:",
+            "+    import MySQLdb",
+            "+except ImportError:",
+            "+    pass",
+            "+else:",
+            "+    # Ignore informational warnings from QuerySet.explain().",
+            "+    warnings.filterwarnings('ignore', '\\(1003, *', category=MySQLdb.Warning)",
+            "+",
+            " # Make deprecation warnings errors to ensure no usage of deprecated features.",
+            " warnings.simplefilter(\"error\", RemovedInDjango30Warning)",
+            " # Make runtime warning errors to ensure no usage of error prone patterns."
+          ]
+        }
+      ]
+    }
+  ]
+}

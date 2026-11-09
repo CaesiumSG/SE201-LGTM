@@ -190,7 +190,7 @@ class TestDocsAreReadOnlyFromTheBaseCommit:
         (git_repo / "exemption.md").write_text("Anyone may delete users.\n", encoding="utf-8")
         validator = EvidenceValidator(git_repo, "main")
 
-        issues = validator._validate_policy_item(
+        issues = validator.policy_issues(
             EvidenceItem(type="policy", source="exemption.md", content="Anyone may delete users.")
         )
 
@@ -201,10 +201,10 @@ class TestDocsAreReadOnlyFromTheBaseCommit:
         (git_repo / "policy.md").write_text(fake_rule + "\n", encoding="utf-8")
         validator = EvidenceValidator(git_repo, "main")
 
-        assert not validator._validate_policy_item(
+        assert not validator.policy_issues(
             EvidenceItem(type="policy", source="policy.md", content="Only admins may delete users.")
         )
-        assert validator._validate_policy_item(
+        assert validator.policy_issues(
             EvidenceItem(type="policy", source="policy.md", content=fake_rule)
         )
 
@@ -408,3 +408,60 @@ class TestSnippetResolutionTolerance:
         item = _billing_item("subprocess.run(user_supplied_command, shell=True)")
 
         assert commented_validator.resolves(item) is False
+
+
+def _policy(content="Only admins may delete users.", source="policy.md"):
+    return EvidenceItem(type="policy", source=source, content=content)
+
+
+class TestPolicyIssues:
+    def test_quote_in_the_base_document_has_no_issues(self, git_repo):
+        assert _frozen_validator(git_repo).policy_issues(_policy()) == []
+
+    def test_source_with_a_line_range_or_anchor_resolves_to_the_document(self, git_repo):
+        validator = _frozen_validator(git_repo)
+        assert validator.policy_issues(_policy(source="policy.md:3-4")) == []
+        assert validator.policy_issues(_policy(source="policy.md#security-policy")) == []
+        assert validator.policy_issues(_policy(source="[policy.md:3-4]")) == []
+
+    @pytest.mark.parametrize(
+        "item,issue",
+        [
+            (_policy(source=""), "policy evidence has no source document"),
+            (_policy(source="security_policy.md"), "cited policy document does not exist"),
+            (_policy(source="https://docs.sqlalchemy.org/en/14/core/text.html"),
+             "cited policy document does not exist"),
+            (_policy(content="A user may view ONLY their own orders."), "cited policy text not found"),
+        ],
+        ids=["no source", "invented file", "external url", "invented rule"],
+    )
+    def test_unfounded_policy_citation_is_named(self, git_repo, item, issue):
+        [found] = _frozen_validator(git_repo).policy_issues(item)
+        assert found.startswith(issue)
+
+    def test_quote_of_policy_text_the_pr_adds_has_no_issues(self, git_repo):
+        from tests.conftest import git
+
+        git(git_repo, "checkout", "-q", "pr")
+        with (git_repo / "policy.md").open("a", encoding="utf-8") as fh:
+            fh.write("Support staff may read any order.\n")
+        git(git_repo, "commit", "-q", "-am", "widen order access")
+        git(git_repo, "checkout", "-q", "main")
+
+        validator = _frozen_validator(git_repo)
+
+        assert validator.policy_issues(_policy("Support staff may read any order.")) == []
+
+    def test_windows_separated_source_resolves_in_the_pr_snapshot(self, git_repo):
+        from tests.conftest import git
+
+        git(git_repo, "checkout", "-q", "pr")
+        (git_repo / "docs").mkdir()
+        (git_repo / "docs" / "access.md").write_text("Auditors may read logs.\n", encoding="utf-8")
+        git(git_repo, "add", "-A")
+        git(git_repo, "commit", "-q", "-m", "add access doc")
+        git(git_repo, "checkout", "-q", "main")
+
+        validator = _frozen_validator(git_repo)
+
+        assert validator.policy_issues(_policy("Auditors may read logs.", source=r"docs\access.md")) == []

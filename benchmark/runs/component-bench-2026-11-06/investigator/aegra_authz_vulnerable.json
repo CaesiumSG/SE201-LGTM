@@ -1,0 +1,76 @@
+{
+  "case_id": "aegra_authz_vulnerable",
+  "diff": "--- a/libs/aegra-api/src/aegra_api/api/runs.py\n+++ b/libs/aegra-api/src/aegra_api/api/runs.py\n@@ -15,7 +15,6 @@ from aegra_api.core.active_runs import active_runs\n from aegra_api.core.auth_deps import auth_dependency, get_current_user\n from aegra_api.core.auth_handlers import build_auth_context, handle_event\n from aegra_api.core.orm import Run as RunORM\n-from aegra_api.core.orm import Thread as ThreadORM\n from aegra_api.core.orm import _get_session_maker, get_session\n from aegra_api.core.sse import create_end_event, get_sse_headers\n from aegra_api.models import Run, RunCreate, RunStatus, User\n@@ -51,12 +50,6 @@ async def create_run(\n     endpoint to follow progress. Provide either `input` or `command` (for\n     human-in-the-loop resumption) but not both.\n     \"\"\"\n-    existing_thread = await session.scalar(\n-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n-    )\n-    if existing_thread and existing_thread.user_id != user.identity:\n-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n-\n     # Authorization check (create_run action on threads resource)\n     ctx = build_auth_context(user, \"threads\", \"create_run\")\n     value = {**request.model_dump(), \"thread_id\": thread_id}\n@@ -99,12 +92,6 @@ async def create_and_stream_run(\n     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`\n     to control which event types are emitted.\n     \"\"\"\n-    existing_thread = await session.scalar(\n-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n-    )\n-    if existing_thread and existing_thread.user_id != user.identity:\n-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n-\n     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n \n     # Default to cancel on disconnect - this matches user expectation that clicking\n@@ -324,12 +311,6 @@ async def wait_for_run(\n \n     # Session block: all pre-execution DB work (validate, create run, submit)\n     async with maker() as session:\n-        existing_thread = await session.scalar(\n-            select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n-        )\n-        if existing_thread and existing_thread.user_id != user.identity:\n-            raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n-\n         run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n \n     # No pool connection held from here \u2014 safe for long waits",
+  "sections": [
+    {
+      "id": "remove-thread-ownership-check",
+      "title": "Remove per-endpoint thread ownership (user_id) authorization checks from run-creation endpoints",
+      "rationale": "All four hunks delete the same inline `existing_thread.user_id != user.identity` guard (and its now-unused ThreadORM import) from the create, stream, and wait run endpoints, so they collectively change how thread ownership is enforced before `_prepare_run`.",
+      "hunks": [
+        {
+          "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#0",
+          "lines": [
+            " from aegra_api.core.auth_deps import auth_dependency, get_current_user",
+            " from aegra_api.core.auth_handlers import build_auth_context, handle_event",
+            " from aegra_api.core.orm import Run as RunORM",
+            "-from aegra_api.core.orm import Thread as ThreadORM",
+            " from aegra_api.core.orm import _get_session_maker, get_session",
+            " from aegra_api.core.sse import create_end_event, get_sse_headers",
+            " from aegra_api.models import Run, RunCreate, RunStatus, User"
+          ]
+        },
+        {
+          "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#1",
+          "lines": [
+            "     endpoint to follow progress. Provide either `input` or `command` (for",
+            "     human-in-the-loop resumption) but not both.",
+            "     \"\"\"",
+            "-    existing_thread = await session.scalar(",
+            "-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+            "-    )",
+            "-    if existing_thread and existing_thread.user_id != user.identity:",
+            "-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+            "-",
+            "     # Authorization check (create_run action on threads resource)",
+            "     ctx = build_auth_context(user, \"threads\", \"create_run\")",
+            "     value = {**request.model_dump(), \"thread_id\": thread_id}"
+          ]
+        },
+        {
+          "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#2",
+          "lines": [
+            "     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`",
+            "     to control which event types are emitted.",
+            "     \"\"\"",
+            "-    existing_thread = await session.scalar(",
+            "-        select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+            "-    )",
+            "-    if existing_thread and existing_thread.user_id != user.identity:",
+            "-        raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+            "-",
+            "     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+            " ",
+            "     # Default to cancel on disconnect - this matches user expectation that clicking"
+          ]
+        },
+        {
+          "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#3",
+          "lines": [
+            " ",
+            "     # Session block: all pre-execution DB work (validate, create run, submit)",
+            "     async with maker() as session:",
+            "-        existing_thread = await session.scalar(",
+            "-            select(ThreadORM).where(ThreadORM.thread_id == thread_id)",
+            "-        )",
+            "-        if existing_thread and existing_thread.user_id != user.identity:",
+            "-            raise HTTPException(404, f\"Thread '{thread_id}' not found\")",
+            "-",
+            "         run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+            " ",
+            "     # No pool connection held from here \u2014 safe for long waits"
+          ]
+        }
+      ]
+    }
+  ]
+}

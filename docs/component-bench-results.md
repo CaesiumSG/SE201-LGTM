@@ -1,111 +1,173 @@
-# Component benchmark results, 2026-11-05
+# Component benchmark results
 
-Each pipeline component scored on its own over the 12 real-world cases, against draft labels written by Claude Opus 5.5. No label has been reviewed yet; every figure below is provisional. Benchmark design and label formats: [`component-bench.md`](component-bench.md).
+*November 2026. Benchmark design and label formats: [`component-bench.md`](component-bench.md).*
 
-Models: reviewer `qwen3.8:27b` (Ollama), judge Kev-4B, both on the Origami cluster.
+## 1. What is being tested
 
-| Run | Commit | Components | Directory |
-| --- | --- | --- | --- |
-| Full run | `4815d3a` | all six | `benchmark/runs/component-bench-2026-11-05/` |
-| Kev rerun 1 | `0fccd5c` | kev-judge | `benchmark/runs/component-bench-kev-2026-11-05/` |
-| Kev rerun 2 | `eeb6a82` | kev-judge | `benchmark/runs/component-bench-kev-2026-11-05-r2/` |
+LGTM reviews a pull request (PR) for two kinds of security bug:
 
-## Summary
+- **SQL injection (SQLi):** user input is pasted into an SQL string instead of being passed as a bound parameter.
+- **Broken authorization (authz):** an endpoint lets a user read or change something they don't own, for example a missing ownership check.
 
-| Component | Units scored | Headline | Reading |
-| --- | --- | --- | --- |
-| Policy retrieval | 6 | hit@k 1.00, recall@k 1.00, MRR 0.83 | Every gold passage retrieved at the default `rag_top_k` |
-| Investigator | 2 of 12 | mean rating 0.90 | 10 units lost to a tunnel outage |
-| Authz reviewer | 6 | precision 0.60, recall 1.00, F1 0.75 | Finds every vulnerability; flags 2 of 3 fixed versions |
-| SAST SQLi triage | 12 | precision 1.00, recall 0.75, F1 0.86 | Drops one true alerta hit |
-| Evidence validator | 24 | precision 1.00, recall 1.00, F1 1.00 | Every citation and distractor classified correctly |
-| Kev judge (rerun 2) | 15 | verdict 0.87, severity 0.86 | See below |
+The review is a pipeline of separate parts. The benchmark scores the four AI parts:
 
-## Policy retrieval
-
-| hit@k | recall@k | MRR |
+| Component | What it does | Model |
 | --- | --- | --- |
-| 1.00 | 1.00 | 0.83 |
+| **SAST triage** | Semgrep, a pattern-matching scanner, flags suspicious SQL lines. An LLM agent then investigates each flagged line and gathers evidence. | `qwen3.8:27b` |
+| **Authz reviewer** | Reads one section of the PR and reports any authorization bug. | `qwen3.8:27b` |
+| **SQLi reviewer** | Reads one section and reports SQL injection. It doesn't wait for Semgrep to flag a line. | `qwen3.8:27b` |
+| **Kev judge** | Reads each finding with its cited code and decides whether the finding is real and how severe it is. | Kev-4B (fine-tuned 4B model) |
 
-All 6 authz cases retrieve a gold passage in the top k; in one third of them the first gold passage is not ranked first. The 6 sqli cases are not applicable.
+The LLM agents can use **tools** while they work:
 
-## Investigator
+- `read_file` opens a file.
+- `grep_repo` searches the repository text.
+- `search_policy` looks up the project's security policy.
+- `investigate_base_code` and `investigate_pr_code` query **CodeGraph**, an index of every function and who calls it, for the code before and after the PR.
 
-| Case | Rating |
-| --- | --- |
-| `pyload_sqli_vulnerable` | 0.95 |
-| `litellm_authz_safe` | 0.85 |
+Each agent gets the same toolbox it has in production. SAST triage doesn't use CodeGraph.
 
-The other 10 cases errored with `connection refused` when both SSH tunnels to the cluster were reset by the remote side for about two minutes. They have no result and are not rated. Ratings and reasons are in `investigator/ratings/`; the rubric is `investigator/investigator_rubric.md`.
+A **component benchmark** tests each part on its own, with the right inputs handed to it. So a bad score points to one component, not to the pipeline as a whole.
 
-## Authz reviewer
+## 2. How it was tested
 
-| | Gold vulnerable | Gold safe |
+### Test cases
+
+There are 25 cases. Each one is a real open-source project at a specific pair of commits: before the PR and after it.
+
+- **12 real-world cases:** 6 projects, each in two versions. One version introduces the bug (*vulnerable*); the other is the fixed code (*safe*).
+  - SQLi: pyload, postgraas, alerta.
+  - Authz: aegra, langflow, litellm.
+- **13 development cases:** real PRs that introduced a vulnerability upstream.
+  - 4 SQLi: superset, litellm, redash, django.
+  - 9 authz: sqladmin, weblate, wger, pretix, two airflow cases, redash, zulip, paperless.
+
+Each project is cloned locally and checked out at the exact commits. The tools read that real code.
+
+### Answer keys ("gold labels")
+
+Each component has an answer key: for each input, what a correct component should output. For example, "this flagged line is a real injection, keep it" or "this line is safely parameterized, drop it".
+
+### Scoring terms
+
+Most components make a yes/no call ("is this a real bug?"). Each call falls into one of four buckets:
+
+| | Really a bug | Not a bug |
 | --- | --- | --- |
-| Flagged | 3 (TP) | 2 (FP) |
-| Not flagged | 0 (FN) | 1 (TN) |
+| **Component said "bug"** | True positive (TP) | False positive (FP): a false alarm |
+| **Component said "no bug"** | False negative (FN): a miss | True negative (TN) |
 
-False positives: `aegra_authz_safe` and `litellm_authz_safe`, both on the fixed code.
+From these counts:
 
-## SAST SQLi triage
+- **Precision** = TP / (TP + FP): of the things it flagged, how many were real. Low precision means many false alarms.
+- **Recall** = TP / (TP + FN): of the real bugs, how many it caught. Low recall means many misses.
+- **F1** = the harmonic mean of the two, as one summary number. It is high only when both are high.
 
-| TP | FP | FN | TN | Precision | Recall | F1 |
+A test unit can also end as an **error**, for example when a service timed out. Errors are left out of the scores, not counted as wrong. A unit marked **not scored** has no valid answer key for that input.
+
+### Setup
+
+The agents use `qwen3.8:27b` and the judge is Kev-4B. Both ran on one A40 GPU on the SCIS Origami cluster, as a Slurm batch job. The SQLi reviewer run used `qwen3.8:27b` alone on one Slurm GPU job. The laptop reached the models through SSH tunnels.
+
+## 3. Results at a glance
+
+| Component | What we measure | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- |
+| SAST triage (+ Kev) | Keep the real flagged lines, drop the false alarms | 0.60 | 0.86 | **0.71** |
+| Authz reviewer | Find the authz bug, stay quiet on fixed code | 0.89 | 0.80 | **0.84** |
+| SQLi reviewer | Find the injection in a section | 1.00 | 1.00 | **1.00** |
+| Kev judge | Real or not real; how severe | 89% verdicts correct, 55% severities correct | | |
+
+## 4. Results by component
+
+### 4.1 SAST triage + Kev judge
+
+**Test.** The benchmark gives the triage agent one Semgrep-flagged line plus that file's PR diff. Each case has two flagged lines:
+
+- **Gold line:** the real injection, which should be **kept**.
+- **Decoy ("distractor") line:** a similar-looking SQL line that is actually safe, which should be **dropped**.
+
+The agent investigates with its tools and returns an explanation plus quoted evidence. That is checked and passed to Kev, exactly as in production. The finding is **kept** if Kev says it is supported and does not judge it not real. If the agent cites no evidence at all, it is dropped without asking Kev.
+
+**How it is scored.** Only the final keep/drop decision is scored. The triage agent gives no verdict of its own by design: its prompt says Kev decides.
+
+**Results** (18 flagged lines scored):
+
+| Real bugs kept (TP) | Real bugs missed (FN) | False alarms (FP) | Correctly dropped (TN) | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 3 | 0 | 1 | 8 | 1.00 | 0.75 | 0.86 |
+| 6 | 1 | 4 | 7 | 0.60 | 0.86 | 0.71 |
 
-False negative: `alerta_sqli_vulnerable-gold-1`.
+**What it means.**
 
-## Evidence validator
+- **It catches most real injections:** 6 of 7.
+- **The false alarms follow a pattern.** All 4 are decoy lines inside PRs that really are vulnerable (pyload, postgraas, alerta, superset). Every decoy inside a safe PR was correctly dropped.
+  - The likely cause is that the agent sees the real bug elsewhere in the diff and attaches it to the line it was handed.
+  - In practice the PR would be flagged anyway, but the report would point at the wrong line.
+- **The one miss** is django: Kev rejected the real finding.
+- **litellm is not scored.** The upstream PR's commits no longer exist on GitHub, so that development case can't be rebuilt.
 
-| TP | FP | FN | TN |
-| --- | --- | --- | --- |
-| 12 | 0 | 0 | 12 |
+### 4.2 Authz reviewer
 
-## Kev judge
+**Test.** The reviewer gets the section of the PR that contains the bug, plus its tools.
 
-| Metric | Full run | Rerun 1 | Rerun 2 |
-| --- | --- | --- | --- |
-| Verdict correct | 0.50 | 0.87 | **0.87** |
-| Real verdict correct | 0.45 | 0.90 | **0.90** |
-| Not-real verdict correct | 0.60 | 0.80 | **0.80** |
-| Severity correct | 0.36 | 0.57 | **0.86** |
-| Units scored / not scored | 16 / 1 | 15 / 1 | 15 / 1 |
+- On a **vulnerable** case, a finding counts as a hit (TP) if it lands in the same function as the known bug location. No report there is a miss (FN), and a report anywhere else is a false alarm (FP).
+- On a **safe** case, silence is correct (TN) and any report is a false alarm.
 
-Changes between runs:
+**Results** (13 cases scored):
 
-- **Rerun 1** (labels): labels accept every defensible verdict and severity (`gold.acceptable`); `kj-alerta-sqli-vuln-1` cites the pre-fix `SearchTerm.__repr__` f-string; `kj-alerta-sqli-safe-2` accepts `not_real`; the duplicate `kj-alerta-sqli-safe-3` is removed. Rescoring the full run's verdicts under these labels gives 0.69.
-- **Rerun 2** (judge input): severity levels are graded on who can reach the flaw, with medium and high worked examples; each cited item is sent with its enclosing function and decorators instead of the quoted lines alone; Kev's raw answers are recorded per unit. Both changes landed together, so their separate effects are not measured.
-
-Kev's answers in rerun 2:
-
-| Label | Gold | Accepted | Kev verdict | Kev severity | Kev supported | Result |
+| TP | FN | FP | TN | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `kj-pyload-sqli-vuln-1` | real / high | high, critical | real | critical | yes | ✓ |
-| `kj-pyload-sqli-safe-1` | not_real | | not_real | | no | ✓ |
-| `kj-postgraas-sqli-vuln-1` | real / high | high, critical | real | high | yes | ✓ |
-| `kj-postgraas-sqli-safe-1` | not_real | | not_real | | no | ✓ |
-| `kj-alerta-sqli-vuln-1` | real / high | high, critical | real | high | yes | ✓ |
-| `kj-alerta-sqli-vuln-2` | real / high | medium, high | not_real | | no | ✗ verdict |
-| `kj-alerta-sqli-safe-1` | not_real | not_real, real | real | critical | no | ✓ |
-| `kj-alerta-sqli-safe-2` | real / high | real, not_real | not_real | | yes | ✓ |
-| `kj-aegra-authz-vuln-1` | real / high | medium, high | real | high | yes | ✓ |
-| `kj-aegra-authz-safe-1` | not_real | | not_real | | yes | ✓ |
-| `kj-aegra-authz-safe-2` | real / medium | real, not_real | not_real | | no | ✓ |
-| `kj-aegra-authz-safe-3` | real / medium | real, not_real | not_real | | no | ✓ |
-| `kj-langflow-authz-vuln-1` | real / high | medium, high | real | high | yes | ✓ |
-| `kj-langflow-authz-safe-1` | not_real | | real | high | no | ✗ verdict |
-| `kj-litellm-authz-vuln-1` | real / high | high, critical | real | high | yes | ✓ |
-| `kj-litellm-authz-safe-1` | undetermined | | | | | not scored |
+| 8 | 2 | 1 | 3 | 0.89 | 0.80 | 0.84 |
 
-Kev severity is shown only where Kev answered `real`; Kev also returns a severity with `not_real`.
+**What it means.**
 
-### Remaining misses
+- **Few false alarms.** It stayed quiet on the fixed versions of aegra, langflow and litellm.
+- **Two misses:**
+  - **redash dashboard fork:** no finding at all.
+  - **paperless share links:** it found a real-looking problem (objects with no owner pass the permission check) but not the labelled bug location. So it counts as both a miss and a false alarm.
+- **Two errors, both airflow cases:** CodeGraph couldn't finish indexing the very large airflow repository within its time limit. Those units are excluded, not marked wrong.
 
-- **`kj-alerta-sqli-vuln-2`**: Kev received the whole `sort_by_columns` function. The allowlist check runs on `sort_by` after it is rewritten to `'attributes'`; the `attribute` value split from the request parameter is never checked and reaches `f"attributes->'{attribute}'"`. Kev answered `not_real`.
-- **`kj-langflow-authz-safe-1`**: Kev answered `supported: no` and `verdict: real` for the fixed delete-API-key route. The same contradiction appears on `kj-alerta-sqli-safe-1`, where `real` is accepted.
+The reviewer made 14 CodeGraph queries, 12 policy searches, 36 file reads and 23 searches.
 
-## Open items
+### 4.3 SQLi reviewer
 
-- Rerun the investigator on the 10 errored cases (`--resume`).
-- Review the draft labels.
-- The worked examples added in rerun 2 resemble benchmark cases (a lookup by id with no ownership check, SQL built from a sort field).
+**Test.** Same as authz, but for SQL injection, on the 10 SQLi cases. The reviewer's Semgrep notes list every flagged line in the section's files, decoys included, as in the pipeline. Each hit is also tagged with how it was found:
+
+- **`sast_also`:** Semgrep had already flagged that line.
+- **`reviewer_only`:** only the reviewer found it.
+
+**Results** (9 cases scored):
+
+| Hits | False alarms | Precision | Recall | F1 | Found only by the reviewer |
+| --- | --- | --- | --- | --- | --- |
+| 6 / 6 | 0 | 1.00 | 1.00 | 1.00 | 1 (django) |
+
+**What it means.**
+
+- The reviewer found every injection with no false alarms.
+- It found 1 that Semgrep did not flag.
+- The decoy notes drew no false alarms.
+- alerta (vulnerable) is not scored: its bug section has no SQL keywords, so the pipeline would never send it to the SQLi reviewer.
+
+### 4.4 Kev judge
+
+**Test.** Kev gets 29 candidate findings, each with a claim, a CWE (weakness type) and the cited code expanded to its whole enclosing function. It answers:
+
+- **Verdict:** is this real?
+- **Severity:** low, medium, high or critical.
+
+Where more than one answer is defensible, the answer key accepts all of them. One candidate's key is "undetermined", so 28 are scored.
+
+**Results:**
+
+| Verdict correct | On real findings | On not-real findings | Severity correct (real findings only) |
+| --- | --- | --- | --- |
+| 25 / 28 = **0.89** | 21 / 23 = 0.91 | 4 / 5 = 0.80 | 0.55 |
+
+**What it means.** Kev is good at real-versus-not-real but weak at severity.
+
+- **Verdict misses (3):**
+  - **alerta:** missed an unchecked sort field that reaches an f-string.
+  - **superset:** missed the `where_in` filter.
+  - **langflow:** called the *fixed* delete-key route real, while also answering "not supported".
+- **Severity misses:** most are Kev saying "high" where the key expects another level, on the newer authz cases.

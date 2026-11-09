@@ -65,6 +65,12 @@ def reply(verdict="real", severity="high"):
     }
 
 
+@pytest.fixture(autouse=True)
+def isolated_clone_cache(monkeypatch, tmp_path):
+    for mod in (run, kev_judge):
+        monkeypatch.setattr(mod, "CLONE_CACHE", tmp_path / "no-clones")
+
+
 def bench(tmp_path, items, judge):
     """Runs kev-judge through the bench-core runner; returns (section, units by label id)."""
     labels = tmp_path / "labels"
@@ -312,7 +318,7 @@ def test_shipped_labels_pass_core_validation(shipped):
 
 def test_every_case_has_at_least_one_candidate_label(shipped):
     all_cases = {c["id"] for c in schema.load_cases()}
-    assert len(all_cases) == 12
+    assert len(all_cases) == 25
     assert {i["case_id"] for i in shipped["items"]} == all_cases
 
 
@@ -347,3 +353,14 @@ def test_shipped_acceptable_sets_contain_the_gold_answer_and_carry_a_rationale(s
         assert set(severities) <= {"low", "medium", "high", "critical"}, i["label_id"]
         if gold.get("severity"):
             assert gold["severity"] in severities, i["label_id"]
+
+
+# AC-S4-1 (DEC-3: verdict record only)
+def test_scored_unit_carries_the_judge_verdict_and_not_scored_unit_none(tmp_path):
+    items = [item("C1"), item("C2", verdict="undetermined", severity=None)]
+    _, units = bench(tmp_path, items, lambda request: reply("not_real", "low"))
+    assert units["C1"]["status"] == "scored"
+    assert units["C1"]["verdict"] == "not_real"
+    assert units["C2"]["status"] == "not_scored"
+    assert not units["C2"].get("verdict")
+    assert units["C2"]["reason"]

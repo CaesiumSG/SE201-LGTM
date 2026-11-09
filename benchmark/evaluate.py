@@ -40,6 +40,7 @@ REPO_ROOT = BENCH.parent
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from lgtm import usage  # noqa: E402
 from lgtm.config import GPU_MODELS, LGTMConfig, apply_gpu_model, setup_logging  # noqa: E402
 from lgtm.pipeline import ReviewPipeline  # noqa: E402
 from lgtm.rag.indexer import index_repo_docs  # noqa: E402
@@ -680,6 +681,7 @@ def evaluate_case(case: dict, config: LGTMConfig) -> dict:
             "grounding_rate": round(len(grounded) / len(findings), 3) if findings else None,
             "latency_seconds": round(latency, 2),
             "est_tokens": est_tokens,
+            **usage.record_fields(getattr(result.meta, "token_usage", None)),
             "findings": findings,
             "run_records": run_record_fields(result),
             **trace_fields(config.mode, result),
@@ -1144,6 +1146,8 @@ def write_summary(
 
 def _write_payload(out_dir: Path, results: list[dict], payload: dict) -> None:
     summary = summarize(results)
+    # Kept out of summarize(), whose scoring is frozen against the eval commit.
+    summary["tokens"] = usage.summarize_records([r for r in results if not result_is_error(r)])
     payload = {
         **payload,
         "outcomes": {

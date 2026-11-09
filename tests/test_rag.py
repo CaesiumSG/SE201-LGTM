@@ -188,6 +188,10 @@ def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
                     {"external-id": ("keep me", {"owner": "external"})},
                 ),
             }
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
 
         def delete_collection(self, name):
             if name != "lgtm_docs":
@@ -224,6 +228,7 @@ def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
     _commit_all(tmp_path)
     config = LGTMConfig(rag_chunk_size=2, rag_chunk_overlap=0)
     assert index_repo_docs(tmp_path, config) == 2
+    assert client.close_calls == 1
     assert [record[0] for record in client.collections["lgtm_docs"].records.values()] == [
         "Admin access",
         "requires approval.",
@@ -239,6 +244,7 @@ def test_index_repo_docs_replaces_only_policy_collection_and_counts_chunks(
     (tmp_path / "policy.md").write_text(" \n\t", encoding="utf-8")
     _commit_all(tmp_path, "blank policy")
     assert index_repo_docs(tmp_path, config) == 0
+    assert client.close_calls == 2
     assert client.collections["lgtm_code"] is stale
     assert stale.metadata == stale_metadata
     assert stale.records == stale_records
@@ -346,6 +352,21 @@ class TestPolicyRetriever:
         result = retriever.format_results("who approves access?")
         assert "[policy.md:3-4]" in result
         assert "Admins must approve access." in result
+
+    def test_close_releases_clients_before_index_dir_removal(self, tmp_path):
+        from benchmark.component_bench.outcomes import remove_index
+
+        index_dir = tmp_path / "index"
+        index_dir.mkdir()
+        retriever = PolicyRetriever(tmp_path, LGTMConfig())
+        client = MagicMock()
+        existed_at_close = []
+        client.close.side_effect = lambda: existed_at_close.append(index_dir.exists())
+        retriever._clients.append(client)
+        remove_index(index_dir, retriever)
+        assert existed_at_close == [True]
+        assert not index_dir.exists()
+        assert retriever._collections == {}
 
     def test_missing_index_raises_filenotfound(self, tmp_path):
         retriever = PolicyRetriever(tmp_path, LGTMConfig())

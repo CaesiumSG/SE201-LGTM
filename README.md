@@ -389,8 +389,19 @@ findings under `docs/kev-labeling-criteria.md`.
 
 Reported metrics: precision / recall / F1 (overall and per category),
 false-positive rate on safe controls, evidence grounding rate,
-`possible` / `insufficient_evidence` rates, median latency and estimated
+`possible` / `insufficient_evidence` rates, median latency, and median
 tokens per PR. See `benchmark/README.md` for details.
+
+Token counts are what the model backends report (Ollama's prompt and output
+counts, Bedrock's input including cached prompt tokens, and Kev's input
+tokens), summed per review in `lgtm.usage`. Each report carries them under
+`review.token_usage`, split by stage (investigator, reviewers, SAST triage,
+plain reviewer). Each benchmark record has `input_tokens`, `output_tokens`,
+`total_tokens` and `judge_input_tokens`, and the summaries add a `tokens`
+block of medians. Ollama may count fewer prompt tokens when it reuses its
+prompt cache, so `estimated_input_tokens` (prompt characters / 4) is kept as
+a cross-check. The older `est_tokens` field only sizes the findings JSON and
+is not a token count.
 
 A case where the pipeline raises, or where an agent reports an
 execution, LLM or unparsable-output failure, is recorded as `ERROR`.
@@ -480,17 +491,18 @@ so its per-PR records are kept out of this public repository. Earlier rounds:
 
 ### 5. Component benchmark
 
-Scores single stages (retrieval, investigator, authz reviewer, SAST triage,
-evidence validator, Kev judge) on the 12 real-world cases against draft gold
-labels. The labels were drafted by Claude Opus 5.5 and have not all been
-reviewed by the team, so these figures are provisional. The final run's
-figures are in
-[`benchmark/runs/final-2026-11/RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md)
-(component section) and the method in
-[`docs/component-bench.md`](docs/component-bench.md). In that run the authz
-reviewer on its own was noisy (precision 0.29 over 6 units), while the Kev
-judge's verdict was right for 13 of 15 candidates, which is why the judge
-sits after the reviewers.
+Scores the four AI components on their own (SAST triage with Kev, the authz
+reviewer, the SQLi reviewer, the Kev judge) on 25 cases: the 12 real-world
+cases and the 13 development real PRs. Latest results (PR #33, 8–9 Nov):
+SAST triage F1 0.71, authz reviewer F1 0.84, SQLi reviewer F1 1.00 on 9
+cases, Kev verdicts correct for 25 of 28 candidates but severities for only
+0.55. Every gold label is still marked `draft` (drafted with Claude Opus 5.5,
+not yet approved by the team), so these figures are provisional. Results:
+[`docs/component-bench-results.md`](docs/component-bench-results.md); method:
+[`docs/component-bench.md`](docs/component-bench.md). An earlier, smaller
+version ran in the final evaluation on 6 Nov
+([`RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md), component section)
+and is superseded by these.
 
 ### All results at a glance
 
@@ -530,8 +542,8 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
   [`docs/real-prs-eval.md`](docs/real-prs-eval.md).
 - ✅ 12 ordinary merged PRs as a field trial; see
   [`docs/field-trial.md`](docs/field-trial.md).
-- Next: a larger held-out set (17 advisories means one case moves the rate
-  by 6 points), more OWASP patterns (stacked queries, second-order
+- Next: a larger held-out set of real PRs (17 advisories means one case
+  moves the rate by 6 points), more OWASP patterns (stacked queries, second-order
   injection), and team-reviewed labels for the component benchmark.
 - Keep the held-out sets held out: prompt and config tuning uses the Shoply
   dev split, the real-world CVEs and the development real PRs only.

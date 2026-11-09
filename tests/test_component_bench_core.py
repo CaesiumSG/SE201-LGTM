@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +56,11 @@ def component(run_item=None, score=None):
         run_item=run_item or (lambda item, ctx: "out"),
         score=score or (lambda item, output: {"hit": 1.0}),
     )
+
+
+@pytest.fixture(autouse=True)
+def isolated_clone_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(bench("run"), "CLONE_CACHE", tmp_path / "no-clones", raising=False)
 
 
 def execute(tmp_path, comps, **kw):
@@ -145,6 +152,21 @@ def test_no_selection_runs_every_component_and_selection_runs_only_chosen(tmp_pa
 # AC-S8-3, AC-S1-5, AC-S8-6: errors and summary
 
 
+def test_summary_json_records_executing_commit_and_dirty_flag(tmp_path, monkeypatch):
+    run = bench("run")
+    answers = {"rev-parse": "abc123", "status": " M src/x.py"}
+    monkeypatch.setattr(run, "_git", lambda *args: answers[args[0]])
+    _, results = execute(tmp_path, {"alpha": (component(), [label()])})
+    written = json.loads((results / "summary.json").read_text())
+    assert written["commit"] == "abc123"
+    assert written["dirty"] is True
+
+    monkeypatch.setattr(run, "_git", lambda *args: None)
+    _, results = execute(tmp_path / "nogit", {"alpha": (component(), [label()])})
+    written = json.loads((results / "summary.json").read_text())
+    assert written["commit"] is None and written["dirty"] is None
+
+
 def test_infra_error_is_recorded_excluded_from_scores_and_counted(tmp_path):
     run = bench("run")
 
@@ -167,12 +189,12 @@ def test_infra_error_is_recorded_excluded_from_scores_and_counted(tmp_path):
     assert s["scores"]["hit"] == 1.0
 
 
-def test_summary_reports_label_review_counts_and_investigator_na(tmp_path):
+def test_summary_reports_label_review_counts_and_na_for_a_per_case_component(tmp_path):
     items = [label("L1"), label("L2", CASE_B, review_state="approved"), label("L3")]
-    comps = {"alpha": (component(), items), "investigator": (component(), None)}
+    comps = {"alpha": (component(), items), "per-case": (component(), None)}
     summary, results = execute(tmp_path, comps)
     assert summary["components"]["alpha"]["labels"] == {"draft": 2, "approved": 1}
-    assert summary["components"]["investigator"]["labels"] == "n/a"
+    assert summary["components"]["per-case"]["labels"] == "n/a"
     assert json.loads((results / "alpha.json").read_text())["labels"] == {
         "draft": 2, "approved": 1,
     }
@@ -346,16 +368,16 @@ def test_partial_rerun_under_new_model_setting_refuses_instead_of_mixing_results
 # AC-S8-7: traceability
 
 
-def test_every_unit_carries_case_id_and_label_id_investigator_case_id_only(tmp_path):
+def test_every_unit_carries_case_id_and_label_id_per_case_component_case_id_only(tmp_path):
     comps = {
         "alpha": (component(), [label("L1"), label("L2", CASE_B)]),
-        "investigator": (component(), None),
+        "per-case": (component(), None),
     }
     _, results = execute(tmp_path, comps)
     got = {(u["case_id"], u["label_id"]) for u in units(results, "alpha")}
     assert got == {(CASE_A, "L1"), (CASE_B, "L2")}
-    inv = units(results, "investigator")
-    assert len(inv) == 12
+    inv = units(results, "per-case")
+    assert len(inv) == 25
     assert all(u["case_id"] and u.get("label_id") is None for u in inv)
 
 
@@ -564,3 +586,349 @@ def test_main_model_setting_differs_when_only_judge_endpoint_differs(tmp_path, m
     endpoint["value"] = "http://kev-two:8008"
     assert run.main(["--results-dir", str(tmp_path / "r"), "--labels-dir", str(tmp_path / "l")]) == 0
     assert seen[0] != seen[1]
+
+
+# Story 2: real_prs development cases
+
+REAL_WORLD_IDS = [
+    "pyload_sqli_vulnerable", "pyload_sqli_safe", "postgraas_sqli_vulnerable", "postgraas_sqli_safe",
+    "alerta_sqli_vulnerable", "alerta_sqli_safe", "aegra_authz_vulnerable", "aegra_authz_safe",
+    "langflow_authz_vulnerable", "langflow_authz_safe", "litellm_authz_vulnerable", "litellm_authz_safe",
+]
+BASE_REVISION = "a1b8121"
+LABEL_FILES = ("authz", "sast-sqli", "kev-judge")
+
+
+def development_cases() -> list[dict]:
+    path = ROOT / "benchmark" / "real_prs" / "cases.json"
+    return json.loads(path.read_text(encoding="utf-8"))["cases"]
+
+
+def loaded_development_cases() -> list[dict]:
+    return [c for c in bench("schema").load_cases() if c.get("split") == "real_prs"]
+
+
+def test_load_cases_returns_real_world_cases_then_the_13_development_cases():
+    cases = bench("schema").load_cases()
+    expected = [c["id"] for c in development_cases()]
+    assert len(expected) == 13
+    assert [c["id"] for c in cases] == REAL_WORLD_IDS + expected
+
+
+def test_each_development_case_has_the_fields_components_read():
+    by_id = {c["id"]: c for c in loaded_development_cases()}
+    for src in development_cases():
+        got = by_id[src["id"]]
+        assert got["repo_url"] == f"https://github.com/{src['repo']}"
+        assert got["base_ref"] == src["introducing"]["base_commit"]
+        assert got["pr_ref"] == src["introducing"]["merge_commit"]
+        assert got["category"] == src["category"]
+        assert got["cwe"] == src["cwe"]
+        assert got["description"] == src["title"]
+        assert got["split"] == "real_prs"
+
+
+def test_development_cases_are_four_sqli_and_nine_authz():
+    categories = [c["category"] for c in loaded_development_cases()]
+    assert (categories.count("sqli"), categories.count("authz")) == (4, 9)
+
+
+def test_real_world_cases_keep_their_split_and_ids():
+    cases = bench("schema").load_cases()[:12]
+    assert [c["id"] for c in cases] == REAL_WORLD_IDS
+    assert {c["split"] for c in cases} == {"real_world"}
+
+
+def test_loading_cases_and_validating_shipped_labels_never_opens_heldout(monkeypatch):
+    schema = bench("schema")
+    real_open, real_read = builtins.open, Path.read_text
+
+    def guard_open(file, *a, **kw):
+        assert "heldout" not in str(file).lower(), file
+        return real_open(file, *a, **kw)
+
+    def guard_read(self, *a, **kw):
+        assert "heldout" not in str(self).lower(), self
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", guard_open)
+    monkeypatch.setattr(Path, "read_text", guard_read)
+    schema.load_cases()
+    for name in LABEL_FILES:
+        schema.validate_labels(json.loads(real_read(PKG / "labels" / f"{name}.json", encoding="utf-8")))
+
+
+def test_loaded_cases_and_label_cases_are_only_real_world_and_development_ids():
+    allowed = set(REAL_WORLD_IDS) | {c["id"] for c in development_cases()}
+    assert {c["id"] for c in bench("schema").load_cases()} == allowed
+    for name in LABEL_FILES:
+        items = json.loads((PKG / "labels" / f"{name}.json").read_text(encoding="utf-8"))["items"]
+        assert {i["case_id"] for i in items} <= allowed, name
+
+
+def test_component_bench_sources_and_labels_do_not_reference_the_held_out_file():
+    files = [p for p in PKG.rglob("*") if p.is_file() and p.suffix in {".py", ".json", ".md"}]
+    assert files
+    offenders = [p.name for p in files if "heldout" in p.read_text(encoding="utf-8").lower()]
+    assert offenders == []
+
+
+def test_label_for_a_development_case_is_accepted_and_still_policed():
+    schema = bench("schema")
+    dev = loaded_development_cases()
+    dev_id, other = dev[0]["id"], dev[1]["id"]
+    schema.validate_labels(doc(label("L1", dev_id)))
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", dev_id), label("L1", other)))
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", dev_id)), applicable={other})
+    with pytest.raises(schema.LabelError):
+        schema.validate_labels(doc(label("L1", "no_such_development_case")))
+
+
+@pytest.mark.parametrize("name", LABEL_FILES)
+def test_real_world_labels_are_unchanged_from_the_base_revision(name):
+    rel = f"benchmark/component_bench/labels/{name}.json"
+    shown = subprocess.run(
+        ["git", "show", f"{BASE_REVISION}:{rel}"], cwd=ROOT, capture_output=True, encoding="utf-8"
+    )
+    if shown.returncode != 0:
+        pytest.skip(f"base revision {BASE_REVISION} not available")
+    before = json.loads(shown.stdout)["items"]
+    now = {i["label_id"]: i for i in json.loads((ROOT / rel).read_text(encoding="utf-8"))["items"]}
+    assert [now.get(i["label_id"]) for i in before] == before
+
+
+def test_fetch_command_is_a_module_with_a_main():
+    fetch = bench("fetch_real_prs")
+    assert callable(fetch.main)
+
+
+# AC-2-3, AC-2-7: the runner verifies a development case's clone and revisions before any component runs
+
+DEV_CASE = "superset-where-in-sqli"
+FETCH = "python -m benchmark.component_bench.fetch_real_prs"
+
+
+def _git(repo: Path, *args: str) -> str:
+    cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false"]
+    return subprocess.run([*cmd, *args], cwd=repo, check=True, capture_output=True, encoding="utf-8").stdout.strip()
+
+
+def _clone_with_branches(cache: Path, roles: tuple[str, ...]) -> None:
+    repo = cache / "superset"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.py").write_text("x = 1")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "c")
+    for role in roles:
+        _git(repo, "branch", f"rw/{DEV_CASE}/{role}")
+
+
+def _run_guarded(tmp_path, monkeypatch, cache: Path):
+    run, reg = bench("run"), bench("registry")
+    monkeypatch.setattr(run, "CLONE_CACHE", cache, raising=False)
+    called: list[str] = []
+
+    def run_item(item, ctx):
+        called.append(item["case_id"])
+        return "out"
+
+    entry = reg.Entry(module=component(run_item), source="cases")
+    run.run_benchmark(results_dir=tmp_path / "r", registry={"fake": entry})
+    rows = {u["case_id"]: u for u in units(tmp_path / "r", "fake")}
+    return rows, called
+
+
+def test_runner_errors_a_development_case_without_a_clone_and_does_not_call_the_component(
+    tmp_path, monkeypatch
+):
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "empty")
+    assert set(called) == set(REAL_WORLD_IDS)
+    row = rows[DEV_CASE]
+    assert row["status"] == "error" and row["scores"] is None
+    assert "superset" in row["reason"] and FETCH in row["reason"]
+
+
+@pytest.mark.parametrize("roles", [("base",), ("pr",), ()], ids=["no-pr", "no-base", "neither"])
+def test_runner_errors_a_development_case_with_a_missing_branch(tmp_path, monkeypatch, roles):
+    _clone_with_branches(tmp_path / "cache", roles)
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "cache")
+    assert DEV_CASE not in called
+    row = rows[DEV_CASE]
+    assert row["status"] == "error"
+    missing = {"base", "pr"} - set(roles)
+    assert all(f"rw/{DEV_CASE}/{role}" in row["reason"] for role in missing)
+    assert FETCH in row["reason"]
+
+
+def test_runner_errors_a_development_case_whose_branches_are_not_at_the_pinned_revisions(
+    tmp_path, monkeypatch
+):
+    _clone_with_branches(tmp_path / "cache", ("base", "pr"))
+    rows, called = _run_guarded(tmp_path, monkeypatch, tmp_path / "cache")
+    assert DEV_CASE not in called
+    row = rows[DEV_CASE]
+    assert row["status"] == "error" and row["scores"] is None
+    assert FETCH in row["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Production toolbox runs: AC-S1-3, AC-S1-4, AC-S1-7, AC-S4-2, AC-S5-1..3
+# ---------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+
+from tests.conftest import BENCH_TOOLBOX_COMPONENTS  # noqa: E402
+
+GRAPH_TOOLS = ("investigate_base_code", "investigate_pr_code")
+TOOLBOX_COMPONENTS = pytest.mark.parametrize("component", BENCH_TOOLBOX_COMPONENTS)
+PREVIOUS_RUN = ROOT / "benchmark" / "runs" / "component-bench-2026-11-06"
+
+
+@TOOLBOX_COMPONENTS
+@pytest.mark.parametrize("missing", ["clone", "ref"])
+def test_missing_case_clone_or_pinned_ref_is_an_error_with_reason_and_fetch_command(
+    bench_env, component, missing
+):
+    if missing == "clone":
+        bench_env.repo.rename(bench_env.cache / "elsewhere")
+    else:
+        bench_env.base = "1" * 40
+    result = bench_env.run(component)
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "fetch" in result.unit["reason"].lower()
+    assert result.agents.toolboxes == []
+
+
+@TOOLBOX_COMPONENTS
+def test_unavailable_codegraph_binary_is_an_error_not_a_score(bench_env, component, tmp_path):
+    result = bench_env.run(component, binary=str(tmp_path / "no-such-codegraph"))
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "unavailable" in result.unit["reason"]
+
+
+@TOOLBOX_COMPONENTS
+def test_missing_rag_index_is_an_error_naming_the_failing_step(bench_env, component):
+    result = bench_env.run(component, rag=False)
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert any(word in result.unit["reason"].lower() for word in ("rag", "index"))
+
+
+@TOOLBOX_COMPONENTS
+def test_degraded_graph_state_after_the_run_is_an_error_not_a_score(bench_env, component):
+    def degrade(toolbox):
+        toolbox.session._latched["pr"] = "export_failed"
+
+    result = bench_env.run(component, effect=degrade, findings=["x"])
+    assert result.unit["status"] == "error"
+    assert result.unit["scores"] is None
+    assert "degraded:pr:export_failed" in result.unit["reason"]
+    assert result.unit["graph_state"].startswith("degraded:pr")
+
+
+@TOOLBOX_COMPONENTS
+def test_healthy_run_records_graph_state_ok(bench_env, component):
+    assert bench_env.run(component).unit["graph_state"] == "ok"
+
+
+@TOOLBOX_COMPONENTS
+@pytest.mark.parametrize("fails", [False, True], ids=["succeeds", "fails"])
+def test_graph_sessions_opened_for_a_unit_are_closed_after_it(bench_env, monkeypatch, component, fails):
+    from benchmark.component_bench.outcomes import InfraError
+    from lgtm.graph.session import GraphSession
+
+    closed: list[int] = []
+    original = GraphSession.close
+
+    def spy_close(self):
+        closed.append(id(self))
+        original(self)
+
+    monkeypatch.setattr(GraphSession, "close", spy_close)
+
+    def boom(toolbox):
+        raise InfraError("model down")
+
+    bench_env.run(component, effect=boom if fails else None)
+    sessions = [id(t.session) for t in bench_env.agents.toolboxes]
+    assert sessions and set(sessions) <= set(closed)
+
+
+@TOOLBOX_COMPONENTS
+def test_unit_records_calls_and_invalid_calls_for_every_offered_tool_and_summary_totals_them(
+    bench_env, component
+):
+    if component == "sast-sqli":
+        calls = [{"tool": "grep_repo", "args": {"pattern": "q", "file_glob": "", "snapshot": "pr"}, "result": "r"}]
+        result = bench_env.run(component, tool_calls=calls)
+        (stats,) = result.unit["tools"].values()
+        assert set(stats) == {"read_file", "grep_repo", "search_policy"}
+        assert stats["grep_repo"] == {"calls": 1, "invalid": 0}
+        assert stats["search_policy"] == {"calls": 0, "invalid": 0}
+        return
+    calls = [{"tool": "investigate_pr_code", "args": {"query": "q"}, "result": "r"}]
+    result = bench_env.run(component, tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert {*GRAPH_TOOLS, "search_policy"} <= set(stats)
+    assert stats["investigate_pr_code"] == {"calls": 1, "invalid": 0}
+    for tool in ("investigate_base_code", "search_policy"):
+        assert stats[tool] == {"calls": 0, "invalid": 0}
+    assert result.summary["codegraph_calls"] == 1
+    assert result.summary["search_policy_calls"] == 0
+
+
+def test_invalid_search_policy_call_counts_as_invalid_in_unit_and_summary_total(bench_env):
+    calls = [{"tool": "search_policy", "args": {}, "result": ""}]
+    result = bench_env.run("authz", tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert stats["search_policy"] == {"calls": 1, "invalid": 1}
+    assert result.summary["search_policy_calls"] == 1
+    assert result.summary["codegraph_calls"] == 0
+
+
+def test_summary_keeps_codegraph_and_search_policy_totals_separate(bench_env):
+    calls = [
+        {"tool": "investigate_pr_code", "args": {"query": "q"}, "result": "r"},
+        {"tool": "investigate_base_code", "args": {"query": "q"}, "result": "r"},
+        {"tool": "search_policy", "args": {"query": "who may delete"}, "result": "r"},
+    ]
+    result = bench_env.run("authz", tool_calls=calls)
+    (stats,) = result.unit["tools"].values()
+    assert stats["search_policy"] == {"calls": 1, "invalid": 0}
+    assert result.summary["codegraph_calls"] == 2
+    assert result.summary["search_policy_calls"] == 1
+
+
+@TOOLBOX_COMPONENTS
+def test_error_unit_records_no_verdict_and_keeps_its_reason(bench_env, component):
+    result = bench_env.run(component, rag=False)
+    assert result.unit["status"] == "error"
+    assert not result.unit.get("verdict")
+    assert not result.unit.get("explanation")
+    assert result.unit["reason"]
+
+
+def test_not_scored_unit_records_no_verdict_and_keeps_its_reason(bench_env):
+    result = bench_env.run("sast-sqli")
+    assert result.unit["status"] == "not_scored"
+    assert not result.unit.get("verdict")
+    assert not result.unit.get("explanation")
+    assert "no scripted answer" in result.unit["reason"]
+
+
+def test_running_the_benchmark_leaves_the_2026_11_06_results_untouched(bench_env):
+    def digest():
+        return {
+            str(p.relative_to(PREVIOUS_RUN)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in PREVIOUS_RUN.rglob("*")
+            if p.is_file()
+        }
+
+    before = digest()
+    bench_env.run("authz")
+    assert before and digest() == before
