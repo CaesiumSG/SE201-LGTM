@@ -54,8 +54,10 @@ feature with a security bug, push it as a pull request, and watch LGTM review it
   clones, pushes and opens the pull request through `gh`, so the demo cannot push without it.
 - **A GitHub account.**
 - **An Amazon Bedrock API key.** The team sends it privately; it is never in the repository or the zip.
-- Optional: [Ollama](https://ollama.com) with `ollama pull llama3.2` (2 GB) for "Write it live". Without it, use
-  "Replay the prepared change" instead.
+- Optional, for "Write it live": [Ollama](https://ollama.com) installed and **running** on its default port
+  11434 (open the Ollama app, or run `ollama serve` in a separate terminal), with the model pulled:
+  `ollama pull llama3.2` (2 GB). Check with `curl http://127.0.0.1:11434/api/tags`, which should list
+  `llama3.2:latest`. Without Ollama, use "Replay the prepared change" instead.
 
 1. **Install** (from the repository root):
 
@@ -86,7 +88,7 @@ feature with a security bug, push it as a pull request, and watch LGTM review it
    API dot means the key in `.env` is missing or rejected (hover it for Bedrock's reason).
 
 7. **The demo:** Workspace → shoply-demo → the task *"Customers want to track one order…"* → **Write it live**
-   (or Replay). The **App** tab runs that code: sign in as Bob, open *Track an order*, enter 1, and Bob sees
+   (needs Ollama running, see Prerequisites; otherwise choose **Replay**). The **App** tab runs that code: sign in as Bob, open *Track an order*, enter 1, and Bob sees
    Alice's order and address. Then **Commit, push and open a pull request**. In about 2 to 3 minutes LGTM fails the
    check on your pull request and leaves an inline comment (insecure direct object reference, CWE-639) with the
    fix. Follow the review live under **Pull requests** in the dashboard.
