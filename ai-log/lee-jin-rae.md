@@ -260,3 +260,32 @@ Kept support for elided citation excerpts and explicit unsupported outcomes
 without a Kev call when the source is unreadable. The matching checks the
 parts around an ellipsis independently; it does not establish their order
 in the source.
+
+## Reflection
+
+### What I learned
+I learned to break work into smaller tasks, but also to trust the tools more
+for routine work. When an agent runs a benchmark, I am now comfortable
+trusting it to calculate F1 and read the results without double-checking
+every file it opens in chat. I put more attention into checking its judgments:
+when I ask about a change, it can give one answer, then change its mind after
+I push back a little. I need to understand the reasons, not just accept a
+confident answer.
+
+### Strengths and weaknesses
+The tools were fast at implementation and working through results. Given
+the right context, I think a model like Opus could probably design a better
+system than me. The weakness is that it does not automatically have the
+context we have as builders. For example, my section-based review changes
+replaced the old review path, but we later restored it behind a flag so we
+could reproduce earlier benchmark runs. Building the new design was not
+enough; we also needed to preserve our evaluation history. That is project
+context I need to make explicit, rather than expect the model to know.
+
+### What went wrong and what I would do differently
+Sometimes I was too specific: AI followed my design without questioning its
+gaps. One example was increasing the investigator's final-answer allowance
+without also reserving enough space for it in the context window. That
+needed a separate fix. During this project, I started discussing my ideas
+and asking AI to poke holes in them before building. Next time, I
+would do that earlier, rather than only checking whether AI built what I asked for.
