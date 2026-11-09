@@ -24,6 +24,8 @@ Roles as planned are in [`docs/project-proposal.md`](docs/project-proposal.md);
 who did what since is in [`docs/team-tasks.md`](docs/team-tasks.md) and the
 commit history.
 
+**Contents:** [Results](#results-in-brief) · [Demo](#demo) · [Run it yourself](#run-it-yourself) · [Architecture](#architecture) · [Setup](#setup) · [Usage](#usage) · [Configuration](#configuration) · [Guardrails](#guardrails) · [Benchmarks](#benchmarks) · [Project layout](#project-layout) · [Development](#development). Sections marked ▸ expand when clicked.
+
 ## Results in brief
 
 On **17 published advisories that we did not tune on** (the pull request that
@@ -141,7 +143,10 @@ judge and key status when it starts. Restarting the server signs you out (sign i
 
 ![LGTM architecture: gather context, investigate with LLM agents, validate with an evidence check and the Kev-4B judge, report](docs/architecture.png)
 
-Figure: [`docs/architecture.png`](docs/architecture.png) (source [`docs/architecture-figure.html`](docs/architecture-figure.html)). How a candidate finding is checked: [`docs/validation.png`](docs/validation.png). The same flow as text:
+Figure: [`docs/architecture.png`](docs/architecture.png) (source [`docs/architecture-figure.html`](docs/architecture-figure.html)). How a candidate finding is checked: [`docs/validation.png`](docs/validation.png).
+
+<details>
+<summary><b>▸ The same flow as text, stage by stage</b></summary>
 
 ```
             ┌──────────────────────────────────────────────────┐
@@ -203,6 +208,8 @@ Exit codes: 0 means no vulnerabilities, and 1 means vulnerabilities reported.
 2 means a person needs to look: a candidate was not judged, an agent failed,
 the PR changes policy docs (only when `fail_on_policy_change` is on), or the
 review itself crashed.
+
+</details>
 
 ## Setup
 
@@ -358,6 +365,9 @@ the default and the configuration we recommend.
 
 ## Configuration
 
+<details>
+<summary><b>▸ Configuration options: CodeGraph, authorization planner, policy index</b></summary>
+
 Settings are read from a JSON file passed with `--config-file`.
 
 ### CodeGraph
@@ -430,6 +440,8 @@ replaces only the policy collection (`lgtm_docs`); LGTM does not clean up
 other collections automatically. Config keys that no longer exist
 are ignored with an `Ignoring unknown config keys` warning.
 
+</details>
+
 ## Guardrails
 
 - Agent tools are **read-only**; file access is sandboxed to the repo.
@@ -491,10 +503,35 @@ and they differ in how independent they are: Shoply's dev split, the
 real-world CVE cases and the 13 development real PRs were all used to tune
 prompts and rules, while the 17 held-out real PRs were chosen after the last
 change and run without tuning. One pooled F1 would mix tuned and untuned data.
-Read them side by side; the [summary at the end of this
-section](#all-results-at-a-glance) does that.
+Read them side by side; the [summary just below](#all-results-at-a-glance) does that.
 
-### 0. Real PRs that introduced published vulnerabilities (main result)
+### All results at a glance
+
+Final evaluation, Qwen3.8 27B reviewer and Kev-4B judge, commit `af878ce`:
+
+| Benchmark | Tuned on? | `lgtm` | `llm-only` (same model, diff only) | Semgrep only |
+|---|---|---|---|---|
+| Real PRs, held-out (17 advisories) | No | 15/17 caught, 1/17 false alarms | 7/17, 2/17 | 3/17, 2/17 |
+| Real PRs, development (13) | Yes | 13/13 caught, 2/13 false alarms | 7/13, 0/13 | 0/13, 0/13 |
+| Shoply (52 synthetic) | Yes | F1 1.00 | F1 0.94 | not run in final |
+| Real-world CVEs (9 in scope) | Yes | F1 0.91 | F1 1.00 | not run in final |
+| Prompt injection (6 attacks) | Yes | 0/6 succeeded | 0/6 succeeded | n/a |
+| Field trial (12 ordinary PRs) | No | 0 crashes, 1 flagged, 78 s median | 0 crashes, 1 flagged, 7 s median | n/a |
+
+What this says: on tuned or synthetic sets a plain LLM is nearly as good as
+the full pipeline, but on real PRs we did not tune on, the agents (repository
+tools, policy retrieval, the SQLi reviewer, the judge) double the catch rate
+at the same false-alarm level. The price is time: about 2 minutes per diff
+against 7 seconds.
+
+The full history of rounds, failures, fixes and lessons is in
+[`docs/evaluation-log.md`](docs/evaluation-log.md); the checkpoint report
+is [`docs/checkpoint.md`](docs/checkpoint.md).
+
+Each benchmark in detail:
+
+<details>
+<summary><b>▸ 0. Real PRs that introduced published vulnerabilities (main result)</b></summary>
 
 Each case is a GitHub Security Advisory in an open-source Python web app. LGTM
 reviews two diffs: the commit or PR that **introduced** the flaw (a flag is a
@@ -538,7 +575,10 @@ many-valued relation). Per-advisory outcomes, temperature runs and the
 repeatability analysis are in
 [`benchmark/runs/final-2026-11/RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md).
 
-### 1. Shoply (synthetic)
+</details>
+
+<details>
+<summary><b>▸ 1. Shoply (synthetic)</b></summary>
 
 `benchmark/` contains **Shoply**, a Flask e-commerce API with token auth
 and RBAC, plus **26 matched PR pairs** (52 cases): 12 SQL-injection pairs
@@ -592,7 +632,10 @@ Results: the run writes its summary to the Shoply run folder under
 written by the team and tuned on, so it shows the pipeline works end to end
 rather than how well it generalises.
 
-### 2. Real-world CVEs
+</details>
+
+<details>
+<summary><b>▸ 2. Real-world CVEs</b></summary>
 
 12 cases built from 6 published advisories in open-source Python
 projects (3 SQLi, 3 authz; a vulnerable and a safe PR each). The real-world
@@ -621,7 +664,10 @@ both modes catch all 6 vulnerable cases; `lgtm` raises 2 false alarms on the 6
 safe ones. The vulnerable cases are synthetic reverts of a fix, which is why
 the real-PR benchmark above replaced this set as the main result.
 
-### 3. Prompt injection
+</details>
+
+<details>
+<summary><b>▸ 3. Prompt injection</b></summary>
 
 6 attack cases: vulnerable Shoply cases with the vulnerable code unchanged,
 plus comments, docstrings, fake JSON findings, renamed identifiers or docs
@@ -641,7 +687,10 @@ Results: final run in `benchmark/runs/final-2026-11/injection/`, where
 on by default in lgtm mode (§7 there; the dev-split comparison is archived in
 `benchmark/runs/archive/run7-mitigation-defaults/`).
 
-### 4. Field trial on ordinary merged PRs
+</details>
+
+<details>
+<summary><b>▸ 4. Field trial on ordinary merged PRs</b></summary>
 
 12 merged PRs from mealie (FastAPI), alerta (Flask) and redash (Flask) that
 touch route handlers, permission helpers or database code. Every PR was
@@ -661,7 +710,10 @@ so its per-PR records are kept out of this public repository. Earlier rounds:
 `benchmark/runs/archive/field_trial/<mode>/summary.json`; write-up in
 [`docs/field-trial.md`](docs/field-trial.md).
 
-### 5. Component benchmark
+</details>
+
+<details>
+<summary><b>▸ 5. Component benchmark</b></summary>
 
 Scores the four AI components on their own (SAST triage with Kev, the authz
 reviewer, the SQLi reviewer, the Kev judge) on 25 cases: the 12 real-world
@@ -676,30 +728,10 @@ version ran in the final evaluation on 6 Nov
 ([`RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md), component section)
 and is superseded by these.
 
-### All results at a glance
+</details>
 
-Final evaluation, Qwen3.8 27B reviewer and Kev-4B judge, commit `af878ce`:
-
-| Benchmark | Tuned on? | `lgtm` | `llm-only` (same model, diff only) | Semgrep only |
-|---|---|---|---|---|
-| Real PRs, held-out (17 advisories) | No | 15/17 caught, 1/17 false alarms | 7/17, 2/17 | 3/17, 2/17 |
-| Real PRs, development (13) | Yes | 13/13 caught, 2/13 false alarms | 7/13, 0/13 | 0/13, 0/13 |
-| Shoply (52 synthetic) | Yes | F1 1.00 | F1 0.94 | not run in final |
-| Real-world CVEs (9 in scope) | Yes | F1 0.91 | F1 1.00 | not run in final |
-| Prompt injection (6 attacks) | Yes | 0/6 succeeded | 0/6 succeeded | n/a |
-| Field trial (12 ordinary PRs) | No | 0 crashes, 1 flagged, 78 s median | 0 crashes, 1 flagged, 7 s median | n/a |
-
-What this says: on tuned or synthetic sets a plain LLM is nearly as good as
-the full pipeline, but on real PRs we did not tune on, the agents (repository
-tools, policy retrieval, the SQLi reviewer, the judge) double the catch rate
-at the same false-alarm level. The price is time: about 2 minutes per diff
-against 7 seconds.
-
-The full history of rounds, failures, fixes and lessons is in
-[`docs/evaluation-log.md`](docs/evaluation-log.md); the checkpoint report
-is [`docs/checkpoint.md`](docs/checkpoint.md).
-
-### Dataset roadmap
+<details>
+<summary><b>▸ Dataset roadmap</b></summary>
 
 - ✅ 6 SQLi pairs derived from the OWASP Benchmark taxonomy (Java →
   Python/Flask translation), keeping positives and negatives balanced.
@@ -720,7 +752,12 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
 - Keep the held-out sets held out: prompt and config tuning uses the Shoply
   dev split, the real-world CVEs and the development real PRs only.
 
+</details>
+
 ## Project layout
+
+<details>
+<summary><b>▸ Repository tree</b></summary>
 
 ```
 run-lgtm.sh                 # one command: install, GPU job, tunnels, index, review
@@ -781,6 +818,8 @@ scripts/make_submission.sh  # builds the course submission zip
 ai-log/                     # AI use logs, one per member, and the team declaration
 docs/                       # design notes, evaluation logs, checkpoint, responsible AI
 ```
+
+</details>
 
 ## Development
 
