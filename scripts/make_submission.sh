@@ -100,7 +100,7 @@ for f in RESULTS.md RUNLOG.md results.json; do
 done
 for f in deck-numbers.md deck-numbers.json real-prs-eval.md evaluation-log.md \
          real-world-eval.md field-trial.md prompt-injection.md component-bench.md \
-         component-bench-results.md gpu-model-eval.md agents.md responsible-ai.md architecture.svg \
+         component-bench-results.md gpu-model-eval.md agents.md responsible-ai.md architecture.png validation.png \
          project-proposal.md checkpoint.pdf; do
   copy_from_ref "docs/$f" "$sup/docs"
 done

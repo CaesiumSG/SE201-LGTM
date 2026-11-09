@@ -139,6 +139,10 @@ judge and key status when it starts. Restarting the server signs you out (sign i
 
 ## Architecture
 
+![LGTM architecture: gather context, investigate with LLM agents, validate with an evidence check and the Kev-4B judge, report](docs/architecture.png)
+
+Figure: [`docs/architecture.png`](docs/architecture.png) (source [`docs/architecture-figure.html`](docs/architecture-figure.html)). How a candidate finding is checked: [`docs/validation.png`](docs/validation.png). The same flow as text:
+
 ```
             ┌──────────────────────────────────────────────────┐
  PR branch  │ 1. Context building                              │
