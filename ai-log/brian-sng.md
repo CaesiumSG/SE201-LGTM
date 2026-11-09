@@ -31,12 +31,12 @@ Kept the word joiner (`\u2060`) defanging technique for `@mentions` and cross-re
 
 ## Reflection
 
-### What I learned about how to use these tools effectively
+### What I learned about using these tools effectively
 I learned to prioritize iterative verification over trust. Model outputs often look plausible on the surface, but they should only be treated as initial working drafts. Running the actual automated test suite, inspecting edge cases manually, and testing against concrete specifications are essential before accepting any generated code.
 
 ### Where the tools were strong, and where they were weak
 The tools were strong at rapid test generation and threat exploration, helping craft injection attack vectors and broad unit test suites quickly. However, they were weak at nuanced specification details—such as CommonMark parsing corner cases and regex boundary constraints—as well as platform-specific quirks like Windows binary resolution and path handling.
 
-### What went wrong, and what would I do differently
+### What went wrong, and what I would do differently
 Platform differences and network assumptions caused friction: Windows-specific executable discovery (`semgrep.exe`) and Ollama client timeouts when communicating with remote GPU cluster tools required unexpected debugging. Next time, I would standardize and validate the cross-platform environment and timeout configurations earlier in the project lifecycle.
 

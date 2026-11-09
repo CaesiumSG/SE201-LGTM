@@ -263,7 +263,7 @@ in the source.
 
 ## Reflection
 
-### What I learned
+### What I learned about using these tools effectively
 I learned to break work into smaller tasks, but also to trust the tools more
 for routine work. When an agent runs a benchmark, I am now comfortable
 trusting it to calculate F1 and read the results without double-checking
@@ -272,7 +272,7 @@ when I ask about a change, it can give one answer, then change its mind after
 I push back a little. I need to understand the reasons, not just accept a
 confident answer.
 
-### Strengths and weaknesses
+### Where the tools were strong, and where they were weak
 The tools were fast at implementation and working through results. Given
 the right context, I think a model like Opus could probably design a better
 system than me. The weakness is that it does not automatically have the
@@ -282,7 +282,7 @@ could reproduce earlier benchmark runs. Building the new design was not
 enough; we also needed to preserve our evaluation history. That is project
 context I need to make explicit, rather than expect the model to know.
 
-### What went wrong and what I would do differently
+### What went wrong, and what I would do differently
 Sometimes I was too specific: AI followed my design without questioning its
 gaps. One example was increasing the investigator's final-answer allowance
 without also reserving enough space for it in the context window. That

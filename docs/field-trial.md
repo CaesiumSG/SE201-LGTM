@@ -80,6 +80,15 @@ PR get reviewed at all. On these 12 PRs, in the archived 23 Oct run
 
 ## Results
 
+**Final run (6–7 Nov, commit af878ce,
+[`RESULTS.md`](../benchmark/runs/final-2026-11/RESULTS.md)):** LGTM flagged 1
+of the 12 PRs, and the judge supported that finding; the plain LLM also
+flagged 1. No run crashed, LGTM covered every changed section on 11 of 12
+PRs, and the median time per PR was 78 s for LGTM against 7 s for the plain
+LLM. The flagged PR is an unreported finding, so its records are kept out of
+this public repository and the PR is not named. The sections below describe
+the earlier, archived 23 Oct run.
+
 Setup: reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev (Kev-4B),
 conditions LGTM and LLM-only. Results: `benchmark/runs/archive/field_trial/<mode>/summary.json`.
 

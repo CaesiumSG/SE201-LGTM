@@ -126,6 +126,15 @@ Running `benchmark/evaluate.py --split dev` with mitigations enabled confirms th
 
 ## 7. Mitigations on by default (23 Oct)
 
+**Final run (6 Nov, commit af878ce,
+[`RESULTS.md`](../benchmark/runs/final-2026-11/RESULTS.md)):** 0 of the 6
+attacks succeeded in either mode. Without the injected text, both modes
+flagged all 6 cases. Because the plain LLM, which sees the raw diff without
+our mitigations, also resisted all 6, this run does not by itself show that
+the mitigations are needed; the evidence for that is the earlier run in which
+all 3 attacks on the unmitigated pipeline succeeded
+([`evaluation-log.md`](evaluation-log.md), "Injection suite, mitigations on").
+
 After the checkpoint we made both mitigations the default for the `lgtm`
 mode (`src/lgtm/config.py`; switch off with
 `--no-strip-comments` / `--no-detect-prompt-injection`). The `llm-only`
