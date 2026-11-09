@@ -68,6 +68,8 @@ doubt, log it.
   committed results; its figures are taken from
   [`docs/deck-numbers.md`](../docs/deck-numbers.md), which names the run file
   behind each one.
+- **ChatGPT** (Sol 6.1): Loh Kai Zhe used it to improve the wording of his
+  slides and his speaking script (see [`loh-kai-zhe.md`](loh-kai-zhe.md)).
 
 The models LGTM itself runs at review time (Qwen3.8 27B, Kev-4B, and the
 Bedrock models in the comparison) are part of the product, not development

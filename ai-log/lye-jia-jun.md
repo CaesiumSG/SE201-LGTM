@@ -259,7 +259,7 @@ kept or changed.
 | **Outcome** | Changed |
 | **What I asked for** | I asked the AI to report the real tokens each review uses, which our proposal named as a metric, and to make LGTM runnable from the submission zip or a fresh clone with only a Bedrock key. |
 | **How I checked it** | The old `est_tokens` figure only sized the findings and undercounted model use by about 10 times; the new counts come from what each backend reports, and calls without usage are marked as unreported rather than guessed. I checked that the frozen scoring code did not change. For the fresh clone, I found that a wrong key made API reviews pass with 0 findings, so I had a key check added at startup. |
-| **What I kept or changed** | I kept both. I made two replay repositories public, but kept the authentik replay private because its licence forbids redistribution. |
+| **What I kept or changed** | I kept both. I made the taiga and wagtail replay repositories public, but kept the authentik replay repository private because the replayed change is under authentik's Enterprise licence. |
 
 ## Reflection
 
