@@ -2,7 +2,7 @@
 
 This file maps every figure used in the final presentation to the record it was read from, so a reader can check any slide against the raw results. `deck-numbers.json` holds the same keys and values. The "Extras" section at the end has failure analysis, re-runs and caveats that did not fit on the slides.
 
-Every value comes from the final evaluation run in `benchmark/runs/final-2026-11/` (added by PR #37, branch `eval/final-integration`). That run and all of its records were made on commit **af878ce** (af878ce46af7d57419d8237931aa1c8100a8d6a3), 6 Nov 16:39 to 7 Nov 02:40 SGT. When this file was written (8 Nov), #33's component-bench runs from 5–6 Nov were superseded by `final-2026-11/component_bench`.
+Every value comes from the final evaluation run in `benchmark/runs/final-2026-11/` (added by PR #37, branch `eval/final-integration`). That run and all of its records were made on commit **af878ce** (af878ce46af7d57419d8237931aa1c8100a8d6a3), 6 Nov 16:39 to 7 Nov 02:40 SGT. The component-bench figures here are from the version at af878ce; PR #33 (merged 9 Nov) later replaced that benchmark with a 25-case version, whose results are in [`component-bench-results.md`](component-bench-results.md) and the README.
 
 "Final held-out run" = `heldout/qwen27b-t0-r1`: Qwen3.8 27B reviewer, Kev-4B judge, T=0, all 17 advisories, 34 diffs (each introducing PR plus its fix).
 
@@ -116,7 +116,7 @@ All rows use the same pipeline (lgtm mode) and the same Kev-4B judge on the GPU 
 |---|---|---|
 | cost.gpu_hours | n/a | Not recorded. RL says two Slurm jobs, each one L40S with **12 h walltime reserved**; actual GPU hours are not logged anywhere |
 | cost.bedrock_usd | 101.72 | R `bedrock_usd_total` = 101.7162; RL "Cost": Bedrock spend for these final runs |
-| cost.total_usd | 118.85 | RL "Cost": whole Bedrock ledger total = 101.72 final runs + 0.40 smoke tests + 16.73 earlier work (4–5 Nov). The GPU cluster is not billed. If the deck means "cost of the final evaluation", use 101.72 |
+| cost.total_usd | 118.85 | RL "Cost": whole Bedrock ledger total = 101.72 final runs + 0.40 smoke tests + 16.73 earlier work (4–5 Nov). The GPU cluster is not billed. The final evaluation alone cost 101.72 |
 | cost.tokens_per_diff | n/a | The held-out runner does not record tokens (no token field in H/ records or the summary). Only Shoply records `median_est_tokens_per_pr` (see Extras) |
 | run.commit | af878ce | `git_commit` in H/`lgtm/summary.json` and in every row of `benchmark/final_eval/manifest.jsonl`; RL "Every run used commit af878ce" |
 | run.dates | 6–7 Nov 2026 | RL: wall time 6 Nov 16:39 to 7 Nov 02:40 SGT; manifest start/end timestamps |
@@ -149,22 +149,22 @@ Chosen over A1 and A6: A6 (plane) was also caught by the plain LLM. A1 (authenti
 
 ## Extras
 
-Flagged for the team to decide on. None of these is in a key.
+Results, caveats and failure analysis that did not fit on the slides. None of these is in a key.
 
-**Numbers that contradict the 5 Nov figures the deck still quotes**
-- Median seconds per diff (LGTM, held-out): **124**, not 191. The 191 s is the 5 Nov v2.1 run (`docs/real-prs-eval.md`). The final runs 2 and 3 took 106.8 and 104.1 s. Source: R `heldout["qwen27b-t0-r{1,2,3}/lgtm"].median_seconds_per_diff`.
-- Plain LLM median: **7 s** (7.3), not 10. Source: R `…/llm-only.median_seconds_per_diff`.
-- Shoply: **lgtm F1 1.00, plain LLM 0.94**, against the deck's 0.94 / 0.75 / 0.62. The final run has no Semgrep-only Shoply mode, so there is nothing to compare with the third number. Source: R `shoply.*.summary.overall.f1`.
+**Final figures that replace earlier (5 Nov) ones**
+- Median seconds per diff (LGTM, held-out): **124**. The earlier 191 s was the 5 Nov v2.1 run (`docs/real-prs-eval.md`). The final runs 2 and 3 took 106.8 and 104.1 s. Source: R `heldout["qwen27b-t0-r{1,2,3}/lgtm"].median_seconds_per_diff`.
+- Plain LLM median: **7 s** (7.3); the earlier figure was 10 s. Source: R `…/llm-only.median_seconds_per_diff`.
+- Shoply: **lgtm F1 1.00, plain LLM 0.94** (earlier figures: 0.94 / 0.75 / 0.62). The final run has no Semgrep-only Shoply mode, so there is nothing to compare with the third earlier number. Source: R `shoply.*.summary.overall.f1`.
 - "Authz 0/6 → F1 0.92": not reproduced. On the 6 real-world authz cases the final run gives lgtm authz F1 **0.86** (TP 3, FP 1, TN 2), plain LLM 1.00. Source: R `real_world.*.summary.per_category.authz`.
-- "SQLi FP 75% → 0%": I could not find which set this refers to in the final run. Real-world SQLi lgtm false-positive rate on safe cases is 0.0, but only 1 safe SQLi case is in scope. Shoply SQLi FPR is 0.0 for both modes. Source: R `real_world.lgtm.summary.per_category.sqli`, `shoply.*.summary.per_category.sqli`. Please confirm where the deck's number came from.
+- An earlier "SQLi FP 75% → 0%" figure has no counterpart in the final run. Real-world SQLi lgtm false-positive rate on safe cases is 0.0, but only 1 safe SQLi case is in scope. Shoply SQLi FPR is 0.0 for both modes. Source: R `real_world.lgtm.summary.per_category.sqli`, `shoply.*.summary.per_category.sqli`.
 - "Semgrep 0/13 on the dev set" holds (R `real_prs_dev["sast-only"].all.caught` = 0). New: Semgrep was run on the held-out set this time and caught **3 / 17** (ormar, piccolo, rucio-oracle), with 2 / 17 false alarms. The 5 Nov doc says it was not run there.
-- Component results: retrieval hit@k 1.00 holds. Validator 24/24 holds (evidence: 24 units, TP 12, TN 12, F1 1.00). Judge 13/15 holds (`verdict_correct` 0.867 of 15 units). Not on the deck: authz reviewer alone has precision 0.29, recall 0.67, F1 0.40, and Semgrep SQLi has F1 0.75. **All component labels are drafts by Claude Opus 5.5, not reviewed by the team.** Source: R `component_bench.components`; RL event 9.
+- Component results (af878ce version): retrieval hit@k 1.00. Validator 24/24 (evidence: 24 units, TP 12, TN 12, F1 1.00). Judge 13/15 (`verdict_correct` 0.867 of 15 units). Also: authz reviewer alone has precision 0.29, recall 0.67, F1 0.40, and Semgrep SQLi has F1 0.75. **All component labels are drafts by Claude Opus 5.5, not reviewed by the team.** Source: R `component_bench.components`; RL event 9. This is the component benchmark as it stood at af878ce; PR #33 later replaced it with a 25-case version, reported in [`component-bench-results.md`](component-bench-results.md).
 
 **Outcome changes from v2.1 to the final run**
 - None. All 17 per-advisory cells for LGTM and for the plain LLM are identical between v2.1 (`docs/real-prs-eval.md`, 5 Nov) and the final run 1. Only latency changed.
 
 **Interesting false alarms and misses**
-- alerta fix (the only LGTM false alarm): the fixed `SearchTerm.to_sql` still puts the `?q=` field name into SQL as an f-string quoted identifier (`queryparser.py:152`), and Kev ruled it real. This may be a real residual issue in the fix and not a pure false alarm (see "Fixed is not safe" in `docs/real-prs-eval.md`). Source: H/`lgtm/alerta-query-string-parser-sqli-fixed.json`.
+- alerta fix (the only LGTM false alarm): LGTM flagged the fixed query-string parser again and Kev ruled the finding real. It is scored as a false alarm because the advisory names this commit as the fix. Source: H/`lgtm/alerta-query-string-parser-sqli-fixed.json`.
 - Kev filtered 5 findings on fix commits that would otherwise have been false alarms: rucio-oracle fix 3 and piccolo fix 2, all ruled `not_real`. Source: H/`lgtm/rucio-oracle-…-fixed.json`, `piccolo-…-fixed.json`.
 - Missed by every Qwen mode: django-orderby (a regex check removed deep inside `Query.add_ordering()`) and readthedocs (two chained `.filter()` calls on a many-valued relation make separate joins). Root causes per `docs/real-prs-eval.md`. readthedocs **is** caught (exact) by Qwen at T=0.5 and T=1.0, by gpt-oss-120b and Haiku 4.5 in all 3 runs, and by Sonnet 4.6 in runs 2 and 3. Source: RM "Per advisory".
 - Taiga (S8): LGTM also posted a CWE-639 authz finding on the same SQLi line next to the CWE-89 one. Source: H/`lgtm/taiga-epic-order-sqli-vulnerable.json`.
@@ -193,7 +193,7 @@ Flagged for the team to decide on. None of these is in a key.
 **Live-hunt leads since published**
 - GHSA-jrgm-fhgv-hmj9 (wagtail PR #14488) and GHSA-c2xx-cjmh-9q8f (wagtail PR #14490). Source: `docs/real-prs-eval.md` "Live hunt". The live-hunt run outputs are git-ignored, so this is the only committed record.
 
-**Possible mistakes in the keys as specified**
+**Notes on specific keys**
 - `fieldtrial.*.fa`: the field trial has no ground truth, so no false-alarm metric exists. The scorer counts "PRs flagged" (1 / 12 in each mode).
 - `cost.tokens_per_diff` and `cost.gpu_hours` are not recorded for the held-out run.
 - `run.dates` example "8–9 Nov": the final runs ran 6–7 Nov. Nothing ran after 7 Nov.
@@ -201,5 +201,5 @@ Flagged for the team to decide on. None of these is in a key.
 - `model.verdict` example "within one case of Sonnet 4.6": the case count is right, but on exact matches Qwen is 14 against Sonnet's 16, and on false alarms it is 1 against 5.
 - Per-advisory value set: the aggregator has one more cell, `on file` (right file, wrong CWE family). It does not occur in the Qwen run-1 lgtm or llm columns, but does occur for other models.
 - `DEEPDIVE.sqli.evidence` asks for "base-code lines". In S3 the cited lines were read from the PR snapshot (the changed files). The only base-side call was one `investigate_base_code` query.
-- `DEEPDIVE.authz.policy` assumes a policy passage was retrieved. For khoj (and for authentik and plane) the repo has no security policy, so search_policy returned unrelated docs. The deck's "retrieval hit@k 1.00" comes from the 6 real-world authz cases, which have a written policy, not from the held-out set.
+- `DEEPDIVE.authz.policy` assumes a policy passage was retrieved. For khoj (and for authentik and plane) the repo has no security policy, so search_policy returned unrelated docs. The "retrieval hit@k 1.00" figure comes from the 6 real-world authz cases, which have a written policy, not from the held-out set.
 - `heldout.*.sec` is the median over all 34 diffs (vulnerable and fixed), not over 17.

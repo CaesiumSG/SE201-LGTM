@@ -31,7 +31,7 @@ these cases, with every experiment flag off.
 ## Headline
 
 The 3 SQL injection cases `alerta_sqli_vulnerable`, `alerta_sqli_safe` and
-`postgraas_sqli_safe` are out of scope. Results: `benchmark/runs/archive/real_world/summary.json`.
+`postgraas_sqli_safe` are out of scope. Results: `benchmark/runs/archive/real_world/<mode>/summary.json`.
 
 ## Setup
 
@@ -119,7 +119,7 @@ the ground truth and did not influence any score.
 
 ## Results
 
-Results: `benchmark/runs/archive/real_world/summary.json`. Review latency excludes
+Results: `benchmark/runs/archive/real_world/<mode>/summary.json`. Review latency excludes
 one-time indexing and downloads.
 
 ### Beside the synthetic Shoply results (36 cases)
@@ -218,7 +218,7 @@ repository's own docs.
   authenticated … This satisfies the documented access-control rule."
   Authentication was treated as authorization, which is the IDOR itself. The
   "documented rule" it cited is `SECURITY.md:110-142`, quoting only the link
-  sentence "For more information, see [API keys and authentication](…)". The
+  sentence "For more information, see `[API keys and authentication](…)`". The
   validator accepted it (the text exists), but it is not a rule: retrieval
   from the repo's own docs returned nothing that states one.
 - **Own docs, safe PR → `vulnerable`** (`lgtm/langflow_authz_safe.json`).

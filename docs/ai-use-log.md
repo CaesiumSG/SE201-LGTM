@@ -4,14 +4,23 @@ The course allows AI tools during development but requires us to track
 their use. Each member's own log, in the format the policy asks for, is
 in [`ai-log/`](../ai-log/README.md) (one file per member). This log covers **AI used to build the project**, collated at
 team level by area of work. The LLM that LGTM runs at review time (Qwen via
-Ollama) is part of the product; its risks are covered in the checkpoint
-report's Responsible AI section.
+Ollama) is part of the product; its risks are covered in
+[`responsible-ai.md`](responsible-ai.md).
 
 Tools used by the team: **Claude Code** (Anthropic; Opus 5.5 / Sonnet 5.5
-/ Fable 5) for most implementation and documentation, **GitHub Copilot**
-for the GPU model server, and **Google Antigravity** (Gemini Flash 3.8)
-for the prompt-injection red-teaming. All AI-generated code went through a
-pull request reviewed by a team member before reaching `main`.
+/ Fable 5 / Fable 5.1) for most implementation and documentation, **Pi** with
+GPT-6.1-sol (and a local Qwen3.6 27B through Pi) for much of Jin Rae's
+pipeline and benchmark work, **GitHub Copilot** for the GPU model server,
+and **Google Antigravity** (Gemini Flash 3.8) for the prompt-injection
+red-teaming and the demo's `safe_markdown` tests. Not every AI-generated
+change had a second reviewer: the initial implementation and checkpoint
+documents were pushed directly to `main`, and some pull requests were merged
+by their author without a review. The team declaration in
+[`ai-log/README.md`](../ai-log/README.md) gives the counts. The table below
+is a team-level summary and stops at 6 Nov; later work (the final
+evaluation, the component benchmark, token counting, `run-lgtm.sh`, the
+slides) and Jin Rae's work with Pi are recorded in the members' own logs in
+[`ai-log/`](../ai-log/README.md).
 
 ## Log
 

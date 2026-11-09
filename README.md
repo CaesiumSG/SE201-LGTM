@@ -154,6 +154,39 @@ ollama pull qwen3.8:27b         # the default model; any tool-calling model work
 model/deploy/up.sh
 ```
 
+**The Kev-4B judge.** `lgtm` mode sends every candidate finding to the Kev-4B
+judge at `http://127.0.0.1:8008` (`--judge-endpoint` to change it). Without
+a judge the review still runs, but candidates with cited code are reported as
+not judged, and the exit code is 2 rather than 1. To run it:
+
+- **On the SCIS GPU cluster** (how we ran every evaluation):
+  `model/deploy/kev-provision.sh` once, then `model/deploy/kev-up.sh`, which
+  starts the server and opens the tunnel. `./run-lgtm.sh` below starts it and
+  opens the tunnel for you, but the one-time `kev-provision.sh` is still needed. Details in [model/README.md](model/README.md#kev-4b-system-one-judge).
+- **On your own NVIDIA GPU:** Kev is open source
+  ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)). Install it with
+  `uv`, download the weights as in `model/deploy/kev-provision.sh`, then
+  start the same server the cluster job starts:
+
+  ```bash
+  git clone https://github.com/jaredpalmer/kev.git && cd kev
+  uv sync --extra serve
+  uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --device cuda --port 8008
+  curl http://127.0.0.1:8008/v1/models   # check it answers
+  ```
+
+  We ran Kev on the cluster's RTX 3090, A40 and L40S GPUs; the demo also
+  runs it locally with `--device auto` (see [demo/README.md](demo/README.md)).
+
+**A first run.** With a reviewer model and Kev up, this reviews one
+vulnerable and one safe Shoply PR from the benchmark and scores them against
+their labels:
+
+```bash
+python benchmark/evaluate.py --model qwen3.8:27b --cases sqli_01_vulnerable sqli_01_safe
+# or, on the GPU cluster tunnel: --gpu-cluster instead of --model
+```
+
 ## Usage
 
 ### One command (GPU cluster)
@@ -408,9 +441,9 @@ Final results (Qwen3.8 27B, T=0; the same in all three runs):
 | `llm-only` | 7/17 | 7/17 | 4/8 | 3/9 | 2/17 | 7/13 (6), 0 false alarms |
 | `sast-only` | 3/17 | 3/17 | 3/8 | 0/9 | 2/17 | 0/13 |
 
-The same pipeline with other reviewer models (one run at T=0 for gpt-oss,
-provider default temperature for Claude; three runs each for all but gpt-oss
-20B):
+The same pipeline with other reviewer models (gpt-oss at T=0, Claude at the
+provider's default temperature; three runs each for all but gpt-oss 20B,
+which ran once):
 
 | Reviewer in `lgtm` | Caught (runs) | False alarms on fixes (runs) | Bedrock cost, run 1 |
 |---|---|---|---|
@@ -547,7 +580,7 @@ Results: final run summarised in
 no crashes, 1 of 12 PRs flagged in each mode, median 78 s per PR for `lgtm`.
 The flagged PR is a possible real issue that has not been reported upstream,
 so its per-PR records are kept out of this public repository. Earlier rounds:
-`benchmark/runs/archive/field_trial/summary.json`; write-up in
+`benchmark/runs/archive/field_trial/<mode>/summary.json`; write-up in
 [`docs/field-trial.md`](docs/field-trial.md).
 
 ### 5. Component benchmark
@@ -630,12 +663,15 @@ src/lgtm/
 ├── graph/snapshot.py       # commit SHA resolution
 ├── graph/format.py         # tool output formatting
 ├── agents/base.py          # finding schema, LLM loop, JSON parsing
+├── agents/bedrock_llm.py   # optional Amazon Bedrock backend (Claude models)
+├── agents/bedrock_openai_llm.py  # optional Bedrock backend (gpt-oss models)
 ├── agents/prompts.toml     # all model-visible prompt text
 ├── agents/registry.py      # loader for prompts.toml
 ├── agents/prompt_parts.py  # tool guidance shared by the agent prompts
 ├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
 ├── agents/investigator.py  # proposes review sections from the PR diff
 ├── agents/sast_triage.py   # CWE-89 triage agent
+├── agents/sqli_reviewer.py # CWE-89 section reviewer (finds injection Semgrep misses)
 ├── agents/authz_reviewer.py# CWE-639/862/863 section reviewer
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── review/sections.py      # plan review sections from investigator output
@@ -647,19 +683,25 @@ src/lgtm/
 ├── validation/judge.py     # Kev-4B judge for each candidate finding
 ├── validation/judge_examples.py  # few-shot examples for the judge
 ├── validation/cwe_criteria.py    # short per-CWE criteria shown to the judge
-└── reporting/report_builder.py  # JSON + Markdown reports
+├── reporting/report_builder.py  # JSON + Markdown reports
+└── usage.py                # reviewer and judge token counts per review
 tests/                      # unit and integration tests, no Ollama needed
 benchmark/                  # Shoply app, 52 cases, evaluate.py, guard.py
 benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
 benchmark/real_prs/         # real PRs that introduced a vulnerability, run_real_prs.py
 benchmark/field_trial/      # ordinary merged PRs from real projects, run_field_trial.py
 benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
-benchmark/kev_support/      # helpers for the Kev judge runs
-benchmark/judge_eval.py     # citation support and judge-quality measures
+benchmark/live_hunt/        # live hunt on recent PRs, run_live_hunt.py
+benchmark/component_bench/  # per-component benchmark (SAST triage, reviewers, Kev)
+benchmark/final_eval/       # final-evaluation run streams and aggregate.py
+benchmark/runs/             # committed run outputs (final-2026-11/, archive/)
 benchmark/citation_export.py# export citations for blind labelling
 model/                      # SCIS GPU cluster: deploy scripts, Slurm jobs (model/README.md)
 viewer/                     # offline HTML report viewer (viewer/README.md)
-docs/                       # design notes, evaluation logs, checkpoint
+demo/                       # demo GitHub App and dashboard (demo/README.md)
+scripts/make_submission.sh  # builds the course submission zip
+ai-log/                     # AI use logs, one per member, and the team declaration
+docs/                       # design notes, evaluation logs, checkpoint, responsible AI
 ```
 
 ## Development

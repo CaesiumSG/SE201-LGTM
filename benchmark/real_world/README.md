@@ -114,8 +114,9 @@ stops and lists the units it did not run, and `--resume` continues them once
 git works. Otherwise it exits 0.
 `--gpu-model qwen3.8-27b` selects the GPU tunnel model with thinking disabled
 and cannot be combined with `--model`. Results go to
-`benchmark/results/real_world/` (git-ignored); curated runs are in
-[`benchmark/runs/real_world/`](../runs/real_world/), and the results and
+`benchmark/results/real_world/` (git-ignored); the final run is in
+[`benchmark/runs/final-2026-11/real_world/`](../runs/final-2026-11/real_world/)
+and earlier runs in [`benchmark/runs/archive/`](../runs/archive/), and the results and
 every miss are explained in [`docs/real-world-eval.md`](../../docs/real-world-eval.md).
 
 ### Batches and the guard run

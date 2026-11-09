@@ -92,7 +92,7 @@ LGTM looked slightly *worse* than the LLM-only baseline.
 Semgrep, no RAG and no tools. The old setup is kept as an *ablation*,
 `lgtm-no-sast`. Also fixed problem 1.2 (scorer) and added grounded and
 off-category metrics (1.6, 1.7). The round 1 rows below are the re-scored
-numbers in `benchmark/runs/archive/run1-original/summary.json`, scored under
+numbers in `benchmark/runs/archive/run1-original/<mode>/summary.json`, scored under
 the earlier rules.
 
 | Mode | P | R | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounded F1 |

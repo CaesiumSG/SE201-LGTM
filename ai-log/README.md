@@ -46,6 +46,12 @@ doubt, log it.
   suite, the real-world CVE and real-PR benchmark tooling, the section and
   SQLi reviewers, later bug fixes, the demo GitHub App and dashboard, the
   final-evaluation scripts, and drafts of our documentation.
+- **Pi** (a coding agent) with **GPT-6.1-sol**, Jin Rae's main development
+  assistant (he also ran a local **Qwen3.6 27B** model through Pi), used for the
+  GPU serving work, the graph and section pipeline, the authorization
+  reviewer and investigator, the benchmark harnesses and held-out guard, the
+  prompt catalogue, the Kev judge integration and the context-budget fixes
+  (see [`lee-jin-rae.md`](lee-jin-rae.md)).
 - **GitHub Copilot**: the Slurm job and deploy scripts for the GPU model
   server.
 - **Google Antigravity** (Gemini Flash 3.8): prompt-injection red-teaming and
@@ -70,21 +76,34 @@ tools; their risks are covered in the slides and in
 
 **How we checked the output.** Most AI-generated code reached `main` through
 a pull request, the test suite was run before merging (on GitHub Actions
-from 26 Oct; 3,289 tests at the final evaluation commit), and every number we report was copied from
+from 26 Oct; 3,289 passed and 1 failed at the final evaluation commit), and every number we report was copied from
 committed benchmark run files by script rather than from AI output. Not every
 change had a second reviewer: the initial implementation and the checkpoint
-documents (10–18 Oct) were pushed directly to `main`, and 15 of 34 merged
-pull requests were merged by their author without a recorded GitHub review.
-Details are in each member's file in this folder, and AI-assisted commits
-carry an `Assisted-by` or `Co-Authored-By` trailer.
+documents (10–18 Oct) were pushed directly to `main`, and as of 9 Nov, 17 of
+38 merged pull requests were merged by their author without a recorded
+GitHub review.
+Details are in each member's file in this folder.
+
+**Commit trailers.** The policy asks for an `Assisted-by` or
+`Co-Authored-By` trailer on every AI-assisted commit, and we did not do this
+consistently. As of 9 Nov, of the non-merge commits on `main`, the trailer is
+on all 89 of Lye Jia Jun's, 6 of Lee Jin Rae's 181, and none of Brian Sng's
+10, Hsu Yati Ko's 7 or Loh Kai Zhe's 17. Adding trailers now would mean
+rewriting shared history, so for commits without one, the member's log in
+this folder is the record of which work was AI-assisted.
 
 ## Final submission checklist
 
 - [ ] Every member has a file here, with entries up to the final commit
-      (as of 9 Nov only Lye Jia Jun's is filled in; Brian's is in PR #34)
+      (as of 9 Nov: Lye Jia Jun's, Brian Sng's and Lee Jin Rae's are filled
+      in, but Jia Jun's has no entry yet for the 7–8 Nov demo work and token
+      counting (#41), and Jin Rae's stops at 6 Nov; Hsu Yati Ko's and Loh
+      Kai Zhe's are still the empty template)
+- [ ] Each member's log covers their commits that have no AI trailer
 - [x] Team declaration above updated (9 Nov); **each member to confirm it
       matches their own use before submission**, then copy it into the
       final deliverables
 - [ ] Each member's reflection, added at the end of their own file: what
       they learned about using the tools effectively, where the tools were
       strong and weak, and what went wrong and what they would do differently
+      (as of 9 Nov only Lye Jia Jun's is written)

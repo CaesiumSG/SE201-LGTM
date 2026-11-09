@@ -81,7 +81,7 @@ PR get reviewed at all. On these 12 PRs, in the archived 23 Oct run
 ## Results
 
 Setup: reviewer `qwen3.8:27b` on the SCIS GPU cluster, judge Kev (Kev-4B),
-conditions LGTM and LLM-only. Results: `benchmark/runs/archive/field_trial/summary.json`.
+conditions LGTM and LLM-only. Results: `benchmark/runs/archive/field_trial/<mode>/summary.json`.
 
 ## Archived 23 Oct run
 
