@@ -57,6 +57,8 @@ Every other vulnerability class is out of scope.
 
 ## Demo
 
+**Demo video:** [youtube.com/watch?v=wGdx2J-7w2A](https://www.youtube.com/watch?v=wGdx2J-7w2A)
+
 LGTM also runs as a real **GitHub App with a dashboard** (`demo/`). In the demo, an AI coding assistant (a small local
 model) writes a feature for a demo shop and leaves out an ownership check; the dashboard's App tab shows what that lets
 a customer do (read another customer's order and address); the pull request goes to GitHub, and LGTM's review blocks

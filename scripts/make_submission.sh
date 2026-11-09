@@ -109,14 +109,20 @@ mkdir -p "$dir/4-ai-use-disclosure"
 git archive "$sha" ai-log | tar -x -C "$dir/4-ai-use-disclosure"
 copy_from_ref "docs/ai-use-log.md" "$dir/4-ai-use-disclosure"
 
+demo_video="https://www.youtube.com/watch?v=wGdx2J-7w2A"
+printf 'LGTM demo video: %s\n' "$demo_video" > "$sup/DEMO-VIDEO.txt"
+
 cat > "$dir/README.txt" <<EOF
 SE201 AI-Driven Software Engineering, AY2026-27 Term 1
 Team "wo men ai AI": LGTM, a context-aware pull request security agent
 
+Demo video: $demo_video
+
 1-slides/                 presentation slides
 2-repository/             repository link (REPOSITORY.txt) and snapshot of commit $short
 3-supporting-documents/   final evaluation results and run log, benchmark write-ups,
-                          evaluation history, and the source of each number on the slides
+                          evaluation history, the source of each number on the slides,
+                          and the demo video link (DEMO-VIDEO.txt)
 4-ai-use-disclosure/      ai-log/ (team declaration in ai-log/README.md, one log and
                           reflection per member) and the team-level summary
 EOF

@@ -92,18 +92,17 @@ on all 89 of Lye Jia Jun's, 6 of Lee Jin Rae's 181, and none of Brian Sng's
 rewriting shared history, so for commits without one, the member's log in
 this folder is the record of which work was AI-assisted.
 
-## Final submission checklist
+## Reflections
 
-- [ ] Every member has a file here, with entries up to the final commit
-      (as of 9 Nov: Lye Jia Jun's, Brian Sng's and Lee Jin Rae's are filled
-      in, but Jia Jun's has no entry yet for the 7–8 Nov demo work and token
-      counting (#41), and Jin Rae's stops at 6 Nov; Hsu Yati Ko's and Loh
-      Kai Zhe's are still the empty template)
-- [ ] Each member's log covers their commits that have no AI trailer
-- [x] Team declaration above updated (9 Nov); **each member to confirm it
-      matches their own use before submission**, then copy it into the
-      final deliverables
-- [ ] Each member's reflection, added at the end of their own file: what
-      they learned about using the tools effectively, where the tools were
-      strong and weak, and what went wrong and what they would do differently
-      (as of 9 Nov only Lye Jia Jun's is written)
+As the policy requires for the final submission, each member's file ends
+with a reflection that answers three questions: what they learned about
+using the tools effectively, where the tools were strong and where they
+were weak, and what went wrong and what they would do differently.
+
+| Member | Reflection |
+|---|---|
+| Lye Jia Jun | [lye-jia-jun.md](lye-jia-jun.md#reflection) |
+| Brian Sng | [brian-sng.md](brian-sng.md#reflection) |
+| Hsu Yati Ko | [hsu-yati-ko.md](hsu-yati-ko.md#reflection) |
+| Lee Jin Rae | [lee-jin-rae.md](lee-jin-rae.md#reflection) |
+| Loh Kai Zhe | [loh-kai-zhe.md](loh-kai-zhe.md#reflection) |
