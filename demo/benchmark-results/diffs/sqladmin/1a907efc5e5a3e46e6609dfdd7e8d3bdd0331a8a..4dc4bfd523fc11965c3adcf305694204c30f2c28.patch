@@ -1,0 +1,733 @@
+diff --git a/sqladmin/ajax.py b/sqladmin/ajax.py
+new file mode 100644
+index 0000000..7739206
+--- /dev/null
++++ b/sqladmin/ajax.py
+@@ -0,0 +1,91 @@
++from typing import TYPE_CHECKING, Any, Dict, List
++
++from sqlalchemy import String, cast, inspect, or_, select, text
++
++from sqladmin.helpers import get_primary_key
++
++if TYPE_CHECKING:
++    from sqladmin.models import ModelView
++
++
++DEFAULT_PAGE_SIZE = 10
++
++
++class QueryAjaxModelLoader:
++    def __init__(
++        self,
++        name: str,
++        model: type,
++        model_admin: "ModelView",
++        **options: Any,
++    ):
++        self.name = name
++        self.model = model
++        self.model_admin = model_admin
++        self.fields = options.get("fields", {})
++        self.order_by = options.get("order_by")
++
++        if not self.fields:
++            raise ValueError(
++                "AJAX loading requires `fields` to be specified for "
++                f"{self.model}.{self.name}"
++            )
++
++        self._cached_fields = self._process_fields()
++        self.pk = get_primary_key(self.model)
++
++    def _process_fields(self) -> list:
++        remote_fields = []
++
++        for field in self.fields:
++            if isinstance(field, str):
++                attr = getattr(self.model, field, None)
++
++                if not attr:
++                    raise ValueError(f"{self.model}.{field} does not exist.")
++
++                remote_fields.append(attr)
++            else:
++                remote_fields.append(field)
++
++        return remote_fields
++
++    def format(self, model: type) -> Dict[str, Any]:
++        if not model:
++            return {}
++
++        return {"id": getattr(model, self.pk.name), "text": str(model)}
++
++    async def get_list(self, term: str, limit: int = DEFAULT_PAGE_SIZE) -> List[Any]:
++        stmt = select(self.model)
++
++        # no type casting to string if a ColumnAssociationProxyInstance is given
++        filters = [
++            cast(field, String).ilike("%%%s%%" % term) for field in self._cached_fields
++        ]
++
++        stmt = stmt.filter(or_(*filters))
++
++        if self.order_by:
++            stmt = stmt.order_by(self.order_by)
++
++        stmt = stmt.limit(limit)
++        result = await self.model_admin._run_query(stmt)
++        return result
++
++
++def create_ajax_loader(
++    *,
++    model_admin: "ModelView",
++    name: str,
++    options: dict,
++) -> QueryAjaxModelLoader:
++    mapper = inspect(model_admin.model)
++
++    try:
++        attr = mapper.relationships[name]
++    except KeyError:
++        raise ValueError(f"{model_admin.model}.{name} is not a relation.")
++
++    remote_model = attr.mapper.class_
++    return QueryAjaxModelLoader(name, remote_model, model_admin, **options)
+diff --git a/sqladmin/application.py b/sqladmin/application.py
+index 7f66c3d..fd57f7e 100644
+--- a/sqladmin/application.py
++++ b/sqladmin/application.py
+@@ -8,14 +8,15 @@ from sqlalchemy.orm import Session, sessionmaker
+ from starlette.applications import Starlette
+ from starlette.exceptions import HTTPException
+ from starlette.middleware import Middleware
+ from starlette.requests import Request
+-from starlette.responses import RedirectResponse, Response
++from starlette.responses import JSONResponse, RedirectResponse, Response
+ from starlette.routing import Mount, Route
+ from starlette.staticfiles import StaticFiles
+ from starlette.templating import Jinja2Templates
+ 
+ from sqladmin._types import ENGINE_TYPE
++from sqladmin.ajax import QueryAjaxModelLoader
+ from sqladmin.authentication import AuthenticationBackend, login_required
+ from sqladmin.models import BaseView, ModelView
+ 
+ __all__ = [
+@@ -119,8 +120,9 @@ class BaseAdmin:
+         """
+ 
+         # Set database engine from Admin instance
+         view.engine = self.engine
++        view.ajax_lookup_url = f"{self.base_url}/{view.identity}/ajax/lookup"
+ 
+         if isinstance(view.engine, Engine):
+             view.sessionmaker = sessionmaker(
+                 bind=view.engine,
+@@ -320,12 +322,12 @@ class Admin(BaseAdminView):
+                 name="edit",
+                 methods=["GET", "POST"],
+             ),
+             Route(
+-                "/{identity}/export/{export_type}",
+-                endpoint=self.export,
+-                name="export",
+-                methods=["GET"],
++                "/{identity}/export/{export_type}", endpoint=self.export, name="export"
++            ),
++            Route(
++                "/{identity}/ajax/lookup", endpoint=self.ajax_lookup, name="ajax_lookup"
+             ),
+             Route("/login", endpoint=self.login, name="login", methods=["GET", "POST"]),
+             Route("/logout", endpoint=self.logout, name="logout", methods=["GET"]),
+         ]
+@@ -513,15 +515,35 @@ class Admin(BaseAdminView):
+ 
+         await self.authentication_backend.logout(request)
+         return RedirectResponse(request.url_for("admin:index"), status_code=302)
+ 
++    async def ajax_lookup(self, request: Request) -> Response:
++        """Ajax lookup route."""
++
++        identity = request.path_params["identity"]
++        model_view = self._find_model_view(identity)
++
++        name = request.query_params.get("name")
++        term = request.query_params.get("term")
++
++        if not name or not term:
++            raise HTTPException(status_code=400)
++
++        try:
++            loader: QueryAjaxModelLoader = model_view._form_ajax_refs[name]
++        except KeyError:
++            raise HTTPException(status_code=400)
++
++        data = [loader.format(m) for m in await loader.get_list(term)]
++        return JSONResponse({"results": data})
++
+ 
+ def expose(
+     path: str,
+     *,
+     methods: List[str] = ["GET"],
+     identity: str = None,
+-    include_in_schema: bool = True
++    include_in_schema: bool = True,
+ ) -> Callable[..., Any]:
+     """Expose View with information."""
+ 
+     @no_type_check
+diff --git a/sqladmin/fields.py b/sqladmin/fields.py
+index 6c0208f..6fcc6c5 100644
+--- a/sqladmin/fields.py
++++ b/sqladmin/fields.py
+@@ -1,14 +1,17 @@
+ import json
+ import operator
+-from typing import Any, Callable, Generator, List, Optional, Tuple, Union
++from typing import Any, Callable, Generator, List, Optional, Set, Tuple, Union
+ 
+ from sqlalchemy import inspect
+-from wtforms import Form, ValidationError, fields, widgets
++from wtforms import Form, SelectFieldBase, ValidationError, fields, widgets
+ 
+ from sqladmin import widgets as sqladmin_widgets
++from sqladmin.ajax import QueryAjaxModelLoader
+ 
+ __all__ = [
++    "AjaxSelectField",
++    "AjaxSelectMultipleField",
+     "DateField",
+     "DateTimeField",
+     "JSONField",
+     "QuerySelectField",
+@@ -262,4 +265,87 @@ class QuerySelectMultipleField(QuerySelectField):
+             pk_list = [x[0] for x in self._select_data]
+             for v in self.data:
+                 if v not in pk_list:  # pragma: no cover
+                     raise ValidationError(self.gettext("Not a valid choice"))
++
++
++class AjaxSelectField(SelectFieldBase):
++    widget = sqladmin_widgets.AjaxSelect2Widget()
++    separator = ","
++
++    def __init__(
++        self,
++        loader: QueryAjaxModelLoader,
++        label: str = None,
++        validators: list = None,
++        allow_blank: bool = False,
++        **kwargs: Any,
++    ) -> None:
++        kwargs.pop("data", None)  # Handled by JS side
++        self.loader = loader
++        self.allow_blank = allow_blank
++        super().__init__(label, validators, **kwargs)
++
++    @property
++    def data(self) -> Any:
++        if self._formdata:
++            self.data = self._formdata
++
++        return self._data
++
++    @data.setter
++    def data(self, data: Any) -> None:
++        self._data = data
++        self._formdata = None
++
++    def process_formdata(self, valuelist: list) -> None:
++        if valuelist:
++            if self.allow_blank and valuelist[0] == "__None":
++                self.data = None
++            else:
++                self._data = None
++                self._formdata = valuelist[0]
++
++    def pre_validate(self, form: Form) -> None:
++        if not self.allow_blank and self.data is None:
++            raise ValidationError("Not a valid choice")
++
++
++class AjaxSelectMultipleField(SelectFieldBase):
++    widget = sqladmin_widgets.AjaxSelect2Widget(multiple=True)
++    separator = ","
++
++    def __init__(
++        self,
++        loader: QueryAjaxModelLoader,
++        label: str = None,
++        validators: list = None,
++        default: list = None,
++        allow_blank: bool = False,
++        **kwargs: Any,
++    ) -> None:
++        kwargs.pop("data", None)  # Handled by JS side
++        self.loader = loader
++        self.allow_blank = allow_blank
++        default = default or []
++        self._formdata: Set[Any] = set()
++
++        super().__init__(label, validators, default=default, **kwargs)
++
++    @property
++    def data(self) -> Any:
++        if self._formdata:
++            self.data = self._formdata
++
++        return self._data
++
++    @data.setter
++    def data(self, data: Any) -> None:
++        self._data = data
++        self._formdata = set()
++
++    def process_formdata(self, valuelist: list) -> None:
++        self._formdata = set()
++
++        for field in valuelist:
++            for n in field.split(self.separator):
++                self._formdata.add(n)
+diff --git a/sqladmin/forms.py b/sqladmin/forms.py
+index e9a2e4b..49b8974 100644
+--- a/sqladmin/forms.py
++++ b/sqladmin/forms.py
+@@ -34,19 +34,22 @@ from wtforms import (
+ from wtforms.fields.core import UnboundField
+ 
+ from sqladmin._types import ENGINE_TYPE, MODEL_ATTR_TYPE
+ from sqladmin._validators import CurrencyValidator, TimezoneValidator
++from sqladmin.ajax import QueryAjaxModelLoader
+ from sqladmin.exceptions import NoConverterFound
+ from sqladmin.fields import (
++    AjaxSelectField,
++    AjaxSelectMultipleField,
+     DateField,
+     DateTimeField,
+     JSONField,
+     QuerySelectField,
+     QuerySelectMultipleField,
+     SelectField,
+     TimeField,
+ )
+-from sqladmin.helpers import get_direction, get_primary_key
++from sqladmin.helpers import get_direction, get_primary_key, is_relationship
+ 
+ if sys.version_info >= (3, 8):
+     from typing import Protocol
+ else:
+@@ -255,8 +258,9 @@ class ModelConverterBase:
+         field_widget_args: Dict[str, Any],
+         form_include_pk: bool,
+         label: Optional[str] = None,
+         override: Optional[Type[Field]] = None,
++        form_ajax_refs: Dict[str, QueryAjaxModelLoader] = {},
+     ) -> Optional[UnboundField]:
+ 
+         kwargs = await self._prepare_kwargs(
+             prop=prop,
+@@ -273,8 +277,21 @@ class ModelConverterBase:
+         if override is not None:
+             assert issubclass(override, Field)
+             return override(**kwargs)
+ 
++        loader = form_ajax_refs.get(prop.key)
++        multiple = (
++            is_relationship(prop)
++            and prop.direction.name in ("ONETOMANY", "MANYTOMANY")
++            and prop.uselist
++        )
++
++        if loader:
++            if multiple:
++                return AjaxSelectMultipleField(loader, **kwargs)
++            else:
++                return AjaxSelectField(loader, **kwargs)
++
+         converter = self.get_converter(prop=prop)
+         return converter(model=model, prop=prop, kwargs=kwargs)
+ 
+     def _get_pk_value(self, o: Any, pk: Column) -> str:
+@@ -476,8 +493,9 @@ async def get_model_form(
+     form_args: Dict[str, Dict[str, Any]] = None,
+     form_widget_args: Dict[str, Dict[str, Any]] = None,
+     form_class: Type[Form] = Form,
+     form_overrides: Dict[str, Type[Field]] = None,
++    form_ajax_refs: Dict[str, QueryAjaxModelLoader] = None,
+     form_include_pk: bool = False,
+ ) -> Type[Form]:
+     type_name = model.__name__ + "Form"
+     converter = ModelConverter()
+@@ -485,8 +503,9 @@ async def get_model_form(
+     form_args = form_args or {}
+     form_widget_args = form_widget_args or {}
+     column_labels = column_labels or {}
+     form_overrides = form_overrides or {}
++    form_ajax_refs = form_ajax_refs or {}
+ 
+     attributes = []
+     names = only or mapper.attrs.keys()
+     for name in names:
+@@ -508,8 +527,9 @@ async def get_model_form(
+             field_widget_args=field_widget_args,
+             label=label,
+             override=override,
+             form_include_pk=form_include_pk,
++            form_ajax_refs=form_ajax_refs,
+         )
+         if field is not None:
+             field_dict[name] = field
+ 
+diff --git a/sqladmin/helpers.py b/sqladmin/helpers.py
+index 53b1d5c..c731a57 100644
+--- a/sqladmin/helpers.py
++++ b/sqladmin/helpers.py
+@@ -139,4 +139,8 @@ def get_column_python_type(column: Column) -> type:
+     try:
+         return column.type.python_type
+     except NotImplementedError:
+         return str
++
++
++def is_relationship(attr: MODEL_ATTR_TYPE) -> bool:
++    return isinstance(attr, RelationshipProperty)
+diff --git a/sqladmin/models.py b/sqladmin/models.py
+index 5d16cfe..1731bd4 100644
+--- a/sqladmin/models.py
++++ b/sqladmin/models.py
+@@ -40,8 +40,9 @@ from sqladmin._queries import (
+     update_async,
+     update_sync,
+ )
+ from sqladmin._types import ENGINE_TYPE, MODEL_ATTR_TYPE
++from sqladmin.ajax import create_ajax_loader
+ from sqladmin.exceptions import InvalidColumnError, InvalidModelError
+ from sqladmin.formatters import BASE_FORMATTERS
+ from sqladmin.forms import get_model_form
+ from sqladmin.helpers import (
+@@ -205,8 +206,9 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
+     sessionmaker: ClassVar[sessionmaker]
+     engine: ClassVar[ENGINE_TYPE]
+     async_engine: ClassVar[bool]
+     is_model: ClassVar[bool] = True
++    ajax_lookup_url: ClassVar[str] = ""
+ 
+     name_plural: ClassVar[str] = ""
+     """Plural name of ModelView.
+     Default value is Model class name + `s`.
+@@ -611,8 +613,23 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
+             count_query = select(func.count(User.id))
+         ```
+     """
+ 
++    form_ajax_refs: ClassVar[Dict[str, dict]] = {}
++    """Use AJAX for foreign key model loading.
++    Should contain dictionary, where key is field name and
++    value is a dictionary which configures AJAX lookups.
++
++    ???+example
++        ```python
++        class UserAdmin(ModelAdmin, model=User):
++            form_ajax_refs = {
++                'address': {
++                    'fields': ('street', 'zip_code'),
++                }
++            }
++    """
++
+     def __init__(self) -> None:
+         self._mapper = inspect(self.model)
+         self._relations = get_relationships(self.model)
+         self._attrs = get_attributes(self.model)
+@@ -661,8 +678,14 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
+             getattr(self.model, self.get_model_attr(attr).key)
+             for attr in self.column_sortable_list
+         ]
+ 
++        self._form_ajax_refs = {}
++        for name, options in self.form_ajax_refs.items():
++            self._form_ajax_refs[name] = create_ajax_loader(
++                model_admin=self, name=name, options=options
++            )
++
+     def _run_query_sync(self, stmt: ClauseElement) -> Any:
+         with self.sessionmaker(expire_on_commit=False) as session:
+             result = session.execute(stmt)
+             return result.scalars().unique().all()
+@@ -965,8 +988,9 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
+             form_args=self.form_args,
+             form_widget_args=self.form_widget_args,
+             form_class=self.form_base_class,
+             form_overrides=self.form_overrides,
++            form_ajax_refs=self._form_ajax_refs,
+             form_include_pk=self.form_include_pk,
+         )
+ 
+     def search_placeholder(self) -> str:
+diff --git a/sqladmin/widgets.py b/sqladmin/widgets.py
+index fd03d23..72943f3 100644
+--- a/sqladmin/widgets.py
++++ b/sqladmin/widgets.py
+@@ -1,7 +1,10 @@
+-from typing import Any
++import json
++from typing import Any, Dict
+ 
++from markupsafe import Markup
+ from wtforms import Field, widgets
++from wtforms.widgets import html_params
+ 
+ __all__ = [
+     "DatePickerWidget",
+     "DateTimePickerWidget",
+@@ -36,4 +39,32 @@ class TimePickerWidget(widgets.TextInput):
+ 
+     def __call__(self, field: Field, **kwargs: Any) -> str:
+         kwargs.setdefault("data-role", "timepicker")
+         return super().__call__(field, **kwargs)
++
++
++class AjaxSelect2Widget(widgets.Select):
++    def __init__(self, multiple: bool = False):
++        self.multiple = multiple
++        self.lookup_url = ""
++
++    def __call__(self, field: Field, **kwargs: Any) -> Markup:
++        kwargs.setdefault("data-role", "select2-ajax")
++        kwargs.setdefault("data-url", field.loader.model_admin.ajax_lookup_url)
++
++        allow_blank = getattr(field, "allow_blank", False)
++        if allow_blank and not self.multiple:
++            kwargs["data-allow-blank"] = "1"
++
++        kwargs.setdefault("id", field.id)
++        kwargs.setdefault("type", "hidden")
++
++        if self.multiple:
++            result = [field.loader.format(value) for value in field.data]
++            kwargs["data-json"] = json.dumps(result)
++            kwargs["multiple"] = "1"
++        else:
++            data = field.loader.format(field.data)
++            if data:
++                kwargs["data-json"] = json.dumps([data])
++
++        return Markup(f"<select {html_params(name=field.name, **kwargs)}></select>")
+diff --git a/tests/common.py b/tests/common.py
+index 529e53e..56c8e77 100644
+--- a/tests/common.py
++++ b/tests/common.py
+@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
+ test_database_uri_sync = os.environ.get(
+     "TEST_DATABASE_URI_SYNC", "sqlite:///test.db?check_same_thread=False"
+ )
+ test_database_uri_async = os.environ.get(
+-    "TEST_DATABASE_URI_ASYNC", "sqlite+aiosqlite:///test.db?check_same_thread=False"
++    "TEST_DATABASE_URI_ASYNC",
++    "postgresql+asyncpg://postgres:postgres@localhost/test_db",
+ )
+ 
+ sync_engine = create_engine(test_database_uri_sync)
+ async_engine = create_async_engine(test_database_uri_async)
+diff --git a/tests/test_ajax.py b/tests/test_ajax.py
+new file mode 100644
+index 0000000..cf39209
+--- /dev/null
++++ b/tests/test_ajax.py
+@@ -0,0 +1,192 @@
++from typing import Any, AsyncGenerator
++
++import pytest
++from httpx import AsyncClient
++from sqlalchemy import Column, ForeignKey, Integer, String, select
++from sqlalchemy.ext.asyncio import AsyncSession
++from sqlalchemy.ext.declarative import declarative_base
++from sqlalchemy.orm import relationship, selectinload, sessionmaker
++from starlette.applications import Starlette
++
++from sqladmin import Admin, ModelView
++from sqladmin.ajax import create_ajax_loader
++from tests.common import async_engine as engine
++
++pytestmark = pytest.mark.anyio
++
++Base = declarative_base()  # type: Any
++
++LocalSession = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
++
++session: AsyncSession = LocalSession()
++
++app = Starlette()
++admin = Admin(app=app, engine=engine)
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id = Column(Integer, primary_key=True)
++    name = Column(String(length=16))
++
++    addresses = relationship("Address", back_populates="user")
++
++    def __str__(self) -> str:
++        return f"User {self.id}"
++
++
++class Address(Base):
++    __tablename__ = "addresses"
++
++    id = Column(Integer, primary_key=True)
++    user_id = Column(Integer, ForeignKey("users.id"))
++
++    user = relationship("User", back_populates="addresses")
++
++    def __str__(self) -> str:
++        return f"Address {self.id}"
++
++
++class UserAdmin(ModelView, model=User):
++    form_ajax_refs = {
++        "addresses": {
++            "fields": ("id",),
++        }
++    }
++
++
++class AddressAdmin(ModelView, model=Address):
++    form_ajax_refs = {
++        "user": {
++            "fields": ("name",),
++            "order_by": ("id"),
++        }
++    }
++
++
++admin.add_view(UserAdmin)
++admin.add_view(AddressAdmin)
++
++
++@pytest.fixture
++async def prepare_database() -> AsyncGenerator[None, None]:
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.create_all)
++    yield
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.drop_all)
++
++    await engine.dispose()
++
++
++@pytest.fixture
++async def client(prepare_database: Any) -> AsyncGenerator[AsyncClient, None]:
++    async with AsyncClient(app=app, base_url="http://testserver") as c:
++        yield c
++
++
++async def test_ajax_lookup_invalid_query_params(client: AsyncClient) -> None:
++    response = await client.get("/admin/user/ajax/lookup")
++    assert response.status_code == 400
++
++    response = await client.get("/admin/address/ajax/lookup")
++    assert response.status_code == 400
++
++    response = await client.get("/admin/user/ajax/lookup?name=test&term=x")
++    assert response.status_code == 400
++
++
++async def test_ajax_response(client: AsyncClient) -> None:
++    user = User(name="John Snow")
++    async with LocalSession() as s:
++        s.add(user)
++        await s.commit()
++
++    response = await client.get("/admin/address/ajax/lookup?name=user&term=john")
++
++    assert response.status_code == 200
++    assert response.json() == {"results": [{"id": 1, "text": "User 1"}]}
++
++
++async def test_create_ajax_loader_exceptions() -> None:
++    with pytest.raises(ValueError):
++        create_ajax_loader(model_admin=AddressAdmin(), name="x", options={})
++
++    with pytest.raises(ValueError):
++        create_ajax_loader(model_admin=AddressAdmin(), name="user", options={})
++
++
++async def test_create_page_template(client: AsyncClient) -> None:
++    response = await client.get("/admin/user/create")
++
++    assert response.text.count('data-json="[]"') == 1
++    assert response.text.count('data-role="select2-ajax"') == 1
++    assert response.text.count('data-url="/admin/user/ajax/lookup"') == 1
++
++    response = await client.get("/admin/address/create")
++
++    assert response.text.count('data-role="select2-ajax"') == 1
++    assert response.text.count('data-url="/admin/address/ajax/lookup"') == 1
++
++
++async def test_edit_page_template(client: AsyncClient) -> None:
++    user = User(name="John Snow")
++    async with LocalSession() as s:
++        s.add(user)
++        await s.flush()
++
++        address = Address(user=user)
++        s.add(address)
++        await s.commit()
++
++    response = await client.get("/admin/user/edit/1")
++    assert (
++        response.text.count(
++            'data-json="[{&#34;id&#34;: 1, &#34;text&#34;: &#34;Address 1&#34;}]"'
++        )
++        == 1
++    )
++    assert response.text.count('data-role="select2-ajax"') == 1
++    assert response.text.count('data-url="/admin/user/ajax/lookup"') == 1
++
++    response = await client.get("/admin/address/edit/1")
++    assert (
++        response.text.count(
++            'data-json="[{&#34;id&#34;: 1, &#34;text&#34;: &#34;User 1&#34;}]"'
++        )
++        == 1
++    )
++    assert response.text.count('data-role="select2-ajax"') == 1
++    assert response.text.count('data-url="/admin/address/ajax/lookup"') == 1
++
++
++async def test_crete_and_edit_forms(client: AsyncClient) -> None:
++    response = await client.post("/admin/address/create", data={})
++    assert response.status_code == 302
++
++    data = {"addresses": ["1"], "name": "Tyrion"}
++    response = await client.post("/admin/user/create", data=data)
++    assert response.status_code == 302
++
++    data = {}
++    response = await client.post("/admin/address/edit/1", data=data)
++    assert response.status_code == 302
++
++    async with LocalSession() as s:
++        stmt = select(User).options(selectinload(User.addresses))
++        result = await s.execute(stmt)
++
++    user = result.scalar_one()
++    assert len(user.addresses) == 0
++
++    data = {"addresses": ["1"]}
++    response = await client.post("/admin/user/edit/1", data=data)
++    assert response.status_code == 302
++
++    async with LocalSession() as s:
++        stmt = select(User).options(selectinload(User.addresses))
++        result = await s.execute(stmt)
++
++    user = result.scalar_one()
++    assert len(user.addresses) == 1

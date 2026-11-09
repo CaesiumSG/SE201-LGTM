@@ -1,0 +1,188 @@
+{
+  "id": "airflow-partitioned-dagruns-authz-vulnerable",
+  "repo": "apache/airflow",
+  "pr": 61398,
+  "title": "New partitioned-DAG-run UI endpoints enforced only asset-level permission, letting users with Asset:read enumerate runs of DAGs they cannot read.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "e7898b8100f92f1988edc35188339e37922813da",
+  "pr_sha": "e0e4ab451ce084a860044cbf53ae41a863ae16f6",
+  "files_changed": 21,
+  "python_files_changed": 7,
+  "added_lines": 724,
+  "diff_chars": 33670,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 207.4,
+  "index_seconds": 53.6,
+  "index_reused": false,
+  "index_chunks": 6397,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:partitioned-dag-runs-endpoints.1:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+      "line": 62,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "Both new endpoints use `requires_access_asset(method=\"GET\")` as their authorization dependency. That dependency (security.py:648-661) reads `asset_id` from `request.path_params` and calls `is_authorized_asset(details=AssetDetails(id=asset_id))`. Neither endpoint path (`/partitioned_dag_runs` and `/pending_partitioned_dag_run/{dag_id}/{partition_key}`) contains an `asset_id` path parameter, so `ass"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 18,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 21,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:partitioned-dag-runs-endpoints.1:1",
+      "cwe_id": "CWE-863",
+      "explanation": "Both new endpoints use `requires_access_asset(method=\"GET\")` as their authorization dependency. That dependency (security.py:648-661) reads `asset_id` from `request.path_params` and calls `is_authorized_asset(details=AssetDetails(id=asset_id))`. Neither endpoint path (`/partitioned_dag_runs` and `/pending_partitioned_dag_run/{dag_id}/{partition_key}`) contains an `asset_id` path parameter, so `asset_id` is always None and the check is effectively a global 'can the user GET any asset' test. The endpoints, however, return data scoped to a user-supplied `dag_id` (and `partition_key`), including DAG asset expressions, asset URIs/names, and partitioned DAG-run state. The policy requires DAG-scoped authorization: the auth-manager docs state that `is_authorized_dag` 'should also handle the authorization logic for Dag runs, tasks, and task instances' and that `access_entity` indicates the sub-component being accessed. Because the asset-level check does not verify the requester's access to the specific DAG, a user who can GET assets but not a given DAG can read that DAG's partitioned DAG-run details and asset expressions \u2014 an incorrect (bypassable) authorization check.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+          "lines": [
+            60,
+            63
+          ],
+          "source": null,
+          "content": "@partitioned_dag_runs_router.get(\n    \"/partitioned_dag_runs\",\n    dependencies=[Depends(requires_access_asset(method=\"GET\"))],\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+          "lines": [
+            162,
+            165
+          ],
+          "source": null,
+          "content": "@partitioned_dag_runs_router.get(\n    \"/pending_partitioned_dag_run/{dag_id}/{partition_key}\",\n    dependencies=[Depends(requires_access_asset(method=\"GET\"))],\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/security.py",
+          "lines": [
+            648,
+            661
+          ],
+          "source": null,
+          "content": "def requires_access_asset(method: ResourceMethod) -> Callable[[Request, BaseUser], None]:\n    def inner(request: Request, user: GetUserDep) -> None:\n        asset_id = request.path_params.get(\"asset_id\")\n        _requires_access(\n            is_authorized_callback=lambda: get_auth_manager().is_authorized_asset(\n                method=method, details=AssetDetails(id=asset_id), user=user\n            ),\n        )\n    return inner",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "airflow-core/docs/core-concepts/auth-manager/index.rst",
+          "content": "Given the hierarchical structure of Dags and their composite resources, the auth manager's ``is_authorized_dag`` method should also handle the authorization logic for Dag runs, tasks, and task instances. The ``access_entity`` parameter passed to ``is_authorized_dag`` indicates which (if any) Dag sub-component the user is attempting to access.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/__init__.py",
+          "lines": [
+            40,
+            40
+          ],
+          "source": null,
+          "content": "ui_router.include_router(partitioned_dag_runs_router)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+          "lines": [
+            60,
+            68
+          ],
+          "source": null,
+          "content": "@partitioned_dag_runs_router.get(\n    \"/partitioned_dag_runs\",\n    dependencies=[Depends(requires_access_asset(method=\"GET\"))],\n)\ndef get_partitioned_dag_runs(\n    session: SessionDep,\n    dag_id: QueryPartitionedDagRunDagIdFilter,",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+          "lines": [
+            162,
+            169
+          ],
+          "source": null,
+          "content": "@partitioned_dag_runs_router.get(\n    \"/pending_partitioned_dag_run/{dag_id}/{partition_key}\",\n    dependencies=[Depends(requires_access_asset(method=\"GET\"))],\n)\ndef get_pending_partitioned_dag_run(\n    dag_id: str,\n    partition_key: str,",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/security.py",
+          "lines": [
+            648,
+            661
+          ],
+          "source": null,
+          "content": "def requires_access_asset(method: ResourceMethod) -> Callable[[Request, BaseUser], None]:\n    def inner(\n        request: Request,\n        user: GetUserDep,\n    ) -> None:\n        asset_id = request.path_params.get(\"asset_id\")\n\n        _requires_access(\n            is_authorized_callback=lambda: get_auth_manager().is_authorized_asset(\n                method=method, details=AssetDetails(id=asset_id), user=user\n            ),\n        )\n\n    return inner",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Authorize these endpoints against the DAG they operate on rather than a generic asset. Add a `requires_access_dag(method=\"GET\")` dependency (or an asset check that resolves the target DAG) so the auth manager's `is_authorized_dag` is invoked with the user-supplied `dag_id` and the appropriate `access_entity` for DAG runs, ensuring users without access to a specific DAG cannot read its partitioned DAG-run data.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8178,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py",
+      "line": 62,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "airflow-partitioned-dagruns-authz",
+  "url": "https://github.com/apache/airflow/pull/61398",
+  "category": "authz",
+  "cwe": "CWE-862",
+  "ghsa": "GHSA-x2x7-p37c-43cr",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

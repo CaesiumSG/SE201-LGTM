@@ -63,6 +63,78 @@ a customer do (read another customer's order and address); the pull request goes
 it with an inline comment, the policy rule it breaks and a fix. Real-world replays show the same on published
 advisories (taiga-back, wagtail, authentik). Runbook, setup and the demo script: [demo/README.md](demo/README.md).
 
+Repository: https://github.com/CaesiumSG/SE201-LGTM
+
+## Run it yourself
+
+Two ways in, from a fresh clone or the submitted zip. Tested on macOS; Linux should work the same. No GPU and
+no Docker needed.
+
+### A. Look at the results (no setup)
+
+Open `viewer/lgtm-viewer.html` in any browser (double-click it). Every benchmark case, with the PR diff, each
+finding pinned to its line, the judge's verdict and the agents' tool calls, for LGTM and the baselines. It is
+built from the committed results in `demo/benchmark-results/` and `benchmark/runs/`; rebuild it with
+`python viewer/build_viewer.py`.
+
+### B. Run a live review on GitHub (about 15 minutes, the first time)
+
+You run LGTM's dashboard on your laptop, connect it to your own GitHub account, have a small AI model write a
+feature with a security bug, push it as a pull request, and watch LGTM review it on GitHub.
+
+**Prerequisites** (check each before step 1):
+
+- **Python 3.13+**: `python3 --version`.
+- **git**: `git --version` (macOS: `xcode-select --install` or `brew install git`; Windows:
+  [git-scm.com](https://git-scm.com)).
+- **GitHub CLI (`gh`)**, signed in to the same GitHub account you will fork with: `brew install gh` (or see
+  [cli.github.com](https://cli.github.com)), then `gh auth login` and check with `gh auth status`. The dashboard
+  clones, pushes and opens the pull request through `gh`, so the demo cannot push without it.
+- **A GitHub account.**
+- **An Amazon Bedrock API key.** The team sends it privately; it is never in the repository or the zip.
+- Optional, for "Write it live": [Ollama](https://ollama.com) installed and **running** on its default port
+  11434 (open the Ollama app, or run `ollama serve` in a separate terminal), with the model pulled:
+  `ollama pull llama3.2` (2 GB). Check with `curl http://127.0.0.1:11434/api/tags`, which should list
+  `llama3.2:latest`. Without Ollama, use "Replay the prepared change" instead.
+
+1. **Install** (from the repository root):
+
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -e ".[demo]"
+   ```
+
+2. **Add the key:** `cp .env.example .env`, then paste the key after `AWS_BEDROCK_API_KEY=`. With the key and no
+   GPU, the reviewer and the evidence judge both run on Claude through Bedrock (spending stops at USD 10 per
+   machine). Every setting is explained in [.env.example](.env.example).
+
+3. **Fork the demo repository** [cyberjj999/shoply-demo](https://github.com/cyberjj999/shoply-demo) to your
+   account. Keep its name, and **untick "Copy the main branch only"**. Optional, for real-world replays: also fork
+   [cyberjj999/taiga-back-replay](https://github.com/cyberjj999/taiga-back-replay) (a 2016 SQL injection, later
+   CVE-2025-62367) and [cyberjj999/wagtail-replay](https://github.com/cyberjj999/wagtail-replay) (an August 2026
+   authorization advisory) the same way.
+
+4. **Start LGTM:** `python demo/server.py`, then open http://127.0.0.1:8765/.
+
+5. **Create your LGTM GitHub App** from the page that opens: **Create the GitHub App** → **Continue to GitHub**
+   (keep the suggested name: app names are unique across GitHub) → **Create GitHub App**. Then **install it** on
+   your forks only (Only select repositories). The app is yours; its keys stay in `demo/.secrets/` on your
+   laptop.
+
+6. **Sign in with GitHub.** In the header, **API** should be selected with a green dot, and **Judge: Claude** and
+   **Webhooks** should be green. The **GPU** dot stays grey; that is expected without the team's GPU job. A red
+   API dot means the key in `.env` is missing or rejected (hover it for Bedrock's reason).
+
+7. **The demo:** Workspace → shoply-demo → the task *"Customers want to track one order…"* → **Write it live**
+   (needs Ollama running, see Prerequisites; otherwise choose **Replay**). The **App** tab runs that code: sign in as Bob, open *Track an order*, enter 1, and Bob sees
+   Alice's order and address. Then **Commit, push and open a pull request**. In about 2 to 3 minutes LGTM fails the
+   check on your pull request and leaves an inline comment (insecure direct object reference, CWE-639) with the
+   fix. Follow the review live under **Pull requests** in the dashboard.
+
+If something is off: the header's status dots link to what is missing, and the server prints the reviewer,
+judge and key status when it starts. Restarting the server signs you out (sign in again with one click).
+`demo/README.md` has the full runbook, including the GPU setup the team used for the evaluation.
+
 ## Architecture
 
 ```

@@ -1,0 +1,209 @@
+{
+  "id": "pretix-exporter-cachedfile-idor-fixed",
+  "repo": "pretix/pretix",
+  "pr": null,
+  "title": "The new 'trigger exports through API' feature served any cached export file by UUID without checking that it belonged to the caller.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "847dc0f9924e162ef65b42cdb3d624a531882e3d",
+  "pr_sha": "aa9c478c30657886cd9f8f7a272ea1699412ad73",
+  "files_changed": 6,
+  "python_files_changed": 6,
+  "added_lines": 52,
+  "diff_chars": 6734,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 260.3,
+  "index_seconds": 6.0,
+  "index_reused": false,
+  "index_chunks": 649,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 2,
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:session-binding-core:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/pretix/base/models/base.py",
+      "line": 84,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new session-binding helper `session_key_for_request` (base.py:62-82) derives the binding key from `request.auth` when present, but `request.auth` is set by the API authentication layer for ANY authenticated API caller (OAuth access token, OAuth application, TeamAPIToken, Device). The key is then only the token/application/device primary key (e.g. `app:<pk>`, `token:<pk>`, `device:<pk>`), with "
+    },
+    {
+      "finding_id": "authz:pdf-background-scope:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/pretix/control/views/pdf.py",
+      "line": 250,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The changed line fetches a CachedFile by a user-controlled identifier (request.POST.get(\"background\")) and only filters by web_download=True. The CachedFile model has no owner/event/organizer field (base.py lines 49-60), so web_download=True is not an ownership check \u2014 it is a global flag shared by all web-downloadable files. The view's own download path (base/views/cachedfiles.py lines 38-40) add"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 14,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 32,
+  "reviewer_units": 6,
+  "findings": [
+    {
+      "finding_id": "authz:session-binding-core:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new session-binding helper `session_key_for_request` (base.py:62-82) derives the binding key from `request.auth` when present, but `request.auth` is set by the API authentication layer for ANY authenticated API caller (OAuth access token, OAuth application, TeamAPIToken, Device). The key is then only the token/application/device primary key (e.g. `app:<pk>`, `token:<pk>`, `device:<pk>`), with no organizer/event scoping. `allowed_for_session` (base.py:84-88) returns True whenever the caller's auth object matches the stored key. Because the key is not scoped to the organizer/event that owns the CachedFile, a caller authenticated with a token that has access to a DIFFERENT organizer/event can pass the session check and download a CachedFile belonging to another organizer/event (IDOR / broken object-level authorization). The base code already had this pattern (e.g. api/views/shredders.py:71 `session_key=f'api-shredder-{type}-{pk}'`), but this PR centralizes and generalizes it into a reusable helper that is now applied to the generic CachedFile download path (base/views/cachedfiles.py:39 `if not o.allowed_for_session(self.request)`), newly exposing the unscoped comparison to the web download view. The policy (permissions.rst) requires fine-grained, organizer/event-scoped permission checks; a bare token pk is not such a check.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pretix/base/models/base.py",
+          "lines": [
+            62,
+            88
+          ],
+          "source": null,
+          "content": "def session_key_for_request(self, request, salt=None):\n    ...\n    if hasattr(request, \"auth\") and isinstance(request.auth, OAuthAccessToken):\n        k = f'app:{request.auth.application.pk}'\n    elif hasattr(request, \"auth\") and isinstance(request.auth, OAuthApplication):\n        k = f'app:{request.auth.pk}'\n    elif hasattr(request, \"auth\") and isinstance(request.auth, TeamAPIToken):\n        k = f'token:{request.auth.pk}'\n    elif hasattr(request, \"auth\") and isinstance(request.auth, Device):\n        k = f'device:{request.auth.pk}'\n    elif request.session.session_key:\n        k = request.session.session_key\n    ...\n    def allowed_for_session(self, request, salt=None):\n        return (\n            not self.session_key or\n            self.session_key_for_request(request, salt) == self.session_key\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/views/cachedfiles.py",
+          "lines": [
+            35,
+            43
+          ],
+          "source": null,
+          "content": "@cached_property\n    def object(self) -> CachedFile:\n        try:\n            o = get_object_or_404(CachedFile, id=self.kwargs['id'], web_download=True)\n            if not o.allowed_for_session(self.request):\n                raise Http404()\n            return o",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "doc/development/implementation/permissions.rst",
+          "content": "pretix uses a fine-grained permission system to control who is allowed to control what parts of the system. ... A team can be assigned a set of permissions and connected to some or all of the events of the organizer.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Scope the session binding key to the organizer/event that owns the CachedFile (e.g. include the organizer/event pk in the key, or verify the caller has permission on the file's organizer/event before allowing the download), rather than comparing only the raw token/application/device pk. Ensure `allowed_for_session` also enforces that the requester is authorized for the specific object's organizer/event.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8334,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/pretix/base/models/base.py",
+      "line": 84,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:pdf-background-scope:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The changed line fetches a CachedFile by a user-controlled identifier (request.POST.get(\"background\")) and only filters by web_download=True. The CachedFile model has no owner/event/organizer field (base.py lines 49-60), so web_download=True is not an ownership check \u2014 it is a global flag shared by all web-downloadable files. The view's own download path (base/views/cachedfiles.py lines 38-40) additionally enforces allowed_for_session(request), but this lookup does not, so a user with 'can_change_settings' on one event can reference a CachedFile id belonging to another event/organizer and use it as the ticket background (override_background=cf.file) or persist it via save_background(cf). This is an IDOR: the object is fetched by a user-controlled id without verifying the requester owns it.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pretix/control/views/pdf.py",
+          "lines": [
+            247,
+            252
+          ],
+          "source": null,
+          "content": "cf = None\n        if request.POST.get(\"background\", \"\").strip():\n            try:\n                cf = CachedFile.objects.get(id=request.POST.get(\"background\"), web_download=True)\n            except CachedFile.DoesNotExist:\n                pass",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/models/base.py",
+          "lines": [
+            49,
+            60
+          ],
+          "source": null,
+          "content": "class CachedFile(models.Model):\n    id = models.UUIDField(primary_key=True, default=uuid.uuid4)\n    expires = models.DateTimeField(null=True, blank=True)\n    date = models.DateTimeField(null=True, blank=True)\n    filename = models.CharField(max_length=255)\n    type = models.CharField(max_length=255)\n    file = models.FileField(null=True, blank=True, upload_to=_cachedfile_name, max_length=255)\n    web_download = models.BooleanField(default=True)  # allow web download, True for backwards compatibility in plugins\n    session_key = models.TextField(null=True, blank=True)  # only allow download in this session",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/views/cachedfiles.py",
+          "lines": [
+            35,
+            43
+          ],
+          "source": null,
+          "content": "@cached_property\n    def object(self) -> CachedFile:\n        try:\n            o = get_object_or_404(CachedFile, id=self.kwargs['id'], web_download=True)\n            if not o.allowed_for_session(self.request):\n                raise Http404()\n            return o\n        except (ValueError, ValidationError):   # Invalid URLs\n            raise Http404()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "doc/development/implementation/permissions.rst",
+          "content": "class MyEventView(EventPermissionRequiredMixin, View):\n    permission = 'can_change_event_settings'\n    # Only users with the permission ``can_change_event_settings`` on\n    # this event can access this",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Scope the lookup to the current event/organizer (e.g. filter by the event's background setting or a session_key bound to the request) and/or enforce o.allowed_for_session(request) before using cf, so a user cannot reference a CachedFile belonging to another event/organizer.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8187,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/pretix/control/views/pdf.py",
+      "line": 250,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "pretix-exporter-cachedfile-idor",
+  "url": "https://github.com/pretix/pretix/commit/aa9c478c30657886cd9f8f7a272ea1699412ad73",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-r2h2-g46h-8mx8",
+  "expected": "safe",
+  "vulnerable_files": [
+    "src/pretix/api/views/exporters.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": false
+}

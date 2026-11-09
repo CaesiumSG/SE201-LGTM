@@ -20,6 +20,8 @@ import threading
 import time
 from pathlib import Path
 
+import demo_repos
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE / ".data" / "workspace"
 PRESETS_FILE = HERE / "workspace_presets.json"
@@ -78,6 +80,8 @@ class Workspace:
     @staticmethod
     def presets(repo: str | None = None) -> list[dict]:
         items = json.loads(PRESETS_FILE.read_text(encoding="utf-8")) if PRESETS_FILE.is_file() else []
+        for p in items:   # cyberjj999/<name> -> this machine's fork
+            p["repo"] = demo_repos.resolve(p["repo"])
         return [p for p in items if not repo or p["repo"] == repo]
 
     def preset(self, pid: str) -> dict:

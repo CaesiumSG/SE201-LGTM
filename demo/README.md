@@ -1,5 +1,8 @@
 # LGTM: the GitHub App and its dashboard
 
+This is the team's runbook. To run LGTM on your own GitHub account, follow
+[Run it yourself](../README.md#run-it-yourself) in the top-level README.
+
 LGTM runs as a real GitHub App owned by `cyberjj999`. When a pull request is opened or updated in a connected repository, LGTM:
 
 1. creates an in-progress **check run** on the PR,

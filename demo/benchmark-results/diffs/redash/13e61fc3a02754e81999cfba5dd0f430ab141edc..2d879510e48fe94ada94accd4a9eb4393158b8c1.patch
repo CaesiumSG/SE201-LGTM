@@ -1,0 +1,114 @@
+diff --git a/redash/handlers/api.py b/redash/handlers/api.py
+index b5aaa23..48428da 100644
+--- a/redash/handlers/api.py
++++ b/redash/handlers/api.py
+@@ -11,8 +11,9 @@ from redash.handlers.alerts import (
+ )
+ from redash.handlers.base import org_scoped_rule
+ from redash.handlers.dashboards import (
+     DashboardFavoriteListResource,
++    DashboardForkResource,
+     DashboardListResource,
+     DashboardResource,
+     DashboardShareResource,
+     DashboardTagsResource,
+@@ -189,8 +190,9 @@ api.add_org_resource(
+     DashboardFavoriteResource,
+     "/api/dashboards/<object_id>/favorite",
+     endpoint="dashboard_favorite",
+ )
++api.add_org_resource(DashboardForkResource, "/api/dashboards/<dashboard_id>/fork", endpoint="dashboard_fork")
+ 
+ api.add_org_resource(MyDashboardsResource, "/api/dashboards/my", endpoint="my_dashboards")
+ 
+ api.add_org_resource(QueryTagsResource, "/api/queries/tags", endpoint="query_tags")
+diff --git a/redash/handlers/dashboards.py b/redash/handlers/dashboards.py
+index f6917b1..56813ea 100644
+--- a/redash/handlers/dashboards.py
++++ b/redash/handlers/dashboards.py
+@@ -397,4 +397,17 @@ class DashboardFavoriteListResource(BaseResource):
+             }
+         )
+ 
+         return response
++
++
++class DashboardForkResource(BaseResource):
++    @require_permission("edit_dashboard")
++    def post(self, dashboard_id):
++        dashboard = models.Dashboard.get_by_id_and_org(dashboard_id, self.current_org)
++
++        fork_dashboard = dashboard.fork(self.current_user)
++        models.db.session.commit()
++
++        self.record_event({"action": "fork", "object_id": dashboard_id, "object_type": "dashboard"})
++
++        return DashboardSerializer(fork_dashboard, with_widgets=True).serialize()
+diff --git a/redash/models/__init__.py b/redash/models/__init__.py
+index ead454b..908f571 100644
+--- a/redash/models/__init__.py
++++ b/redash/models/__init__.py
+@@ -1130,8 +1130,23 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model
+     @classmethod
+     def get_by_slug_and_org(cls, slug, org):
+         return cls.query.filter(cls.slug == slug, cls.org == org).one()
+ 
++    def fork(self, user):
++        forked_list = ["org", "layout", "dashboard_filters_enabled", "tags"]
++
++        kwargs = {a: getattr(self, a) for a in forked_list}
++        forked_dashboard = Dashboard(name="Copy of (#{}) {}".format(self.id, self.name), user=user, **kwargs)
++
++        for w in self.widgets:
++            forked_w = w.copy(forked_dashboard.id)
++            fw = Widget(**forked_w)
++            db.session.add(fw)
++
++        forked_dashboard.slug = forked_dashboard.id
++        db.session.add(forked_dashboard)
++        return forked_dashboard
++
+     @hybrid_property
+     def lowercase_name(self):
+         "Optional property useful for sorting purposes."
+         return self.name.lower()
+@@ -1189,8 +1204,17 @@ class Widget(TimestampMixin, BelongsToOrgMixin, db.Model):
+     @classmethod
+     def get_by_id_and_org(cls, object_id, org):
+         return super(Widget, cls).get_by_id_and_org(object_id, org, Dashboard)
+ 
++    def copy(self, dashboard_id):
++        return {
++            "options": self.options,
++            "width": self.width,
++            "text": self.text,
++            "visualization_id": self.visualization_id,
++            "dashboard_id": dashboard_id,
++        }
++
+ 
+ @generic_repr("id", "object_type", "object_id", "action", "user_id", "org_id", "created_at")
+ class Event(db.Model):
+     id = primary_key("Event")
+diff --git a/tests/handlers/test_dashboards.py b/tests/handlers/test_dashboards.py
+index 748f5fc..5f81b27 100644
+--- a/tests/handlers/test_dashboards.py
++++ b/tests/handlers/test_dashboards.py
+@@ -150,8 +150,17 @@ class TestDashboardResourcePost(BaseTestCase):
+         self.assertEqual(rv.status_code, 200)
+         self.assertEqual(rv.json["name"], new_name)
+ 
+ 
++class TestDashboardForkResourcePost(BaseTestCase):
++    def test_forks_a_dashboard(self):
++        dashboard = self.factory.create_dashboard()
++
++        rv = self.make_request("post", "/api/dashboards/{}/fork".format(dashboard.id))
++
++        self.assertEqual(rv.status_code, 200)
++
++
+ class TestDashboardResourceDelete(BaseTestCase):
+     def test_delete_dashboard(self):
+         d = self.factory.create_dashboard()
+ 

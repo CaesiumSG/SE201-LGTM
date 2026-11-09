@@ -1,0 +1,222 @@
+{
+  "id": "pretix-exporter-cachedfile-idor-vulnerable",
+  "repo": "pretix/pretix",
+  "pr": 1839,
+  "title": "The new 'trigger exports through API' feature served any cached export file by UUID without checking that it belonged to the caller.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "c757f3e4c7abb3667ae76fa7a7292fc52a6b0fce",
+  "pr_sha": "d08c811f3a4a07146f9af8f6b023ee406a1da619",
+  "files_changed": 12,
+  "python_files_changed": 10,
+  "added_lines": 457,
+  "diff_chars": 22638,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 177.2,
+  "index_seconds": 4.5,
+  "index_reused": false,
+  "index_chunks": 522,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 2,
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:api-endpoints:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/pretix/api/views/exporters.py",
+      "line": 48,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new `download` action fetches a `CachedFile` purely by the user-supplied `cfid` URL parameter via `get_object_or_404(CachedFile, id=kwargs['cfid'])` and then streams its file contents. The `CachedFile` model (base.py:21-30) has no owner/organizer/event field, and the view performs no check tying the file to the authenticated requester, their team, or the organizer/event in the URL. The `EventP"
+    },
+    {
+      "finding_id": "authz:multiexport-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/pretix/base/services/export.py",
+      "line": 54,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new multiexport task fetches a Device or TeamAPIToken by a user-controlled integer id (device/token) and uses it as the authorization principal, but never verifies that the object belongs to the organizer argument. The policy (permissions.rst) states that tokens are 'bound to a team' and that access must be scoped to the organizer; the existing Device.has_organizer_permission helper explicitly"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 9,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 21,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:api-endpoints:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new `download` action fetches a `CachedFile` purely by the user-supplied `cfid` URL parameter via `get_object_or_404(CachedFile, id=kwargs['cfid'])` and then streams its file contents. The `CachedFile` model (base.py:21-30) has no owner/organizer/event field, and the view performs no check tying the file to the authenticated requester, their team, or the organizer/event in the URL. The `EventPermission` class (permission.py:14-71) only enforces event/organizer-level permission on the view, not ownership of this specific object. Because `cfid` is a random UUID, any authenticated user who learns or guesses another user's `cfid` (e.g. from a `run` response URL) can download that user's export file. This is a classic IDOR: an object is fetched by a user-controlled identifier without verifying the requester owns it.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pretix/api/views/exporters.py",
+          "lines": [
+            46,
+            52
+          ],
+          "source": null,
+          "content": "    @action(detail=True, methods=['GET'], url_name='download', url_path='download/(?P<asyncid>[^/]+)/(?P<cfid>[^/]+)')\n    def download(self, *args, **kwargs):\n        cf = get_object_or_404(CachedFile, id=kwargs['cfid'])\n        if cf.file:\n            resp = ChunkBasedFileResponse(cf.file.file, content_type=cf.type)\n            resp['Content-Disposition'] = 'attachment; filename=\"{}\"'.format(cf.filename)\n            return resp",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/models/base.py",
+          "lines": [
+            21,
+            30
+          ],
+          "source": null,
+          "content": "class CachedFile(models.Model):\n    \"\"\"\n    An uploaded file, with an optional expiry date.\n    \"\"\"\n    id = models.UUIDField(primary_key=True, default=uuid.uuid4)\n    expires = models.DateTimeField(null=True, blank=True)\n    date = models.DateTimeField(null=True, blank=True)\n    filename = models.CharField(max_length=255)\n    type = models.CharField(max_length=255)\n    file = models.FileField(null=True, blank=True, upload_to=cachedfile_name, max_length=255)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/api/auth/permission.py",
+          "lines": [
+            14,
+            23
+          ],
+          "source": null,
+          "content": "    def has_permission(self, request, view):\n        if not request.user.is_authenticated and not isinstance(request.auth, (Device, TeamAPIToken)):\n            return False\n\n        if request.method not in SAFE_METHODS and hasattr(view, 'write_permission'):\n            required_permission = getattr(view, 'write_permission')\n        elif hasattr(view, 'permission'):\n            required_permission = getattr(view, 'permission')\n        else:\n            required_permission = None",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "doc/development/implementation/permissions.rst",
+          "content": "pretix uses a fine-grained permission system to control who is allowed to control what parts of the system. ... A team can be assigned a set of permissions and connected to some or all of the events of the organizer.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Associate the CachedFile with the requesting user/team/organizer (e.g. add an owner or organizer/event FK) and, in `download`, verify that the fetched `cf` belongs to the authenticated requester's scope before returning the file. Alternatively, restrict the lookup to files created by the current user/token, e.g. `get_object_or_404(CachedFile, id=kwargs['cfid'], owner=request.user)`.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8616,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/pretix/api/views/exporters.py",
+      "line": 48,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:multiexport-authz:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new multiexport task fetches a Device or TeamAPIToken by a user-controlled integer id (device/token) and uses it as the authorization principal, but never verifies that the object belongs to the organizer argument. The policy (permissions.rst) states that tokens are 'bound to a team' and that access must be scoped to the organizer; the existing Device.has_organizer_permission helper explicitly checks `organizer == self.organizer`, but the new code path does not. A caller can pass a device/token id from a different organizer and have its permission set drive `allowed_events`, bypassing the intended organizer scoping. The slug branch (line 80) even filters by `organizer=organizer`, but the pk branch (line 82) does not, so cross-organizer event ids can be exported.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/pretix/base/services/export.py",
+          "lines": [
+            52,
+            57
+          ],
+          "source": null,
+          "content": "def multiexport(self, organizer: Organizer, user: User, device: int, token: int, fileid: str, provider: str, form_data: Dict[str, Any]) -> None:\n    if device:\n        device = Device.objects.get(pk=device)\n    if token:\n        device = TeamAPIToken.objects.get(pk=token)\n    allowed_events = (device or token or user).get_events_with_permission('can_view_orders')",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/services/export.py",
+          "lines": [
+            79,
+            82
+          ],
+          "source": null,
+          "content": "if isinstance(form_data['events'][0], str):\n            events = allowed_events.filter(slug__in=form_data.get('events'), organizer=organizer)\n        else:\n            events = allowed_events.filter(pk__in=form_data.get('events'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/pretix/base/models/devices.py",
+          "lines": [
+            211,
+            213
+          ],
+          "source": null,
+          "content": "if isinstance(perm_name, (tuple, list)):\n            return organizer == self.organizer and any(p in self.permission_set() for p in perm_name)\n        return organizer == self.organizer and (not perm_name or perm_name in self.permission_set())",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "doc/development/implementation/permissions.rst",
+          "content": "A second way to access pretix is via the REST API, which allows authentication via tokens that are bound to a team, but not to a user.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Verify the resolved Device/TeamAPIToken belongs to the organizer before using it, e.g. `if device and device.organizer != organizer: raise PermissionDenied` (and likewise for the token), or scope the lookup with `Device.objects.get(pk=device, organizer=organizer)` / `TeamAPIToken.objects.get(pk=token, team__organizer=organizer)`. Also filter the pk branch by `organizer=organizer` to match the slug branch.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8547,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/pretix/base/services/export.py",
+      "line": 54,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "pretix-exporter-cachedfile-idor",
+  "url": "https://github.com/pretix/pretix/pull/1839",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-r2h2-g46h-8mx8",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/pretix/api/views/exporters.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

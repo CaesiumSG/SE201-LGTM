@@ -1,0 +1,4346 @@
+diff --git a/cms/admin/pageadmin.py b/cms/admin/pageadmin.py
+index f16902b..bc8f606 100644
+--- a/cms/admin/pageadmin.py
++++ b/cms/admin/pageadmin.py
+@@ -58,8 +58,9 @@ from cms.models import (
+ from cms.operations.helpers import send_post_page_operation, send_pre_page_operation
+ from cms.plugin_pool import plugin_pool
+ from cms.signals.apphook import set_restart_trigger
+ from cms.toolbar_pool import toolbar_pool
++from cms.toolbar.utils import get_object_edit_url
+ from cms.utils import permissions, get_current_site, get_language_from_request
+ from cms.utils import page_permissions
+ from cms.utils.i18n import (
+     get_language_list,
+@@ -1162,10 +1163,9 @@ class BasePageAdmin(admin.ModelAdmin):
+             message = message % {'title': force_text(page)}
+             self.message_user(request, message, level=messages.ERROR)
+             return HttpResponseRedirect(self.get_admin_url('changelist'))
+ 
+-        attrs = "?%s" % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-        url = page.get_absolute_url(language) + attrs
++        url = page.get_absolute_url(language)
+ 
+         if site != active_site and page.node.site_id != site.pk:
+             # The user has selected a site using the site selector menu
+             # and the page is not available on the current site's tree.
+@@ -1353,12 +1353,9 @@ class BasePageAdmin(admin.ModelAdmin):
+                         obj = None
+         if obj:
+             if not getattr(request, 'toolbar', False) or not getattr(request.toolbar, 'edit_mode_active', False):
+                 if isinstance(obj, Page):
+-                    url = '%s?%s' % (
+-                        obj.get_absolute_url(),
+-                        get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-                    )
++                    url = get_object_edit_url(obj.get_title_obj())
+                 else:
+                     url = obj.get_absolute_url()
+             else:
+                 url = obj.get_absolute_url()
+diff --git a/cms/admin/placeholderadmin.py b/cms/admin/placeholderadmin.py
+index 9c670f5..7aa8399 100644
+--- a/cms/admin/placeholderadmin.py
++++ b/cms/admin/placeholderadmin.py
+@@ -45,8 +45,10 @@ from cms.utils.plugins import (
+     copy_plugins_to_placeholder,
+     has_reached_plugin_limit,
+ )
+ from cms.utils.urlutils import admin_reverse
++from cms.views import render_object_edit, render_object_structure, render_object_preview
++
+ 
+ _no_default = object()
+ 
+ 
+@@ -203,8 +205,13 @@ class PlaceholderAdmin(admin.ModelAdmin):
+             pat(r'^edit-plugin/([0-9]+)/$', self.edit_plugin),
+             pat(r'^delete-plugin/([0-9]+)/$', self.delete_plugin),
+             pat(r'^clear-placeholder/([0-9]+)/$', self.clear_placeholder),
+             pat(r'^move-plugin/$', self.move_plugin),
++            # Register object edit/structure/preview endpoints.
++            # pat(r'^object/(?P<content_type_id>\d+)/structure/(?P<object_id>.+)$', render_object_structure),
++            pat(r'^object/([0-9]+)/edit/([0-9]+)/$', render_object_edit),
++            pat(r'^object/([0-9]+)/structure/([0-9]+)/$', render_object_structure),
++            pat(r'^object/([0-9]+)/preview/([0-9]+)/$', render_object_preview),
+         ]
+         return url_patterns
+ 
+     def _get_operation_language(self, request):
+diff --git a/cms/api.py b/cms/api.py
+index 452aaa4..f5e8c50 100644
+--- a/cms/api.py
++++ b/cms/api.py
+@@ -102,17 +102,19 @@ def create_page(title, template, language, menu_title=None, slug=None,
+                 apphook=None, apphook_namespace=None, redirect=None, meta_description=None,
+                 created_by='python-api', parent=None,
+                 publication_date=None, publication_end_date=None,
+                 in_navigation=False, soft_root=False, reverse_id=None,
+-                navigation_extenders=None, published=False, site=None,
++                navigation_extenders=None, published=None, site=None,
+                 login_required=False, limit_visibility_in_menu=constants.VISIBILITY_ALL,
+                 position="last-child", overwrite_url=None,
+                 xframe_options=constants.X_FRAME_OPTIONS_INHERIT):
+     """
+     Create a CMS Page and it's title for the given language
+ 
+     See docs/extending_cms/api_reference.rst for more info
+     """
++    if published != None:
++        raise Exception("WTF")
+     # validate template
+     if not template == TEMPLATE_INHERITANCE_MAGIC:
+         assert template in [tpl[0] for tpl in get_cms_setting('TEMPLATES')]
+         get_template(template)
+diff --git a/cms/cms_toolbars.py b/cms/cms_toolbars.py
+index 680db5e..1a43f3a 100644
+--- a/cms/cms_toolbars.py
++++ b/cms/cms_toolbars.py
+@@ -13,8 +13,9 @@ from cms.constants import TEMPLATE_INHERITANCE_MAGIC
+ from cms.models import Placeholder, Title, Page, PageType, StaticPlaceholder
+ from cms.toolbar.items import TemplateItem, REFRESH_PAGE
+ from cms.toolbar_base import CMSToolbar
+ from cms.toolbar_pool import toolbar_pool
++from cms.toolbar.utils import get_object_edit_url, get_object_structure_url
+ from cms.utils import get_language_from_request, page_permissions
+ from cms.utils.conf import get_cms_setting
+ from cms.utils.i18n import get_language_tuple, get_language_dict
+ from cms.utils.page_permissions import (
+@@ -253,18 +254,19 @@ class PageToolbar(CMSToolbar):
+ 
+     def add_structure_mode_item(self, extra_classes=('cms-toolbar-item-cms-mode-switcher',)):
+         structure_active = self.toolbar.structure_mode_active
+         edit_mode_active = (not structure_active and self.toolbar.edit_mode_active)
+-        build_url = '{}?{}'.format(self.toolbar.request_path, get_cms_setting('CMS_TOOLBAR_URL__BUILD'))
+-        edit_url = '{}?{}'.format(self.toolbar.request_path, get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+ 
+-        if self.request.user.has_perm("cms.use_structure"):
+-            switcher = self.toolbar.add_button_list('Mode Switcher', side=self.toolbar.RIGHT,
+-                                                    extra_classes=extra_classes)
+-            switcher.add_button(_('Structure'), build_url, active=structure_active, disabled=False,
+-                    extra_classes='cms-structure-btn')
+-            switcher.add_button(_('Content'), edit_url, active=edit_mode_active, disabled=False,
+-                    extra_classes='cms-content-btn')
++        with force_language(self.current_lang):
++            if self.request.user.has_perm("cms.use_structure"):
++                build_url = get_object_structure_url(self.title) if self.title else ''
++                edit_url = get_object_edit_url(self.title) if self.title else ''
++                switcher = self.toolbar.add_button_list('Mode Switcher', side=self.toolbar.RIGHT,
++                                                        extra_classes=extra_classes)
++                switcher.add_button(_('Structure'), build_url, active=structure_active, disabled=False,
++                        extra_classes='cms-structure-btn')
++                switcher.add_button(_('Content'), edit_url, active=edit_mode_active, disabled=False,
++                        extra_classes='cms-content-btn')
+ 
+     def get_title(self):
+         try:
+             return Title.objects.get(page=self.page, language=self.current_lang)
+@@ -276,8 +278,11 @@ class PageToolbar(CMSToolbar):
+             self.page_change_permission = can_change_page(self.request)
+         return self.page_change_permission
+ 
+     def in_apphook(self):
++        if self.toolbar.edit_mode_active:
++            return False
++
+         with force_language(self.toolbar.request_language):
+             try:
+                 resolver = resolve(self.toolbar.request_path)
+             except Resolver404:
+@@ -518,10 +523,11 @@ class PageToolbar(CMSToolbar):
+             # first break
+             current_page_menu.add_break(PAGE_MENU_FIRST_BREAK)
+ 
+             # page edit
+-            page_edit_url = '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-            current_page_menu.add_link_item(_('Edit this Page'), disabled=edit_mode, url=page_edit_url)
++            with force_language(self.current_lang):
++                page_edit_url = get_object_edit_url(self.title) if self.title else ''
++                current_page_menu.add_link_item(_('Edit this Page'), disabled=edit_mode, url=page_edit_url)
+ 
+             # page settings
+             page_settings_url = add_url_parameters(page_settings_url, language=self.toolbar.request_language)
+             settings_disabled = not edit_mode or not can_change
+diff --git a/cms/middleware/toolbar.py b/cms/middleware/toolbar.py
+index d995d3e..8545567 100644
+--- a/cms/middleware/toolbar.py
++++ b/cms/middleware/toolbar.py
+@@ -5,8 +5,9 @@ Edit Toolbar middleware
+ from django import forms
+ from django.contrib.admin.models import LogEntry, ADDITION, CHANGE
+ from django.core.exceptions import ValidationError
+ from django.urls import resolve
++from django.utils.functional import SimpleLazyObject
+ 
+ from cms.toolbar.toolbar import CMSToolbar
+ from cms.toolbar.utils import get_toolbar_from_request
+ from cms.utils.conf import get_cms_setting
+@@ -21,8 +22,16 @@ class ToolbarMiddleware(MiddlewareMixin):
+     """
+     Middleware to set up CMS Toolbar.
+     """
+ 
++    def is_edit_mode(self, request):
++        try:
++            match = resolve(request.path_info)
++        except:
++            return False
++
++        return match.url_name == 'cms_placeholder_render_object_edit'
++
+     def is_cms_request(self, request):
+         toolbar_hide = get_cms_setting('TOOLBAR_HIDE')
+         internal_ips = get_cms_setting('INTERNAL_IPS')
+ 
+@@ -54,51 +63,26 @@ class ToolbarMiddleware(MiddlewareMixin):
+ 
+         if not self.is_cms_request(request):
+             return
+ 
+-        edit_on = get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-        edit_off = get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF')
+-        disable = get_cms_setting('CMS_TOOLBAR_URL__DISABLE')
+-        anonymous_on = get_cms_setting('TOOLBAR_ANONYMOUS_ON')
+-        edit_enabled = edit_on in request.GET and 'preview' not in request.GET
+-        edit_disabled = edit_off in request.GET or 'preview' in request.GET
++        enable_toolbar = get_cms_setting('CMS_TOOLBAR_URL__ENABLE')
++        disable_toolbar = get_cms_setting('CMS_TOOLBAR_URL__DISABLE')
+ 
+-        if disable in request.GET:
++        if disable_toolbar in request.GET:
+             request.session['cms_toolbar_disabled'] = True
+ 
+-        if edit_enabled:
+-            # If we actively enter edit mode, we should show the toolbar in any case
++        if enable_toolbar in request.GET or self.is_edit_mode(request):
+             request.session['cms_toolbar_disabled'] = False
+ 
+-        toolbar_enabled = not request.session.get('cms_toolbar_disabled', False)
+-        can_see_toolbar = request.user.is_staff or (anonymous_on and request.user.is_anonymous)
+-        show_toolbar = (toolbar_enabled and can_see_toolbar)
+-
+-        if edit_enabled and show_toolbar and not request.session.get('cms_edit'):
+-            # User has explicitly enabled mode
+-            # AND can see the toolbar
+-            request.session['cms_edit'] = True
+-            request.session['cms_preview'] = False
+-
+-        if edit_disabled or not show_toolbar and request.session.get('cms_edit'):
+-            # User has explicitly disabled the toolbar
+-            # OR user has explicitly turned off edit mode
+-            # OR user can't see toolbar
+-            request.session['cms_edit'] = False
+-
+-        if 'preview' in request.GET and not request.session.get('cms_preview'):
+-            # User has explicitly requested a preview of the live page.
+-            request.session['cms_preview'] = True
+-
+         if request.user.is_staff:
+             try:
+                 request.cms_latest_entry = LogEntry.objects.filter(
+                     user=request.user,
+                     action_flag__in=(ADDITION, CHANGE)
+                 ).only('pk').order_by('-pk')[0].pk
+             except IndexError:
+                 request.cms_latest_entry = -1
+-        request.toolbar = CMSToolbar(request)
++        request.toolbar = SimpleLazyObject(lambda: CMSToolbar(request))
+ 
+     def process_response(self, request, response):
+         if not self.is_cms_request(request):
+             return response
+diff --git a/cms/models/pagemodel.py b/cms/models/pagemodel.py
+index fd28ff7..216d9b5 100644
+--- a/cms/models/pagemodel.py
++++ b/cms/models/pagemodel.py
+@@ -1059,14 +1059,8 @@ class Page(models.Model):
+         from cms.utils.placeholder import get_placeholders
+ 
+         return get_placeholders(self.get_template())
+ 
+-    def get_declared_static_placeholders(self, context):
+-        # inline import to prevent circular imports
+-        from cms.utils.placeholder import get_static_placeholders
+-
+-        return get_static_placeholders(self.get_template(), context)
+-
+     def get_xframe_options(self, language=None, fallback=True, force_reload=False):
+         title = self.get_title_obj(language, fallback, force_reload)
+         if title:
+             return title.get_xframe_options()
+diff --git a/cms/models/titlemodels.py b/cms/models/titlemodels.py
+index 73a8cfa..a6abfae 100644
+--- a/cms/models/titlemodels.py
++++ b/cms/models/titlemodels.py
+@@ -187,8 +187,11 @@ class Title(models.Model):
+             return xframe_options[0]
+         except IndexError:
+             return None
+ 
++    def get_absolute_url(self, language=None):
++        return self.page.get_absolute_url(language=language)
++
+ 
+ class EmptyTitle(object):
+     """
+     Empty title object, can be returned from Page.get_title_obj() if required
+diff --git a/cms/page_rendering.py b/cms/page_rendering.py
+index 645de5d..4c4a8cf 100644
+--- a/cms/page_rendering.py
++++ b/cms/page_rendering.py
+@@ -1,15 +1,13 @@
+ # -*- coding: utf-8 -*-
+ from django.conf import settings
+ from django.http import Http404
+-from django.shortcuts import render
+ from django.template.response import TemplateResponse
+ from django.urls import Resolver404, resolve, reverse
+ 
+ from cms import __version__
+ from cms import constants
+ from cms.cache.page import set_page_cache
+-from cms.utils.conf import get_cms_setting
+ from cms.utils.page import get_page_template_from_request
+ from cms.utils.page_permissions import user_can_change_page, user_can_view_page
+ 
+ 
+@@ -49,17 +47,8 @@ def render_page(request, page, current_language, slug):
+     elif xframe_options == constants.X_FRAME_OPTIONS_DENY:
+         response['X-Frame-Options'] = 'DENY'
+     return response
+ 
+-
+-def render_object_structure(request, obj):
+-    context = {
+-        'object': obj,
+-        'cms_toolbar': request.toolbar,
+-    }
+-    return render(request, 'cms/toolbar/structure.html', context)
+-
+-
+ def _handle_no_page(request):
+     try:
+         #add a $ to the end of the url (does not match on the cms anymore)
+         resolve('%s$' % request.path)
+@@ -72,9 +61,8 @@ def _handle_no_page(request):
+ 
+ def _render_welcome_page(request):
+     context = {
+         'cms_version': __version__,
+-        'cms_edit_on': get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'),
+         'django_debug': settings.DEBUG,
+         'next_url': reverse('pages-root'),
+     }
+     return TemplateResponse(request, "cms/welcome.html", context)
+diff --git a/cms/templatetags/cms_js_tags.py b/cms/templatetags/cms_js_tags.py
+index e8a7bbe..4baabe3 100644
+--- a/cms/templatetags/cms_js_tags.py
++++ b/cms/templatetags/cms_js_tags.py
+@@ -9,10 +9,8 @@ from django import template
+ from django.utils.safestring import mark_safe
+ 
+ from sekizai.helpers import get_varname
+ 
+-from cms.models import StaticPlaceholder
+-
+ 
+ register = template.Library()
+ 
+ 
+@@ -31,40 +29,21 @@ def bool(value):
+     else:
+         return 'false'
+ 
+ 
+-@register.simple_tag(takes_context=True)
+-def render_cms_structure_js(context, renderer, obj):
++@register.simple_tag()
++def render_cms_structure_js(renderer, obj):
+     cms_page = obj.page
+     markup_bits = []
+-    static_placeholders = []
+     page_placeholders_by_slot = obj.rescan_placeholders()
+-    declared_static_placeholders = cms_page.get_declared_static_placeholders(context)
+-
+-    for static_placeholder in declared_static_placeholders:
+-        kwargs = {
+-            'code': static_placeholder.slot,
+-            'defaults': {'creation_method': StaticPlaceholder.CREATION_BY_TEMPLATE}
+-        }
+-
+-        if static_placeholder.site_bound:
+-            kwargs['site'] = renderer.current_site.pk
+-        else:
+-            kwargs['site_id__isnull'] = True
+-
+-        static_placeholder = StaticPlaceholder.objects.get_or_create(**kwargs)[0]
+-        static_placeholders.append(static_placeholder)
+ 
+     for placeholder_node in cms_page.get_declared_placeholders():
+         page_placeholder = page_placeholders_by_slot.get(placeholder_node.slot)
+ 
+         if page_placeholder:
+             placeholder_js = renderer.render_page_placeholder(cms_page, page_placeholder)
+             markup_bits.append(placeholder_js)
+ 
+-    for placeholder in static_placeholders:
+-        placeholder_js = renderer.render_static_placeholder(placeholder)
+-        markup_bits.append(placeholder_js)
+     return mark_safe('\n'.join(markup_bits))
+ 
+ 
+ @register.simple_tag(takes_context=True)
+diff --git a/cms/test_utils/fixtures/menus.py b/cms/test_utils/fixtures/menus.py
+index 668f764..8186037 100644
+--- a/cms/test_utils/fixtures/menus.py
++++ b/cms/test_utils/fixtures/menus.py
+@@ -117,9 +117,8 @@ class SoftrootFixture(object):
+         defaults = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+             'in_navigation': True,
+-            'published': True,
+         }
+         with self.settings(CMS_PERMISSION=False):
+             top = create_page('top', **defaults)
+             top.set_as_homepage()
+diff --git a/cms/test_utils/fixtures/templatetags.py b/cms/test_utils/fixtures/templatetags.py
+index d7b3a64..7e8d8ea 100644
+--- a/cms/test_utils/fixtures/templatetags.py
++++ b/cms/test_utils/fixtures/templatetags.py
+@@ -5,9 +5,8 @@ from cms.api import create_page, create_title
+ class TwoPagesFixture(object):
+     def create_fixtures(self):
+         defaults = {
+             'template': 'nav_playground.html',
+-            'published': True,
+             'in_navigation': True,
+         }
+         with self.settings(CMS_PERMISSION=False):
+             first = create_page('first', language='en', **defaults)
+diff --git a/cms/test_utils/project/sampleapp/admin.py b/cms/test_utils/project/sampleapp/admin.py
+index 6c0a36d..7339091 100644
+--- a/cms/test_utils/project/sampleapp/admin.py
++++ b/cms/test_utils/project/sampleapp/admin.py
+@@ -1,7 +1,13 @@
+ from django.contrib import admin
+ 
+-from cms.test_utils.project.sampleapp.models import Picture, Category, SampleAppConfig
++from cms.admin.placeholderadmin import FrontendEditableAdminMixin
++from cms.test_utils.project.sampleapp.models import (
++    Category,
++    Picture,
++    SampleAppConfig,
++    SomeEditableModel,
++)
+ 
+ 
+ class PictureInline(admin.StackedInline):
+     model = Picture
+@@ -9,6 +15,11 @@ class PictureInline(admin.StackedInline):
+ 
+ class CategoryAdmin(admin.ModelAdmin):
+     inlines = [PictureInline]
+ 
++
++class SomeEditableAdmin(FrontendEditableAdminMixin, admin.ModelAdmin):
++    pass
++
+ admin.site.register(Category, CategoryAdmin)
+ admin.site.register(SampleAppConfig)
++admin.site.register(SomeEditableModel, SomeEditableAdmin)
+diff --git a/cms/test_utils/project/sampleapp/models.py b/cms/test_utils/project/sampleapp/models.py
+index cd4b17a..5548565 100644
+--- a/cms/test_utils/project/sampleapp/models.py
++++ b/cms/test_utils/project/sampleapp/models.py
+@@ -32,4 +32,8 @@ class SampleAppConfig(models.Model):
+         default=None,
+         max_length=100,
+         unique=True,
+     )
++
++
++class SomeEditableModel(models.Model):
++    pass
+diff --git a/cms/test_utils/testcases.py b/cms/test_utils/testcases.py
+index cfebf73..b3524a3 100644
+--- a/cms/test_utils/testcases.py
++++ b/cms/test_utils/testcases.py
+@@ -21,10 +21,11 @@ from django.utils.timezone import now
+ from django.utils.translation import activate
+ from menus.menu_pool import menu_pool
+ 
+ from cms.api import create_page, add_plugin
++from cms.middleware.toolbar import ToolbarMiddleware
+ from cms.plugin_rendering import ContentRenderer, StructureRenderer
+-from cms.models import Page
++from cms.models import Page, Title
+ from cms.models.permissionmodels import (
+     GlobalPagePermission,
+     PagePermission,
+     PageUser,
+@@ -33,8 +34,9 @@ from cms.test_utils.util.context_managers import UserLoginContext
+ from cms.utils.conf import get_cms_setting
+ from cms.utils.permissions import set_current_user
+ from cms.utils.urlutils import admin_reverse
+ 
++
+ # Page urls
+ URL_CMS_PAGE = "/en/admin/cms/page/"
+ URL_CMS_PAGE_ADD = urljoin(URL_CMS_PAGE, "add/")
+ URL_CMS_PAGE_CHANGE_BASE = urljoin(URL_CMS_PAGE, "%d/")
+@@ -156,8 +158,11 @@ class BaseCMSTestCase(object):
+         pp = PagePermission.objects.create(**options)
+         pp.sites = Site.objects.all()
+         return pp
+ 
++    def get_page_title_obj(self, page, language="en"):
++        return Title.objects.get(page=page, language=language)
++
+     def _create_user(self, username, is_staff=False, is_superuser=False,
+                      is_active=True, add_default_permissions=False, permissions=None):
+         """
+         Use this method to create users.
+@@ -436,8 +441,27 @@ class BaseCMSTestCase(object):
+ 
+         request._messages = MockStorage()
+         return request
+ 
++    def get_page_request(self, page, user, path=None, lang_code='en', disable=False):
++        path = path or page and page.get_absolute_url()
++
++        request = RequestFactory().get(path)
++        request.session = {}
++        request.user = user
++        request.LANGUAGE_CODE = lang_code
++        request.GET = request.GET.copy()
++
++        # Hide the toolbar
++        if disable:
++            request.GET[get_cms_setting('CMS_TOOLBAR_URL__DISABLE')] = None
++        request.current_page = page
++        mid = ToolbarMiddleware()
++        mid.process_request(request)
++        if hasattr(request, 'toolbar'):
++            request.toolbar.populate()
++        return request
++
+     def failUnlessWarns(self, category, message, f, *args, **kwargs):
+         warningsShown = []
+         result = _collectWarnings(warningsShown.append, f, *args, **kwargs)
+ 
+@@ -595,17 +619,8 @@ class BaseCMSTestCase(object):
+             'cms_path': path,
+         })
+         return endpoint
+ 
+-    def get_edit_on_url(self, url):
+-        return '{}?{}'.format(url, get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-
+-    def get_edit_off_url(self, url):
+-        return '{}?{}'.format(url, get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF'))
+-
+-    def get_obj_structure_url(self, url):
+-        return '{}?{}'.format(url, get_cms_setting('TOOLBAR_URL__BUILD'))
+-
+     def get_toolbar_disable_url(self, url):
+         return '{}?{}'.format(url, get_cms_setting('TOOLBAR_URL__DISABLE'))
+ 
+     def _add_plugin_to_placeholder(self, placeholder, plugin_type='LinkPlugin', language='en'):
+diff --git a/cms/tests/test_admin.py b/cms/tests/test_admin.py
+index b167b3a..2b23f53 100644
+--- a/cms/tests/test_admin.py
++++ b/cms/tests/test_admin.py
+@@ -447,22 +447,20 @@ class AdminTests(AdminTestsBase):
+         with self.login_user_context(permless):
+             request = self.get_request('/?public=true')
+             response = self.admin_class.preview_page(request, page.pk, 'en')
+             self.assertEqual(response.status_code, 302)
+-            self.assertEqual(response['Location'], '%s?%s' % (base_url, get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')))
++            self.assertEqual(response['Location'], base_url)
+             request = self.get_request()
+             response = self.admin_class.preview_page(request, page.pk, 'en')
+             self.assertEqual(response.status_code, 302)
+-            self.assertEqual(response['Location'], '%s?%s' % (base_url, get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')))
+-
++            self.assertEqual(response['Location'], base_url)
+             # Switch active site
+             request.session['cms_admin_site'] = new_site.pk
+ 
+             # Preview page attached to active site but not to current site
+             response = self.admin_class.preview_page(request, new_page.pk, 'fr')
+             self.assertEqual(response.status_code, 302)
+-            self.assertEqual(response['Location'],
+-                             'http://django-cms.org/fr/testpage/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            self.assertEqual(response['Location'], 'http://django-cms.org/fr/testpage/')
+ 
+     def test_too_many_plugins_global(self):
+         conf = {
+             'body': {
+@@ -854,20 +852,16 @@ class AdminFormsTests(AdminTestsBase):
+         user = self.get_superuser()
+         self.assertEqual(homepage.get_placeholders('en').count(), 2)
+         with self.login_user_context(user):
+             output = force_text(
+-                self.client.get(
+-                    '/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-                ).content
++                self.client.get('/en/').content
+             )
+             self.assertIn('<b>Test</b>', output)
+             self.assertEqual(StaticPlaceholder.objects.count(), 2)
+             for placeholder in homepage.get_placeholders('en'):
+                 add_plugin(placeholder, TextPlugin, 'en', body='<b>Test</b>')
+             output = force_text(
+-                self.client.get(
+-                    '/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-                ).content
++                self.client.get('/en/').content
+             )
+             self.assertIn('<b>Test</b>', output)
+ 
+     def test_tree_view_queries(self):
+diff --git a/cms/tests/test_alias.py b/cms/tests/test_alias.py
+index f00af7b..edd4238 100644
+--- a/cms/tests/test_alias.py
++++ b/cms/tests/test_alias.py
+@@ -7,8 +7,9 @@ from cms import api
+ from cms.models import Placeholder
+ from cms.test_utils.project.placeholderapp.models import Example1
+ from cms.test_utils.testcases import TransactionCMSTestCase
+ from cms.toolbar.toolbar import CMSToolbar
++from cms.toolbar.utils import get_object_edit_url
+ from cms.utils.urlutils import admin_reverse
+ 
+ from sekizai.data import UniqueSequence
+ from sekizai.helpers import get_varname
+@@ -51,9 +52,8 @@ class AliasTestCase(TransactionCMSTestCase):
+             "Alias plugin",
+             "col_two.html",
+             "en",
+             slug="page1",
+-            published=True,
+             in_navigation=True,
+         )
+         ph_1_en = page_en.get_placeholders("en").get(slot="col_left")
+         ph_2_en = page_en.get_placeholders("en").get(slot="col_sidebar")
+@@ -96,9 +96,8 @@ class AliasTestCase(TransactionCMSTestCase):
+         source_page = api.create_page(
+             "Alias plugin",
+             "col_two.html",
+             "en",
+-            published=False,
+         )
+         source_plugin = api.add_plugin(
+             source_page.get_placeholders("en").get(slot="col_left"),
+             'LinkPlugin',
+@@ -109,25 +108,26 @@ class AliasTestCase(TransactionCMSTestCase):
+         target_page = api.create_page(
+             "Alias plugin",
+             "col_two.html",
+             "en",
+-            published=False,
+         )
+         api.add_plugin(
+             target_page.get_placeholders("en").get(slot="col_left"),
+             'AliasPlugin',
+             language='en',
+             plugin=source_plugin,
+         )
+ 
++        target_page_content = self.get_page_title_obj(target_page)
++
+         # Not edit mode: show content
+         response = self.client.get(target_page.get_absolute_url())
+         self.assertEqual(response.status_code, 200)
+         self.assertContains(response, '<a href="https://www.django-cms.org" >A Link</a>', html=True)
+ 
+         with self.login_user_context(self.get_superuser()):
+             # Edit mode: show content
+-            response = self.client.get(target_page.get_absolute_url() + '?edit')
++            response = self.client.get(get_object_edit_url(target_page_content))
+             self.assertEqual(response.status_code, 200)
+             self.assertContains(response, '<a href="https://www.django-cms.org" >A Link</a>', html=True)
+ 
+     def test_alias_content_placeholder_display(self):
+@@ -138,9 +138,8 @@ class AliasTestCase(TransactionCMSTestCase):
+         source_page = api.create_page(
+             "Alias plugin",
+             "col_two.html",
+             "en",
+-            published=False,
+         )
+         source_placeholder = source_page.get_placeholders("en").get(slot="col_left")
+         api.add_plugin(
+             source_placeholder,
+@@ -152,25 +151,26 @@ class AliasTestCase(TransactionCMSTestCase):
+         target_page = api.create_page(
+             "Alias plugin",
+             "col_two.html",
+             "en",
+-            published=False,
+         )
+         api.add_plugin(
+             target_page.get_placeholders('en').get(slot="col_left"),
+             'AliasPlugin',
+             language='en',
+             alias_placeholder=source_placeholder,
+         )
+ 
++        target_page_content = self.get_page_title_obj(target_page)
++
+         # Not edit mode: show content
+         response = self.client.get(target_page.get_absolute_url())
+         self.assertEqual(response.status_code, 200)
+         self.assertContains(response, '<a href="https://www.django-cms.org" >A Link</a>', html=True)
+ 
+         with self.login_user_context(self.get_superuser()):
+             # Edit mode: show content
+-            response = self.client.get(target_page.get_absolute_url() + '?edit')
++            response = self.client.get(get_object_edit_url(target_page_content))
+             self.assertEqual(response.status_code, 200)
+             self.assertContains(response, '<a href="https://www.django-cms.org" >A Link</a>', html=True)
+ 
+     def test_alias_placeholder_is_not_editable(self):
+@@ -181,9 +181,8 @@ class AliasTestCase(TransactionCMSTestCase):
+         source_page = api.create_page(
+             "Home",
+             "col_two.html",
+             "en",
+-            published=True,
+             in_navigation=True,
+         )
+         source_placeholder = source_page.get_placeholders("en").get(slot="col_left")
+ 
+@@ -198,9 +197,8 @@ class AliasTestCase(TransactionCMSTestCase):
+         target_page = api.create_page(
+             "Target",
+             "col_two.html",
+             "en",
+-            published=True,
+             in_navigation=True,
+         )
+         target_placeholder = target_page.get_placeholders("en").get(slot="col_left")
+         alias = api.add_plugin(
+@@ -209,21 +207,22 @@ class AliasTestCase(TransactionCMSTestCase):
+             'en',
+             alias_placeholder=source_placeholder,
+         )
+ 
++        target_page_content = self.get_page_title_obj(target_page)
++
+         with self.login_user_context(self.get_superuser()):
+-            context = self.get_context(path=target_page.get_absolute_url(), page=target_page)
++            context = self.get_context(path=get_object_edit_url(target_page_content))
+             request = context['request']
+-            request.session['cms_edit'] = True
+             request.toolbar = CMSToolbar(request)
+             renderer = request.toolbar.get_content_renderer()
+             context[get_varname()] = defaultdict(UniqueSequence)
+             output = renderer.render_placeholder(
+                 target_placeholder,
+                 context=context,
+                 language='en',
+                 page=target_page,
+-                editable=True
++                editable=True,
+             )
+ 
+             tag_format = '<template class="cms-plugin cms-plugin-start cms-plugin-{}">'
+ 
+@@ -246,16 +245,14 @@ class AliasTestCase(TransactionCMSTestCase):
+         api.create_page(
+             "Home",
+             "col_two.html",
+             "en",
+-            published=True,
+             in_navigation=True,
+         )
+         source_page = api.create_page(
+             "Source",
+             "col_two.html",
+             "en",
+-            published=True,
+             in_navigation=True,
+         )
+         source_placeholder = source_page.get_placeholders("en").get(slot="col_left")
+ 
+@@ -270,9 +267,8 @@ class AliasTestCase(TransactionCMSTestCase):
+         target_page = api.create_page(
+             "Target",
+             "col_two.html",
+             "en",
+-            published=True,
+             in_navigation=True,
+         )
+         target_placeholder = target_page.get_placeholders('en').get(slot="col_left")
+         alias = api.add_plugin(
+diff --git a/cms/tests/test_apphooks.py b/cms/tests/test_apphooks.py
+index 4b56b7c..ab8f482 100644
+--- a/cms/tests/test_apphooks.py
++++ b/cms/tests/test_apphooks.py
+@@ -24,9 +24,8 @@ from cms.middleware.page import get_page
+ from cms.test_utils.project.placeholderapp.models import Example1
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.tests.test_menu_utils import DumbPageLanguageUrl
+ from cms.toolbar.toolbar import CMSToolbar
+-from cms.utils.conf import get_cms_setting
+ from cms.utils.urlutils import admin_reverse
+ from menus.menu_pool import menu_pool
+ from menus.utils import DefaultLanguageChanger
+ 
+@@ -333,15 +332,15 @@ class ApphooksTestCase(CMSTestCase):
+ 
+         with self.login_user_context(superuser):
+             with force_language("en"):
+                 path = reverse('sample-settings')
+-                request = self.get_request(path + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++                request = self.get_request(path)
+                 request.LANGUAGE_CODE = 'en'
+                 attached_to_page = applications_page_check(request)
+                 self.assertEqual(attached_to_page.pk, page.pk)
+             with force_language("de"):
+                 path = reverse('sample-settings')
+-                request = self.get_request(path + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++                request = self.get_request(path)
+                 request.LANGUAGE_CODE = 'de'
+                 attached_to_page = applications_page_check(request)
+                 self.assertEqual(attached_to_page.pk, page.pk)
+ 
+@@ -428,9 +427,8 @@ class ApphooksTestCase(CMSTestCase):
+         page2 = create_page("page2",
+                             "nav_playground.html",
+                             language="en",
+                             created_by=self.superuser,
+-                            published=True,
+                             parent=de_title.page.get_parent_page(),
+                             apphook=NS_APP_NAME,
+                             apphook_namespace="instance_2")
+         create_title("de", "de_title", page2, slug="slug")
+@@ -876,9 +874,8 @@ class ApphooksTestCase(CMSTestCase):
+         the menu should mark the node for that page as selected.
+         """
+         defaults = {
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+             'template': 'nav_playground.html',
+         }
+         homepage = create_page('EN-P1', **defaults)
+@@ -905,9 +902,8 @@ class ApphooksTestCase(CMSTestCase):
+         """
+         # Refs - https://github.com/divio/django-cms/issues/6336
+         defaults = {
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+             'template': 'nav_playground.html',
+         }
+         homepage = create_page('EN-P1', **defaults)
+diff --git a/cms/tests/test_cache.py b/cms/tests/test_cache.py
+index 28c7029..6866f7e 100644
+--- a/cms/tests/test_cache.py
++++ b/cms/tests/test_cache.py
+@@ -33,8 +33,9 @@ from cms.test_utils.project.pluginapp.plugins.caching.cms_plugins import (
+ )
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.test_utils.util.fuzzy_int import FuzzyInt
+ from cms.toolbar.toolbar import CMSToolbar
++from cms.toolbar.utils import get_object_edit_url
+ from cms.utils.conf import get_cms_setting
+ from cms.utils.helpers import get_timezone_name
+ 
+ 
+@@ -90,19 +91,18 @@ class CacheTestCase(CMSTestCase):
+         )
+         with self.settings(**overrides):
+             with self.assertNumQueries(FuzzyInt(13, 25)):
+                 self.client.get(page1_url)
+-            with self.assertNumQueries(FuzzyInt(5, 12)):
++            with self.assertNumQueries(FuzzyInt(5, 13)):
+                 self.client.get(page1_url)
+ 
+         overrides['CMS_PLACEHOLDER_CACHE'] = False
+         with self.settings(**overrides):
+             with self.assertNumQueries(FuzzyInt(7, 17)):
+                 self.client.get(page1_url)
+ 
+     def test_no_cache_plugin(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_url = page1.get_absolute_url()
+ 
+         placeholder1 = page1.get_placeholders('en').filter(slot='body')[0]
+         placeholder2 = page1.get_placeholders('en').filter(slot='right-column')[0]
+@@ -172,19 +172,18 @@ class CacheTestCase(CMSTestCase):
+             request.toolbar = CMSToolbar(request)
+             with self.assertNumQueries(6):
+                 output2 = self.render_template_obj(template, {}, request)
+             with self.settings(CMS_PAGE_CACHE=False):
+-                with self.assertNumQueries(FuzzyInt(8, 15)):
++                with self.assertNumQueries(FuzzyInt(8, 16)):
+                     response = self.client.get(page1_url)
+                     resp2 = response.content.decode('utf8').split("$$$")[1]
+             self.assertNotEqual(output, output2)
+             self.assertNotEqual(resp1, resp2)
+ 
+         plugin_pool.unregister_plugin(NoCachePlugin)
+ 
+     def test_timedelta_cache_plugin(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+         plugin_pool.register_plugin(TimeDeltaCacheExpirationPlugin)
+@@ -215,10 +214,9 @@ class CacheTestCase(CMSTestCase):
+ 
+         plugin_pool.unregister_plugin(TimeDeltaCacheExpirationPlugin)
+ 
+     def test_datetime_cache_plugin(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_url = page1.get_absolute_url()
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+@@ -253,10 +251,9 @@ class CacheTestCase(CMSTestCase):
+ 
+         plugin_pool.unregister_plugin(DateTimeCacheExpirationPlugin)
+ 
+     def TTLCacheExpirationPlugin(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+         plugin_pool.register_plugin(TTLCacheExpirationPlugin)
+@@ -291,10 +288,9 @@ class CacheTestCase(CMSTestCase):
+         """
+         Tests that when used in combination, the page is cached to the
+         shortest TTL.
+         """
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_url = page1.get_absolute_url()
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+@@ -356,10 +352,9 @@ class CacheTestCase(CMSTestCase):
+         plugin_pool.unregister_plugin(DateTimeCacheExpirationPlugin)
+         plugin_pool.unregister_plugin(NoCachePlugin)
+ 
+     def test_dual_legacy_cache_plugins(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_url = page1.get_absolute_url()
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+@@ -451,51 +446,36 @@ class CacheTestCase(CMSTestCase):
+                 self.assertEqual(response.status_code, 200)
+ 
+     def test_no_page_cache_on_toolbar_edit(self):
+         with self.settings(CMS_PAGE_CACHE=True):
++            superuser = self.get_superuser()
+             # Create a test page
+-            page1 = create_page('test page 1', 'nav_playground.html', 'en')
+-            page1_url = page1.get_absolute_url()
++            page = create_page('test page 1', 'nav_playground.html', 'en')
++            page_content = self.get_page_title_obj(page)
++            page_url = page.get_absolute_url()
++            page_edit_url = get_object_edit_url(page_content)
+ 
+             # Add some content
+-            placeholder = page1.get_placeholders("en").filter(slot="body")[0]
++            placeholder = page.get_placeholders("en").filter(slot="body")[0]
+             add_plugin(placeholder, "TextPlugin", 'en', body="English")
+             add_plugin(placeholder, "TextPlugin", 'de', body="Deutsch")
+ 
+-            # Set edit mode
+-            session = self.client.session
+-            session['cms_edit'] = True
+-            session.save()
+-
+-            # Make an initial ?edit request
+-            with self.assertNumQueries(FuzzyInt(1, 24)):
+-                response = self.client.get(page1_url)
++            # Make an initial edit endpoint request
++            with self.login_user_context(superuser):
++                with self.assertNumQueries(FuzzyInt(1, 35)):
++                    response = self.client.get(page_edit_url)
+             self.assertEqual(response.status_code, 200)
+ 
+-            # Disable edit mode
+-            session = self.client.session
+-            session['cms_edit'] = False
+-            session.save()
+-
+             # Set the cache
+             with self.assertNumQueries(FuzzyInt(1, 24)):
+-                response = self.client.get(page1_url)
++                response = self.client.get(page_url)
+             self.assertEqual(response.status_code, 200)
+ 
+             # Assert cached content was used
+             with self.assertNumQueries(0):
+-                response = self.client.get(page1_url)
++                response = self.client.get(page_url)
+             self.assertEqual(response.status_code, 200)
+ 
+-            # Set edit mode once more
+-            session = self.client.session
+-            session['cms_edit'] = True
+-            session.save()
+-
+-            # Assert no cached content was used
+-            with self.assertNumQueries(FuzzyInt(1, 24)):
+-                response = self.client.get('{}?edit'.format(page1_url))
+-            self.assertEqual(response.status_code, 200)
+ 
+     def test_invalidate_restart(self):
+ 
+         # Ensure that we're testing in an environment WITHOUT the MW cache...
+@@ -547,10 +527,9 @@ class CacheTestCase(CMSTestCase):
+                 response = self.client.get(page1_url)
+                 self.assertEqual(response.status_code, 200)
+ 
+     def test_sekizai_plugin(self):
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+ 
+         placeholder1 = page1.get_placeholders("en").filter(slot="body")[0]
+         placeholder2 = page1.get_placeholders("en").filter(slot="right-column")[0]
+         plugin_pool.register_plugin(SekizaiPlugin)
+@@ -574,10 +553,9 @@ class CacheTestCase(CMSTestCase):
+         with self.settings(**overrides):
+             # Silly to do these tests if this setting isn't True
+             page_cache_setting = get_cms_setting('PAGE_CACHE')
+             self.assertTrue(page_cache_setting)
+-            page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                                published=True)
++            page1 = create_page('test page 1', 'nav_playground.html', 'en')
+             page1_url = page1.get_absolute_url()
+ 
+             placeholder = page1.get_placeholders("en").get(slot="body")
+             add_plugin(placeholder, "TextPlugin", 'en', body="First content")
+diff --git a/cms/tests/test_helpers.py b/cms/tests/test_helpers.py
+new file mode 100644
+index 0000000..a7141c9
+--- /dev/null
++++ b/cms/tests/test_helpers.py
+@@ -0,0 +1,28 @@
++# -*- coding: utf-8 -*-
++from cms.models import Page, Title
++from cms.test_utils.project.sampleapp.models import Category, Picture, SomeEditableModel
++from cms.test_utils.testcases import CMSTestCase
++from cms.utils.helpers import is_editable_model
++
++
++class HelperTests(CMSTestCase):
++
++    def test_is_editable_model(self):
++        # Model has Placeholder relationship.
++        # Returns True.
++        self.assertTrue(is_editable_model(Category))
++        self.assertTrue(is_editable_model(Title))
++
++        # Model has no placeholder relationship and no admin class.
++        # Returns False.
++        self.assertFalse(is_editable_model(Picture))
++
++        # Model has no placeholder relationship
++        # but has admin class which inherits from FrontendEditableAdminMixin.
++        # Returns True.
++        self.assertTrue(is_editable_model(SomeEditableModel))
++
++        # Model has no placeholder relationship.
++        # but has admin class which is not inherited from FrontendEditableAdminMixin.
++        # Returns False.
++        self.assertFalse(is_editable_model(Page))
+diff --git a/cms/tests/test_menu.py b/cms/tests/test_menu.py
+index fe274b3..2166ed5 100644
+--- a/cms/tests/test_menu.py
++++ b/cms/tests/test_menu.py
+@@ -99,13 +99,11 @@ class MenuDiscoveryTest(ExtendedMenusFixture, CMSTestCase):
+         self.assertEqual(len(registered_for_rendering), 1)
+ 
+         # Attached both menus to separate pages
+         create_page("apphooked-page", "nav_playground.html", "en",
+-                    published=True,
+                     navigation_extenders='StaticMenu')
+ 
+         create_page("apphooked-page", "nav_playground.html", "en",
+-                    published=True,
+                     navigation_extenders='StaticMenu2')
+ 
+         registered = menu_pool.get_registered_menus(for_rendering=False)
+         registered_for_rendering = menu_pool.get_registered_menus(for_rendering=True)
+@@ -130,13 +128,11 @@ class MenuDiscoveryTest(ExtendedMenusFixture, CMSTestCase):
+         self.assertEqual(len(registered), 3)
+         self.assertEqual(len(request_1_renderer.menus), 1)
+ 
+         create_page("apphooked-page", "nav_playground.html", "en",
+-                    published=True,
+                     navigation_extenders='StaticMenu')
+ 
+         create_page("apphooked-page", "nav_playground.html", "en",
+-                    published=True,
+                     navigation_extenders='StaticMenu2')
+ 
+         request_2 = self.get_request('/en/')
+         request_2_renderer = menu_pool.get_renderer(request_2)
+@@ -179,9 +175,8 @@ class MenuDiscoveryTest(ExtendedMenusFixture, CMSTestCase):
+                 apphook_pool.discover_apps()
+                 create_page("apphooked-page", "nav_playground.html", "en",
+                             apphook="SampleApp2")
+                 create_page("apphooked-page", "nav_playground.html", "en",
+-                            published=True,
+                             navigation_extenders='StaticMenu')
+                 create_page("apphooked-page", "nav_playground.html", "en",
+                             apphook="NamespacedApp", apphook_namespace='whatever',
+                             navigation_extenders='StaticMenu')
+@@ -1315,9 +1310,8 @@ class ShowMenuBelowIdTests(BaseMenuTest):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         a = create_page('A', reverse_id='a', **stdkwargs)
+         b = create_page('B', parent=a, soft_root=True, **stdkwargs)
+@@ -1776,9 +1770,8 @@ class SoftrootTests(CMSTestCase):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         home = create_page("Home", **stdkwargs)
+         projects = create_page("Projects", parent=home, soft_root=True, **stdkwargs)
+@@ -1824,9 +1817,8 @@ class SoftrootTests(CMSTestCase):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         home = create_page("Home", **stdkwargs)
+         projects = create_page("Projects", parent=home, soft_root=True, **stdkwargs)
+@@ -1867,9 +1859,8 @@ class SoftrootTests(CMSTestCase):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         home = create_page("Home", **stdkwargs)
+         projects = create_page("Projects", parent=home, soft_root=True, **stdkwargs)
+@@ -1912,9 +1903,8 @@ class SoftrootTests(CMSTestCase):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         home = create_page("Home", **stdkwargs)
+         projects = create_page("Projects", parent=home, soft_root=True, **stdkwargs)
+diff --git a/cms/tests/test_menu_page_viewperm.py b/cms/tests/test_menu_page_viewperm.py
+index 964f4aa..f71c376 100644
+--- a/cms/tests/test_menu_page_viewperm.py
++++ b/cms/tests/test_menu_page_viewperm.py
+@@ -66,9 +66,8 @@ class ViewPermissionTests(CMSTestCase):
+     def _setup_tree_pages(self):
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         homepage = create_page("page_a", **stdkwargs)
+         homepage.set_as_homepage()
+@@ -563,9 +562,8 @@ class ViewPermissionTreeBugTests(ViewPermissionTests):
+         """
+         stdkwargs = {
+             'template': 'nav_playground.html',
+             'language': 'en',
+-            'published': True,
+             'in_navigation': True,
+         }
+         homepage = create_page("page_1", **stdkwargs)
+         homepage.set_as_homepage()
+diff --git a/cms/tests/test_multilingual.py b/cms/tests/test_multilingual.py
+index 65e2e92..9214b62 100644
+--- a/cms/tests/test_multilingual.py
++++ b/cms/tests/test_multilingual.py
+@@ -200,16 +200,14 @@ class MultilingualTestCase(CMSTestCase):
+         self.create_homepage(
+             "page",
+             template='nav_playground.html',
+             language="de",
+-            published=True,
+             site=site_2,
+         )
+         page_2 = create_page(
+             "page",
+             template='nav_playground.html',
+             language="de",
+-            published=True,
+             site=site_2,
+         )
+ 
+         with self.settings(SITE_ID=2, LANGUAGE_CODE='en'):
+@@ -226,16 +224,14 @@ class MultilingualTestCase(CMSTestCase):
+         self.create_homepage(
+             "page",
+             template='nav_playground.html',
+             language="de",
+-            published=True,
+             site=site_2,
+         )
+         page_2 = create_page(
+             "page",
+             template='nav_playground.html',
+             language="de",
+-            published=True,
+             site=site_2,
+         )
+ 
+         with self.settings(SITE_ID=2, LANGUAGE_CODE='en'):
+@@ -304,9 +300,9 @@ class MultilingualTestCase(CMSTestCase):
+         title = Title(title="page", language="ru", page=page)
+         title.save()
+         # add wrong plugin language
+         add_plugin(ph_en, "TextPlugin", "ru", body="I'm the second")
+-        endpoint = page.get_absolute_url() + '?' + get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
++        endpoint = page.get_absolute_url()
+         superuser = self.get_superuser()
+         with self.login_user_context(superuser):
+             response = self.client.get(endpoint)
+             self.assertEqual(response.status_code, 200)
+diff --git a/cms/tests/test_no_i18n.py b/cms/tests/test_no_i18n.py
+index f3d4191..e906576 100644
+--- a/cms/tests/test_no_i18n.py
++++ b/cms/tests/test_no_i18n.py
+@@ -1,18 +1,16 @@
+ # -*- coding: utf-8 -*-
+ from django.contrib.auth import get_user_model
+ from django.template import Template
+-from django.test import RequestFactory
+ from django.test.utils import override_settings
+ from django.urls import clear_url_caches
+ 
+ from cms.api import create_page
+-from cms.middleware.toolbar import ToolbarMiddleware
+ from cms.models import Page, CMSPlugin
+ from cms.test_utils.testcases import (CMSTestCase,
+                                       URL_CMS_PAGE_ADD,
+                                       URL_CMS_PAGE_CHANGE_TEMPLATE)
+-from cms.utils.conf import get_cms_setting
++
+ 
+ overrides = dict(
+     LANGUAGE_CODE='en-us',
+     LANGUAGES=[],
+@@ -54,32 +52,8 @@ class TestNoI18N(CMSTestCase):
+     def tearDown(self):
+         super(TestNoI18N, self).tearDown()
+         clear_url_caches()
+ 
+-    def get_page_request(self, page, user, path=None, edit=False, lang_code='en', disable=False):
+-        path = path or page and page.get_absolute_url()
+-        if edit:
+-            path += '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-        request = RequestFactory().get(path)
+-        request.session = {}
+-        request.user = user
+-        request.LANGUAGE_CODE = lang_code
+-        request.GET = request.GET.copy()
+-
+-        if edit:
+-            request.GET['edit'] = None
+-        else:
+-            request.GET['edit_off'] = None
+-
+-        if disable:
+-            request.GET[get_cms_setting('CMS_TOOLBAR_URL__DISABLE')] = None
+-        request.current_page = page
+-        mid = ToolbarMiddleware()
+-        mid.process_request(request)
+-        if hasattr(request, 'toolbar'):
+-            request.toolbar.populate()
+-        return request
+-
+     def test_language_chooser(self):
+         # test simple language chooser with default args
+         create_page("home", template="col_two.html", language="en-us")
+         context = self.get_context(path="/")
+@@ -130,9 +104,8 @@ class TestNoI18N(CMSTestCase):
+             homepage = create_page(
+                 "home",
+                 template="col_two.html",
+                 language="en-us",
+-                published=True,
+                 redirect='/foobar/',
+             )
+             homepage.set_as_homepage()
+             response = self.client.get('/', follow=False)
+diff --git a/cms/tests/test_nonroot.py b/cms/tests/test_nonroot.py
+index ac0e8c5..8c5d018 100644
+--- a/cms/tests/test_nonroot.py
++++ b/cms/tests/test_nonroot.py
+@@ -29,9 +29,8 @@ class NonRootCase(CMSTestCase):
+         self.page1 = self.create_homepage(
+             title="page1",
+             template="nav_playground.html",
+             language="en",
+-            published=True,
+             in_navigation=True,
+         )
+         self.page2 = create_page("page2", "nav_playground.html", "en",
+                           parent=self.page1, in_navigation=True)
+diff --git a/cms/tests/test_page.py b/cms/tests/test_page.py
+index 8a938e4..0a8546d 100644
+--- a/cms/tests/test_page.py
++++ b/cms/tests/test_page.py
+@@ -68,9 +68,8 @@ class PagesTestCase(TransactionCMSTestCase):
+         _create = functools.partial(
+             create_page,
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+         )
+         page_a = _create('page_a')
+         page_a_a = _create('page_a_a_a', parent=page_a)
+         page_a_a_a = _create('page_a_a_a', parent=page_a_a)
+@@ -186,10 +185,9 @@ class PagesTestCase(TransactionCMSTestCase):
+     def test_path_collisions_api_1(self):
+         """ Checks for slug collisions on sibling pages - uses API to create pages
+         """
+         site = get_current_site()
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_1 = create_page('test page 1_1', 'nav_playground.html', 'en',
+                               parent=page1, slug="foo")
+         page1_2 = create_page('test page 1_2', 'nav_playground.html', 'en',
+                               parent=page1, slug="foo")
+@@ -214,10 +212,9 @@ class PagesTestCase(TransactionCMSTestCase):
+     def test_path_collisions_api_2(self):
+         """ Checks for slug collisions on root (not home) page and a home page child - uses API to create pages
+         """
+         site = get_current_site()
+-        page1 = self.create_homepage('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = self.create_homepage('test page 1', 'nav_playground.html', 'en')
+         page1_1 = create_page('test page 1_1', 'nav_playground.html', 'en',
+                               parent=page1, slug="foo")
+         page2 = create_page('test page 1_1', 'nav_playground.html', 'en',
+                             slug="foo")
+@@ -242,10 +239,9 @@ class PagesTestCase(TransactionCMSTestCase):
+     def test_path_collisions_api_3(self):
+         """ Checks for slug collisions on children of a non root page - uses API to create pages
+         """
+         site = get_current_site()
+-        page1 = create_page('test page 1', 'nav_playground.html', 'en',
+-                            published=True)
++        page1 = create_page('test page 1', 'nav_playground.html', 'en')
+         page1_1 = create_page('test page 1_1', 'nav_playground.html', 'en',
+                               parent=page1, slug="foo")
+         page1_1_1 = create_page('test page 1_1_1', 'nav_playground.html', 'en',
+                                 parent=page1_1, slug="bar")
+@@ -311,16 +307,14 @@ class PagesTestCase(TransactionCMSTestCase):
+         alpha = create_page(
+             "Alpha",
+             "nav_playground.html",
+             "en",
+-            published=True,
+             parent=home,
+         )
+         beta = create_page(
+             "Beta",
+             "nav_playground.html",
+             "en",
+-            published=True,
+             parent=home,
+         )
+         beta.move_page(alpha.node, position='left')
+ 
+@@ -337,16 +331,14 @@ class PagesTestCase(TransactionCMSTestCase):
+         alpha = create_page(
+             "Alpha",
+             "nav_playground.html",
+             "en",
+-            published=True,
+             parent=home,
+         )
+         beta = create_page(
+             "Beta",
+             "nav_playground.html",
+             "en",
+-            published=True,
+             parent=home,
+         )
+         beta.move_page(alpha.node, position='left')
+ 
+@@ -550,10 +542,9 @@ class PagesTestCase(TransactionCMSTestCase):
+         found_page = get_page_from_request(request)
+         self.assertEqual(found_page, None)
+ 
+     def test_get_page_without_final_slash(self):
+-        root = create_page("root", "nav_playground.html", "en", slug="root",
+-                           published=True)
++        root = create_page("root", "nav_playground.html", "en", slug="root")
+         create_page("page", "nav_playground.html", "en", slug="page",
+                            parent=root)
+         request = self.get_request('/en/root/page')
+         found_page = get_page_from_request(request)
+@@ -567,10 +558,9 @@ class PagesTestCase(TransactionCMSTestCase):
+ 
+         page3 = create_page('test page 3', 'nav_playground.html', 'en',
+                             parent=page2)
+ 
+-        page4 = create_page('test page 4', 'nav_playground.html', 'en',
+-                            published=True)
++        page4 = create_page('test page 4', 'nav_playground.html', 'en')
+ 
+         page5 = create_page('test page 5', 'nav_playground.html', 'en',
+                             parent=page4)
+         page1 = page1.reload()
+@@ -761,9 +751,8 @@ class PagesTestCase(TransactionCMSTestCase):
+         page = create_page(
+             title='home',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='home',
+             xframe_options=constants.X_FRAME_OPTIONS_ALLOW
+         )
+ 
+@@ -775,9 +764,8 @@ class PagesTestCase(TransactionCMSTestCase):
+         page = create_page(
+             title='home',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='home',
+             xframe_options=constants.X_FRAME_OPTIONS_SAMEORIGIN
+         )
+ 
+@@ -789,9 +777,8 @@ class PagesTestCase(TransactionCMSTestCase):
+         page = create_page(
+             title='home',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='home',
+             xframe_options=constants.X_FRAME_OPTIONS_DENY
+         )
+ 
+@@ -803,18 +790,16 @@ class PagesTestCase(TransactionCMSTestCase):
+         parent = create_page(
+             title='home',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='home',
+             xframe_options=constants.X_FRAME_OPTIONS_DENY
+         )
+ 
+         child1 = create_page(
+             title='subpage',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='subpage',
+             parent=parent,
+             xframe_options=constants.X_FRAME_OPTIONS_INHERIT
+         )
+@@ -822,18 +807,16 @@ class PagesTestCase(TransactionCMSTestCase):
+         child2 = create_page(
+             title='subpage',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='subpage',
+             parent=child1,
+             xframe_options=constants.X_FRAME_OPTIONS_ALLOW
+         )
+         child3 = create_page(
+             title='subpage',
+             template='nav_playground.html',
+             language='en',
+-            published=True,
+             slug='subpage',
+             parent=child2,
+             xframe_options=constants.X_FRAME_OPTIONS_INHERIT
+         )
+@@ -878,9 +861,8 @@ class PagesTestCase(TransactionCMSTestCase):
+             page = create_page(
+                 'test page 1',
+                 'nav_playground.html',
+                 'en',
+-                published=True,
+                 xframe_options=constants.X_FRAME_OPTIONS_ALLOW,
+             )
+ 
+             # Normal response from render_page
+diff --git a/cms/tests/test_page_admin.py b/cms/tests/test_page_admin.py
+index 3fd0cbe..d872a6c 100644
+--- a/cms/tests/test_page_admin.py
++++ b/cms/tests/test_page_admin.py
+@@ -507,16 +507,14 @@ class PageTest(PageTestBase):
+             "child-1",
+             "nav_playground.html",
+             language="en",
+             parent=homepage,
+-            published=True,
+         )
+         pending_child_2 = create_page(
+             "child-2",
+             "nav_playground.html",
+             language="en",
+             parent=homepage,
+-            published=True,
+         )
+         expected_tree = [
+             (homepage, ''),
+             (pending_child_1, 'child-1'),
+@@ -692,25 +690,22 @@ class PageTest(PageTestBase):
+         child_0002 = create_page(
+             "child-0002",
+             template="nav_playground.html",
+             language="de",
+-            published=True,
+             parent=site_2_parent,
+             site=site_2,
+         )
+         child_0003 = create_page(
+             "child-0003",
+             template="nav_playground.html",
+             language="de",
+-            published=True,
+             parent=site_2_parent,
+             site=site_2,
+         )
+         child_0005 = create_page(
+             "child-0005",
+             template="nav_playground.html",
+             language="de",
+-            published=True,
+             parent=site_2_parent,
+             site=site_2,
+         )
+ 
+@@ -1019,16 +1014,14 @@ class PageTest(PageTestBase):
+             "child-1",
+             "nav_playground.html",
+             language="en",
+             parent=homepage,
+-            published=True,
+         )
+         home_child_2 = create_page(
+             "child-2",
+             "nav_playground.html",
+             language="en",
+             parent=homepage,
+-            published=True,
+         )
+         home_sibling_1 = create_page("root-1", "nav_playground.html", "en")
+ 
+         expected_tree = [
+@@ -1194,9 +1187,8 @@ class PageTest(PageTestBase):
+         cms_page = create_page(
+             'page',
+             'nav_playground.html',
+             language='en',
+-            published=True,
+             overwrite_url='/new-url/',
+         )
+         expected = (
+             '<input id="id_overwrite_url" maxlength="255" '
+diff --git a/cms/tests/test_permmod.py b/cms/tests/test_permmod.py
+index 9025591..a81bdc8 100644
+--- a/cms/tests/test_permmod.py
++++ b/cms/tests/test_permmod.py
+@@ -216,10 +216,9 @@ class PermissionModeratorTests(CMSTestCase):
+         with self.login_user_context(self.user_super):
+             user_global = create_page_user(user_global, user_global)
+             user_global.is_staff = False
+             user_global.save() # Prevent is_staff permission
+-            global_page = create_page("global", "nav_playground.html", "en",
+-                                      published=True)
++            global_page = create_page("global", "nav_playground.html", "en")
+             # Removed call since global page user doesn't have publish permission
+             #global_page = publish_page(global_page, user_global)
+             # it's allowed for the normal user to view the page
+             assign_user_to_page(global_page, user_global,
+diff --git a/cms/tests/test_placeholder.py b/cms/tests/test_placeholder.py
+index 4ea1e17..03325b4 100644
+--- a/cms/tests/test_placeholder.py
++++ b/cms/tests/test_placeholder.py
+@@ -28,11 +28,10 @@ from cms.test_utils.project.placeholderapp.models import (
+ )
+ from cms.test_utils.project.sampleapp.models import Category
+ from cms.test_utils.testcases import CMSTestCase, TransactionCMSTestCase
+ from cms.test_utils.util.mock import AttributeObject
+-from cms.toolbar.utils import get_toolbar_from_request
++from cms.toolbar.utils import get_object_edit_url, get_toolbar_from_request
+ from cms.utils.compat.tests import UnittestCompatMixin
+-from cms.utils.conf import get_cms_setting
+ from cms.utils.placeholder import (PlaceholderNoAction, MLNGPlaceholderActions,
+                                    get_placeholder_conf, get_placeholders, _get_nodelist,
+                                    _scan_placeholders)
+ from cms.utils.urlutils import admin_reverse
+@@ -603,9 +602,9 @@ class PlaceholderTestCase(TransactionCMSTestCase, UnittestCompatMixin):
+             # Superuser
+             user = self.get_superuser()
+             self.client.login(username=getattr(user, get_user_model().USERNAME_FIELD),
+                               password=getattr(user, get_user_model().USERNAME_FIELD))
+-            endpoint = page.get_absolute_url() + '?' + get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
++            endpoint = get_object_edit_url(title)
+             response = self.client.get(endpoint)
+             for placeholder in page.get_placeholders("en"):
+                 self.assertContains(
+                     response, '"placeholder_id": "%s"' % placeholder.pk)
+diff --git a/cms/tests/test_placeholder_admin.py b/cms/tests/test_placeholder_admin.py
+index 2d7062c..e85bc5d 100644
+--- a/cms/tests/test_placeholder_admin.py
++++ b/cms/tests/test_placeholder_admin.py
+@@ -1,9 +1,12 @@
+ # -*- coding: utf-8 -*-
++from django.contrib.contenttypes.models import ContentType
+ from django.forms.models import model_to_dict
+ 
++from cms.api import create_page
+ from cms.models import Placeholder, UserSettings, CMSPlugin
+ from cms.test_utils.testcases import CMSTestCase
++from cms.utils.urlutils import admin_reverse
+ 
+ 
+ class PlaceholderAdminTestCase(CMSTestCase):
+ 
+@@ -162,4 +165,15 @@ class PlaceholderAdminTestCase(CMSTestCase):
+             response = self.client.post(endpoint, {'test': 0})
+ 
+         self.assertEqual(response.status_code, 302)
+         self.assertEqual(placeholder.get_plugins('en').count(), 0)
++
++    def test_object_edit_endpoint(self):
++        page = create_page('Page 1', 'nav_playground.html', 'en')
++        title = page.get_title_obj()
++        title_type = ContentType.objects.get(app_label='cms', model='title')
++        superuser = self.get_superuser()
++        endpoint = admin_reverse('cms_placeholder_render_object_edit', args=(title_type.pk, title.pk,))
++        with self.login_user_context(superuser):
++            response = self.client.get(endpoint)
++
++        self.assertEqual(response.status_code, 200)
+diff --git a/cms/tests/test_placeholder_operation_signals.py b/cms/tests/test_placeholder_operation_signals.py
+index 541fa4a..fe69236 100644
+--- a/cms/tests/test_placeholder_operation_signals.py
++++ b/cms/tests/test_placeholder_operation_signals.py
+@@ -48,9 +48,8 @@ class PagePlaceholderTestCase(CMSTestCase, UnittestCompatMixin):
+             "home",
+             "nav_playground.html",
+             "en",
+             created_by=self._admin_user,
+-            published=True,
+         )
+         self._placeholder_1 = self._cms_page.get_placeholders("en").get(slot='body')
+         self._placeholder_2 = self._cms_page.get_placeholders("en").get(slot='right-column')
+ 
+@@ -650,8 +649,7 @@ class AppPlaceholderTestCase(PagePlaceholderTestCase):
+             "home",
+             "nav_playground.html",
+             "en",
+             created_by=self._admin_user,
+-            published=True,
+         )
+         self._placeholder_1 = self._cms_page.get_placeholders("en").get(slot='body')
+         self._placeholder_2 = self._cms_page.get_placeholders("en").get(slot='right-column')
+diff --git a/cms/tests/test_plugins.py b/cms/tests/test_plugins.py
+index 8f8accb..5af8b1a 100644
+--- a/cms/tests/test_plugins.py
++++ b/cms/tests/test_plugins.py
+@@ -37,10 +37,9 @@ from cms.test_utils.testcases import (
+     CMSTestCase, URL_CMS_PAGE, URL_CMS_PAGE_ADD,
+     URL_CMS_PAGE_CHANGE,
+ )
+ from cms.toolbar.toolbar import CMSToolbar
+-from cms.toolbar.utils import get_toolbar_from_request
+-from cms.utils.conf import get_cms_setting
++from cms.toolbar.utils import get_toolbar_from_request, get_object_edit_url
+ from cms.utils.plugins import copy_plugins_to_placeholder
+ from cms.utils.plugins import get_plugins
+ 
+ from djangocms_text_ckeditor.models import Text
+@@ -792,17 +791,18 @@ class PluginsTestCase(PluginsTestBaseCase):
+             self.assertEqual(force_text(style_config['name']), expected_struct_de['name'])
+ 
+     def test_plugin_toolbar_struct_permissions(self):
+         page = self.get_permissions_test_page()
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         staff_user = self.get_staff_user_with_no_permissions()
+         placeholder = page.get_placeholders('en').get(slot='body')
+-        page_url = page.get_absolute_url() + '?' + get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+ 
+         self.add_permission(staff_user, 'change_page')
+         self.add_permission(staff_user, 'add_text')
+ 
+         with self.login_user_context(staff_user):
+-            request = self.get_request(page_url, page=page)
++            request = self.get_request(page_edit_url, page=page)
+             request.toolbar = CMSToolbar(request)
+             renderer = self.get_structure_renderer(request=request)
+             output = renderer.render_placeholder(placeholder, language='en', page=page)
+             self.assertIn('<a data-rel="add" href="TextPlugin">Text</a>', output)
+@@ -960,9 +960,9 @@ class PluginManyToManyTestCase(PluginsTestBaseCase):
+         self.assertEqual(response.status_code, 200)
+         self.assertEqual(ArticlePluginModel.objects.count(), 1)
+         plugin = ArticlePluginModel.objects.all()[0]
+         self.assertEqual(self.section_count, plugin.sections.count())
+-        response = self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++        response = self.client.get('/en/')
+         self.assertEqual(response.status_code, 200)
+         self.assertEqual(plugin.sections.through._meta.db_table, 'manytomany_rel_articlepluginmodel_sections')
+ 
+     def test_copy_plugin_with_m2m(self):
+diff --git a/cms/tests/test_rendering.py b/cms/tests/test_rendering.py
+index 85f2c6c..e1b2d8b 100644
+--- a/cms/tests/test_rendering.py
++++ b/cms/tests/test_rendering.py
+@@ -12,8 +12,9 @@ from cms.plugin_rendering import PluginContext
+ from cms.test_utils.project.placeholderapp.models import Example1
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.test_utils.util.fuzzy_int import FuzzyInt
+ from cms.toolbar.toolbar import CMSToolbar
++from cms.toolbar.utils import get_object_edit_url
+ from cms.views import details
+ 
+ 
+ TEMPLATE_NAME = 'tests/rendering/base.html'
+@@ -672,10 +673,11 @@ class RenderingTestCase(CMSTestCase):
+         placeholder.slot = 'test'
+         placeholder.pk = placeholder.id = 99
+ 
+         with self.login_user_context(self.get_superuser()):
+-            request = self.get_request(page=None)
+-            request.session = {'cms_edit': True}
++            page_content = self.get_page_title_obj(self.test_page)
++            request = self.get_request(get_object_edit_url(page_content))
++            request.session = {}
+             request.toolbar = CMSToolbar(request)
+             renderer = self.get_content_renderer(request)
+             context = SekizaiContext()
+             context['request'] = request
+@@ -708,10 +710,11 @@ class RenderingTestCase(CMSTestCase):
+             child_plugin_2,
+         ]
+ 
+         with self.login_user_context(self.get_superuser()):
+-            request = self.get_request(page.get_absolute_url(), page=page)
+-            request.session = {'cms_edit': True}
++            page_content = self.get_page_title_obj(page)
++            request = self.get_request(get_object_edit_url(page_content))
++            request.session = {}
+             request.toolbar = CMSToolbar(request)
+             context = SekizaiContext()
+             context['request'] = request
+             content_renderer = request.toolbar.get_content_renderer()
+diff --git a/cms/tests/test_signals.py b/cms/tests/test_signals.py
+index 4b15bb1..f547037 100644
+--- a/cms/tests/test_signals.py
++++ b/cms/tests/test_signals.py
+@@ -25,9 +25,8 @@ class SignalTests(CMSTestCase):
+                     cms_page = create_page(
+                         "apphooked-page",
+                         "nav_playground.html",
+                         "en",
+-                        published=True,
+                     )
+                     redirect_to = self.get_admin_url(Page, 'changelist')
+                     endpoint = self.get_admin_url(Page, 'advanced', cms_page.pk)
+                     current_revision, _ = UrlconfRevision.get_or_create_revision()
+@@ -57,9 +56,8 @@ class SignalTests(CMSTestCase):
+                 page = create_page(
+                     "apphooked-page",
+                     "nav_playground.html",
+                     "en",
+-                    published=True,
+                     apphook="SampleApp",
+                     apphook_namespace="test"
+                 )
+ 
+@@ -84,9 +82,8 @@ class SignalTests(CMSTestCase):
+                     page = create_page(
+                         "apphooked-page",
+                         "nav_playground.html",
+                         "en",
+-                        published=True,
+                         apphook="SampleApp",
+                         apphook_namespace="test"
+                     )
+                     # Change slug should trigger the signal
+diff --git a/cms/tests/test_site.py b/cms/tests/test_site.py
+index 5182ec0..36e57dc 100644
+--- a/cms/tests/test_site.py
++++ b/cms/tests/test_site.py
+@@ -54,18 +54,19 @@ class SiteTestCase(CMSTestCase):
+             self.assertEqual(Page.objects.on_site().count(), 1)
+ 
+     def test_site_preview(self):
+         page = create_page("page", "nav_playground.html", "de", site=self.site2)
+-        page_edit_url_on = self.get_edit_on_url(page.get_absolute_url('de'))
++        page_content_de = self.get_page_title_obj(page, language='de')
++        page_url = page_content_de.get_absolute_url(language='de')
+ 
+         with self.login_user_context(self.get_superuser()):
+             # set the current site on changelist
+             response = self.client.post(admin_reverse('cms_page_changelist'), {'site': self.site2.pk})
+             self.assertEqual(response.status_code, 200)
+             # simulate user clicks on preview icon
+             response = self.client.get(admin_reverse('cms_page_preview_page', args=[page.pk, 'de']))
+             self.assertEqual(response.status_code, 302)
+-            self.assertEqual(response._headers['location'][1], 'http://sample2.com{}'.format(page_edit_url_on))
++            self.assertEqual(response._headers['location'][1], 'http://sample2.com{}'.format(page_url))
+ 
+     def test_site_publish(self):
+         self._login_context.__exit__(None, None, None)
+         pages = {"2": list(range(0, 5)), "3": list(range(0, 5))}
+diff --git a/cms/tests/test_templatetags.py b/cms/tests/test_templatetags.py
+index 51ad707..516d2fd 100644
+--- a/cms/tests/test_templatetags.py
++++ b/cms/tests/test_templatetags.py
+@@ -29,8 +29,9 @@ from cms.templatetags.cms_js_tags import json_filter
+ from cms.templatetags.cms_admin import get_page_display_name
+ from cms.test_utils.fixtures.templatetags import TwoPagesFixture
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.toolbar.toolbar import CMSToolbar
++from cms.toolbar.utils import get_object_edit_url
+ from cms.utils import get_site_id
+ from cms.utils.conf import get_cms_setting
+ from cms.utils.placeholder import get_placeholders
+ from sekizai.context import SekizaiContext
+@@ -432,16 +433,17 @@ class NoFixtureDatabaseTemplateTagTests(CMSTestCase):
+     def test_render_plugin_editable(self):
+         from django.core.cache import cache
+         cache.clear()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
+         placeholder = page.get_placeholders('en')[0]
+         plugin = add_plugin(placeholder, TextPlugin, 'en', body='<b>Test</b>')
+         template = "{% load cms_tags %}{% render_plugin plugin %}"
+-        request = RequestFactory().get('/')
++        request = RequestFactory().get(get_object_edit_url(page_content))
+         user = self._create_user("admin", True, True)
+         request.user = user
+         request.current_page = page
+-        request.session = {'cms_edit': True}
++        request.session = {}
+         request.toolbar = CMSToolbar(request)
+         request.toolbar.show_toolbar = True
+         output = self.render_template_obj(template, {'plugin': plugin}, request)
+         expected = (
+@@ -468,15 +470,17 @@ class NoFixtureDatabaseTemplateTagTests(CMSTestCase):
+         output = self.render_template_obj(template, {'plugin': plugin}, request)
+         self.assertEqual('<b>Test</b>', output)
+ 
+     def test_render_plugin_no_context(self):
++        page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
+         placeholder = Placeholder.objects.create(slot='test')
+         plugin = add_plugin(placeholder, TextPlugin, 'en', body='Test')
+         superuser = self.get_superuser()
+-        request = RequestFactory().get('/')
++        request = RequestFactory().get(get_object_edit_url(page_content))
+         request.current_page = None
+         request.user = superuser
+-        request.session = {'cms_edit': True}
++        request.session = {}
+         request.toolbar = CMSToolbar(request)
+         context = SekizaiContext({
+             'request': request,
+         })
+@@ -524,14 +528,15 @@ class NoFixtureDatabaseTemplateTagTests(CMSTestCase):
+ 
+         Category.objects.create(name='foo', depth=1)
+         cache.clear()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
+         template = "{% load cms_tags %}{% render_model category 'name' %}"
+         user = self._create_user("admin", True, True)
+-        request = RequestFactory().get('/')
++        request = RequestFactory().get(get_object_edit_url(page_content))
+         request.user = user
+         request.current_page = page
+-        request.session = {'cms_edit': True}
++        request.session = {}
+         request.toolbar = CMSToolbar(request)
+         request.toolbar.is_staff = True
+         category = Category.objects.only('name').get()
+         output = self.render_template_obj(template, {'category': category}, request)
+@@ -554,17 +559,18 @@ class NoFixtureDatabaseTemplateTagTests(CMSTestCase):
+         from cms.test_utils.project.sampleapp.models import Category
+ 
+         cache.clear()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
+         template = "{% load cms_tags %}{% render_model_add category %}"
+         user = self._create_user("admin", True, True)
+-        request = RequestFactory().get(page.get_absolute_url())
++        request = RequestFactory().get(get_object_edit_url(page_content))
+         request.user = user
+         request.current_page = page
+         request.session = {'cms_edit': True}
+         request.toolbar = CMSToolbar(request)
+         request.toolbar.is_staff = True
+-        with self.assertNumQueries(0):
++        with self.assertNumQueries(1):
+             output = self.render_template_obj(template, {'category': Category()}, request)
+         expected_start = '<template class="cms-plugin cms-plugin-start cms-plugin-sampleapp-category-add-0 cms-render-model-add"></template>'
+         expected_end = '<template class="cms-plugin cms-plugin-end cms-plugin-sampleapp-category-add-0 cms-render-model-add"></template>'
+         self.assertIn(expected_start, output)
+@@ -586,17 +592,18 @@ class NoFixtureDatabaseTemplateTagTests(CMSTestCase):
+         from cms.test_utils.project.sampleapp.models import Category
+ 
+         cache.clear()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
+         template = "{% load cms_tags %}{% render_model_add_block category %}wrapped{% endrender_model_add_block %}"
+         user = self._create_user("admin", True, True)
+-        request = RequestFactory().get(page.get_absolute_url())
++        request = RequestFactory().get(get_object_edit_url(page_content))
+         request.user = user
+         request.current_page = page
+         request.session = {'cms_edit': True}
+         request.toolbar = CMSToolbar(request)
+         request.toolbar.is_staff = True
+-        with self.assertNumQueries(0):
++        with self.assertNumQueries(1):
+             output = self.render_template_obj(template, {'category': Category()}, request)
+         expected_start = '<template class="cms-plugin cms-plugin-start cms-plugin-sampleapp-category-add-0 '
+         'cms-render-model-add"></template>'
+         expected_end = '<template class="cms-plugin cms-plugin-end cms-plugin-sampleapp-category-add-0 '
+diff --git a/cms/tests/test_toolbar.py b/cms/tests/test_toolbar.py
+index 5f303c5..faa1fc7 100644
+--- a/cms/tests/test_toolbar.py
++++ b/cms/tests/test_toolbar.py
+@@ -22,59 +22,25 @@ from django.utils.translation import ugettext_lazy as _
+ from cms.api import create_page, create_title, add_plugin
+ from cms.admin.forms import RequestToolbarForm
+ from cms.cms_toolbars import (ADMIN_MENU_IDENTIFIER, ADMINISTRATION_BREAK, get_user_model,
+                               LANGUAGE_MENU_IDENTIFIER)
+-from cms.middleware.toolbar import ToolbarMiddleware
+ from cms.models import Page, UserSettings, PagePermission
+ from cms.test_utils.project.placeholderapp.models import Example1, CharPksExample
+ from cms.test_utils.project.placeholderapp.views import detail_view, ClassDetail
+-from cms.test_utils.testcases import (CMSTestCase,
+-                                      URL_CMS_PAGE_ADD, URL_CMS_PAGE_CHANGE,
+-                                      URL_CMS_USERSETTINGS)
++from cms.test_utils.testcases import (CMSTestCase, URL_CMS_PAGE_CHANGE, URL_CMS_USERSETTINGS)
+ from cms.test_utils.util.context_managers import UserLoginContext
+ from cms.toolbar_pool import toolbar_pool
+ from cms.toolbar.items import (ToolbarAPIMixin, LinkItem, ItemSearchResult,
+                                Break, SubMenu, AjaxItem)
+ from cms.toolbar.toolbar import CMSToolbar
+-from cms.utils.conf import get_cms_setting
++from cms.toolbar.utils import get_object_edit_url, get_object_preview_url, get_object_structure_url
+ from cms.utils.i18n import get_language_tuple
+ from cms.utils.urlutils import admin_reverse
+ from cms.views import details
+ 
+ 
+ class ToolbarTestBase(CMSTestCase):
+ 
+-    def get_page_request(self, page, user, path=None, edit=False,
+-                         preview=False, structure=False, lang_code='en', disable=False):
+-        if not path:
+-            path = page.get_absolute_url()
+-
+-        if edit:
+-            path += '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-
+-        if structure:
+-            path += '?%s' % get_cms_setting('CMS_TOOLBAR_URL__BUILD')
+-
+-        if preview:
+-            path += '?preview'
+-
+-        request = RequestFactory().get(path)
+-        request.session = {}
+-        request.user = user
+-        request.LANGUAGE_CODE = lang_code
+-        if edit:
+-            request.GET = {'edit': None}
+-        else:
+-            request.GET = {'edit_off': None}
+-        if disable:
+-            request.GET[get_cms_setting('CMS_TOOLBAR_URL__DISABLE')] = None
+-        request.current_page = page
+-        mid = ToolbarMiddleware()
+-        mid.process_request(request)
+-        if hasattr(request,'toolbar'):
+-            request.toolbar.populate()
+-        return request
+-
+     def get_anon(self):
+         return AnonymousUser()
+ 
+     def get_staff(self):
+@@ -103,11 +69,22 @@ class ToolbarTestBase(CMSTestCase):
+         session = self.client.session
+         session['cms_log_latest'] = entry.pk
+         session.save()
+ 
++    def _get_example_obj(self):
++        obj = Example1.objects.create(
++            char_1='one',
++            char_2='two',
++            char_3='tree',
++            char_4='four'
++        )
++        obj.save()
++        return obj
++
+ 
+ @override_settings(ROOT_URLCONF='cms.test_utils.project.nonroot_urls')
+ class ToolbarMiddlewareTest(ToolbarTestBase):
++
+     @override_settings(CMS_TOOLBAR_HIDE=False)
+     def test_no_app_setted_show_toolbar_in_non_cms_urls(self):
+         request = self.get_page_request(None, self.get_anon(), '/en/example/')
+         self.assertTrue(hasattr(request, 'toolbar'))
+@@ -211,11 +188,12 @@ class ToolbarTests(ToolbarTestBase):
+         """
+         old_pool = toolbar_pool.toolbars
+         toolbar_pool.clear()
+         cms_page = create_page("toolbar-page", "col_two.html", "en")
++        page_content = self.get_page_title_obj(cms_page)
++        endpoint = get_object_edit_url(page_content)
+ 
+         with self.login_user_context(self.get_superuser()):
+-            endpoint = cms_page.get_absolute_url() + '?' + get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+             response = self.client.get(endpoint)
+             self.assertContains(response, '<script type="text/javascript" src="/static/samplemap/js/sampleapp.js"></script>')
+             self.assertContains(response, '<link href="/static/samplemap/css/sampleapp.css"')
+         toolbar_pool.toolbars = old_pool
+@@ -260,14 +238,9 @@ class ToolbarTests(ToolbarTestBase):
+             self.assertEqual(response.status_code, 400)
+ 
+     def test_toolbar_request_form(self):
+         cms_page = create_page("toolbar-page", "col_two.html", "en")
+-        generic_obj = Example1.objects.create(
+-            char_1="char_1",
+-            char_2="char_2",
+-            char_3="char_3",
+-            char_4="char_4",
+-        )
++        generic_obj = self._get_example_obj()
+ 
+         # Valid forms
+         form = RequestToolbarForm({
+             'obj_id': cms_page.pk,
+@@ -355,17 +328,19 @@ class ToolbarTests(ToolbarTestBase):
+ 
+     @override_settings(CMS_PERMISSION=True)
+     def test_template_change_permission(self):
+         page = create_page('test', 'nav_playground.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
+ 
+         # Staff user with change page permissions only
+         staff_user = self.get_staff_user_with_no_permissions()
+         self.add_permission(staff_user, 'change_page')
+         global_permission = self.add_global_permission(staff_user, can_change=True, can_delete=True)
+ 
+         # User should not see "Templates" option because he only has
+         # "change" permission.
+-        request = self.get_page_request(page, staff_user, edit=True)
++        request = self.get_page_request(page, staff_user, edit_url)
+         toolbar = CMSToolbar(request)
+         page_item = self.get_page_item(toolbar)
+         template_item = [item for item in page_item.items
+                          if force_text(getattr(item, 'name', '')) == 'Templates']
+@@ -379,54 +354,50 @@ class ToolbarTests(ToolbarTestBase):
+         staff_user = self.reload(staff_user)
+ 
+         # User should see "Templates" option because
+         # he has "change advanced settings" permission
+-        request = self.get_page_request(page, staff_user, edit=True)
++        request = self.get_page_request(page, staff_user, edit_url)
+         toolbar = CMSToolbar(request)
+         page_item = self.get_page_item(toolbar)
+         template_item = [item for item in page_item.items
+                          if force_text(getattr(item, 'name', '')) == 'Templates']
+         self.assertEqual(len(template_item), 1)
+ 
+     def test_markup(self):
+         page = create_page("toolbar-page", "nav_playground.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         superuser = self.get_superuser()
+ 
+         with self.login_user_context(superuser):
+-            response = self.client.get(page_edit_on_url)
++            response = self.client.get(page_edit_url)
+         self.assertEqual(response.status_code, 200)
+         self.assertTemplateUsed(response, 'nav_playground.html')
+         self.assertContains(response, '<div id="cms-top"')
+         self.assertContains(response, 'cms.base.css')
+ 
+     def test_live_draft_markup_on_app_page(self):
+         """
+         Checks that the "edit page" button shows up
+-        on non-cms pages with app placeholders and no static placeholders.
++        on non-cms pages with app placeholders.
+         """
+         superuser = self.get_superuser()
+-
++        ex1 = self._get_example_obj()
++        obj_edit_url = get_object_edit_url(ex1)
+         output = (
+             '<a class="cms-btn cms-btn-action cms-btn-switch-edit" '
+-            'href="/en/example/latest/?{}">Edit</a>'
+-        ).format(get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-
+-        Example1.objects.create(
+-            char_1="char_1",
+-            char_2="char_2",
+-            char_3="char_3",
+-            char_4="char_4",
+-        )
++            'href="{}">Edit</a>'
++        ).format(obj_edit_url)
+ 
+         with self.login_user_context(superuser):
+-            response = self.client.get('/en/example/latest/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF'))
++            response = self.client.get('/en/example/latest/')
+         self.assertEqual(response.status_code, 200)
+         self.assertContains(response, output, html=True)
+ 
+     def test_markup_generic_module(self):
+         page = create_page("toolbar-page", "col_two.html", "en")
+-        page_structure_url = self.get_obj_structure_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_structure_url = get_object_structure_url(page_content)
+         superuser = self.get_superuser()
+ 
+         with self.login_user_context(superuser):
+             response = self.client.get(page_structure_url)
+@@ -436,9 +407,10 @@ class ToolbarTests(ToolbarTestBase):
+ 
+     def test_markup_link_custom_module(self):
+         superuser = self.get_superuser()
+         page = create_page("toolbar-page", "col_two.html", "en")
+-        page_structure_url = self.get_obj_structure_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_structure_url = get_object_structure_url(page_content)
+ 
+         with self.login_user_context(superuser):
+             response = self.client.get(page_structure_url)
+ 
+@@ -449,9 +421,10 @@ class ToolbarTests(ToolbarTestBase):
+ 
+     def test_extra_placeholder_menu_items(self):
+         superuser = self.get_superuser()
+         page = create_page("toolbar-page", "col_two.html", "en")
+-        page_structure_url = self.get_obj_structure_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_structure_url = get_object_structure_url(page_content)
+ 
+         with self.login_user_context(superuser):
+             response = self.client.get(page_structure_url)
+ 
+@@ -470,14 +443,15 @@ class ToolbarTests(ToolbarTestBase):
+         )
+ 
+     def test_markup_plugin_template(self):
+         page = create_page("toolbar-page-1", "col_two.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         plugin_1 = add_plugin(page.get_placeholders("en").get(slot='col_left'), language='en',
+                               plugin_type='TestPluginAlpha', alpha='alpha')
+         superuser = self.get_superuser()
+         with self.login_user_context(superuser):
+-            response = self.client.get(page_edit_on_url)
++            response = self.client.get(page_edit_url)
+         self.assertEqual(response.status_code, 200)
+         response_text = response.render().rendered_content
+         self.assertTrue(re.search('edit_plugin.+/en/admin/cms/placeholder/edit-plugin/%s' % plugin_1.pk, response_text))
+         self.assertTrue(re.search('move_plugin.+/en/admin/cms/placeholder/move-plugin/', response_text))
+@@ -485,48 +459,44 @@ class ToolbarTests(ToolbarTestBase):
+         self.assertTrue(re.search('add_plugin.+/en/admin/cms/placeholder/add-plugin/', response_text))
+         self.assertTrue(re.search('copy_plugin.+/en/admin/cms/placeholder/copy-plugins/', response_text))
+ 
+     def test_show_toolbar_to_staff(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
+         staff = self.get_staff()
+         assert staff.user_permissions.get().name == 'Can change page'
+         request = self.get_page_request(page, staff, '/')
+         toolbar = CMSToolbar(request)
+         self.assertTrue(toolbar.show_toolbar)
+ 
+-    def test_show_toolbar_with_edit(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
+-        request = self.get_page_request(page, AnonymousUser(), edit=True)
++    def test_show_toolbar_staff(self):
++        page = create_page("toolbar-page", "nav_playground.html", "en")
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        request = self.get_page_request(page, self.get_staff(), edit_url)
+         toolbar = CMSToolbar(request)
+         self.assertTrue(toolbar.show_toolbar)
+ 
+-    def test_show_toolbar_staff(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
+-        request = self.get_page_request(page, self.get_staff(), edit=True)
+-        self.assertTrue(request.session.get('cms_edit', False))
+-
+     def test_hide_toolbar_non_staff(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
+-        request = self.get_page_request(page, self.get_nonstaff(), edit=True)
+-        self.assertNotIn('cms_edit', request.session)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        request = self.get_page_request(page, self.get_nonstaff(), edit_url)
++        toolbar = CMSToolbar(request)
++        self.assertFalse(toolbar.show_toolbar)
+ 
+     def test_hide_toolbar_disabled(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
+         # Edit mode should re-enable the toolbar in any case
+-        request = self.get_page_request(page, self.get_staff(), edit=False, disable=True)
++        request = self.get_page_request(page, self.get_staff(), disable=True)
+         self.assertTrue(request.session.get('cms_toolbar_disabled'))
+         toolbar = CMSToolbar(request)
+-        self.assertFalse(toolbar.show_toolbar)
++        self.assertFalse(toolbar.edit_mode_active)
+ 
+     def test_show_disabled_toolbar_with_edit(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
+-        request = self.get_page_request(page, self.get_staff(), edit=True, disable=True)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        request = self.get_page_request(page, self.get_staff(), edit_url, disable=True)
+         self.assertFalse(request.session.get('cms_toolbar_disabled'))
+         toolbar = CMSToolbar(request)
+         self.assertTrue(toolbar.show_toolbar)
+ 
+@@ -539,81 +509,67 @@ class ToolbarTests(ToolbarTestBase):
+         endpoint = '{}?next=https://notyourdomain.com'.format(login_url)
+         response = self.client.post(endpoint, {'username': username, 'password': username})
+         self.assertRedirects(response, page.get_absolute_url(), fetch_redirect_response=False)
+ 
+-    def test_show_toolbar_login_anonymous(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
+-        response = self.client.get(page_edit_on_url)
+-        self.assertEqual(response.status_code, 200)
+-        self.assertContains(response, 'cms-form-login')
+-
+     @override_settings(CMS_TOOLBAR_ANONYMOUS_ON=False)
++    # Test toolbar on
+     def test_hide_toolbar_login_anonymous_setting(self):
+         page = create_page("toolbar-page", "nav_playground.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
+-        response = self.client.get(page_edit_on_url)
++        response = self.client.get(page.get_absolute_url())
+         self.assertEqual(response.status_code, 200)
+         self.assertNotContains(response, 'cms-form-login')
+ 
+-    def test_hide_toolbar_login_nonstaff(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
+-
+-        with self.login_user_context(self.get_nonstaff()):
+-            response = self.client.get(page_edit_on_url)
+-        self.assertEqual(response.status_code, 200)
+-        self.assertNotContains(response, 'cms-form-login')
+-        self.assertNotContains(response, 'cms-toolbar')
+-
+     def test_admin_logout_staff(self):
+         with override_settings(CMS_PERMISSION=True):
+             with self.login_user_context(self.get_staff()):
+-                response = self.client.get('/en/admin/logout/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++                response = self.client.get('/en/admin/logout/')
+                 self.assertTrue(response.status_code, 200)
+ 
+     def test_show_toolbar_without_edit(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
+-        request = self.get_page_request(page, AnonymousUser(), edit=False)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
++        request = self.get_page_request(page, AnonymousUser())
+         toolbar = CMSToolbar(request)
+         self.assertFalse(toolbar.show_toolbar)
+ 
+     def test_no_change_button(self):
+         page = create_page('test', 'nav_playground.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
+         user = self.get_staff()
+         user.user_permissions.all().delete()
+-        request = self.get_page_request(page, user, edit=True)
+-        toolbar = CMSToolbar(request)
+-        toolbar.populate()
+-        toolbar.post_template_populate()
++        request = self.get_page_request(page, user, edit_url, disable=False)
++        request.toolbar.post_template_populate()
+         self.assertFalse(page.has_change_permission(request.user))
+         self.assertFalse(page.has_publish_permission(request.user))
+ 
+-        items = toolbar.get_left_items() + toolbar.get_right_items()
++        items = request.toolbar.get_left_items() + request.toolbar.get_right_items()
+         # Logo + page-menu + admin-menu + logout
+         self.assertEqual(len(items), 4, items)
+         page_items = items[1].get_items()
+         # The page menu should only have the "Create page" item enabled.
+         self.assertFalse(page_items[0].disabled)
+         self.assertTrue(all(item.disabled for item in page_items[1:] if hasattr(item, 'disabled')))
+-        admin_items = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER, 'Test').get_items()
++        admin_items = request.toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER, 'Test').get_items()
+         self.assertEqual(len(admin_items), 14, admin_items)
+ 
+     def test_button_consistency_staff(self):
+         """
+         Tests that the buttons remain even when the language changes.
+         """
+         user = self.get_staff()
+         cms_page = create_page('test-en', 'nav_playground.html', 'en')
+-        create_title('de', 'test-de', cms_page)
+-        en_request = self.get_page_request(cms_page, user, edit=True)
++        page_content_en = self.get_page_title_obj(cms_page)
++        edit_url_en = get_object_edit_url(page_content_en)
++        page_content_de = create_title('de', 'test-de', cms_page)
++        edit_url_de = get_object_edit_url(page_content_de)
++
++        en_request = self.get_page_request(cms_page, user, edit_url_en)
+         en_toolbar = CMSToolbar(en_request)
+         en_toolbar.populate()
+         en_toolbar.post_template_populate()
+         # Logo + templates + page-menu + admin-menu + logout
+         self.assertEqual(len(en_toolbar.get_left_items() + en_toolbar.get_right_items()), 5)
+-        de_request = self.get_page_request(cms_page, user, path='/de/', edit=True, lang_code='de')
++        de_request = self.get_page_request(cms_page, user, edit_url_de, lang_code='de')
+         de_toolbar = CMSToolbar(de_request)
+         de_toolbar.populate()
+         de_toolbar.post_template_populate()
+         # Logo + templates + page-menu + admin-menu + logout
+@@ -623,9 +579,12 @@ class ToolbarTests(ToolbarTestBase):
+         """
+         Tests that even called multiple times, admin and language buttons are not duplicated
+         """
+         user = self.get_staff()
+-        en_request = self.get_page_request(None, user, edit=True, path='/')
++        page = create_page('test', 'nav_playground.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        en_request = self.get_page_request(None, user, edit_url)
+         toolbar = CMSToolbar(en_request)
+         toolbar.populated = False
+         toolbar.populate()
+         toolbar.populated = False
+@@ -640,12 +599,13 @@ class ToolbarTests(ToolbarTestBase):
+     @override_settings(CMS_PLACEHOLDER_CONF={'col_left': {'name': 'PPPP'}})
+     def test_placeholder_name(self):
+         superuser = self.get_superuser()
+         page = create_page("toolbar-page", "col_two.html", "en")
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+ 
+         with self.login_user_context(superuser):
+-            response = self.client.get(page_edit_on_url)
++            response = self.client.get(page_edit_url)
+         self.assertEqual(response.status_code, 200)
+         self.assertContains(response, 'PPPP')
+ 
+     def test_user_settings(self):
+@@ -655,24 +615,24 @@ class ToolbarTests(ToolbarTestBase):
+             self.assertEqual(response.status_code, 200)
+ 
+     def test_remove_lang(self):
+         page = create_page('test', 'nav_playground.html', 'en')
+-        page_edit_on_url = self.get_edit_on_url(page.get_absolute_url())
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         superuser = self.get_superuser()
+         with self.login_user_context(superuser):
+-            response = self.client.get(page_edit_on_url)
++            response = self.client.get(page_edit_url)
+             self.assertEqual(response.status_code, 200)
+             setting = UserSettings.objects.get(user=superuser)
+             setting.language = 'it'
+             setting.save()
+             with self.settings(LANGUAGES=(('en', 'english'),)):
+-                response = self.client.get(page_edit_on_url)
++                response = self.client.get(page_edit_url)
+                 self.assertEqual(response.status_code, 200)
+                 self.assertNotContains(response, '/it/')
+ 
+     def test_get_alphabetical_insert_position(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
+         request = self.get_page_request(page, self.get_staff(), '/')
+         toolbar = CMSToolbar(request)
+         toolbar.get_left_items()
+         toolbar.get_right_items()
+@@ -696,10 +656,9 @@ class ToolbarTests(ToolbarTestBase):
+         beta_position = admin_menu.get_alphabetical_insert_position('menu-beta', SubMenu)
+         self.assertEqual(beta_position, gamma_position)
+ 
+     def test_out_of_order(self):
+-        page = create_page("toolbar-page", "nav_playground.html", "en",
+-                           published=True)
++        page = create_page("toolbar-page", "nav_playground.html", "en")
+         request = self.get_page_request(page, self.get_staff(), '/')
+         toolbar = CMSToolbar(request)
+         menu1 = toolbar.get_or_create_menu("test")
+         menu2 = toolbar.get_or_create_menu("test", "Test", side=toolbar.RIGHT, position=2)
+@@ -734,127 +693,90 @@ class ToolbarTests(ToolbarTestBase):
+ 
+     def test_page_create_redirect(self):
+         superuser = self.get_superuser()
+         page = self.create_homepage("home", "nav_playground.html", "en")
+-        resolve_url_on = '%s?%s' % (admin_reverse('cms_page_resolve'),
+-                                    get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-        resolve_url_off = '%s?%s' % (admin_reverse('cms_page_resolve'),
+-                                     get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF'))
++        resolve_url = admin_reverse('cms_page_resolve')
+         with self.login_user_context(superuser):
+-            response = self.client.post(resolve_url_on, {'pk': '', 'model': 'cms.page'})
++            response = self.client.post(resolve_url, {'pk': '', 'model': 'cms.page'})
+             self.assertEqual(response.content.decode('utf-8'), '')
+             page_data = self.get_new_page_data(parent_id=page.node.pk)
+             response = self.client.post(self.get_admin_url(Page, 'add'), page_data)
+             self.assertRedirects(response, self.get_admin_url(Page, 'changelist'))
+ 
+-            # test redirection when toolbar is in edit mode
+-            response = self.client.post(resolve_url_on, {'pk': page.pk,
+-                                                         'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '/en/test-page-1/')
+-
+-            self.client.post(URL_CMS_PAGE_ADD, page_data)
+-
+-            # test redirection when toolbar is not in edit mode
+-            response = self.client.post(resolve_url_off, {'pk': page.pk,
+-                                                          'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '/en/?edit')
++            new_page = Page.objects.get(urls__slug__startswith='test-page-')
++            edit_url = get_object_edit_url(self.get_page_title_obj(new_page))
++            response = self.client.post(resolve_url, {'pk': page.pk, 'model': 'cms.page'})
++            self.assertEqual(response.content.decode('utf-8'), edit_url)
+ 
+     def test_page_edit_redirect_editmode(self):
+         page1 = self.create_homepage("home", "nav_playground.html", "en")
+-        page2 = create_page("test", "nav_playground.html", "en",
+-                            published=True)
+-        page3 = create_page("non-pub", "nav_playground.html", "en",
+-                            published=False)
++        page1_content = self.get_page_title_obj(page1)
++        page2 = create_page("test", "nav_playground.html", "en")
++        page2_content = self.get_page_title_obj(page2)
++        page3 = create_page("non-pub", "nav_playground.html", "en")
++        page3_content = self.get_page_title_obj(page3)
+         superuser = self.get_superuser()
+         with self.login_user_context(superuser):
+             page_data = self.get_new_page_data()
+             self.client.post(URL_CMS_PAGE_CHANGE % page2.pk, page_data)
+-            url = '%s?%s' % (admin_reverse('cms_page_resolve'),
+-                             get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            url = admin_reverse('cms_page_resolve')
+             # first call returns the latest modified page with updated slug even if a different
+             # page has been requested
+             response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '/en/test-page-1/')
++            self.assertEqual(response.content.decode('utf-8'), get_object_edit_url(page2_content))
+             # following call returns the actual page requested
+             response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '/en/')
++            self.assertEqual(response.content.decode('utf-8'), get_object_edit_url(page1_content))
+             # non published page - staff user can access it
+             response = self.client.post(url, {'pk': page3.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '/en/non-pub/')
++            self.assertEqual(response.content.decode('utf-8'), get_object_edit_url(page3_content))
+         # anonymous users should be redirected to the root page
+         response = self.client.post(url, {'pk': page3.pk, 'model': 'cms.page'})
+         self.assertEqual(response.content.decode('utf-8'), '/')
+ 
+     def test_page_edit_redirect_no_editmode(self):
+-        page1 = create_page("home", "nav_playground.html", "en",
+-                            published=True)
+-        page2 = create_page("test", "nav_playground.html", "en",
+-                            parent=page1)
+-        page3 = create_page("non-pub-1", "nav_playground.html", "en",
+-                            published=False, parent=page2)
+-        page4 = create_page("non-pub-2", "nav_playground.html", "en",
+-                            published=False, parent=page3)
++        page1 = create_page("home", "nav_playground.html", "en")
++        page1_content = self.get_page_title_obj(page1)
++        page1_edit_url = get_object_edit_url(page1_content)
++        page2 = create_page("test", "nav_playground.html", "en", parent=page1)
++        page2_content = self.get_page_title_obj(page2)
++        page2_edit_url = get_object_edit_url(page2_content)
++
+         superuser = self.get_superuser()
+         url = admin_reverse('cms_page_resolve')
+         with self.login_user_context(superuser):
+             # checking the redirect by passing URL parameters
+             # redirect to the same page
+             response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), page1.get_absolute_url() + '?edit')
++            self.assertEqual(response.content.decode('utf-8'), page1_edit_url)
+             # redirect to the same page
+             response = self.client.post(url, {'pk': page2.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), page2.get_absolute_url() + '?edit')
+-            # redirect to the first published ancestor
+-            response = self.client.post(url, {'pk': page3.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '%s?%s' % (
+-                page3.get_absolute_url(),
+-                get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-            )
+-            # redirect to the first published ancestor
+-            response = self.client.post(url, {'pk': page4.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '%s?%s' % (
+-                page4.get_absolute_url(),
+-                get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-            )
++            self.assertEqual(response.content.decode('utf-8'), page2_edit_url)
+ 
+             # checking the redirect by setting the session data
+             self._fake_logentry(page1.pk, superuser, 'test page')
+             response = self.client.post(url, {'pk': page2.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), page1.get_absolute_url() + '?edit')
++            self.assertEqual(response.content.decode('utf-8'), page1_edit_url)
+ 
+             self._fake_logentry(page2.pk, superuser, 'test page')
+             response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), page2.get_absolute_url() + '?edit')
++            self.assertEqual(response.content.decode('utf-8'), page2_edit_url)
+ 
+-            self._fake_logentry(page3.pk, superuser, 'test page')
+-            response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '%s?%s' % (
+-                page3.get_absolute_url(),
+-                get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-            )
+-
+-            self._fake_logentry(page4.pk, superuser, 'test page')
+-            response = self.client.post(url, {'pk': page1.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), '%s?%s' % (
+-                page4.get_absolute_url(),
+-                get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+-            )
+ 
+     def test_page_edit_redirect_errors(self):
+-        page1 = create_page("home", "nav_playground.html", "en",
+-                            published=True)
++        page1 = create_page("home", "nav_playground.html", "en")
+         page2 = create_page("test", "nav_playground.html", "en",
+                             parent=page1)
+-        create_page("non-pub", "nav_playground.html", "en",
+-                    published=False, parent=page2)
++        page2_content = self.get_page_title_obj(page2)
++        create_page("non-pub", "nav_playground.html", "en", parent=page2)
+         superuser = self.get_superuser()
+         url = admin_reverse('cms_page_resolve')
+ 
+         with self.login_user_context(superuser):
+             # logentry - non existing id - parameter is used
+             self._fake_logentry(9999, superuser, 'test page')
+             response = self.client.post(url, {'pk': page2.pk, 'model': 'cms.page'})
+-            self.assertEqual(response.content.decode('utf-8'), page2.get_absolute_url() + '?edit')
++            self.assertEqual(response.content.decode('utf-8'), get_object_edit_url(page2_content))
+             # parameters - non existing id - no redirection
+             response = self.client.post(url, {'pk': 9999, 'model': 'cms.page'})
+             self.assertEqual(response.content.decode('utf-8'), '')
+ 
+@@ -877,10 +799,11 @@ class ToolbarTests(ToolbarTestBase):
+             "toolbar-page", "nav_playground.html", "en"
+         )
+         create_title(title="de page", language="de", page=page)
+         create_title(title="fr page", language="fr", page=page)
+-
+-        request = self.get_page_request(page, self.get_staff(), '/', edit=True)
++        page_content_en = self.get_page_title_obj(page)
++        edit_url_en = get_object_edit_url(page_content_en)
++        request = self.get_page_request(page, self.get_staff(), edit_url_en)
+ 
+         self.assertMenuItems(
+             request, LANGUAGE_MENU_IDENTIFIER, 'Delete Translation',
+             ['German...', 'English...', 'French...']
+@@ -909,9 +832,11 @@ class ToolbarTests(ToolbarTestBase):
+             )
+ 
+     def test_add_language(self):
+         page = create_page("tbp", "nav_playground.html", "en")
+-        request = self.get_page_request(page, self.get_staff(), '/', edit=True)
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        request = self.get_page_request(page, self.get_staff(), edit_url)
+         self.assertMenuItems(
+             request, LANGUAGE_MENU_IDENTIFIER, 'Add Translation',
+             [u'German...', u'Brazilian Portuguese...', u'French...', u'Espa\xf1ol...']
+         )
+@@ -924,22 +849,25 @@ class ToolbarTests(ToolbarTestBase):
+         )
+ 
+     def test_copy_plugins(self):
+         page = create_page("tbp", "nav_playground.html", "en")
++        title_en = self.get_page_title_obj(page)
++        edit_url_en = get_object_edit_url(title_en)
+         title_de = create_title('de', 'de page', page)
++        edit_url_de = get_object_edit_url(title_de)
+         add_plugin(title_de.placeholders.get(slot='body'), "TextPlugin", "de", body='de body')
+         title_fr = create_title('fr', 'fr page', page)
+         add_plugin(title_fr.placeholders.get(slot='body'), "TextPlugin", "fr", body='fr body')
+ 
+         staff = self.get_staff()
+ 
+-        request = self.get_page_request(page, staff, '/', edit=True)
++        request = self.get_page_request(page, staff, edit_url_en)
+         self.assertMenuItems(
+             request, LANGUAGE_MENU_IDENTIFIER, 'Copy all plugins',
+             [u'from German', u'from French']
+         )
+ 
+-        request = self.get_page_request(page, staff, '/', edit=True, lang_code='de')
++        request = self.get_page_request(page, staff, edit_url_de, lang_code='de')
+         self.assertMenuItems(
+             request, LANGUAGE_MENU_IDENTIFIER, 'Copy all plugins',
+             [u'from English', u'from French']
+         )
+@@ -968,17 +896,18 @@ class ToolbarTests(ToolbarTestBase):
+             superuser.first_name = ''
+             superuser.last_name = ''
+             superuser.save()
+ 
+-        page = create_page("home", "nav_playground.html", "en",
+-                           published=True)
++        page = create_page("home", "nav_playground.html", "en")
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         self.get_page_request(page, superuser, '/')
+         #
+         # Test that the logout shows the username of the logged-in user if
+         # first_name and last_name haven't been provided.
+         #
+         with self.login_user_context(superuser):
+-            response = self.client.get(page.get_absolute_url('en') + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            response = self.client.get(page_edit_url)
+             toolbar = response.context['request'].toolbar
+             admin_menu = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER)
+             self.assertTrue(admin_menu.find_first(AjaxItem, name=_(u'Logout %s') % self.get_username(superuser)))
+ 
+@@ -990,54 +919,60 @@ class ToolbarTests(ToolbarTestBase):
+         superuser.last_name = 'User'
+         superuser.save()
+         # Sanity check...
+         self.get_page_request(page, superuser, '/')
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         with self.login_user_context(superuser):
+-            response = self.client.get(page.get_absolute_url('en') + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            response = self.client.get(page_edit_url)
+             toolbar = response.context['request'].toolbar
+             admin_menu = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER)
+             self.assertTrue(admin_menu.find_first(AjaxItem, name=_(u'Logout %s') % self.get_username(superuser)))
+ 
+     @override_settings(CMS_PERMISSION=True)
+     def test_toolbar_logout_redirect(self):
+         """
+         Tests the logount AjaxItem on_success parameter in four different conditions:
+-
+          * published page: no redirect
+          * unpublished page: redirect to the home page
+          * published page with login_required: redirect to the home page
+          * published page with view permissions: redirect to the home page
+         """
+         superuser = self.get_superuser()
+-        page0 = create_page("home", "nav_playground.html", "en",
+-                            published=True)
++        page0 = create_page("home", "nav_playground.html", "en")
+         page1 = create_page("internal", "nav_playground.html", "en",
+                             parent=page0)
+-        create_page("unpublished", "nav_playground.html", "en", published=False, parent=page0)
++        page1_content = self.get_page_title_obj(page1)
++        page1_edit_url = get_object_edit_url(page1_content)
++        create_page("unpublished", "nav_playground.html", "en", parent=page0)
+         page3 = create_page("login_restricted", "nav_playground.html", "en",
+                             parent=page0, login_required=True)
++        page3_content = self.get_page_title_obj(page3)
++        page3_edit_url = get_object_edit_url(page3_content)
+         page4 = create_page("view_restricted", "nav_playground.html", "en",
+                             parent=page0)
++        page4_content = self.get_page_title_obj(page4)
++        page4_edit_url = get_object_edit_url(page4_content)
+         PagePermission.objects.create(page=page4, can_view=True,
+                                       user=superuser)
+         self.get_page_request(page4, superuser, '/')
+ 
+         with self.login_user_context(superuser):
+             # Published page, no redirect
+-            response = self.client.get(page1.get_absolute_url('en') + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            response = self.client.get(page1_edit_url)
+             toolbar = response.context['request'].toolbar
+             menu_name = _(u'Logout %s') % self.get_username(superuser)
+             admin_menu = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER)
+             self.assertTrue(admin_menu.find_first(AjaxItem, name=menu_name).item.on_success)
+ 
+             # Published page with login restrictions, redirect
+-            response = self.client.get(page3.get_absolute_url('en') + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            response = self.client.get(page3_edit_url)
+             toolbar = response.context['request'].toolbar
+             admin_menu = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER)
+             self.assertEquals(admin_menu.find_first(AjaxItem, name=menu_name).item.on_success, '/')
+ 
+             # Published page with view permissions, redirect
+-            response = self.client.get(page4.get_absolute_url('en') + '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++            response = self.client.get(page4_edit_url)
+             toolbar = response.context['request'].toolbar
+             admin_menu = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER)
+             self.assertEquals(admin_menu.find_first(AjaxItem, name=menu_name).item.on_success, '/')
+ 
+@@ -1052,78 +987,73 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_markup_toolbar_url_model(self):
+         superuser = self.get_superuser()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        preview_url = get_object_preview_url(page_content)
++        ex1 = self._get_example_obj()
+         # object
+         # check when in draft mode
+-        request = self.get_page_request(page, superuser, edit=True)
++        request = self.get_page_request(page, superuser, edit_url)
+         response = detail_view(request, ex1.pk)
+         self.assertEqual(response.status_code, 200)
+-        self.assertContains(response, 'href="%s?preview&amp;%s"' % (
+-            ex1.get_absolute_url(), get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF')
+-        ))
++        self.assertContains(response, 'href="%s"' % get_object_preview_url(ex1))
+         # check when in live mode
+-        request = self.get_page_request(page, superuser, preview=True)
++        request = self.get_page_request(page, superuser, preview_url)
+         response = detail_view(request, ex1.pk)
+         self.assertEqual(response.status_code, 200)
+-        self.assertContains(response, 'href="%s?%s"' % (
+-            ex1.get_absolute_url(), get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-        ))
++        self.assertContains(response, 'href="%s"' % get_object_edit_url(ex1))
+ 
+     def test_anon(self):
+         user = self.get_anon()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
+-        request = self.get_page_request(page, user, edit=False)
++        ex1 = self._get_example_obj()
++        request = self.get_page_request(page, user)
+         response = detail_view(request, ex1.pk)
+-        self.assertContains(response, "<h1>char_1</h1>")
++        self.assertContains(response, "<h1>one</h1>")
+         self.assertNotContains(response, "CMS.API")
+ 
+     def test_noedit(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
+-        request = self.get_page_request(page, user, edit=False)
++        ex1 = self._get_example_obj()
++        request = self.get_page_request(page, user)
+         response = detail_view(request, ex1.pk)
+-        self.assertContains(response, "<h1>char_1</h1>")
++        self.assertContains(response, "<h1>one</h1>")
+         self.assertContains(response, "CMS.API")
+ 
+     def test_edit(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
+-        request = self.get_page_request(page, user, edit=True)
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
++
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk)
+         self.assertContains(
+             response,
+             '<h1><template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template></h1>'.format(
+                 'placeholderapp', 'example1', 'char_1', ex1.pk))
+ 
+     def test_invalid_item(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
++
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model fake "char_1" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-%s cms-render-model"></template>' % ex1.pk)
+@@ -1133,19 +1063,20 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_as_varname(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
++
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "char_1" as tempvar %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertNotContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-%s cms-render-model"></template>' % ex1.pk)
+@@ -1158,11 +1089,11 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+         Tests the {% render_placeholder %} templatetag.
+         """
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+ 
+         render_placeholder_body = "I'm the render placeholder body"
+ 
+         plugin = add_plugin(ex1.placeholder, u"TextPlugin", u"en", body=render_placeholder_body)
+@@ -1175,9 +1106,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ <h2>{% render_placeholder instance.placeholder as tempvar %}</h2>
+ <h3>{{ tempvar }}</h3>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<div class="cms-placeholder cms-placeholder-{0}"></div>'.format(ex1.placeholder.pk))
+@@ -1215,8 +1146,10 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_filters(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
+         ex1 = Example1(char_1="char_1, <p>hello</p>, <p>hello</p>, <p>hello</p>, <p>hello</p>", char_2="char_2",
+                        char_3="char_3",
+                        char_4="char_4")
+         ex1.save()
+@@ -1226,9 +1159,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% block content %}
+ <h1>{% render_model instance "char_1" "" "" 'truncatewords:2' %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+@@ -1244,9 +1177,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% block content %}
+ <h1>{% render_model instance "char_1" "" "" "truncatewords:2|safe" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+@@ -1265,14 +1198,16 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% endblock content %}
+ '''
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
+         ex1 = Example1(char_1="char_1, <p>hello</p>, <p>hello</p>, <p>hello</p>, <p>hello</p>", char_2="char_2",
+                        char_3="char_3",
+                        char_4="char_4")
+         ex1.save()
+ 
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+@@ -1286,11 +1221,15 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+         # Ensure we have a consistent testing env...
+         with self.settings(USE_L10N=False, DATE_FORMAT="M. d, Y"):
+             user = self.get_staff()
+             page = create_page('Test', 'col_two.html', 'en')
+-            ex1 = Example1(char_1="char_1, <p>hello</p>, <p>hello</p>, <p>hello</p>, <p>hello</p>", char_2="char_2",
++            page_content = self.get_page_title_obj(page)
++            edit_url = get_object_edit_url(page_content)
++            ex1 = Example1(char_1="char_1, <p>hello</p>, <p>hello</p>, <p>hello</p>, <p>hello</p>",
++                           char_2="char_2",
+                            char_3="char_3",
+-                           char_4="char_4", date_field=datetime.date(2012, 1, 2))
++                           char_4="char_4",
++                           date_field=datetime.date(2012, 1, 2))
+             ex1.save()
+             template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+@@ -1298,9 +1237,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ <h1>{% render_model instance "date_field" %}</h1>
+ {% endblock content %}
+ '''
+ 
+-            request = self.get_page_request(page, user, edit=True)
++            request = self.get_page_request(page, user, edit_url)
+             response = detail_view(request, ex1.pk, template_string=template_text)
+             self.assertContains(
+                 response,
+                 '<h1>'
+@@ -1317,9 +1256,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% block content %}
+ <h1>{% render_model instance "date_field" "" "" "safe" %}</h1>
+ {% endblock content %}
+ '''
+-            request = self.get_page_request(page, user, edit=True)
++            request = self.get_page_request(page, user, edit_url)
+             response = detail_view(request, ex1.pk, template_string=template_text)
+             self.assertContains(
+                 response,
+                 '<h1>'
+@@ -1362,9 +1301,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ <h1>{% render_model instance "char_1" "" "" 'truncatewords:2' %}</h1>
+ {% endblock content %}
+ '''
+ 
+-        request = self.get_page_request(page, user, edit=False)
++        request = self.get_page_request(page, user)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(response,
+                             '<h1>%s</h1>' % truncatewords(escape(ex1.char_1), 2))
+ 
+@@ -1374,26 +1313,25 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% block content %}
+ <h1>{% render_model instance "char_1" "" "" 'truncatewords:2|safe' "" "" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=False)
++        request = self.get_page_request(page, user)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(response,
+                             '<h1>%s</h1>' % truncatewords(ex1.char_1, 2))
+ 
+     def test_no_cms(self):
+         user = self.get_staff()
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        ex1 = self._get_example_obj()
++        edit_url = get_object_edit_url(ex1)
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ {% render_model_icon instance %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(None, user, path='/', edit=True)
++        request = self.get_page_request(None, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2} cms-render-model-icon"></template>'
+@@ -1404,19 +1342,19 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_icon_tag(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ {% render_model_icon instance %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2} cms-render-model-icon"></template>'
+@@ -1426,11 +1364,11 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_icon_followed_by_render_model_block_tag(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4", date_field=datetime.date(2012, 1, 1))
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+@@ -1445,9 +1383,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+     {% endif %}
+ {% endrender_model_block %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             "CMS._plugins.push(['cms-plugin-{0}-{1}-{2}-{3}'".format('placeholderapp', 'example1', 'char_1', ex1.pk))
+@@ -1458,19 +1396,19 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_add_tag(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ {% render_model_add instance %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-add-{2} cms-render-model-add"></template>'
+@@ -1481,19 +1419,19 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_add_tag_class(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ {% render_model_add instance_class %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-add-{2} cms-render-model-add"></template>'
+@@ -1503,19 +1441,19 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_add_tag_classview(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ {% render_model_add instance_class %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         view_func = ClassDetail.as_view(template_string=template_text)
+         response = view_func(request, pk=ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+@@ -1526,8 +1464,10 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_block_tag(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
+         ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+                        char_4="char_4", date_field=datetime.date(2012, 1, 1))
+         ex1.save()
+ 
+@@ -1546,9 +1486,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+     {% endif %}
+ {% endrender_model_block %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertNotContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2} cms-render-model-icon"></template>'
+@@ -1572,9 +1512,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% endrender_model_block %}
+ {{ rendered_model }}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         # Assertions on the content of the block tag
+         self.assertContains(
+             response,
+@@ -1598,9 +1538,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+     {% endif %}
+ {% endrender_model_block %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         # Assertions on the content of the block tag
+         self.assertContains(
+             response,
+@@ -1619,9 +1559,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+     {{ instance }}
+ {% endrender_model_block %}
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         # Assertions on the content of the block tag
+         self.assertContains(
+             response,
+@@ -1633,19 +1573,19 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_invalid_attribute(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "fake_field" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'.format(
+@@ -1662,9 +1602,9 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ {% block content %}
+ <h1>{% render_model instance "" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0} cms-render-model"></template>'.format(ex1.pk))
+@@ -1674,132 +1614,132 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_callable_item(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1><template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template></h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+ 
+     def test_view_method(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_1,char_2" "en" "" "" "dynamic_url" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response, "edit_plugin: '/admin/placeholderapp/example1/edit-field/%s/en/" % ex1.pk)
+ 
+     def test_view_url(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_1,char_2" "en" "" "admin:placeholderapp_example1_edit_field" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response, "edit_plugin: '/admin/placeholderapp/example1/edit-field/%s/en/" % ex1.pk)
+ 
+     def test_method_attribute(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_1,char_2" "en" "" "" "static_admin_url" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         ex1.set_static_url(request)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+ 
+     def test_admin_url(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_1" "en" "" "admin:placeholderapp_example1_edit_field" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         expected_output = (
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'
+         ).format('placeholderapp', 'example1', 'callable_item', ex1.pk)
+         self.assertContains(response, expected_output)
+ 
+     def test_admin_url_extra_field(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_2" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+         self.assertContains(response, "/admin/placeholderapp/example1/edit-field/%s/en/" % ex1.pk)
+@@ -1807,25 +1747,25 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_admin_url_multiple_fields(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" "char_1,char_2" "en" "" "admin:placeholderapp_example1_edit_field" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+         self.assertContains(response, "/admin/placeholderapp/example1/edit-field/%s/en/" % ex1.pk)
+@@ -1834,83 +1774,81 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+ 
+     def test_instance_method(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance "callable_item" %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text)
+         self.assertContains(
+             response,
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+ 
+     def test_item_from_context(self):
+         user = self.get_staff()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+         template_text = '''{% extends "base.html" %}
+ {% load cms_tags %}
+ 
+ {% block content %}
+ <h1>{% render_model instance item_name %}</h1>
+ {% endblock content %}
+ '''
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         response = detail_view(request, ex1.pk, template_string=template_text,
+                                item_name="callable_item")
+         self.assertContains(
+             response,
+             '<h1>'
+             '<template class="cms-plugin cms-plugin-start cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+-            'char_1'
++            'one'
+             '<template class="cms-plugin cms-plugin-end cms-plugin-{0}-{1}-{2}-{3} cms-render-model"></template>'
+             '</h1>'.format(
+                 'placeholderapp', 'example1', 'callable_item', ex1.pk))
+ 
+     def test_edit_field(self):
+         from django.contrib.admin import site
+ 
+         exadmin = site._registry[Example1]
+-
+         user = self.get_superuser()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+ 
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         request.GET['edit_fields'] = 'char_1'
+         response = exadmin.edit_field(request, ex1.pk, "en")
+         self.assertContains(response, 'id="id_char_1"')
+-        self.assertContains(response, 'value="char_1"')
++        self.assertContains(response, 'value="one"')
+ 
+     def test_edit_field_not_allowed(self):
+         from django.contrib.admin import site
+ 
+         exadmin = site._registry[Example1]
+-
+         user = self.get_superuser()
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
+-                       char_4="char_4")
+-        ex1.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex1 = self._get_example_obj()
+ 
+-        request = self.get_page_request(page, user, edit=True)
++        request = self.get_page_request(page, user, edit_url)
+         request.GET['edit_fields'] = 'char_3'
+         response = exadmin.edit_field(request, ex1.pk, "en")
+         self.assertEqual(response.status_code, 200)
+         self.assertContains(response, 'Field char_3 not found')
+@@ -1924,9 +1862,10 @@ class EditModelTemplateTagTest(ToolbarTestBase):
+         title.page_title = 'Page Test'
+         title.title = 'Main Test'
+         title.save()
+         page.reload()
+-        request = self.get_page_request(page, user, edit=True)
++        edit_url = get_object_edit_url(title)
++        request = self.get_page_request(page, user, edit_url)
+         response = details(request, page.get_path(language))
+         self.assertContains(
+             response,
+             '<template class="cms-plugin cms-plugin-start cms-plugin-cms-page-get_page_title-{0} cms-render-model"></template>'
+@@ -1977,15 +1916,9 @@ class CharPkFrontendPlaceholderAdminTest(ToolbarTestBase):
+     def test_url_numeric_pk(self):
+         """
+         Tests whether the frontend admin matches the edit_fields url with numeric pks
+         """
+-        ex = Example1(
+-            char_1='one',
+-            char_2='two',
+-            char_3='tree',
+-            char_4='four'
+-        )
+-        ex.save()
++        ex = self._get_example_obj()
+         superuser = self.get_superuser()
+         with UserLoginContext(self, superuser):
+             response = self.client.get(admin_reverse('placeholderapp_example1_edit_field', args=(ex.pk, 'en')),
+                                        data={'edit_fields': 'char_1'})
+@@ -1997,17 +1930,13 @@ class CharPkFrontendPlaceholderAdminTest(ToolbarTestBase):
+         Tests whether the admin urls triggered when the toolbar is active works
+         (i.e.: no NoReverseMatch is raised) with numeric pks
+         """
+         page = create_page('Test', 'col_two.html', 'en')
+-        ex = Example1(
+-            char_1='one',
+-            char_2='two',
+-            char_3='tree',
+-            char_4='four'
+-        )
+-        ex.save()
++        page_content = self.get_page_title_obj(page)
++        edit_url = get_object_edit_url(page_content)
++        ex = self._get_example_obj()
+         superuser = self.get_superuser()
+-        request = self.get_page_request(page, superuser, edit=True)
++        request = self.get_page_request(page, superuser, edit_url)
+         response = detail_view(request, ex.pk)
+         # if we get a response pattern matches
+         self.assertEqual(response.status_code, 200)
+ 
+@@ -2038,9 +1967,9 @@ class ToolbarAPITests(TestCase):
+         self.assertNotEqual(result, None)
+         self.assertEqual(result.index, 0)
+ 
+     def test_not_is_staff(self):
+-        request = RequestFactory().get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
++        request = RequestFactory().get('/en/')
+         request.session = {}
+         request.LANGUAGE_CODE = 'en'
+         request.user = AnonymousUser()
+         toolbar = CMSToolbar(request)
+diff --git a/cms/tests/test_toolbar_pool.py b/cms/tests/test_toolbar_pool.py
+index 5bbe833..a89d3f2 100644
+--- a/cms/tests/test_toolbar_pool.py
++++ b/cms/tests/test_toolbar_pool.py
+@@ -6,8 +6,9 @@ from cms import api
+ from cms.exceptions import ToolbarAlreadyRegistered, ToolbarNotRegistered
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.toolbar_base import CMSToolbar
+ from cms.toolbar_pool import ToolbarPool, toolbar_pool
++from cms.toolbar.utils import get_object_edit_url
+ 
+ 
+ class TestToolbar(CMSToolbar):
+     pass
+@@ -56,9 +57,10 @@ class ToolbarPoolTests(CMSTestCase):
+         with self.settings(CMS_TOOLBARS=['cms.cms_toolbars.BasicToolbar', 'cms.cms_toolbars.PlaceholderToolbar']):
+             toolbar_pool.register(TestToolbar)
+             self.assertEqual(len(list(pool.get_toolbars().keys())), 2)
+             page = api.create_page("home", "simple.html", "en")
+-            page_edit_url_on = self.get_edit_on_url(page.get_absolute_url())
++            page_content = self.get_page_title_obj(page)
++            page_edit_url_on = get_object_edit_url(page_content)
+ 
+             with self.login_user_context(self.get_superuser()):
+                 response = self.client.get(page_edit_url_on)
+                 self.assertEqual(response.status_code, 200)
+diff --git a/cms/tests/test_views.py b/cms/tests/test_views.py
+index 063c680..61756af 100644
+--- a/cms/tests/test_views.py
++++ b/cms/tests/test_views.py
+@@ -7,14 +7,20 @@ from django.core.cache import cache
+ from django.http import Http404
+ from django.template import Variable
+ from django.test.utils import override_settings
+ from django.urls import clear_url_caches
++from django.utils.translation import override as force_language
+ 
+ from cms.api import create_page, create_title
+ from cms.models import PagePermission, UserSettings, Placeholder
+ from cms.page_rendering import _handle_no_page
+ from cms.test_utils.testcases import CMSTestCase
+ from cms.test_utils.util.fuzzy_int import FuzzyInt
++from cms.toolbar.utils import (
++    get_object_edit_url,
++    get_object_preview_url,
++    get_object_structure_url,
++)
+ from cms.utils.conf import get_cms_setting
+ from cms.views import details
+ from menus.menu_pool import menu_pool
+ 
+@@ -130,30 +136,27 @@ class ViewTests(CMSTestCase):
+ 
+     def test_redirect_with_toolbar(self):
+         page = create_page("one", "nav_playground.html", "en",
+                     redirect='/en/page2')
+-        page_url = page.get_absolute_url()
+-        page_edit_on_url = self.get_edit_on_url(page_url)
++        page_content = self.get_page_title_obj(page)
++        page_edit_on_url = get_object_edit_url(page_content)
+ 
+         superuser = self.get_superuser()
+         with self.login_user_context(superuser):
+             response = self.client.get(page_edit_on_url)
+             self.assertEqual(response.status_code, 200)
+             self.assertContains(response, 'This page has no preview')
+ 
+             self.client.get(page_edit_on_url)
+-            response = self.client.get(self.get_edit_off_url(page_url))
++            response = self.client.get(get_object_preview_url(page_content))
+             self.assertEqual(response.status_code, 302)
+ 
+             self.client.get(page_edit_on_url)
+-            response = self.client.get(self.get_obj_structure_url(page_url))
++            response = self.client.get(self.get_toolbar_disable_url(page_edit_on_url))
++            # edit endpoint overrides toolbar_off and enables it
+             self.assertEqual(response.status_code, 200)
+             self.assertContains(response, 'This page has no preview')
+ 
+-            self.client.get(page_edit_on_url)
+-            response = self.client.get(self.get_toolbar_disable_url(page_url))
+-            self.assertEqual(response.status_code, 302)
+-
+     def test_login_required(self):
+         self.create_homepage("page", "nav_playground.html", "en", login_required=True)
+         plain_url = '/accounts/'
+         login_rx = re.compile("%s\?(signin=|next=/en/)&" % plain_url)
+@@ -170,30 +173,31 @@ class ViewTests(CMSTestCase):
+             self.assertTrue(login_rx.search(response['Location']))
+ 
+     def test_edit_permission(self):
+         page = create_page("page", "nav_playground.html", "en")
+-        page_url = page.get_absolute_url()
++        page_content = self.get_page_title_obj(page)
++        page_edit_url = get_object_edit_url(page_content)
+         # Anon user
+-        response = self.client.get(self.get_edit_on_url(page_url))
+-        self.assertNotContains(response, "cms_toolbar-item-switch-save-edit", 200)
++        response = self.client.get(page_edit_url)
++        self.assertRedirects(response, '/en/admin/login/?next={}'.format(page_edit_url))
+ 
+         # Superuser
+         user = self.get_superuser()
+         with self.login_user_context(user):
+-            response = self.client.get(self.get_edit_on_url(page_url))
++            response = self.client.get(page_edit_url)
+         self.assertContains(response, "cms-toolbar-item-switch-save-edit", 1, 200)
+ 
+         # Admin but with no permission
+         user = self.get_staff_user_with_no_permissions()
+         user.user_permissions.add(Permission.objects.get(codename='change_page'))
+ 
+         with self.login_user_context(user):
+-            response = self.client.get(self.get_edit_on_url(page_url))
++            response = self.client.get(page_edit_url)
+         self.assertNotContains(response, "cms-toolbar-item-switch-save-edit", 200)
+ 
+         PagePermission.objects.create(can_change=True, user=user, page=page)
+         with self.login_user_context(user):
+-            response = self.client.get(self.get_edit_on_url(page_url))
++            response = self.client.get(page_edit_url)
+         self.assertContains(response, "cms-toolbar-item-switch-save-edit", 1, 200)
+ 
+     def test_toolbar_switch_urls(self):
+         user = self.get_superuser()
+@@ -203,46 +207,55 @@ class ViewTests(CMSTestCase):
+         user_settings.clipboard = placeholder
+         user_settings.save()
+ 
+         page = create_page("page", "nav_playground.html", "en")
+-        create_title("fr", "french home", page)
++        page_content = create_title("fr", "french home", page)
+ 
+         page.set_as_homepage()
+ 
+-        edit_on = get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-        edit_off = get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF')
++        with self.login_user_context(user), force_language('fr'):
++            edit_url = get_object_edit_url(page_content)
++            preview_url = get_object_preview_url(page_content)
++            structure_url = get_object_structure_url(page_content)
+ 
+-        with self.login_user_context(user):
+-            response = self.client.get("/fr/?{}".format(edit_on))
++            response = self.client.get(edit_url)
+             expected = """
+-                <a href="?structure" class="cms-btn cms-btn-disabled" title="Toggle structure"
+-                data-cms-structure-btn='{ "url": "/fr/?structure", "name": "Structure" }'
+-                data-cms-content-btn='{ "url": "/fr/?edit", "name": "Content" }'>
++                <a href="%s" class="cms-btn cms-btn-disabled" title="Toggle structure"
++                data-cms-structure-btn='{ "url": "%s", "name": "Structure" }'
++                data-cms-content-btn='{ "url": "%s", "name": "Content" }'>
+                 <span class="cms-icon cms-icon-plugins"></span></a>
+-            """
++            """ % (
++                structure_url,
++                structure_url,
++                edit_url,
++            )
+             self.assertContains(
+                 response,
+                 expected,
+                 count=1,
+                 html=True,
+             )
+             self.assertContains(
+                 response,
+-                '<a class="cms-btn cms-btn-switch-save" href="/fr/?preview&{}">'
+-                '<span>Preview</span></a>'.format(edit_off),
++                '<a class="cms-btn cms-btn-switch-save" href="%s">'
++                '<span>Preview</span></a>' % (
++                    preview_url,
++                ),
+                 count=1,
+                 html=True,
+             )
+-            response = self.client.get("/fr/?preview&{}".format(edit_off))
++            response = self.client.get(preview_url)
+             self.assertContains(
+                 response,
+                 expected,
+                 count=1,
+                 html=True,
+             )
+             self.assertContains(
+                 response,
+-                '<a class="cms-btn cms-btn-action cms-btn-switch-edit" href="/fr/?{}">Edit</a>'.format(edit_on),
++                '<a class="cms-btn cms-btn-action cms-btn-switch-edit" href="%s">Edit</a>' % (
++                    edit_url,
++                ),
+                 count=1,
+                 html=True,
+             )
+ 
+diff --git a/cms/tests/test_wizards.py b/cms/tests/test_wizards.py
+index fe46785..765898d 100644
+--- a/cms/tests/test_wizards.py
++++ b/cms/tests/test_wizards.py
+@@ -135,16 +135,15 @@ class TestWizardBase(WizardTestMixin, TransactionCMSTestCase):
+             language="en",
+             created_by=smart_text(user),
+             parent=None,
+             in_navigation=True,
+-            published=False
+         )
+-        url = "{0}?edit".format(page.get_absolute_url(language="en"))
++        url = page.get_absolute_url(language="en")
+         self.assertEqual(self.page_wizard.get_success_url(
+             page, language="en"), url)
+ 
+         # Now again without a language code
+-        url = "{0}?edit".format(page.get_absolute_url())
++        url = page.get_absolute_url()
+         self.assertEqual(self.page_wizard.get_success_url(page), url)
+ 
+     def test_get_model(self):
+         self.assertEqual(self.page_wizard.get_model(), Page)
+@@ -538,9 +537,8 @@ class TestPageWizard(WizardTestMixin, CMSTestCase):
+         create_page(
+             'page',
+             'nav_playground.html',
+             language='en',
+-            published=True,
+             slug='page'
+         )
+ 
+         # slug -> page-1
+diff --git a/cms/toolbar/items.py b/cms/toolbar/items.py
+index 82b5778..420b4d4 100644
+--- a/cms/toolbar/items.py
++++ b/cms/toolbar/items.py
+@@ -501,9 +501,9 @@ class ButtonList(BaseItem):
+             'extra_classes': self.extra_classes
+         }
+ 
+         if self.toolbar:
+-            context['cms_structure_on'] = self.toolbar.structure_mode_url_on
++            context['cms_structure_url'] = self.toolbar.get_object_structure_url()
+         return context
+ 
+ 
+ class Dropdown(ButtonList):
+diff --git a/cms/toolbar/toolbar.py b/cms/toolbar/toolbar.py
+index cf45f80..528394b 100644
+--- a/cms/toolbar/toolbar.py
++++ b/cms/toolbar/toolbar.py
+@@ -9,8 +9,13 @@ from cms.forms.login import CMSToolbarLoginForm
+ from cms.models import UserSettings, Placeholder
+ from cms.templates import TemplatesCache
+ from cms.toolbar.items import Menu, ToolbarAPIMixin, ButtonList
+ from cms.toolbar_pool import toolbar_pool
++from cms.toolbar.utils import (
++    get_object_edit_url,
++    get_object_structure_url,
++    get_object_preview_url,
++)
+ from cms.utils import get_language_from_request
+ from cms.utils.compat import DJANGO_VERSION, PYTHON_VERSION
+ from cms.utils.compat.dj import installed_apps
+ from cms.utils.conf import get_cms_setting
+@@ -28,13 +33,21 @@ from django.utils.translation import override as force_language
+ 
+ class BaseToolbar(ToolbarAPIMixin):
+ 
+     watch_models = []
+-    edit_mode_url_on = get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+-    edit_mode_url_off = get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF')
+-    structure_mode_url_on = get_cms_setting('CMS_TOOLBAR_URL__BUILD')
+     disable_url = get_cms_setting('CMS_TOOLBAR_URL__DISABLE')
+ 
++    @cached_property
++    def _resolver_match(self):
++        if getattr(self.request, 'resolver_match', None):
++            return self.request.resolver_match
++
++        try:
++            match = resolve(self.request.path_info)
++        except Resolver404:
++            match = None
++        return match
++
+     @cached_property
+     def site_language(self):
+         cms_page = self.request.current_page
+         site_id = cms_page.node.site_id if cms_page else None
+@@ -72,30 +85,33 @@ class BaseToolbar(ToolbarAPIMixin):
+         return StructureRenderer(request=self.request)
+ 
+     @cached_property
+     def structure_mode_active(self):
+-        structure = get_cms_setting('CMS_TOOLBAR_URL__BUILD')
+-        return self.is_staff and structure in self.request.GET
++        if self.is_staff and self._resolver_match:
++            return self._resolver_match.url_name == 'cms_placeholder_render_object_structure'
++        return False
+ 
+     @cached_property
+     def edit_mode_active(self):
+         if not self.show_toolbar:
+             return False
+-        return self.structure_mode_active or self.content_mode_active
++
++        if self.structure_mode_active:
++            return True
++
++        if self._resolver_match:
++            return self._resolver_match.url_name == 'cms_placeholder_render_object_edit'
++        return False
+ 
+     @cached_property
+     def content_mode_active(self):
+         if self.structure_mode_active:
+             # Structure mode always takes precedence
+             return False
+-        return self.is_staff and self.request.session.get('cms_edit', False)
++        return self.is_staff and not self.edit_mode_active
+ 
+     @cached_property
+     def uses_legacy_structure_mode(self):
+-        current_page = self.request.current_page
+-
+-        if not current_page or current_page.application_urls:
+-            return True
+         return False
+ 
+     @cached_property
+     def templates(self):
+@@ -120,9 +136,8 @@ class CMSToolbar(BaseToolbar):
+         self.obj = None
+         self.redirect_url = None
+         self.request = None
+         self.is_staff = None
+-        self.show_toolbar = None
+         self.clipboard = None
+         self.toolbar_language = None
+         self.show_toolbar = True
+         self.init_toolbar(request, request_path=request_path)
+@@ -175,9 +190,9 @@ class CMSToolbar(BaseToolbar):
+ 
+     def init_toolbar(self, request, request_path=None):
+         self.request = request
+         self.is_staff = self.request.user.is_staff
+-        self.show_toolbar = self.is_staff or self.request.session.get('cms_edit', False)
++        self.show_toolbar = self.is_staff
+ 
+         if self.request.session.get('cms_toolbar_disabled', False):
+             self.show_toolbar = False
+ 
+@@ -312,27 +327,21 @@ class CMSToolbar(BaseToolbar):
+         if self.obj:
+             return self.obj.pk
+         return ''
+ 
+-    def get_object_public_url(self):
++    def get_object_preview_url(self):
+         if self.obj:
+-            with force_language(self.request_language):
+-                try:
+-                    return self.obj.get_absolute_url()
+-                except:
+-                    pass
++            return get_object_preview_url(self.obj, language=self.request_language)
+         return ''
+ 
+-    def get_object_draft_url(self):
++    def get_object_edit_url(self):
+         if self.obj:
+-            with force_language(self.request_language):
+-                try:
+-                    return self.obj.get_draft_url()
+-                except:
+-                    try:
+-                        return self.obj.get_absolute_url()
+-                    except:
+-                        pass
++            return get_object_edit_url(self.obj, language=self.request_language)
++        return ''
++
++    def get_object_structure_url(self):
++        if self.obj:
++            return get_object_structure_url(self.obj, language=self.request_language)
+         return ''
+ 
+     # Internal API
+ 
+@@ -443,11 +452,11 @@ class CMSToolbar(BaseToolbar):
+ 
+         context = {
+             'cms_toolbar': self,
+             'cms_renderer': renderer,
+-            'cms_edit_on': self.edit_mode_url_on,
+-            'cms_edit_off': self.edit_mode_url_off,
+-            'cms_structure_on': self.structure_mode_url_on,
++            'cms_edit_url': self.get_object_edit_url(),
++            'cms_preview_url': self.get_object_preview_url(),
++            'cms_structure_url': self.get_object_structure_url(),
+             'cms_version': __version__,
+             'django_version': DJANGO_VERSION,
+             'login_form': CMSToolbarLoginForm(),
+             'python_version': PYTHON_VERSION,
+diff --git a/cms/toolbar/utils.py b/cms/toolbar/utils.py
+index 01ed40a..2768516 100644
+--- a/cms/toolbar/utils.py
++++ b/cms/toolbar/utils.py
+@@ -1,11 +1,12 @@
+ from __future__ import unicode_literals
+ from collections import defaultdict, deque
+ import json
+ 
++from django.contrib.contenttypes.models import ContentType
+ from django.utils.encoding import force_text
+ from django.utils.six import text_type
+-from django.utils.translation import override as force_language, ugettext
++from django.utils.translation import get_language, override as force_language, ugettext
+ 
+ from cms.constants import PLACEHOLDER_TOOLBAR_JS, PLUGIN_TOOLBAR_JS
+ from cms.utils.urlutils import admin_reverse
+ 
+@@ -115,4 +116,34 @@ def get_plugin_tree_as_json(request, plugins):
+ def get_toolbar_from_request(request):
+     from .toolbar import EmptyToolbar
+ 
+     return getattr(request, 'toolbar', EmptyToolbar(request))
++
++
++def get_object_edit_url(obj, language=None):
++    content_type = ContentType.objects.get_for_model(obj)
++
++    if not language:
++        language = get_language()
++
++    with force_language(language):
++        return admin_reverse('cms_placeholder_render_object_edit', args=[content_type.pk, obj.pk])
++
++
++def get_object_preview_url(obj, language=None):
++    content_type = ContentType.objects.get_for_model(obj)
++
++    if not language:
++        language = get_language()
++
++    with force_language(language):
++        return admin_reverse('cms_placeholder_render_object_preview', args=[content_type.pk, obj.pk])
++
++
++def get_object_structure_url(obj, language=None):
++    content_type = ContentType.objects.get_for_model(obj)
++
++    if not language:
++        language = get_language()
++
++    with force_language(language):
++        return admin_reverse('cms_placeholder_render_object_structure', args=[content_type.pk, obj.pk])
+diff --git a/cms/utils/conf.py b/cms/utils/conf.py
+index 6b9cb0f..2a0940c 100644
+--- a/cms/utils/conf.py
++++ b/cms/utils/conf.py
+@@ -68,12 +68,10 @@ DEFAULTS = {
+     'UNIHANDECODE_VERSION': None,
+     'UNIHANDECODE_DECODERS': ['ja', 'zh', 'kr', 'vn', 'diacritic'],
+     'UNIHANDECODE_DEFAULT_DECODER': 'diacritic',
+     'TOOLBAR_ANONYMOUS_ON': True,
+-    'TOOLBAR_URL__EDIT_ON': 'edit',
+-    'TOOLBAR_URL__EDIT_OFF': 'edit_off',
+-    'TOOLBAR_URL__BUILD': 'structure',
+     'TOOLBAR_URL__DISABLE': 'toolbar_off',
++    'TOOLBAR_URL__ENABLE': 'toolbar_on',
+     'ADMIN_NAMESPACE': 'admin',
+     'APP_NAME': None,
+     'TOOLBAR_HIDE': False,
+     'INTERNAL_IPS': [],
+@@ -105,28 +103,18 @@ def get_media_root():
+ def get_media_url():
+     return urljoin(settings.MEDIA_URL, get_cms_setting('MEDIA_PATH'))
+ 
+ 
+-@default('CMS_TOOLBAR_URL__EDIT_ON')
+-def get_toolbar_url__edit_on():
+-    return get_cms_setting('TOOLBAR_URL__EDIT_ON')
+-
+-
+-@default('CMS_TOOLBAR_URL__EDIT_OFF')
+-def get_toolbar_url__edit_off():
+-    return get_cms_setting('TOOLBAR_URL__EDIT_OFF')
+-
+-
+-@default('CMS_TOOLBAR_URL__BUILD')
+-def get_toolbar_url__structure():
+-    return get_cms_setting('TOOLBAR_URL__BUILD')
+-
+-
+ @default('CMS_TOOLBAR_URL__DISABLE')
+ def get_toolbar_url__disable():
+     return get_cms_setting('TOOLBAR_URL__DISABLE')
+ 
+ 
++@default('CMS_TOOLBAR_URL__ENABLE')
++def get_toolbar_url__enable():
++    return get_cms_setting('TOOLBAR_URL__ENABLE')
++
++
+ def get_templates():
+     if getattr(settings, 'CMS_TEMPLATES_DIR', False):
+         tpldir = getattr(settings, 'CMS_TEMPLATES_DIR', False)
+         # CMS_TEMPLATES_DIR can either be a string poiting to the templates directory
+@@ -268,12 +256,10 @@ COMPLEX = {
+     # complex because not prefixed by CMS_
+     'TEMPLATES': get_templates,
+     'LANGUAGES': get_languages,
+     'UNIHANDECODE_HOST': get_unihandecode_host,
+-    'CMS_TOOLBAR_URL__EDIT_ON': get_toolbar_url__edit_on,
+-    'CMS_TOOLBAR_URL__EDIT_OFF': get_toolbar_url__edit_off,
+-    'CMS_TOOLBAR_URL__BUILD': get_toolbar_url__structure,
+     'CMS_TOOLBAR_URL__DISABLE': get_toolbar_url__disable,
++    'CMS_TOOLBAR_URL__ENABLE': get_toolbar_url__enable,
+ }
+ 
+ 
+ def get_cms_setting(name):
+diff --git a/cms/utils/helpers.py b/cms/utils/helpers.py
+index 6701213..249e92b 100644
+--- a/cms/utils/helpers.py
++++ b/cms/utils/helpers.py
+@@ -81,4 +81,33 @@ def get_timezone_name():
+     # User-defined tzinfo classes may return absolutely anything.
+     # Hence this paranoid conversion to create a valid cache key.
+     tz_name = force_text(get_current_timezone_name(), errors='ignore')
+     return tz_name.encode('ascii', 'ignore').decode('ascii').replace(' ', '_')
++
++
++def is_editable_model(model_class):
++    """
++    Return True if the model_class is editable.
++    Checks whether the model_class has any relationships with Placeholder.
++    If not, checks whether the model_class has an admin class
++    and is inherited by FrontendEditableAdminMixin.
++    :param model_class: The model class
++    :return: Boolean
++    """
++    from django.contrib import admin
++
++    from cms.admin.placeholderadmin import FrontendEditableAdminMixin
++    from cms.models.placeholdermodel import Placeholder
++
++    # First check whether model_class has
++    # any fields which has a relation to Placeholder
++    for field in model_class._meta.get_fields():
++        if field.related_model == Placeholder:
++            return True
++
++    # Check whether model_class has an admin class
++    # and whether its inherited from FrontendEditableAdminMixin
++    try:
++        admin_class = admin.site._registry[model_class]
++    except KeyError:
++        return False
++    return isinstance(admin_class, FrontendEditableAdminMixin)
+diff --git a/cms/views.py b/cms/views.py
+index ae0766d..f488fd7 100644
+--- a/cms/views.py
++++ b/cms/views.py
+@@ -1,11 +1,14 @@
+ # -*- coding: utf-8 -*-
+ 
++from django.core.exceptions import ObjectDoesNotExist
+ from django.conf import settings
+ from django.contrib.auth import REDIRECT_FIELD_NAME, login as auth_login
+ from django.contrib.auth.views import redirect_to_login
+-from django.http import HttpResponse, HttpResponseRedirect
+-from django.urls import reverse
++from django.contrib.contenttypes.models import ContentType
++from django.http import Http404, HttpResponse, HttpResponseBadRequest, HttpResponseRedirect
++from django.shortcuts import render
++from django.urls import reverse, resolve
+ from django.utils.cache import patch_cache_control
+ from django.utils.http import is_safe_url, urlquote
+ from django.utils.timezone import now
+ from django.utils.translation import get_language_from_request
+@@ -14,18 +17,18 @@ from django.views.decorators.http import require_POST
+ from cms.cache.page import get_page_cache
+ from cms.exceptions import LanguageError
+ from cms.forms.login import CMSToolbarLoginForm
+ from cms.models.pagemodel import TreeNode
+-from cms.page_rendering import _handle_no_page, render_page, render_object_structure, _render_welcome_page
++from cms.page_rendering import _handle_no_page, render_page, _render_welcome_page
+ from cms.toolbar.utils import get_toolbar_from_request
+ from cms.utils import get_current_site
+ from cms.utils.conf import get_cms_setting
++from cms.utils.helpers import is_editable_model
+ from cms.utils.i18n import (get_fallback_languages, get_public_languages,
+                             get_redirect_on_fallback, get_language_list,
+                             get_default_language_for_site,
+                             is_language_prefix_patterns_used)
+ from cms.utils.page import get_page_from_request
+-from cms.utils.page_permissions import user_can_change_page
+ 
+ 
+ def _clean_redirect_url(redirect_url, language):
+     if (redirect_url and is_language_prefix_patterns_used() and redirect_url[0] == "/"
+@@ -160,15 +163,10 @@ def details(request, slug):
+     if page.login_required and not request.user.is_authenticated:
+         return redirect_to_login(urlquote(request.get_full_path()), settings.LOGIN_URL)
+ 
+     if hasattr(request, 'toolbar'):
+-        request.toolbar.set_object(page)
++        request.toolbar.set_object(page.get_title_obj(language=request_language))
+ 
+-    structure_requested = get_cms_setting('CMS_TOOLBAR_URL__BUILD') in request.GET
+-
+-    if user_can_change_page(request.user, page) and structure_requested:
+-        title = page.get_title_obj(request_language, fallback=False)
+-        return render_object_structure(request, title)
+     return render_page(request, page, current_language=request_language, slug=slug)
+ 
+ 
+ @require_POST
+@@ -187,4 +185,60 @@ def login(request):
+         auth_login(request, form.user_cache)
+     else:
+         redirect_to += u'?cms_toolbar_login_error=1'
+     return HttpResponseRedirect(redirect_to)
++
++
++def render_object_structure(request, content_type_id, object_id):
++    content_type = ContentType.objects.get_for_id(content_type_id)
++
++    try:
++        content_type_obj = content_type.get_object_for_this_type(pk=object_id)
++    except ObjectDoesNotExist:
++        raise Http404
++
++    context = {
++        'object': content_type_obj,
++        'cms_toolbar': request.toolbar,
++    }
++    toolbar = get_toolbar_from_request(request)
++    toolbar.set_object(content_type_obj)
++    return render(request, 'cms/toolbar/structure.html', context)
++
++
++def render_object_edit(request, content_type_id, object_id):
++    content_type = ContentType.objects.get_for_id(content_type_id)
++
++    if not is_editable_model(content_type.model_class()):
++        raise Http404
++
++    try:
++        content_type_obj = content_type.get_object_for_this_type(pk=object_id)
++    except ObjectDoesNotExist:
++        raise Http404
++
++    if not hasattr(content_type_obj, 'get_absolute_url'):
++        return HttpResponseBadRequest('Requested object does not have a valid url')
++
++    abs_url = content_type_obj.get_absolute_url()
++    match = resolve(abs_url)
++    toolbar = get_toolbar_from_request(request)
++    toolbar.set_object(content_type_obj)
++    return match.func(request, **match.kwargs)
++
++
++def render_object_preview(request, content_type_id, object_id):
++    content_type = ContentType.objects.get_for_id(content_type_id)
++
++    try:
++        content_type_obj = content_type.get_object_for_this_type(pk=object_id)
++    except ObjectDoesNotExist:
++        raise Http404
++
++    if not hasattr(content_type_obj, 'get_absolute_url'):
++        return HttpResponseBadRequest('Requested object does not have a valid url')
++
++    abs_url = content_type_obj.get_absolute_url()
++    match = resolve(abs_url)
++    toolbar = get_toolbar_from_request(request)
++    toolbar.set_object(content_type_obj)
++    return match.func(request, **match.kwargs)
+diff --git a/cms/wizards/wizard_base.py b/cms/wizards/wizard_base.py
+index 0215f89..5ff51b6 100644
+--- a/cms/wizards/wizard_base.py
++++ b/cms/wizards/wizard_base.py
+@@ -8,16 +8,14 @@ from django.utils.encoding import force_text, python_2_unicode_compatible
+ from django.utils.functional import cached_property
+ 
+ from django.utils.translation import override as force_language, ugettext as _
+ 
+-from cms.utils.conf import get_cms_setting
+-
+ 
+ class WizardBase(object):
+     template_name = None
+ 
+     def __init__(self, title, weight, form, model=None, template_name=None,
+-                 description=None, edit_mode_on_success=True):
++                 description=None):
+         """
+         :param title: This is used on the start form.
+         :param weight: Used for determining the order of the wizards on the
+                        creation form.
+@@ -26,19 +24,16 @@ class WizardBase(object):
+                       used to determine uniqueness of the wizards, so, only one
+                       wizard per model.
+         :param template_name: The full-path to the template to use, if any.
+         :param description: This is used on the start form.
+-        :param edit_mode_on_success: If true, the CMS will switch to edit mode
+-                                     when going to the newly created object.
+         """
+         # NOTE: If class attributes or properties are changed, consider updating
+         # cms.templatetags.cms_wizard_tags.WizardProperty too.
+         self.title = title
+         self.weight = weight
+         self.form = form
+         self.model = model
+         self.description = description
+-        self.edit_mode_on_success = edit_mode_on_success
+         if template_name is not None:
+             self.template_name = template_name
+ 
+ 
+@@ -124,13 +119,8 @@ class Wizard(WizardBase):
+                 url = obj.get_absolute_url()
+         else:
+             url = obj.get_absolute_url()
+ 
+-        # Add 'edit' to GET params of URL
+-        if self.edit_mode_on_success:
+-            sep = "&" if "?" in url else "?"
+-            url = '{0}{1}{2}'.format(
+-                url, sep, get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+         return url
+ 
+     def get_model(self):
+         if self.model:
+diff --git a/testserver.py b/testserver.py
+index 42f7c1e..d7cf574 100644
+--- a/testserver.py
++++ b/testserver.py
+@@ -16,11 +16,8 @@ port = 8000
+ for arg in sys.argv:
+     if arg == '--CMS_PERMISSION=False':
+         permission = False
+ 
+-    if arg == '--CMS_TOOLBAR_URL__EDIT_ON=test-edit':
+-        cms_toolbar_edit_on = 'test-edit'
+-
+     if arg.startswith('--port='):
+         port = arg.split('=')[1]
+ 
+ gettext = noop_gettext
+@@ -66,9 +63,8 @@ HELPER_SETTINGS = dict(
+         'content': 0,
+         'permissions': 0,
+     },
+     CMS_PAGE_CACHE=False,
+-    CMS_TOOLBAR_URL__EDIT_ON=cms_toolbar_edit_on,
+     # required for integration tests
+     LOGIN_URL='/admin/login/?user-login=test',
+     CMS_LANGUAGES={
+         1: [

@@ -1,0 +1,149 @@
+{
+  "id": "redash-query-results-param-sqli-fixed",
+  "repo": "getredash/redash",
+  "pr": null,
+  "title": "Query Results runner added param_query_N_{k=v} syntax that substitutes user-supplied values verbatim into another data source's SQL, bypassing Redash's parameter validation and view-only safety check.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd",
+  "pr_sha": "048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 71,
+  "diff_chars": 5682,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 131.3,
+  "index_seconds": 1.1,
+  "index_reused": false,
+  "index_chunks": 92,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:param-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "redash/query_runner/query_results.py",
+      "line": 72,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new authorization gate (query_results.py:72-76) only blocks view-only users when `parameterized.is_safe` is False. `is_safe` (parameterized_query.py:184-187) is computed solely from the query's declared parameter schema (`self.schema`, i.e. `query.parameters`), not from the mustache placeholders actually present in `query_text`. A query whose text contains a `{{...}}` placeholder that is not d"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 10,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "authz:param-authz:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new authorization gate (query_results.py:72-76) only blocks view-only users when `parameterized.is_safe` is False. `is_safe` (parameterized_query.py:184-187) is computed solely from the query's declared parameter schema (`self.schema`, i.e. `query.parameters`), not from the mustache placeholders actually present in `query_text`. A query whose text contains a `{{...}}` placeholder that is not declared in its parameter schema yields an empty schema, so `is_safe` is True and the `not_view_only` check is skipped. `apply()` then renders the user-supplied value into the query text (parameterized_query.py:131) and it is executed at query_results.py:83. This lets a view-only user inject arbitrary SQL, bypassing the authorization the PR intends to enforce. The policy states only 'safe' (validated, non-text) parameters may be refreshed by View Only users; an undeclared placeholder is neither validated nor restricted, so the gate is bypassable.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            70,
+            83
+          ],
+          "source": null,
+          "content": "parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n\n            if not parameterized.is_safe:\n                if not has_access(query.data_source, user, not_view_only):\n                    raise PermissionError(...)\n\n            qs = parse_qs(params)\n            parameters = {key: value[0] for key, value in qs.items()}\n            parameterized.apply(parameters)\n            query_text = parameterized.query\n\n        results, error = query.data_source.query_runner.run_query(query_text, user)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            184,
+            187
+          ],
+          "source": null,
+          "content": "@property\n    def is_safe(self):\n        text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n        return not any(text_parameters)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            125,
+            133
+          ],
+          "source": null,
+          "content": "def apply(self, parameters):\n        invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n        if invalid_parameter_names:\n            raise InvalidParameterError(invalid_parameter_names)\n        else:\n            self.parameters.update(parameters)\n            self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n\n        return self",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            135,
+            137
+          ],
+          "source": null,
+          "content": "def _valid(self, name, value):\n        if not self.schema:\n            return True",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "CHANGELOG.md:756-780",
+          "content": "We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Base the safety/authorization decision on the placeholders actually present in the query text, not only the declared schema. For example, collect the mustache keys in the template (e.g. via `_collect_query_parameters`) and require that every placeholder be declared in the schema and of a safe (non-text) type before allowing a view-only user to refresh; otherwise enforce the `not_view_only` gate. This closes the bypass where an undeclared `{{...}}` placeholder is rendered with user input for a view-only user.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8201,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "redash/query_runner/query_results.py",
+      "line": 72,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "redash-query-results-param-sqli",
+  "url": "https://github.com/getredash/redash/commit/048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-v43x-rgcc-wh77",
+  "expected": "safe",
+  "vulnerable_files": [
+    "redash/query_runner/query_results.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": true
+}

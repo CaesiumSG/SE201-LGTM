@@ -1,0 +1,177 @@
+diff --git a/taiga/base/filters.py b/taiga/base/filters.py
+index a30e2dc..0627412 100644
+--- a/taiga/base/filters.py
++++ b/taiga/base/filters.py
+@@ -336,12 +336,18 @@ class IsProjectAdminFromWebhookLogFilterBackend(FilterBackend, BaseIsProjectAdmi
+ # Generic Attributes filters (for User Stories, Tasks and Issues)
+ #####################################################################
+ 
+ class BaseRelatedFieldsFilter(FilterBackend):
+-    def __init__(self, filter_name=None):
++    filter_name = None
++    param_name = None
++
++    def __init__(self, filter_name=None, param_name=None):
+         if filter_name:
+             self.filter_name = filter_name
+ 
++        if param_name:
++            self.param_name = param_name
++
+     def _prepare_filter_data(self, query_param_value):
+         def _transform_value(value):
+             try:
+                 return int(value)
+@@ -354,9 +360,10 @@ class BaseRelatedFieldsFilter(FilterBackend):
+         values = map(_transform_value, values)
+         return list(values)
+ 
+     def _get_queryparams(self, params):
+-        raw_value = params.get(self.filter_name, None)
++        param_name = self.param_name or self.filter_name
++        raw_value = params.get(param_name, None)
+ 
+         if raw_value:
+             value = self._prepare_filter_data(raw_value)
+ 
+diff --git a/taiga/projects/userstories/api.py b/taiga/projects/userstories/api.py
+index 23a471f..758fa98 100644
+--- a/taiga/projects/userstories/api.py
++++ b/taiga/projects/userstories/api.py
+@@ -59,8 +59,9 @@ class UserStoryViewSet(OCCResourceMixin, VotedResourceMixin, HistoryResourceMixi
+     queryset = models.UserStory.objects.all()
+     permission_classes = (permissions.UserStoryPermission,)
+     filter_backends = (base_filters.CanViewUsFilterBackend,
+                        filters.EpicsFilter,
++                       filters.EpicFilter,
+                        base_filters.OwnersFilter,
+                        base_filters.AssignedToFilter,
+                        base_filters.StatusesFilter,
+                        base_filters.TagsFilter,
+@@ -79,8 +80,9 @@ class UserStoryViewSet(OCCResourceMixin, VotedResourceMixin, HistoryResourceMixi
+                      "status__is_closed"]
+     order_by_fields = ["backlog_order",
+                        "sprint_order",
+                        "kanban_order",
++                       "epic_order",
+                        "total_voters"]
+ 
+     def get_serializer_class(self, *args, **kwargs):
+         if self.action in ["retrieve", "by_ref"]:
+@@ -101,11 +103,13 @@ class UserStoryViewSet(OCCResourceMixin, VotedResourceMixin, HistoryResourceMixi
+                                "generated_from_issue")
+ 
+         include_attachments = "include_attachments" in self.request.QUERY_PARAMS
+         include_tasks = "include_tasks" in self.request.QUERY_PARAMS
++        epic_id =  self.request.QUERY_PARAMS.get("epic", None)
+         qs = attach_extra_info(qs, user=self.request.user,
+                                include_attachments=include_attachments,
+-                               include_tasks=include_tasks)
++                               include_tasks=include_tasks,
++                               epic_id=epic_id)
+ 
+         return qs
+ 
+     def pre_conditions_on_save(self, obj):
+diff --git a/taiga/projects/userstories/filters.py b/taiga/projects/userstories/filters.py
+index 5f87761..f061667 100644
+--- a/taiga/projects/userstories/filters.py
++++ b/taiga/projects/userstories/filters.py
+@@ -19,6 +19,11 @@
+ 
+ from taiga.base import filters
+ 
+ 
++class EpicFilter(filters.BaseRelatedFieldsFilter):
++    filter_name = "epics"
++    param_name = "epic"
++
++
+ class EpicsFilter(filters.BaseRelatedFieldsFilter):
+-    filter_name = 'epics'
++    filter_name = "epics"
+diff --git a/taiga/projects/userstories/serializers.py b/taiga/projects/userstories/serializers.py
+index 97fcea4..b7c4346 100644
+--- a/taiga/projects/userstories/serializers.py
++++ b/taiga/projects/userstories/serializers.py
+@@ -77,10 +77,22 @@ class UserStoryListSerializer(ProjectExtraInfoSerializerMixin,
+     total_points = MethodField()
+     comment = MethodField()
+     origin_issue = OriginIssueSerializer(attr="generated_from_issue")
+     epics = MethodField()
++    epic_order = MethodField()
+     tasks = MethodField()
+ 
++    def get_epic_order(self, obj):
++        include_epic_order = getattr(obj, "include_epic_order", False)
++
++        if include_epic_order:
++            assert hasattr(obj, "epic_order"), "instance must have a epic_order attribute"
++
++        if not include_epic_order or obj.epic_order is None:
++            return None
++
++        return obj.epic_order
++
+     def get_epics(self, obj):
+         assert hasattr(obj, "epics_attr"), "instance must have a epics_attr attribute"
+         return obj.epics_attr
+ 
+diff --git a/taiga/projects/userstories/utils.py b/taiga/projects/userstories/utils.py
+index ea7637f..ef5e8ba 100644
+--- a/taiga/projects/userstories/utils.py
++++ b/taiga/projects/userstories/utils.py
+@@ -119,16 +119,38 @@ def attach_epics(queryset, as_field="epics_attr"):
+                                               'slug', "projects_project"."slug") AS "project"
+                        FROM "epics_relateduserstory"
+                  INNER JOIN "epics_epic" ON "epics_epic"."id" = "epics_relateduserstory"."epic_id"
+                  INNER JOIN "projects_project" ON "projects_project"."id" = "epics_epic"."project_id"
+-                      WHERE "epics_relateduserstory"."user_story_id" = {tbl}.id) t"""
++                      WHERE "epics_relateduserstory"."user_story_id" = {tbl}.id
++                   ORDER BY "projects_project"."name", "epics_epic"."ref") t"""
+ 
+     sql = sql.format(tbl=model._meta.db_table)
+     queryset = queryset.extra(select={as_field: sql})
+     return queryset
+ 
+ 
+-def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False):
++def attach_epic_order(queryset, epic_id, as_field="epic_order"):
++    """Attach epic_order column to each object of the queryset.
++
++    :param queryset: A Django user stories queryset object.
++    :param epic_id: Order related to this epic.
++    :param as_field: Attach order as an attribute with this name.
++
++    :return: Queryset object with the additional `as_field` field.
++    """
++
++    model = queryset.model
++    sql = """SELECT "epics_relateduserstory"."order" AS "epic_order"
++               FROM "epics_relateduserstory"
++              WHERE "epics_relateduserstory"."user_story_id" = {tbl}.id and
++                    "epics_relateduserstory"."epic_id" = {epic_id}"""
++
++    sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)
++    queryset = queryset.extra(select={as_field: sql})
++    return queryset
++
++
++def attach_extra_info(queryset, user=None, include_attachments=False, include_tasks=False, epic_id=None):
+     queryset = attach_total_points(queryset)
+     queryset = attach_role_points(queryset)
+     queryset = attach_epics(queryset)
+ 
+@@ -139,8 +161,12 @@ def attach_extra_info(queryset, user=None, include_attachments=False, include_ta
+     if include_tasks:
+         queryset = attach_tasks(queryset)
+         queryset = queryset.extra(select={"include_tasks": "True"})
+ 
++    if epic_id is not None:
++        queryset = attach_epic_order(queryset, epic_id)
++        queryset = queryset.extra(select={"include_epic_order": "True"})
++
+     queryset = attach_total_voters_to_queryset(queryset)
+     queryset = attach_watchers_to_queryset(queryset)
+     queryset = attach_total_watchers_to_queryset(queryset)
+     queryset = attach_is_voter_to_queryset(queryset, user)

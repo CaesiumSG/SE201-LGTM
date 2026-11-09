@@ -1,0 +1,126 @@
+{
+  "id": "zulip-realm-export-delete-idor-vulnerable",
+  "repo": "zulip/zulip",
+  "pr": 31760,
+  "title": "A refactor moving exports to a new RealmExport model dropped the realm filter on deletion, so an admin of one organization could delete another organization's export.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "6968d7374a168af04181298d421a4fcd3f24d78e",
+  "pr_sha": "07dcee36b2a34d63429d7a706f880628cf3433df",
+  "files_changed": 12,
+  "python_files_changed": 12,
+  "added_lines": 443,
+  "diff_chars": 51033,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 323.0,
+  "index_seconds": 17.8,
+  "index_reused": false,
+  "index_chunks": 2326,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:export-request-view:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "zerver/views/realm_export.py",
+      "line": 99,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR changes delete_realm_export to fetch the RealmExport row by user-controlled id only: `RealmExport.objects.get(id=export_id)`. The base version scoped the lookup to the caller's realm (`RealmAuditLog.objects.get(id=export_id, realm=user.realm, ...)`). The new RealmExport model has a `realm` FK (realms.py:1319), but the PR never filters by `user.realm`. A realm admin in one organization can t"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 10,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 41,
+  "reviewer_units": 8,
+  "findings": [
+    {
+      "finding_id": "authz:export-request-view:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR changes delete_realm_export to fetch the RealmExport row by user-controlled id only: `RealmExport.objects.get(id=export_id)`. The base version scoped the lookup to the caller's realm (`RealmAuditLog.objects.get(id=export_id, realm=user.realm, ...)`). The new RealmExport model has a `realm` FK (realms.py:1319), but the PR never filters by `user.realm`. A realm admin in one organization can therefore delete (and the action deletes the tarball for) a RealmExport belonging to a different organization by guessing/enumerating the integer id \u2014 a cross-realm IDOR. The @require_realm_admin decorator only enforces the admin role, not ownership of the specific export row.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "zerver/views/realm_export.py",
+          "lines": [
+            96,
+            110
+          ],
+          "source": null,
+          "content": "@require_realm_admin\ndef delete_realm_export(request: HttpRequest, user: UserProfile, export_id: int) -> HttpResponse:\n    try:\n        export_row = RealmExport.objects.get(id=export_id)\n    except RealmExport.DoesNotExist:\n        raise JsonableError(_(\"Invalid data export ID\"))\n\n    if export_row.status == RealmExport.DELETED:\n        raise JsonableError(_(\"Export already deleted\"))\n    if export_row.status == RealmExport.FAILED:\n        raise JsonableError(_(\"Export failed, nothing to delete\"))\n    if export_row.status in [RealmExport.REQUESTED, RealmExport.STARTED]:\n        raise JsonableError(_(\"Export still in progress\"))\n    do_delete_realm_export(export_row)\n    return json_success(request)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "zerver/views/realm_export.py",
+          "lines": [
+            97,
+            102
+          ],
+          "source": null,
+          "content": "def delete_realm_export(request: HttpRequest, user: UserProfile, export_id: int) -> HttpResponse:\n    try:\n        audit_log_entry = RealmAuditLog.objects.get(\n            id=export_id, realm=user.realm, event_type=AuditLogEventType.REALM_EXPORTED\n        )\n    except RealmAuditLog.DoesNotExist:\n        raise JsonableError(_(\"Invalid data export ID\"))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "zerver/models/realms.py",
+          "lines": [
+            1316,
+            1319
+          ],
+          "source": null,
+          "content": "class RealmExport(models.Model):\n    \"\"\"Every data export is recorded in this table.\"\"\"\n\n    realm = models.ForeignKey(Realm, on_delete=CASCADE)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Scope the lookup to the caller's realm, e.g. `RealmExport.objects.get(id=export_id, realm=user.realm)`, so a realm admin can only delete exports belonging to their own organization.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7845,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "zerver/views/realm_export.py",
+      "line": 99,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "zulip-realm-export-delete-idor",
+  "url": "https://github.com/zulip/zulip/pull/31760",
+  "category": "authz",
+  "cwe": "CWE-566",
+  "ghsa": "GHSA-rmhr-5ffq-qcrc",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "zerver/views/realm_export.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

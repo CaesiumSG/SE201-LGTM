@@ -1,0 +1,3145 @@
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/datamodels/hitl.py b/airflow-core/src/airflow/api_fastapi/core_api/datamodels/hitl.py
+new file mode 100644
+index 00000000..88ad7023
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/core_api/datamodels/hitl.py
+@@ -0,0 +1,77 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from collections.abc import Mapping
++from datetime import datetime
++from typing import Any
++
++from pydantic import Field, field_validator
++
++from airflow.api_fastapi.core_api.base import BaseModel
++from airflow.sdk import Param
++
++
++class UpdateHITLDetailPayload(BaseModel):
++    """Schema for updating the content of a Human-in-the-loop detail."""
++
++    chosen_options: list[str]
++    params_input: Mapping = Field(default_factory=dict)
++
++
++class HITLDetailResponse(BaseModel):
++    """Response of updating a Human-in-the-loop detail."""
++
++    user_id: str
++    response_at: datetime
++    chosen_options: list[str]
++    params_input: Mapping = Field(default_factory=dict)
++
++
++class HITLDetail(BaseModel):
++    """Schema for Human-in-the-loop detail."""
++
++    ti_id: str
++
++    # User Request Detail
++    options: list[str]
++    subject: str
++    body: str | None = None
++    defaults: list[str] | None = None
++    multiple: bool = False
++    params: dict[str, Any] = Field(default_factory=dict)
++
++    # Response Content Detail
++    user_id: str | None = None
++    response_at: datetime | None = None
++    chosen_options: list[str] | None = None
++    params_input: dict[str, Any] = Field(default_factory=dict)
++
++    response_received: bool = False
++
++    @field_validator("params", mode="before")
++    @classmethod
++    def get_params(cls, params: dict[str, Any]) -> dict[str, Any]:
++        """Convert params attribute to dict representation."""
++        return {k: v.dump() if isinstance(v, Param) else v for k, v in params.items()}
++
++
++class HITLDetailCollection(BaseModel):
++    """Schema for a collection of Human-in-the-loop details."""
++
++    hitl_details: list[HITLDetail]
++    total_entries: int
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/routes/public/__init__.py b/airflow-core/src/airflow/api_fastapi/core_api/routes/public/__init__.py
+index fbbfb46d..6db86ce2 100644
+--- a/airflow-core/src/airflow/api_fastapi/core_api/routes/public/__init__.py
++++ b/airflow-core/src/airflow/api_fastapi/core_api/routes/public/__init__.py
+@@ -36,8 +36,9 @@ from airflow.api_fastapi.core_api.routes.public.dag_versions import dag_versions
+ from airflow.api_fastapi.core_api.routes.public.dag_warning import dag_warning_router
+ from airflow.api_fastapi.core_api.routes.public.dags import dags_router
+ from airflow.api_fastapi.core_api.routes.public.event_logs import event_logs_router
+ from airflow.api_fastapi.core_api.routes.public.extra_links import extra_links_router
++from airflow.api_fastapi.core_api.routes.public.hitl import hitl_router
+ from airflow.api_fastapi.core_api.routes.public.import_error import import_error_router
+ from airflow.api_fastapi.core_api.routes.public.job import job_router
+ from airflow.api_fastapi.core_api.routes.public.log import task_instances_log_router
+ from airflow.api_fastapi.core_api.routes.public.monitor import monitor_router
+@@ -82,8 +83,9 @@ authenticated_router.include_router(variables_router)
+ authenticated_router.include_router(task_instances_log_router)
+ authenticated_router.include_router(dag_parsing_router)
+ authenticated_router.include_router(dag_tags_router)
+ authenticated_router.include_router(dag_versions_router)
++authenticated_router.include_router(hitl_router)
+ 
+ 
+ # Include authenticated router in public router
+ public_router.include_router(authenticated_router)
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py b/airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py
+new file mode 100644
+index 00000000..78c7604b
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py
+@@ -0,0 +1,274 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import structlog
++from fastapi import Depends, HTTPException, status
++from sqlalchemy import select
++
++from airflow.api_fastapi.auth.managers.models.resource_details import DagAccessEntity
++from airflow.api_fastapi.common.db.common import SessionDep, paginated_select
++from airflow.api_fastapi.common.router import AirflowRouter
++from airflow.api_fastapi.core_api.datamodels.hitl import (
++    HITLDetail,
++    HITLDetailCollection,
++    HITLDetailResponse,
++    UpdateHITLDetailPayload,
++)
++from airflow.api_fastapi.core_api.openapi.exceptions import create_openapi_http_exception_doc
++from airflow.api_fastapi.core_api.security import GetUserDep, ReadableTIFilterDep, requires_access_dag
++from airflow.models.hitl import HITLDetail as HITLDetailModel
++from airflow.models.taskinstance import TaskInstance as TI
++from airflow.utils import timezone
++
++hitl_router = AirflowRouter(tags=["HumanInTheLoop"], prefix="/hitl-details")
++
++log = structlog.get_logger(__name__)
++
++
++def _get_task_instance(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    session: SessionDep,
++    map_index: int | None = None,
++) -> TI:
++    query = select(TI).where(
++        TI.dag_id == dag_id,
++        TI.run_id == dag_run_id,
++        TI.task_id == task_id,
++    )
++
++    if map_index is not None:
++        query = query.where(TI.map_index == map_index)
++
++    task_instance = session.scalar(query)
++    if task_instance is None:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND,
++            f"The Task Instance with dag_id: `{dag_id}`, run_id: `{dag_run_id}`, task_id: `{task_id}` and map_index: `{map_index}` was not found",
++        )
++    if map_index is None and task_instance.map_index != -1:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND, "Task instance is mapped, add the map_index value to the URL"
++        )
++
++    return task_instance
++
++
++def _update_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    update_hitl_detail_payload: UpdateHITLDetailPayload,
++    user: GetUserDep,
++    session: SessionDep,
++    map_index: int | None = None,
++) -> HITLDetailResponse:
++    task_instance = _get_task_instance(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        map_index=map_index,
++    )
++    ti_id_str = str(task_instance.id)
++    hitl_detail_model = session.scalar(select(HITLDetailModel).where(HITLDetailModel.ti_id == ti_id_str))
++    if not hitl_detail_model:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND,
++            f"Human-in-the-loop detail does not exist for Task Instance with id {ti_id_str}",
++        )
++
++    if hitl_detail_model.response_received:
++        raise HTTPException(
++            status.HTTP_409_CONFLICT,
++            f"Human-in-the-loop detail has already been updated for Task Instance with id {ti_id_str} "
++            "and is not allowed to write again.",
++        )
++
++    hitl_detail_model.user_id = user.get_id()
++    hitl_detail_model.response_at = timezone.utcnow()
++    hitl_detail_model.chosen_options = update_hitl_detail_payload.chosen_options
++    hitl_detail_model.params_input = update_hitl_detail_payload.params_input
++    session.add(hitl_detail_model)
++    session.commit()
++    return HITLDetailResponse.model_validate(hitl_detail_model)
++
++
++def _get_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    session: SessionDep,
++    map_index: int | None = None,
++) -> HITLDetail:
++    """Get a Human-in-the-loop detail of a specific task instance."""
++    task_instance = _get_task_instance(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        map_index=map_index,
++    )
++    if task_instance is None:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND,
++            f"The Task Instance with dag_id: `{dag_id}`, run_id: `{dag_run_id}`, task_id: `{task_id}` and map_index: `{map_index}` was not found",
++        )
++
++    ti_id_str = str(task_instance.id)
++    hitl_detail_model = session.scalar(select(HITLDetailModel).where(HITLDetailModel.ti_id == ti_id_str))
++    if not hitl_detail_model:
++        log.error("Human-in-the-loop detail not found")
++        raise HTTPException(
++            status_code=status.HTTP_404_NOT_FOUND,
++            detail={
++                "reason": "not_found",
++                "message": "Human-in-the-loop detail not found",
++            },
++        )
++    return HITLDetail.model_validate(hitl_detail_model)
++
++
++@hitl_router.patch(
++    "/{dag_id}/{dag_run_id}/{task_id}",
++    responses=create_openapi_http_exception_doc(
++        [
++            status.HTTP_404_NOT_FOUND,
++            status.HTTP_409_CONFLICT,
++        ]
++    ),
++    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.TASK_INSTANCE))],
++)
++def update_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    update_hitl_detail_payload: UpdateHITLDetailPayload,
++    user: GetUserDep,
++    session: SessionDep,
++) -> HITLDetailResponse:
++    """Update a Human-in-the-loop detail."""
++    return _update_hitl_detail(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        update_hitl_detail_payload=update_hitl_detail_payload,
++        user=user,
++        map_index=None,
++    )
++
++
++@hitl_router.patch(
++    "/{dag_id}/{dag_run_id}/{task_id}/{map_index}",
++    responses=create_openapi_http_exception_doc(
++        [
++            status.HTTP_404_NOT_FOUND,
++            status.HTTP_409_CONFLICT,
++        ]
++    ),
++    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.TASK_INSTANCE))],
++)
++def update_mapped_ti_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    update_hitl_detail_payload: UpdateHITLDetailPayload,
++    user: GetUserDep,
++    session: SessionDep,
++    map_index: int,
++) -> HITLDetailResponse:
++    """Update a Human-in-the-loop detail."""
++    return _update_hitl_detail(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        update_hitl_detail_payload=update_hitl_detail_payload,
++        user=user,
++        map_index=map_index,
++    )
++
++
++@hitl_router.get(
++    "/{dag_id}/{dag_run_id}/{task_id}",
++    status_code=status.HTTP_200_OK,
++    responses=create_openapi_http_exception_doc([status.HTTP_404_NOT_FOUND]),
++    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.TASK_INSTANCE))],
++)
++def get_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    session: SessionDep,
++) -> HITLDetail:
++    """Get a Human-in-the-loop detail of a specific task instance."""
++    return _get_hitl_detail(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        map_index=None,
++    )
++
++
++@hitl_router.get(
++    "/{dag_id}/{dag_run_id}/{task_id}/{map_index}",
++    status_code=status.HTTP_200_OK,
++    responses=create_openapi_http_exception_doc([status.HTTP_404_NOT_FOUND]),
++    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.TASK_INSTANCE))],
++)
++def get_mapped_ti_hitl_detail(
++    dag_id: str,
++    dag_run_id: str,
++    task_id: str,
++    session: SessionDep,
++    map_index: int,
++) -> HITLDetail:
++    """Get a Human-in-the-loop detail of a specific task instance."""
++    return _get_hitl_detail(
++        dag_id=dag_id,
++        dag_run_id=dag_run_id,
++        task_id=task_id,
++        session=session,
++        map_index=map_index,
++    )
++
++
++@hitl_router.get(
++    "/",
++    status_code=status.HTTP_200_OK,
++    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.TASK_INSTANCE))],
++)
++def get_hitl_details(
++    readable_ti_filter: ReadableTIFilterDep,
++    session: SessionDep,
++) -> HITLDetailCollection:
++    """Get Human-in-the-loop details."""
++    query = select(HITLDetailModel).join(TI, HITLDetailModel.ti_id == TI.id)
++    hitl_detail_select, total_entries = paginated_select(
++        statement=query,
++        filters=[readable_ti_filter],
++        session=session,
++    )
++    hitl_details = session.scalars(hitl_detail_select)
++    return HITLDetailCollection(
++        hitl_details=hitl_details,
++        total_entries=total_entries,
++    )
+diff --git a/airflow-core/src/airflow/api_fastapi/execution_api/datamodels/hitl.py b/airflow-core/src/airflow/api_fastapi/execution_api/datamodels/hitl.py
+new file mode 100644
+index 00000000..c75ca8c1
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/execution_api/datamodels/hitl.py
+@@ -0,0 +1,72 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from datetime import datetime
++from typing import Any
++from uuid import UUID
++
++from pydantic import Field
++
++from airflow.api_fastapi.core_api.base import BaseModel
++from airflow.models.hitl import HITLDetail
++
++
++class HITLDetailRequest(BaseModel):
++    """Schema for the request part of a Human-in-the-loop detail for a specific task instance."""
++
++    ti_id: UUID
++    options: list[str]
++    subject: str
++    body: str | None = None
++    defaults: list[str] | None = None
++    multiple: bool = False
++    params: dict[str, Any] = Field(default_factory=dict)
++
++
++class GetHITLDetailResponsePayload(BaseModel):
++    """Schema for getting the response part of a Human-in-the-loop detail for a specific task instance."""
++
++    ti_id: UUID
++
++
++class UpdateHITLDetailPayload(BaseModel):
++    """Schema for writing the response part of a Human-in-the-loop detail for a specific task instance."""
++
++    ti_id: UUID
++    chosen_options: list[str]
++    params_input: dict[str, Any] = Field(default_factory=dict)
++
++
++class HITLDetailResponse(BaseModel):
++    """Schema for the response part of a Human-in-the-loop detail for a specific task instance."""
++
++    response_received: bool
++    user_id: str | None
++    response_at: datetime | None
++    chosen_options: list[str] | None
++    params_input: dict[str, Any] = Field(default_factory=dict)
++
++    @classmethod
++    def from_hitl_detail_orm(cls, hitl_detail: HITLDetail) -> HITLDetailResponse:
++        return HITLDetailResponse(
++            response_received=hitl_detail.response_received,
++            response_at=hitl_detail.response_at,
++            user_id=hitl_detail.user_id,
++            chosen_options=hitl_detail.chosen_options,
++            params_input=hitl_detail.params_input or {},
++        )
+diff --git a/airflow-core/src/airflow/api_fastapi/execution_api/routes/__init__.py b/airflow-core/src/airflow/api_fastapi/execution_api/routes/__init__.py
+index 164c3f09..ab163f0b 100644
+--- a/airflow-core/src/airflow/api_fastapi/execution_api/routes/__init__.py
++++ b/airflow-core/src/airflow/api_fastapi/execution_api/routes/__init__.py
+@@ -25,8 +25,9 @@ from airflow.api_fastapi.execution_api.routes import (
+     assets,
+     connections,
+     dag_runs,
+     health,
++    hitl,
+     task_instances,
+     task_reschedules,
+     variables,
+     xcoms,
+@@ -47,6 +48,7 @@ authenticated_router.include_router(
+     task_reschedules.router, prefix="/task-reschedules", tags=["Task Reschedules"]
+ )
+ authenticated_router.include_router(variables.router, prefix="/variables", tags=["Variables"])
+ authenticated_router.include_router(xcoms.router, prefix="/xcoms", tags=["XComs"])
++authenticated_router.include_router(hitl.router, prefix="/hitl-details", tags=["Human in the Loop"])
+ 
+ execution_api_router.include_router(authenticated_router)
+diff --git a/airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py b/airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py
+new file mode 100644
+index 00000000..a82e496a
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py
+@@ -0,0 +1,108 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from uuid import UUID
++
++import structlog
++from fastapi import APIRouter, HTTPException, status
++from sqlalchemy import select
++
++from airflow.api_fastapi.common.db.common import SessionDep
++from airflow.api_fastapi.execution_api.datamodels.hitl import (
++    HITLDetailRequest,
++    HITLDetailResponse,
++)
++from airflow.models.hitl import HITLDetail
++from airflow.sdk.execution_time.comms import CreateHITLDetailPayload, UpdateHITLDetail
++
++router = APIRouter()
++
++log = structlog.get_logger(__name__)
++
++
++@router.post(
++    "/{task_instance_id}",
++    status_code=status.HTTP_201_CREATED,
++)
++def add_hitl_detail(
++    task_instance_id: UUID,
++    payload: CreateHITLDetailPayload,
++    session: SessionDep,
++) -> HITLDetailRequest:
++    """Get Human-in-the-loop detail for a specific Task Instance."""
++    ti_id_str = str(task_instance_id)
++    hitl_detail_model = session.scalar(select(HITLDetail).where(HITLDetail.ti_id == ti_id_str))
++    if hitl_detail_model:
++        raise HTTPException(
++            status.HTTP_409_CONFLICT,
++            f"Human-in-the-loop detail for Task Instance with id {ti_id_str} already exists.",
++        )
++
++    hitl_detail = HITLDetail(
++        ti_id=ti_id_str,
++        options=payload.options,
++        subject=payload.subject,
++        body=payload.body,
++        defaults=payload.defaults,
++        multiple=payload.multiple,
++        params=payload.params,
++    )
++    session.add(hitl_detail)
++    session.commit()
++    return HITLDetailRequest.model_validate(hitl_detail)
++
++
++@router.patch("/{task_instance_id}")
++def update_hitl_detail(
++    task_instance_id: UUID,
++    payload: UpdateHITLDetail,
++    session: SessionDep,
++) -> HITLDetailResponse:
++    """Update the response part of a Human-in-the-loop detail for a specific Task Instance."""
++    ti_id_str = str(task_instance_id)
++    hitl_detail_model = session.execute(select(HITLDetail).where(HITLDetail.ti_id == ti_id_str)).scalar()
++    if hitl_detail_model.response_received:
++        raise HTTPException(
++            status.HTTP_409_CONFLICT,
++            f"Human-in-the-loop detail for Task Instance with id {ti_id_str} already exists.",
++        )
++
++    hitl_detail_model.user_id = "Fallback to defaults"
++    hitl_detail_model.response_at = datetime.now(timezone.utc)
++    hitl_detail_model.chosen_options = payload.chosen_options
++    hitl_detail_model.params_input = payload.params_input
++    session.add(hitl_detail_model)
++    session.commit()
++    return HITLDetailResponse.from_hitl_detail_orm(hitl_detail_model)
++
++
++@router.get(
++    "/{task_instance_id}",
++    status_code=status.HTTP_200_OK,
++)
++def get_hitl_detail(
++    task_instance_id: UUID,
++    session: SessionDep,
++) -> HITLDetailResponse:
++    """Get Human-in-the-loop detail for a specific Task Instance."""
++    ti_id_str = str(task_instance_id)
++    hitl_detail_model = session.execute(
++        select(HITLDetail).where(HITLDetail.ti_id == ti_id_str),
++    ).scalar()
++    return HITLDetailResponse.from_hitl_detail_orm(hitl_detail_model)
+diff --git a/airflow-core/src/airflow/jobs/triggerer_job_runner.py b/airflow-core/src/airflow/jobs/triggerer_job_runner.py
+index fd02baec..07966655 100644
+--- a/airflow-core/src/airflow/jobs/triggerer_job_runner.py
++++ b/airflow-core/src/airflow/jobs/triggerer_job_runner.py
+@@ -42,8 +42,9 @@ from airflow.configuration import conf
+ from airflow.executors import workloads
+ from airflow.jobs.base_job_runner import BaseJobRunner
+ from airflow.jobs.job import perform_heartbeat
+ from airflow.models.trigger import Trigger
++from airflow.sdk.api.datamodels._generated import HITLDetailResponse
+ from airflow.sdk.execution_time.comms import (
+     CommsDecoder,
+     ConnectionResult,
+     DagRunStateResult,
+@@ -51,14 +52,16 @@ from airflow.sdk.execution_time.comms import (
+     ErrorResponse,
+     GetConnection,
+     GetDagRunState,
+     GetDRCount,
++    GetHITLDetailResponse,
+     GetTaskStates,
+     GetTICount,
+     GetVariable,
+     GetXCom,
+     TaskStatesResult,
+     TICount,
++    UpdateHITLDetail,
+     VariableResult,
+     XComResult,
+     _RequestFrame,
+ )
+@@ -208,8 +211,25 @@ class messages:
+         to_create: list[workloads.RunTrigger]
+         to_cancel: set[int]
+ 
+ 
++class HITLDetailResponseResult(HITLDetailResponse):
++    """Response to GetHITLDetailResponse request."""
++
++    type: Literal["HITLDetailResponseResult"] = "HITLDetailResponseResult"
++
++    @classmethod
++    def from_api_response(cls, response: HITLDetailResponse) -> HITLDetailResponseResult:
++        """
++        Create result class from API Response.
++
++        API Response is autogenerated from the API schema, so we need to convert it to Result
++        for communication between the Supervisor and the task process since it needs a
++        discriminator field.
++        """
++        return cls(**response.model_dump(exclude_defaults=True), type="HITLDetailResponseResult")
++
++
+ ToTriggerRunner = Annotated[
+     messages.StartTriggerer
+     | messages.TriggerStateSync
+     | ConnectionResult
+@@ -218,8 +238,9 @@ ToTriggerRunner = Annotated[
+     | DagRunStateResult
+     | DRCount
+     | TICount
+     | TaskStatesResult
++    | HITLDetailResponseResult
+     | ErrorResponse,
+     Field(discriminator="type"),
+ ]
+ """
+@@ -235,9 +256,11 @@ ToTriggerSupervisor = Annotated[
+     | GetXCom
+     | GetTICount
+     | GetTaskStates
+     | GetDagRunState
+-    | GetDRCount,
++    | GetDRCount
++    | GetHITLDetailResponse
++    | UpdateHITLDetail,
+     Field(discriminator="type"),
+ ]
+ """
+ The types of messages that the async Trigger Runner can send back up to the supervisor process.
+@@ -447,8 +470,18 @@ class TriggerRunnerSupervisor(WatchedSubprocess):
+             if isinstance(run_id_task_state_map, TaskStatesResponse):
+                 resp = TaskStatesResult.from_api_response(run_id_task_state_map)
+             else:
+                 resp = run_id_task_state_map
++        elif isinstance(msg, UpdateHITLDetail):
++            api_resp = self.client.hitl.update_response(
++                ti_id=msg.ti_id,
++                chosen_options=msg.chosen_options,
++                params_input=msg.params_input,
++            )
++            resp = HITLDetailResponseResult.from_api_response(response=api_resp)
++        elif isinstance(msg, GetHITLDetailResponse):
++            api_resp = self.client.hitl.get_detail_response(ti_id=msg.ti_id)
++            resp = HITLDetailResponseResult.from_api_response(response=api_resp)
+         else:
+             raise ValueError(f"Unknown message type {type(msg)}")
+ 
+         self.send_msg(resp, request_id=req_id, error=None, **dump_opts)
+diff --git a/airflow-core/src/airflow/migrations/versions/0077_3_1_0_add_human_in_the_loop_response.py b/airflow-core/src/airflow/migrations/versions/0077_3_1_0_add_human_in_the_loop_response.py
+new file mode 100644
+index 00000000..61f950f5
+--- /dev/null
++++ b/airflow-core/src/airflow/migrations/versions/0077_3_1_0_add_human_in_the_loop_response.py
+@@ -0,0 +1,78 @@
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++"""
++Add Human In the Loop Detail table.
++
++Revision ID: 40f7c30a228b
++Revises: 5d3072c51bac
++Create Date: 2025-07-04 15:05:19.459197
++
++"""
++
++from __future__ import annotations
++
++import sqlalchemy_jsonfield
++from alembic import op
++from sqlalchemy import Boolean, Column, ForeignKeyConstraint, String, Text
++from sqlalchemy.dialects import postgresql
++
++from airflow.settings import json
++from airflow.utils.sqlalchemy import UtcDateTime
++
++# revision identifiers, used by Alembic.
++revision = "40f7c30a228b"
++down_revision = "5d3072c51bac"
++branch_labels = None
++depends_on = None
++airflow_version = "3.1.0"
++
++
++def upgrade():
++    """Add Human In the Loop Detail table."""
++    op.create_table(
++        "hitl_detail",
++        Column(
++            "ti_id",
++            String(length=36).with_variant(postgresql.UUID(), "postgresql"),
++            primary_key=True,
++            nullable=False,
++        ),
++        Column("options", sqlalchemy_jsonfield.JSONField(json=json), nullable=False),
++        Column("subject", Text, nullable=False),
++        Column("body", Text, nullable=True),
++        Column("defaults", sqlalchemy_jsonfield.JSONField(json=json), nullable=True),
++        Column("multiple", Boolean, unique=False, default=False),
++        Column("params", sqlalchemy_jsonfield.JSONField(json=json), nullable=False, default={}),
++        Column("response_at", UtcDateTime, nullable=True),
++        Column("user_id", String(128), nullable=True),
++        Column("chosen_options", sqlalchemy_jsonfield.JSONField(json=json), nullable=True),
++        Column("params_input", sqlalchemy_jsonfield.JSONField(json=json), nullable=False, default={}),
++        ForeignKeyConstraint(
++            ["ti_id"],
++            ["task_instance.id"],
++            name="hitl_detail_ti_fkey",
++            ondelete="CASCADE",
++            onupdate="CASCADE",
++        ),
++    )
++
++
++def downgrade():
++    """Response Human In the Loop Detail table."""
++    op.drop_table("hitl_detail")
+diff --git a/airflow-core/src/airflow/models/__init__.py b/airflow-core/src/airflow/models/__init__.py
+index 3e472b70..ac6c2a76 100644
+--- a/airflow-core/src/airflow/models/__init__.py
++++ b/airflow-core/src/airflow/models/__init__.py
+@@ -102,8 +102,9 @@ __lazy_imports = {
+     "DagWarning": "airflow.models.dagwarning",
+     "DbCallbackRequest": "airflow.models.db_callback_request",
+     "Deadline": "airflow.models.deadline",
+     "Log": "airflow.models.log",
++    "HITLDetail": "airflow.models.hitl",
+     "MappedOperator": "airflow.models.mappedoperator",
+     "Operator": "airflow.models.operator",
+     "Param": "airflow.sdk.definitions.param",
+     "Pool": "airflow.models.pool",
+diff --git a/airflow-core/src/airflow/models/hitl.py b/airflow-core/src/airflow/models/hitl.py
+new file mode 100644
+index 00000000..9d060ba1
+--- /dev/null
++++ b/airflow-core/src/airflow/models/hitl.py
+@@ -0,0 +1,69 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import sqlalchemy_jsonfield
++from sqlalchemy import Boolean, Column, ForeignKeyConstraint, String, Text
++from sqlalchemy.dialects import postgresql
++from sqlalchemy.ext.hybrid import hybrid_property
++
++from airflow.models.base import Base
++from airflow.settings import json
++from airflow.utils.sqlalchemy import UtcDateTime
++
++
++class HITLDetail(Base):
++    """Human-in-the-loop request and corresponding response."""
++
++    __tablename__ = "hitl_detail"
++    ti_id = Column(
++        String(36).with_variant(postgresql.UUID(as_uuid=False), "postgresql"),
++        primary_key=True,
++        nullable=False,
++    )
++
++    # User Request Detail
++    options = Column(sqlalchemy_jsonfield.JSONField(json=json), nullable=False)
++    subject = Column(Text, nullable=False)
++    body = Column(Text, nullable=True)
++    defaults = Column(sqlalchemy_jsonfield.JSONField(json=json), nullable=True)
++    multiple = Column(Boolean, unique=False, default=False)
++    params = Column(sqlalchemy_jsonfield.JSONField(json=json), nullable=False, default={})
++
++    # Response Content Detail
++    response_at = Column(UtcDateTime, nullable=True)
++    user_id = Column(String(128), nullable=True)
++    chosen_options = Column(
++        sqlalchemy_jsonfield.JSONField(json=json),
++        nullable=True,
++        default=None,
++    )
++    params_input = Column(sqlalchemy_jsonfield.JSONField(json=json), nullable=False, default={})
++
++    __table_args__ = (
++        ForeignKeyConstraint(
++            (ti_id,),
++            ["task_instance.id"],
++            name="hitl_detail_ti_fkey",
++            ondelete="CASCADE",
++            onupdate="CASCADE",
++        ),
++    )
++
++    @hybrid_property
++    def response_received(self) -> bool:
++        return self.response_at is not None
+diff --git a/airflow-core/src/airflow/utils/db.py b/airflow-core/src/airflow/utils/db.py
+index 8666deac..c99972a8 100644
+--- a/airflow-core/src/airflow/utils/db.py
++++ b/airflow-core/src/airflow/utils/db.py
+@@ -92,9 +92,9 @@ _REVISION_HEADS_MAP: dict[str, str] = {
+     "2.10.0": "22ed7efa9da2",
+     "2.10.3": "5f2621c13b39",
+     "3.0.0": "29ce7909c52b",
+     "3.0.3": "fe199e1abd77",
+-    "3.1.0": "5d3072c51bac",
++    "3.1.0": "40f7c30a228b",
+ }
+ 
+ 
+ @provide_session
+diff --git a/airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_hitl.py b/airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_hitl.py
+new file mode 100644
+index 00000000..3fa34a57
+--- /dev/null
++++ b/airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_hitl.py
+@@ -0,0 +1,391 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import pytest
++from sqlalchemy.orm import Session
++
++from tests_common.test_utils.db import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    pytest.skip("Human in the loop public API compatible with Airflow >= 3.0.1", allow_module_level=True)
++
++from datetime import datetime
++from typing import TYPE_CHECKING, Any
++
++import time_machine
++
++from airflow.models.hitl import HITLDetail
++
++if TYPE_CHECKING:
++    from fastapi.testclient import TestClient
++
++    from airflow.models.taskinstance import TaskInstance
++
++    from tests_common.pytest_plugin import CreateTaskInstance
++
++
++pytestmark = pytest.mark.db_test
++
++DAG_ID = "test_hitl_dag"
++
++
++@pytest.fixture
++def sample_ti(create_task_instance: CreateTaskInstance) -> TaskInstance:
++    return create_task_instance()
++
++
++@pytest.fixture
++def sample_ti_url_identifier(sample_ti: TaskInstance) -> str:
++    if TYPE_CHECKING:
++        assert sample_ti.task
++
++    return f"{sample_ti.dag_id}/{sample_ti.run_id}/{sample_ti.task.task_id}"
++
++
++@pytest.fixture
++def sample_hitl_detail(sample_ti: TaskInstance, session: Session) -> HITLDetail:
++    hitl_detail_model = HITLDetail(
++        ti_id=sample_ti.id,
++        options=["Approve", "Reject"],
++        subject="This is subject",
++        body="this is body",
++        defaults=["Approve"],
++        multiple=False,
++        params={"input_1": 1},
++    )
++    session.add(hitl_detail_model)
++    session.commit()
++
++    return hitl_detail_model
++
++
++@pytest.fixture
++def expected_ti_not_found_error_msg(sample_ti: TaskInstance) -> str:
++    if TYPE_CHECKING:
++        assert sample_ti.task
++
++    return (
++        f"The Task Instance with dag_id: `{sample_ti.dag_id}`,"
++        f" run_id: `{sample_ti.run_id}`, task_id: `{sample_ti.task.task_id}`"
++        " and map_index: `None` was not found"
++    )
++
++
++@pytest.fixture
++def expected_mapped_ti_not_found_error_msg(sample_ti: TaskInstance) -> str:
++    if TYPE_CHECKING:
++        assert sample_ti.task
++
++    return (
++        f"The Task Instance with dag_id: `{sample_ti.dag_id}`,"
++        f" run_id: `{sample_ti.run_id}`, task_id: `{sample_ti.task.task_id}`"
++        " and map_index: `-1` was not found"
++    )
++
++
++@pytest.fixture
++def expected_sample_hitl_detail_dict(sample_ti: TaskInstance) -> dict[str, Any]:
++    return {
++        "body": "this is body",
++        "defaults": ["Approve"],
++        "multiple": False,
++        "options": ["Approve", "Reject"],
++        "params": {"input_1": 1},
++        "params_input": {},
++        "response_at": None,
++        "chosen_options": None,
++        "response_received": False,
++        "subject": "This is subject",
++        "ti_id": sample_ti.id,
++        "user_id": None,
++    }
++
++
++class TestUpdateHITLDetailEndpoint:
++    @time_machine.travel(datetime(2025, 7, 3, 0, 0, 0), tick=False)
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_200_with_existing_response(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++
++        assert response.status_code == 200
++        assert response.json() == {
++            "params_input": {"input_1": 2},
++            "chosen_options": ["Approve"],
++            "user_id": "test",
++            "response_at": "2025-07-03T00:00:00Z",
++        }
++
++    def test_should_respond_404(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_ti_not_found_error_msg: str,
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 404
++        assert response.json() == {"detail": expected_ti_not_found_error_msg}
++
++    @time_machine.travel(datetime(2025, 7, 3, 0, 0, 0), tick=False)
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_409(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        sample_ti: TaskInstance,
++    ) -> None:
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++
++        expected_response = {
++            "params_input": {"input_1": 2},
++            "chosen_options": ["Approve"],
++            "user_id": "test",
++            "response_at": "2025-07-03T00:00:00Z",
++        }
++        assert response.status_code == 200
++        assert response.json() == expected_response
++
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++        assert response.status_code == 409
++        assert response.json() == {
++            "detail": (
++                "Human-in-the-loop detail has already been updated for Task Instance "
++                f"with id {sample_ti.id} "
++                "and is not allowed to write again."
++            )
++        }
++
++    def test_should_respond_401(
++        self,
++        unauthenticated_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthenticated_test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 401
++
++    def test_should_respond_403(
++        self,
++        unauthorized_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthorized_test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 403
++
++
++class TestUpdateMappedTIHITLDetail:
++    @time_machine.travel(datetime(2025, 7, 3, 0, 0, 0), tick=False)
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_200_with_existing_response(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}/-1",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++
++        assert response.status_code == 200
++        assert response.json() == {
++            "params_input": {"input_1": 2},
++            "chosen_options": ["Approve"],
++            "user_id": "test",
++            "response_at": "2025-07-03T00:00:00Z",
++        }
++
++    def test_should_respond_404(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_mapped_ti_not_found_error_msg: str,
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 404
++        assert response.json() == {"detail": expected_mapped_ti_not_found_error_msg}
++
++    @time_machine.travel(datetime(2025, 7, 3, 0, 0, 0), tick=False)
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_409(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        sample_ti: TaskInstance,
++    ) -> None:
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}/-1",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++
++        expected_response = {
++            "params_input": {"input_1": 2},
++            "chosen_options": ["Approve"],
++            "user_id": "test",
++            "response_at": "2025-07-03T00:00:00Z",
++        }
++        assert response.status_code == 200
++        assert response.json() == expected_response
++
++        response = test_client.patch(
++            f"/hitl-details/{sample_ti_url_identifier}/-1",
++            json={"chosen_options": ["Approve"], "params_input": {"input_1": 2}},
++        )
++        assert response.status_code == 409
++        assert response.json() == {
++            "detail": (
++                "Human-in-the-loop detail has already been updated for Task Instance "
++                f"with id {sample_ti.id} "
++                "and is not allowed to write again."
++            )
++        }
++
++    def test_should_respond_401(
++        self,
++        unauthenticated_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthenticated_test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 401
++
++    def test_should_respond_403(
++        self,
++        unauthorized_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthorized_test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 403
++
++
++class TestGetHITLDetailEndpoint:
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_200_with_existing_response(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_sample_hitl_detail_dict: dict[str, Any],
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 200
++        assert response.json() == expected_sample_hitl_detail_dict
++
++    def test_should_respond_404(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_ti_not_found_error_msg: str,
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 404
++        assert response.json() == {"detail": expected_ti_not_found_error_msg}
++
++    def test_should_respond_401(
++        self,
++        unauthenticated_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthenticated_test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 401
++
++    def test_should_respond_403(
++        self,
++        unauthorized_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthorized_test_client.get(f"/hitl-details/{sample_ti_url_identifier}")
++        assert response.status_code == 403
++
++
++class TestGetMappedTIHITLDetail:
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_200_with_existing_response(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_sample_hitl_detail_dict: dict[str, Any],
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 200
++        assert response.json() == expected_sample_hitl_detail_dict
++
++    def test_should_respond_404(
++        self,
++        test_client: TestClient,
++        sample_ti_url_identifier: str,
++        expected_mapped_ti_not_found_error_msg: str,
++    ) -> None:
++        response = test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 404
++        assert response.json() == {"detail": expected_mapped_ti_not_found_error_msg}
++
++    def test_should_respond_401(
++        self,
++        unauthenticated_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthenticated_test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 401
++
++    def test_should_respond_403(
++        self,
++        unauthorized_test_client: TestClient,
++        sample_ti_url_identifier: str,
++    ) -> None:
++        response = unauthorized_test_client.get(f"/hitl-details/{sample_ti_url_identifier}/-1")
++        assert response.status_code == 403
++
++
++class TestGetHITLDetailsEndpoint:
++    @pytest.mark.usefixtures("sample_hitl_detail")
++    def test_should_respond_200_with_existing_response(
++        self,
++        test_client: TestClient,
++        expected_sample_hitl_detail_dict: dict[str, Any],
++    ) -> None:
++        response = test_client.get("/hitl-details/")
++        assert response.status_code == 200
++        assert response.json() == {
++            "hitl_details": [expected_sample_hitl_detail_dict],
++            "total_entries": 1,
++        }
++
++    def test_should_respond_200_without_response(self, test_client: TestClient) -> None:
++        response = test_client.get("/hitl-details/")
++        assert response.status_code == 200
++        assert response.json() == {
++            "hitl_details": [],
++            "total_entries": 0,
++        }
++
++    def test_should_respond_401(self, unauthenticated_test_client: TestClient) -> None:
++        response = unauthenticated_test_client.get("/hitl-details/")
++        assert response.status_code == 401
++
++    def test_should_respond_403(self, unauthorized_test_client: TestClient) -> None:
++        response = unauthorized_test_client.get("/hitl-details/")
++        assert response.status_code == 403
+diff --git a/airflow-core/tests/unit/api_fastapi/execution_api/versions/head/test_hitl.py b/airflow-core/tests/unit/api_fastapi/execution_api/versions/head/test_hitl.py
+new file mode 100644
+index 00000000..33247304
+--- /dev/null
++++ b/airflow-core/tests/unit/api_fastapi/execution_api/versions/head/test_hitl.py
+@@ -0,0 +1,140 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from datetime import datetime
++
++import pytest
++import time_machine
++from uuid6 import uuid7
++
++from tests_common.test_utils.db import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    pytest.skip("Human in the loop public API compatible with Airflow >= 3.0.1", allow_module_level=True)
++
++from typing import TYPE_CHECKING, Any
++
++from airflow.models.hitl import HITLDetail
++
++if TYPE_CHECKING:
++    from airflow.models.taskinstance import TaskInstance
++
++pytestmark = pytest.mark.db_test
++TI_ID = uuid7()
++
++
++@pytest.fixture
++def sample_ti(create_task_instance) -> TaskInstance:
++    return create_task_instance()
++
++
++@pytest.fixture
++def sample_hitl_detail(session, sample_ti) -> HITLDetail:
++    hitl_detail_model = HITLDetail(
++        ti_id=sample_ti.id,
++        options=["Approve", "Reject"],
++        subject="This is subject",
++        body="this is body",
++        defaults=["Approve"],
++        multiple=False,
++        params={"input_1": 1},
++    )
++    session.add(hitl_detail_model)
++    session.commit()
++
++    return hitl_detail_model
++
++
++@pytest.fixture
++def expected_sample_hitl_detail_dict(sample_ti) -> dict[str, Any]:
++    return {
++        "body": "this is body",
++        "defaults": ["Approve"],
++        "multiple": False,
++        "options": ["Approve", "Reject"],
++        "params": {"input_1": 1},
++        "params_input": {},
++        "response_at": None,
++        "chosen_options": None,
++        "response_received": False,
++        "subject": "This is subject",
++        "ti_id": sample_ti.id,
++        "user_id": None,
++    }
++
++
++def test_add_hitl_detail(client, create_task_instance, session) -> None:
++    ti = create_task_instance()
++    session.commit()
++
++    response = client.post(
++        f"/execution/hitl-details/{ti.id}",
++        json={
++            "ti_id": ti.id,
++            "options": ["Approve", "Reject"],
++            "subject": "This is subject",
++            "body": "this is body",
++            "defaults": ["Approve"],
++            "multiple": False,
++            "params": {"input_1": 1},
++        },
++    )
++    assert response.status_code == 201
++    assert response.json() == {
++        "ti_id": ti.id,
++        "options": ["Approve", "Reject"],
++        "subject": "This is subject",
++        "body": "this is body",
++        "defaults": ["Approve"],
++        "multiple": False,
++        "params": {"input_1": 1},
++    }
++
++
++@time_machine.travel(datetime(2025, 7, 3, 0, 0, 0), tick=False)
++@pytest.mark.usefixtures("sample_hitl_detail")
++def test_update_hitl_detail(client, sample_ti) -> None:
++    response = client.patch(
++        f"/execution/hitl-details/{sample_ti.id}",
++        json={
++            "ti_id": sample_ti.id,
++            "chosen_options": ["Reject"],
++            "params_input": {"input_1": 2},
++        },
++    )
++    assert response.status_code == 200
++    assert response.json() == {
++        "params_input": {"input_1": 2},
++        "response_at": "2025-07-03T00:00:00Z",
++        "chosen_options": ["Reject"],
++        "response_received": True,
++        "user_id": "Fallback to defaults",
++    }
++
++
++@pytest.mark.usefixtures("sample_hitl_detail")
++def test_get_hitl_detail(client, sample_ti) -> None:
++    response = client.get(f"/execution/hitl-details/{sample_ti.id}")
++    assert response.status_code == 200
++    assert response.json() == {
++        "params_input": {},
++        "response_at": None,
++        "chosen_options": None,
++        "response_received": False,
++        "user_id": None,
++    }
+diff --git a/airflow-ctl/src/airflowctl/api/datamodels/generated.py b/airflow-ctl/src/airflowctl/api/datamodels/generated.py
+index c64907a9..08247598 100644
+--- a/airflow-ctl/src/airflowctl/api/datamodels/generated.py
++++ b/airflow-ctl/src/airflowctl/api/datamodels/generated.py
+@@ -572,8 +572,47 @@ class FastAPIRootMiddlewareResponse(BaseModel):
+     middleware: Annotated[str, Field(title="Middleware")]
+     name: Annotated[str, Field(title="Name")]
+ 
+ 
++class HITLDetail(BaseModel):
++    """
++    Schema for Human-in-the-loop detail.
++    """
++
++    ti_id: Annotated[str, Field(title="Ti Id")]
++    options: Annotated[list[str], Field(title="Options")]
++    subject: Annotated[str, Field(title="Subject")]
++    body: Annotated[str | None, Field(title="Body")] = None
++    defaults: Annotated[list[str] | None, Field(title="Defaults")] = None
++    multiple: Annotated[bool | None, Field(title="Multiple")] = False
++    params: Annotated[dict[str, Any] | None, Field(title="Params")] = None
++    user_id: Annotated[str | None, Field(title="User Id")] = None
++    response_at: Annotated[datetime | None, Field(title="Response At")] = None
++    chosen_options: Annotated[list[str] | None, Field(title="Chosen Options")] = None
++    params_input: Annotated[dict[str, Any] | None, Field(title="Params Input")] = None
++    response_received: Annotated[bool | None, Field(title="Response Received")] = False
++
++
++class HITLDetailCollection(BaseModel):
++    """
++    Schema for a collection of Human-in-the-loop details.
++    """
++
++    hitl_details: Annotated[list[HITLDetail], Field(title="Hitl Details")]
++    total_entries: Annotated[int, Field(title="Total Entries")]
++
++
++class HITLDetailResponse(BaseModel):
++    """
++    Response of updating a Human-in-the-loop detail.
++    """
++
++    user_id: Annotated[str, Field(title="User Id")]
++    response_at: Annotated[datetime, Field(title="Response At")]
++    chosen_options: Annotated[list[str], Field(title="Chosen Options")]
++    params_input: Annotated[dict[str, Any] | None, Field(title="Params Input")] = None
++
++
+ class HTTPExceptionResponse(BaseModel):
+     """
+     HTTPException Model used for error response.
+     """
+@@ -898,8 +937,17 @@ class TriggererInfoResponse(BaseModel):
+     status: Annotated[str | None, Field(title="Status")] = None
+     latest_triggerer_heartbeat: Annotated[str | None, Field(title="Latest Triggerer Heartbeat")] = None
+ 
+ 
++class UpdateHITLDetailPayload(BaseModel):
++    """
++    Schema for updating the content of a Human-in-the-loop detail.
++    """
++
++    chosen_options: Annotated[list[str], Field(title="Chosen Options")]
++    params_input: Annotated[dict[str, Any] | None, Field(title="Params Input")] = None
++
++
+ class ValidationError(BaseModel):
+     loc: Annotated[list[str | int], Field(title="Location")]
+     msg: Annotated[str, Field(title="Message")]
+     type: Annotated[str, Field(title="Error Type")]
+diff --git a/providers/standard/src/airflow/providers/standard/exceptions.py b/providers/standard/src/airflow/providers/standard/exceptions.py
+index 66acd54a..6975e0af 100644
+--- a/providers/standard/src/airflow/providers/standard/exceptions.py
++++ b/providers/standard/src/airflow/providers/standard/exceptions.py
+@@ -54,4 +54,12 @@ class ExternalDagFailedError(AirflowExternalTaskSensorException):
+ 
+ 
+ class DuplicateStateError(AirflowExternalTaskSensorException):
+     """Raised when duplicate states are provided across allowed, skipped and failed states."""
++
++
++class HITLTriggerEventError(AirflowException):
++    """Raised when TriggerEvent contains error."""
++
++
++class HITLTimeoutError(HITLTriggerEventError):
++    """Raised when HILTOperator timeouts."""
+diff --git a/providers/standard/src/airflow/providers/standard/get_provider_info.py b/providers/standard/src/airflow/providers/standard/get_provider_info.py
+index bb40bfaa..bd7118c7 100644
+--- a/providers/standard/src/airflow/providers/standard/get_provider_info.py
++++ b/providers/standard/src/airflow/providers/standard/get_provider_info.py
+@@ -57,8 +57,9 @@ def get_provider_info():
+                     "airflow.providers.standard.operators.trigger_dagrun",
+                     "airflow.providers.standard.operators.latest_only",
+                     "airflow.providers.standard.operators.smooth",
+                     "airflow.providers.standard.operators.branch",
++                    "airflow.providers.standard.operators.hitl",
+                 ],
+             }
+         ],
+         "sensors": [
+@@ -92,8 +93,9 @@ def get_provider_info():
+                 "python-modules": [
+                     "airflow.providers.standard.triggers.external_task",
+                     "airflow.providers.standard.triggers.file",
+                     "airflow.providers.standard.triggers.temporal",
++                    "airflow.providers.standard.triggers.hitl",
+                 ],
+             }
+         ],
+         "extra-links": [
+diff --git a/providers/standard/src/airflow/providers/standard/models/__init__.py b/providers/standard/src/airflow/providers/standard/models/__init__.py
+new file mode 100644
+index 00000000..13a83393
+--- /dev/null
++++ b/providers/standard/src/airflow/providers/standard/models/__init__.py
+@@ -0,0 +1,16 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
+diff --git a/providers/standard/src/airflow/providers/standard/operators/hitl.py b/providers/standard/src/airflow/providers/standard/operators/hitl.py
+new file mode 100644
+index 00000000..6a1f88dd
+--- /dev/null
++++ b/providers/standard/src/airflow/providers/standard/operators/hitl.py
+@@ -0,0 +1,232 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import logging
++
++from airflow.exceptions import AirflowOptionalProviderFeatureException
++from airflow.providers.standard.version_compat import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    raise AirflowOptionalProviderFeatureException("Human in the loop functionality needs Airflow 3.1+.")
++
++
++from collections.abc import Collection, Mapping
++from datetime import datetime, timezone
++from typing import TYPE_CHECKING, Any
++
++from airflow.models.baseoperator import BaseOperator
++from airflow.providers.standard.exceptions import HITLTimeoutError, HITLTriggerEventError
++from airflow.providers.standard.triggers.hitl import HITLTrigger, HITLTriggerEventSuccessPayload
++from airflow.providers.standard.utils.skipmixin import SkipMixin
++from airflow.sdk.definitions.param import ParamsDict
++from airflow.sdk.execution_time.hitl import add_hitl_detail
++
++if TYPE_CHECKING:
++    from airflow.sdk.definitions.context import Context
++
++
++class HITLOperator(BaseOperator):
++    """
++    Base class for all Human-in-the-loop Operators to inherit from.
++
++    :param subject: Headline/subject presented to the user for the interaction task.
++    :param options: List of options that the an user can select from to complete the task.
++    :param body: Descriptive text (with Markdown support) that gives the details that are needed to decide.
++    :param defaults: The default options and the options that are taken if timeout is passed.
++    :param multiple: Whether the user can select one or multiple options.
++    :param params: dictionary of parameter definitions that are in the format of Dag params such that
++        a Form Field can be rendered. Entered data is validated (schema, required fields) like for a Dag run
++        and added to XCom of the task result.
++    """
++
++    template_fields: Collection[str] = ("subject", "body")
++
++    def __init__(
++        self,
++        *,
++        subject: str,
++        options: list[str],
++        body: str | None = None,
++        defaults: str | list[str] | None = None,
++        multiple: bool = False,
++        params: ParamsDict | dict[str, Any] | None = None,
++        **kwargs,
++    ) -> None:
++        super().__init__(**kwargs)
++        self.subject = subject
++        self.body = body
++
++        self.options = options
++        # allow defaults to store more than one options when multiple=True
++        self.defaults = [defaults] if isinstance(defaults, str) else defaults
++        self.multiple = multiple
++
++        self.params: ParamsDict = params if isinstance(params, ParamsDict) else ParamsDict(params or {})
++
++        self.validate_defaults()
++
++    def validate_defaults(self) -> None:
++        """
++        Validate whether the given defaults pass the following criteria.
++
++        1. Default options should be the subset of options.
++        2. When multiple is False, there should only be one option.
++        """
++        if self.defaults is not None:
++            if not set(self.defaults).issubset(self.options):
++                raise ValueError(f'defaults "{self.defaults}" should be a subset of options "{self.options}"')
++
++            if self.multiple is False and len(self.defaults) > 1:
++                raise ValueError('More than one defaults given when "multiple" is set to False.')
++
++    def execute(self, context: Context):
++        """Add a Human-in-the-loop Response and then defer to HITLTrigger and wait for user input."""
++        ti_id = context["task_instance"].id
++        # Write Human-in-the-loop input request to DB
++        add_hitl_detail(
++            ti_id=ti_id,
++            options=self.options,
++            subject=self.subject,
++            body=self.body,
++            defaults=self.defaults,
++            multiple=self.multiple,
++            params=self.serialzed_params,
++        )
++        if self.execution_timeout:
++            timeout_datetime = datetime.now(timezone.utc) + self.execution_timeout
++        else:
++            timeout_datetime = None
++        self.log.info("Waiting for response")
++        # Defer the Human-in-the-loop response checking process to HITLTrigger
++        self.defer(
++            trigger=HITLTrigger(
++                ti_id=ti_id,
++                options=self.options,
++                defaults=self.defaults,
++                params=self.serialzed_params,
++                multiple=self.multiple,
++                timeout_datetime=timeout_datetime,
++            ),
++            method_name="execute_complete",
++        )
++
++    @property
++    def serialzed_params(self) -> dict[str, Any]:
++        return self.params.dump() if isinstance(self.params, ParamsDict) else self.params
++
++    def execute_complete(self, context: Context, event: dict[str, Any]) -> Any:
++        if "error" in event:
++            self.process_trigger_event_error(event)
++
++        chosen_options = event["chosen_options"]
++        params_input = event["params_input"] or {}
++        self.validate_chosen_options(chosen_options)
++        self.validate_params_input(params_input)
++        return HITLTriggerEventSuccessPayload(
++            chosen_options=chosen_options,
++            params_input=params_input,
++        )
++
++    def process_trigger_event_error(self, event: dict[str, Any]) -> None:
++        if "error_type" == "timeout":
++            raise HITLTimeoutError(event)
++
++        raise HITLTriggerEventError(event)
++
++    def validate_chosen_options(self, chosen_options: list[str]) -> None:
++        """Check whether user provide valid response."""
++        if diff := set(chosen_options) - set(self.options):
++            raise ValueError(f"Responses {diff} not in {self.options}")
++
++    def validate_params_input(self, params_input: Mapping) -> None:
++        """Check whether user provide valid params input."""
++        if (
++            self.serialzed_params is not None
++            and params_input is not None
++            and set(self.serialzed_params.keys()) ^ set(params_input)
++        ):
++            raise ValueError(f"params_input {params_input} does not match params {self.params}")
++
++
++class ApprovalOperator(HITLOperator, SkipMixin):
++    """Human-in-the-loop Operator that has only 'Approval' and 'Reject' options."""
++
++    inherits_from_skipmixin = True
++
++    FIXED_ARGS = ["options", "multiple"]
++
++    def __init__(self, ignore_downstream_trigger_rules: bool = False, **kwargs) -> None:
++        for arg in self.FIXED_ARGS:
++            if arg in kwargs:
++                raise ValueError(f"Passing {arg} to ApprovalOperator is not allowed.")
++
++        self.ignore_downstream_trigger_rules = ignore_downstream_trigger_rules
++
++        super().__init__(options=["Approve", "Reject"], multiple=False, **kwargs)
++
++    def execute_complete(self, context: Context, event: dict[str, Any]) -> Any:
++        ret = super().execute_complete(context=context, event=event)
++
++        chosen_option = ret["chosen_options"][0]
++        if chosen_option == "Approve":
++            self.log.info("Approved. Proceeding with downstream tasks...")
++            return ret
++
++        if not self.downstream_task_ids:
++            self.log.info("No downstream tasks; nothing to do.")
++            return ret
++
++        def get_tasks_to_skip():
++            if self.ignore_downstream_trigger_rules is True:
++                tasks = context["task"].get_flat_relatives(upstream=False)
++            else:
++                tasks = context["task"].get_direct_relatives(upstream=False)
++
++            yield from (t for t in tasks if not t.is_teardown)
++
++        tasks_to_skip = get_tasks_to_skip()
++
++        # this lets us avoid an intermediate list unless debug logging
++        if self.log.getEffectiveLevel() <= logging.DEBUG:
++            self.log.debug("Downstream task IDs %s", tasks_to_skip := list(get_tasks_to_skip()))
++
++        self.log.info("Skipping downstream tasks")
++        self.skip(ti=context["ti"], tasks=tasks_to_skip)
++
++        return ret
++
++
++class HITLBranchOperator(HITLOperator):
++    """BranchOperator based on Human-in-the-loop Response."""
++
++    def __init__(self, **kwargs) -> None:
++        super().__init__(**kwargs)
++
++    def execute_complete(self, context: Context, event: dict[str, Any]) -> None:
++        raise NotImplementedError
++
++
++class HITLEntryOperator(HITLOperator):
++    """Human-in-the-loop Operator that is used to accept user input through TriggerForm."""
++
++    def __init__(self, **kwargs) -> None:
++        if "options" not in kwargs:
++            kwargs["options"] = ["OK"]
++            kwargs["defaults"] = ["OK"]
++
++        super().__init__(**kwargs)
+diff --git a/providers/standard/src/airflow/providers/standard/triggers/hitl.py b/providers/standard/src/airflow/providers/standard/triggers/hitl.py
+new file mode 100644
+index 00000000..63cea153
+--- /dev/null
++++ b/providers/standard/src/airflow/providers/standard/triggers/hitl.py
+@@ -0,0 +1,132 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from airflow.exceptions import AirflowOptionalProviderFeatureException
++from airflow.providers.standard.version_compat import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    raise AirflowOptionalProviderFeatureException("Human in the loop functionality needs Airflow 3.1+.")
++
++import asyncio
++from collections.abc import AsyncIterator
++from datetime import datetime
++from typing import Any, Literal, TypedDict
++from uuid import UUID
++
++from asgiref.sync import sync_to_async
++
++from airflow.sdk.execution_time.hitl import (
++    get_hitl_detail_content_detail,
++    update_htil_detail_response,
++)
++from airflow.triggers.base import BaseTrigger, TriggerEvent
++from airflow.utils import timezone
++
++
++class HITLTriggerEventSuccessPayload(TypedDict, total=False):
++    """Minimum required keys for a success Human-in-the-loop TriggerEvent."""
++
++    chosen_options: list[str]
++    params_input: dict[str, Any]
++
++
++class HITLTriggerEventFailurePayload(TypedDict):
++    """Minimum required keys for a failed Human-in-the-loop TriggerEvent."""
++
++    error: str
++    error_type: Literal["timeout", "unknown"]
++
++
++class HITLTrigger(BaseTrigger):
++    """A trigger that checks whether Human-in-the-loop responses are received."""
++
++    def __init__(
++        self,
++        *,
++        ti_id: UUID,
++        options: list[str],
++        params: dict[str, Any],
++        defaults: list[str] | None = None,
++        multiple: bool = False,
++        timeout_datetime: datetime | None,
++        poke_interval: float = 5.0,
++        **kwargs,
++    ):
++        super().__init__(**kwargs)
++        self.ti_id = ti_id
++        self.poke_interval = poke_interval
++
++        self.options = options
++        self.multiple = multiple
++        self.defaults = defaults
++        self.timeout_datetime = timeout_datetime
++
++        self.params = params
++
++    def serialize(self) -> tuple[str, dict[str, Any]]:
++        """Serialize HITLTrigger arguments and classpath."""
++        return (
++            "airflow.providers.standard.triggers.hitl.HITLTrigger",
++            {
++                "ti_id": self.ti_id,
++                "options": self.options,
++                "defaults": self.defaults,
++                "params": self.params,
++                "multiple": self.multiple,
++                "timeout_datetime": self.timeout_datetime,
++                "poke_interval": self.poke_interval,
++            },
++        )
++
++    async def run(self) -> AsyncIterator[TriggerEvent]:
++        """Loop until the Human-in-the-loop response received or timeout reached."""
++        while True:
++            if self.timeout_datetime and self.timeout_datetime < timezone.utcnow():
++                if self.defaults is None:
++                    yield TriggerEvent(
++                        HITLTriggerEventFailurePayload(
++                            error="The timeout has passed, and the response has not yet been received.",
++                            error_type="timeout",
++                        )
++                    )
++                    return
++
++                await sync_to_async(update_htil_detail_response)(
++                    ti_id=self.ti_id,
++                    chosen_options=self.defaults,
++                    params_input=self.params,
++                )
++                yield TriggerEvent(
++                    HITLTriggerEventSuccessPayload(
++                        chosen_options=self.defaults,
++                        params_input=self.params,
++                    )
++                )
++                return
++
++            resp = await sync_to_async(get_hitl_detail_content_detail)(ti_id=self.ti_id)
++            if resp.response_received and resp.chosen_options:
++                self.log.info("Responded by %s at %s", resp.user_id, resp.response_at)
++                yield TriggerEvent(
++                    HITLTriggerEventSuccessPayload(
++                        chosen_options=resp.chosen_options,
++                        params_input=resp.params_input,
++                    )
++                )
++                return
++            await asyncio.sleep(self.poke_interval)
+diff --git a/providers/standard/tests/unit/standard/operators/test_hitl.py b/providers/standard/tests/unit/standard/operators/test_hitl.py
+new file mode 100644
+index 00000000..767c379b
+--- /dev/null
++++ b/providers/standard/tests/unit/standard/operators/test_hitl.py
+@@ -0,0 +1,269 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import pytest
++
++from tests_common.test_utils.version_compat import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    pytest.skip("Human in the loop public API compatible with Airflow >= 3.0.1", allow_module_level=True)
++
++from typing import TYPE_CHECKING, Any
++
++from sqlalchemy import select
++
++from airflow.exceptions import DownstreamTasksSkipped
++from airflow.models import Trigger
++from airflow.models.hitl import HITLDetail
++from airflow.providers.standard.operators.empty import EmptyOperator
++from airflow.providers.standard.operators.hitl import (
++    ApprovalOperator,
++    HITLEntryOperator,
++    HITLOperator,
++)
++from airflow.sdk import Param
++from airflow.sdk.definitions.param import ParamsDict
++
++if TYPE_CHECKING:
++    from sqlalchemy.orm import Session
++
++    from tests_common.pytest_plugin import DagMaker
++
++pytestmark = pytest.mark.db_test
++
++
++class TestHITLOperator:
++    def test_validate_defaults(self) -> None:
++        hitl_op = HITLOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            options=["1", "2", "3", "4", "5"],
++            body="This is body",
++            defaults=["1"],
++            multiple=False,
++            params=ParamsDict({"input_1": 1}),
++        )
++        hitl_op.validate_defaults()
++
++    @pytest.mark.parametrize(
++        "extra_kwargs, expected_error_msg",
++        [
++            ({"defaults": ["0"]}, r'defaults ".*" should be a subset of options ".*"'),
++            (
++                {"multiple": False, "defaults": ["1", "2"]},
++                'More than one defaults given when "multiple" is set to False.',
++            ),
++        ],
++        ids=[
++            "defaults not in option",
++            "multiple defaults when multiple is False",
++        ],
++    )
++    def test_validate_defaults_with_invalid_defaults(
++        self,
++        extra_kwargs: dict[str, Any],
++        expected_error_msg: str,
++    ) -> None:
++        with pytest.raises(ValueError, match=expected_error_msg):
++            HITLOperator(
++                task_id="hitl_test",
++                subject="This is subject",
++                body="This is body",
++                options=["1", "2", "3", "4", "5"],
++                params=ParamsDict({"input_1": 1}),
++                **extra_kwargs,
++            )
++
++    def test_execute(self, dag_maker: DagMaker, session: Session) -> None:
++        with dag_maker("test_dag"):
++            task = HITLOperator(
++                task_id="hitl_test",
++                subject="This is subject",
++                options=["1", "2", "3", "4", "5"],
++                body="This is body",
++                defaults=["1"],
++                multiple=False,
++                params=ParamsDict({"input_1": 1}),
++            )
++        dr = dag_maker.create_dagrun()
++        ti = dag_maker.run_ti(task.task_id, dr)
++
++        hitl_detail_model = session.scalar(select(HITLDetail).where(HITLDetail.ti_id == ti.id))
++        assert hitl_detail_model.ti_id == ti.id
++        assert hitl_detail_model.subject == "This is subject"
++        assert hitl_detail_model.options == ["1", "2", "3", "4", "5"]
++        assert hitl_detail_model.body == "This is body"
++        assert hitl_detail_model.defaults == ["1"]
++        assert hitl_detail_model.multiple is False
++        assert hitl_detail_model.params == {"input_1": 1}
++        assert hitl_detail_model.response_at is None
++        assert hitl_detail_model.user_id is None
++        assert hitl_detail_model.chosen_options is None
++        assert hitl_detail_model.params_input == {}
++
++        registered_trigger = session.scalar(
++            select(Trigger).where(Trigger.classpath == "airflow.providers.standard.triggers.hitl.HITLTrigger")
++        )
++        assert registered_trigger.kwargs == {
++            "ti_id": ti.id,
++            "options": ["1", "2", "3", "4", "5"],
++            "defaults": ["1"],
++            "params": {"input_1": 1},
++            "multiple": False,
++            "timeout_datetime": None,
++            "poke_interval": 5.0,
++        }
++
++    @pytest.mark.parametrize(
++        "input_params, expected_params",
++        [
++            (ParamsDict({"input": 1}), {"input": 1}),
++            ({"input": Param(5, type="integer", minimum=3)}, {"input": 5}),
++            (None, {}),
++        ],
++    )
++    def test_serialzed_params(self, input_params, expected_params: dict[str, Any]) -> None:
++        hitl_op = HITLOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            body="This is body",
++            options=["1", "2", "3", "4", "5"],
++            params=input_params,
++        )
++        assert hitl_op.serialzed_params == expected_params
++
++    def test_execute_complete(self) -> None:
++        hitl_op = HITLOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            body="This is body",
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++        )
++
++        ret = hitl_op.execute_complete(
++            context={},
++            event={"chosen_options": ["1"], "params_input": {"input": 2}},
++        )
++
++        assert ret["chosen_options"] == ["1"]
++        assert ret["params_input"] == {"input": 2}
++
++    def test_validate_chosen_options_with_invalid_content(self) -> None:
++        hitl_op = HITLOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            body="This is body",
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++        )
++
++        with pytest.raises(ValueError):
++            hitl_op.execute_complete(
++                context={},
++                event={
++                    "chosen_options": ["not exists"],
++                    "params_input": {"input": 2},
++                },
++            )
++
++    def test_validate_params_input_with_invalid_input(self) -> None:
++        hitl_op = HITLOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            body="This is body",
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++        )
++
++        with pytest.raises(ValueError):
++            hitl_op.execute_complete(
++                context={},
++                event={
++                    "chosen_options": ["1"],
++                    "params_input": {"no such key": 2, "input": 333},
++                },
++            )
++
++
++class TestApprovalOperator:
++    def test_init_with_options(self) -> None:
++        with pytest.raises(ValueError):
++            ApprovalOperator(
++                task_id="hitl_test",
++                subject="This is subject",
++                body="This is body",
++                options=["1", "2", "3", "4", "5"],
++                params={"input": 1},
++            )
++
++    def test_init_with_multiple_set_to_true(self) -> None:
++        with pytest.raises(ValueError):
++            ApprovalOperator(
++                task_id="hitl_test",
++                subject="This is subject",
++                params={"input": 1},
++                multiple=True,
++            )
++
++    def test_execute_complete(self) -> None:
++        hitl_op = ApprovalOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++        )
++
++        ret = hitl_op.execute_complete(
++            context={},
++            event={"chosen_options": ["Approve"], "params_input": {}},
++        )
++
++        assert ret == {
++            "chosen_options": ["Approve"],
++            "params_input": {},
++        }
++
++    def test_execute_complete_with_downstream_tasks(self, dag_maker) -> None:
++        with dag_maker("hitl_test_dag", serialized=True):
++            hitl_op = ApprovalOperator(
++                task_id="hitl_test",
++                subject="This is subject",
++            )
++            (hitl_op >> EmptyOperator(task_id="op1"))
++
++        dr = dag_maker.create_dagrun()
++        ti = dr.get_task_instance("hitl_test")
++
++        with pytest.raises(DownstreamTasksSkipped) as exc_info:
++            hitl_op.execute_complete(
++                context={"ti": ti, "task": ti.task},
++                event={"chosen_options": ["Reject"], "params_input": {}},
++            )
++        assert set(exc_info.value.tasks) == {"op1"}
++
++
++class TestHITLEntryOperator:
++    def test_init(self) -> None:
++        op = HITLEntryOperator(
++            task_id="hitl_test",
++            subject="This is subject",
++            body="This is body",
++            params={"input": 1},
++        )
++
++        assert op.options == ["OK"]
++        assert op.defaults == ["OK"]
+diff --git a/providers/standard/tests/unit/standard/triggers/test_hitl.py b/providers/standard/tests/unit/standard/triggers/test_hitl.py
+new file mode 100644
+index 00000000..ac96d9ee
+--- /dev/null
++++ b/providers/standard/tests/unit/standard/triggers/test_hitl.py
+@@ -0,0 +1,161 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++from __future__ import annotations
++
++import pytest
++
++from tests_common.test_utils.version_compat import AIRFLOW_V_3_1_PLUS
++
++if not AIRFLOW_V_3_1_PLUS:
++    pytest.skip("Human in the loop public API compatible with Airflow >= 3.0.1", allow_module_level=True)
++
++import asyncio
++from datetime import timedelta
++from unittest import mock
++
++from uuid6 import uuid7
++
++from airflow.api_fastapi.execution_api.datamodels.hitl import HITLDetailResponse
++from airflow.providers.standard.triggers.hitl import (
++    HITLTrigger,
++    HITLTriggerEventFailurePayload,
++    HITLTriggerEventSuccessPayload,
++)
++from airflow.triggers.base import TriggerEvent
++from airflow.utils.timezone import utcnow
++
++TI_ID = uuid7()
++
++
++class TestHITLTrigger:
++    def test_serialization(self):
++        trigger = HITLTrigger(
++            ti_id=TI_ID,
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++            defaults=["1"],
++            multiple=False,
++            timeout_datetime=None,
++            poke_interval=50.0,
++        )
++        classpath, kwargs = trigger.serialize()
++        assert classpath == "airflow.providers.standard.triggers.hitl.HITLTrigger"
++        assert kwargs == {
++            "ti_id": TI_ID,
++            "options": ["1", "2", "3", "4", "5"],
++            "params": {"input": 1},
++            "defaults": ["1"],
++            "multiple": False,
++            "timeout_datetime": None,
++            "poke_interval": 50.0,
++        }
++
++    @pytest.mark.db_test
++    @pytest.mark.asyncio
++    @mock.patch("airflow.sdk.execution_time.hitl.update_htil_detail_response")
++    async def test_run_failed_due_to_timeout(self, mock_update, mock_supervisor_comms):
++        trigger = HITLTrigger(
++            ti_id=TI_ID,
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++            multiple=False,
++            timeout_datetime=utcnow() + timedelta(seconds=0.1),
++            poke_interval=5,
++        )
++        mock_supervisor_comms.send.return_value = HITLDetailResponse(
++            response_received=False,
++            user_id=None,
++            response_at=None,
++            chosen_options=None,
++            params_input={},
++        )
++
++        gen = trigger.run()
++        trigger_task = asyncio.create_task(gen.__anext__())
++        await asyncio.sleep(0.3)
++        event = await trigger_task
++        assert event == TriggerEvent(
++            HITLTriggerEventFailurePayload(
++                error="The timeout has passed, and the response has not yet been received.",
++                error_type="timeout",
++            )
++        )
++
++    @pytest.mark.db_test
++    @pytest.mark.asyncio
++    @mock.patch("airflow.sdk.execution_time.hitl.update_htil_detail_response")
++    async def test_run_fallback_to_default_due_to_timeout(self, mock_update, mock_supervisor_comms):
++        trigger = HITLTrigger(
++            ti_id=TI_ID,
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++            defaults=["1"],
++            multiple=False,
++            timeout_datetime=utcnow() + timedelta(seconds=0.1),
++            poke_interval=5,
++        )
++        mock_supervisor_comms.send.return_value = HITLDetailResponse(
++            response_received=False,
++            user_id=None,
++            response_at=None,
++            chosen_options=None,
++            params_input={},
++        )
++
++        gen = trigger.run()
++        trigger_task = asyncio.create_task(gen.__anext__())
++        await asyncio.sleep(0.3)
++        event = await trigger_task
++        assert event == TriggerEvent(
++            HITLTriggerEventSuccessPayload(
++                chosen_options=["1"],
++                params_input={"input": 1},
++            )
++        )
++
++    @pytest.mark.db_test
++    @pytest.mark.asyncio
++    @mock.patch("airflow.sdk.execution_time.hitl.update_htil_detail_response")
++    async def test_run(self, mock_update, mock_supervisor_comms):
++        trigger = HITLTrigger(
++            ti_id=TI_ID,
++            options=["1", "2", "3", "4", "5"],
++            params={"input": 1},
++            defaults=["1"],
++            multiple=False,
++            timeout_datetime=None,
++            poke_interval=5,
++        )
++        mock_supervisor_comms.send.return_value = HITLDetailResponse(
++            response_received=True,
++            user_id="test",
++            response_at=utcnow(),
++            chosen_options=["3"],
++            params_input={"input": 50},
++        )
++
++        gen = trigger.run()
++        trigger_task = asyncio.create_task(gen.__anext__())
++        await asyncio.sleep(0.3)
++        event = await trigger_task
++        assert event == TriggerEvent(
++            HITLTriggerEventSuccessPayload(
++                chosen_options=["3"],
++                params_input={"input": 50},
++            )
++        )
+diff --git a/task-sdk/src/airflow/sdk/api/client.py b/task-sdk/src/airflow/sdk/api/client.py
+index 5dcccb1f..992cc2e4 100644
+--- a/task-sdk/src/airflow/sdk/api/client.py
++++ b/task-sdk/src/airflow/sdk/api/client.py
+@@ -37,10 +37,12 @@ from airflow.sdk.api.datamodels._generated import (
+     API_VERSION,
+     AssetEventsResponse,
+     AssetResponse,
+     ConnectionResponse,
++    CreateHITLDetailPayload,
+     DagRunStateResponse,
+     DagRunType,
++    HITLDetailResponse,
+     InactiveAssetsResponse,
+     PrevSuccessfulDagRunResponse,
+     TaskInstanceState,
+     TaskStatesResponse,
+@@ -54,8 +56,9 @@ from airflow.sdk.api.datamodels._generated import (
+     TISkippedDownstreamTasksStatePayload,
+     TISuccessStatePayload,
+     TITerminalStatePayload,
+     TriggerDAGRunPayload,
++    UpdateHITLDetail,
+     ValidationError as RemoteValidationError,
+     VariablePostBody,
+     VariableResponse,
+     XComResponse,
+@@ -65,8 +68,9 @@ from airflow.sdk.api.datamodels._generated import (
+ from airflow.sdk.exceptions import ErrorType
+ from airflow.sdk.execution_time.comms import (
+     DRCount,
+     ErrorResponse,
++    HITLDetailRequestResult,
+     OKResponse,
+     SkipDownstreamTasks,
+     TaskRescheduleStartDate,
+     TICount,
+@@ -617,8 +621,72 @@ class DagRunOperations:
+         resp = self.client.get("dag-runs/count", params=params)
+         return DRCount(count=resp.json())
+ 
+ 
++class HITLOperations:
++    """
++    Operations related to Human in the loop. Require Airflow 3.1+.
++
++    :meta: private
++    """
++
++    __slots__ = ("client",)
++
++    def __init__(self, client: Client) -> None:
++        self.client = client
++
++    def add_response(
++        self,
++        *,
++        ti_id: uuid.UUID,
++        options: list[str],
++        subject: str,
++        body: str | None = None,
++        defaults: list[str] | None = None,
++        multiple: bool = False,
++        params: dict[str, Any] | None = None,
++    ) -> HITLDetailRequestResult:
++        """Add a Human-in-the-loop response that waits for human response for a specific Task Instance."""
++        payload = CreateHITLDetailPayload(
++            ti_id=ti_id,
++            options=options,
++            subject=subject,
++            body=body,
++            defaults=defaults,
++            multiple=multiple,
++            params=params,
++        )
++        resp = self.client.post(
++            f"/hitl-details/{ti_id}",
++            content=payload.model_dump_json(),
++        )
++        return HITLDetailRequestResult.model_validate_json(resp.read())
++
++    def update_response(
++        self,
++        *,
++        ti_id: uuid.UUID,
++        chosen_options: list[str],
++        params_input: dict[str, Any],
++    ) -> HITLDetailResponse:
++        """Update an existing Human-in-the-loop response."""
++        payload = UpdateHITLDetail(
++            ti_id=ti_id,
++            chosen_options=chosen_options,
++            params_input=params_input,
++        )
++        resp = self.client.patch(
++            f"/hitl-details/{ti_id}",
++            content=payload.model_dump_json(),
++        )
++        return HITLDetailResponse.model_validate_json(resp.read())
++
++    def get_detail_response(self, ti_id: uuid.UUID) -> HITLDetailResponse:
++        """Get content part of a Human-in-the-loop response for a specific Task Instance."""
++        resp = self.client.get(f"/hitl-details/{ti_id}")
++        return HITLDetailResponse.model_validate_json(resp.read())
++
++
+ class BearerAuth(httpx.Auth):
+     def __init__(self, token: str):
+         self.token: str = token
+ 
+@@ -750,8 +818,14 @@ class Client(httpx.Client):
+     def asset_events(self) -> AssetEventOperations:
+         """Operations related to Asset Events."""
+         return AssetEventOperations(self)
+ 
++    @lru_cache()  # type: ignore[misc]
++    @property
++    def hitl(self):
++        """Operations related to HITL Responses."""
++        return HITLOperations(self)
++
+ 
+ # This is only used for parsing. ServerResponseError is raised instead
+ class _ErrorBody(BaseModel):
+     detail: list[RemoteValidationError] | str
+diff --git a/task-sdk/src/airflow/sdk/api/datamodels/_generated.py b/task-sdk/src/airflow/sdk/api/datamodels/_generated.py
+index f0d3d45d..13e41bd5 100644
+--- a/task-sdk/src/airflow/sdk/api/datamodels/_generated.py
++++ b/task-sdk/src/airflow/sdk/api/datamodels/_generated.py
+@@ -101,8 +101,25 @@ class ConnectionResponse(BaseModel):
+     port: Annotated[int | None, Field(title="Port")] = None
+     extra: Annotated[str | None, Field(title="Extra")] = None
+ 
+ 
++class CreateHITLDetailPayload(BaseModel):
++    """
++    Add the input request part of a Human-in-the-loop response.
++    """
++
++    ti_id: Annotated[UUID, Field(title="Ti Id")]
++    options: Annotated[list[str], Field(title="Options")]
++    subject: Annotated[str, Field(title="Subject")]
++    body: Annotated[str | None, Field(title="Body")] = None
++    defaults: Annotated[list[str] | None, Field(title="Defaults")] = None
++    multiple: Annotated[bool | None, Field(title="Multiple")] = False
++    params: Annotated[dict[str, Any] | None, Field(title="Params")] = None
++    type: Annotated[Literal["CreateHITLDetailPayload"] | None, Field(title="Type")] = (
++        "CreateHITLDetailPayload"
++    )
++
++
+ class DagRunAssetReference(BaseModel):
+     """
+     DagRun serializer for asset responses.
+     """
+@@ -153,8 +170,34 @@ class DagRunType(str, Enum):
+     MANUAL = "manual"
+     ASSET_TRIGGERED = "asset_triggered"
+ 
+ 
++class HITLDetailRequest(BaseModel):
++    """
++    Schema for the request part of a Human-in-the-loop detail for a specific task instance.
++    """
++
++    ti_id: Annotated[UUID, Field(title="Ti Id")]
++    options: Annotated[list[str], Field(title="Options")]
++    subject: Annotated[str, Field(title="Subject")]
++    body: Annotated[str | None, Field(title="Body")] = None
++    defaults: Annotated[list[str] | None, Field(title="Defaults")] = None
++    multiple: Annotated[bool | None, Field(title="Multiple")] = False
++    params: Annotated[dict[str, Any] | None, Field(title="Params")] = None
++
++
++class HITLDetailResponse(BaseModel):
++    """
++    Schema for the response part of a Human-in-the-loop detail for a specific task instance.
++    """
++
++    response_received: Annotated[bool, Field(title="Response Received")]
++    user_id: Annotated[str | None, Field(title="User Id")] = None
++    response_at: Annotated[AwareDatetime | None, Field(title="Response At")] = None
++    chosen_options: Annotated[list[str] | None, Field(title="Chosen Options")] = None
++    params_input: Annotated[dict[str, Any] | None, Field(title="Params Input")] = None
++
++
+ class InactiveAssetsResponse(BaseModel):
+     """
+     Response for inactive assets.
+     """
+@@ -324,8 +367,19 @@ class TriggerDAGRunPayload(BaseModel):
+     conf: Annotated[dict[str, Any] | None, Field(title="Conf")] = None
+     reset_dag_run: Annotated[bool | None, Field(title="Reset Dag Run")] = False
+ 
+ 
++class UpdateHITLDetail(BaseModel):
++    """
++    Update the response content part of an existing Human-in-the-loop response.
++    """
++
++    ti_id: Annotated[UUID, Field(title="Ti Id")]
++    chosen_options: Annotated[list[str], Field(title="Chosen Options")]
++    params_input: Annotated[dict[str, Any] | None, Field(title="Params Input")] = None
++    type: Annotated[Literal["UpdateHITLDetail"] | None, Field(title="Type")] = "UpdateHITLDetail"
++
++
+ class ValidationError(BaseModel):
+     loc: Annotated[list[str | int], Field(title="Location")]
+     msg: Annotated[str, Field(title="Message")]
+     type: Annotated[str, Field(title="Error Type")]
+diff --git a/task-sdk/src/airflow/sdk/execution_time/comms.py b/task-sdk/src/airflow/sdk/execution_time/comms.py
+index d52e9bb3..fb9bdbaf 100644
+--- a/task-sdk/src/airflow/sdk/execution_time/comms.py
++++ b/task-sdk/src/airflow/sdk/execution_time/comms.py
+@@ -62,16 +62,21 @@ import msgspec
+ import structlog
+ from fastapi import Body
+ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, field_serializer
+ 
++from airflow.api_fastapi.execution_api.datamodels.hitl import (
++    GetHITLDetailResponsePayload,
++    UpdateHITLDetailPayload,
++)
+ from airflow.sdk.api.datamodels._generated import (
+     AssetEventDagRunReference,
+     AssetEventResponse,
+     AssetEventsResponse,
+     AssetResponse,
+     BundleInfo,
+     ConnectionResponse,
+     DagRunStateResponse,
++    HITLDetailRequest,
+     InactiveAssetsResponse,
+     PrevSuccessfulDagRunResponse,
+     TaskInstance,
+     TaskInstanceState,
+@@ -95,8 +100,9 @@ try:
+ except ImportError:
+     # Available on Unix and Windows (so "everywhere") but lets be safe
+     recv_fds = None  # type: ignore[assignment]
+ 
++
+ if TYPE_CHECKING:
+     from structlog.typing import FilteringBoundLogger as Logger
+ 
+ SendMsgType = TypeVar("SendMsgType", bound=BaseModel)
+@@ -556,8 +562,20 @@ class SentFDs(BaseModel):
+     type: Literal["SentFDs"] = "SentFDs"
+     fds: list[int]
+ 
+ 
++class CreateHITLDetailPayload(HITLDetailRequest):
++    """Add the input request part of a Human-in-the-loop response."""
++
++    type: Literal["CreateHITLDetailPayload"] = "CreateHITLDetailPayload"
++
++
++class HITLDetailRequestResult(HITLDetailRequest):
++    """Response to CreateHITLDetailPayload request."""
++
++    type: Literal["HITLDetailRequestResult"] = "HITLDetailRequestResult"
++
++
+ ToTask = Annotated[
+     AssetResult
+     | AssetEventsResult
+     | ConnectionResult
+@@ -575,8 +593,10 @@ ToTask = Annotated[
+     | XComResult
+     | XComSequenceIndexResult
+     | XComSequenceSliceResult
+     | InactiveAssetsResult
++    | CreateHITLDetailPayload
++    | HITLDetailRequestResult
+     | OKResponse,
+     Field(discriminator="type"),
+ ]
+ 
+@@ -837,8 +857,20 @@ class GetDRCount(BaseModel):
+     states: list[str] | None = None
+     type: Literal["GetDRCount"] = "GetDRCount"
+ 
+ 
++class GetHITLDetailResponse(GetHITLDetailResponsePayload):
++    """Get the response content part of a Human-in-the-loop response."""
++
++    type: Literal["GetHITLDetailResponse"] = "GetHITLDetailResponse"
++
++
++class UpdateHITLDetail(UpdateHITLDetailPayload):
++    """Update the response content part of an existing Human-in-the-loop response."""
++
++    type: Literal["UpdateHITLDetail"] = "UpdateHITLDetail"
++
++
+ ToSupervisor = Annotated[
+     DeferTask
+     | DeleteXCom
+     | GetAssetByName
+@@ -867,7 +899,10 @@ ToSupervisor = Annotated[
+     | ValidateInletsAndOutlets
+     | TaskState
+     | TriggerDagRun
+     | DeleteVariable
+-    | ResendLoggingFD,
++    | ResendLoggingFD
++    | CreateHITLDetailPayload
++    | UpdateHITLDetail
++    | GetHITLDetailResponse,
+     Field(discriminator="type"),
+ ]
+diff --git a/task-sdk/src/airflow/sdk/execution_time/hitl.py b/task-sdk/src/airflow/sdk/execution_time/hitl.py
+new file mode 100644
+index 00000000..6f6409b3
+--- /dev/null
++++ b/task-sdk/src/airflow/sdk/execution_time/hitl.py
+@@ -0,0 +1,83 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Any
++from uuid import UUID
++
++from airflow.sdk.execution_time.comms import (
++    CreateHITLDetailPayload,
++    GetHITLDetailResponse,
++    UpdateHITLDetail,
++)
++
++if TYPE_CHECKING:
++    from airflow.api_fastapi.execution_api.datamodels.hitl import HITLDetailResponse
++
++
++def add_hitl_detail(
++    ti_id: UUID,
++    options: list[str],
++    subject: str,
++    body: str | None = None,
++    defaults: list[str] | None = None,
++    multiple: bool = False,
++    params: dict[str, Any] | None = None,
++) -> None:
++    from airflow.sdk.execution_time.task_runner import SUPERVISOR_COMMS
++
++    SUPERVISOR_COMMS.send(
++        msg=CreateHITLDetailPayload(
++            ti_id=ti_id,
++            options=options,
++            subject=subject,
++            body=body,
++            defaults=defaults,
++            params=params,
++            multiple=multiple,
++        )
++    )
++
++
++def update_htil_detail_response(
++    ti_id: UUID,
++    chosen_options: list[str],
++    params_input: dict[str, Any],
++) -> HITLDetailResponse:
++    from airflow.sdk.execution_time.task_runner import SUPERVISOR_COMMS
++
++    response = SUPERVISOR_COMMS.send(
++        msg=UpdateHITLDetail(
++            ti_id=ti_id,
++            chosen_options=chosen_options,
++            params_input=params_input,
++        ),
++    )
++    if TYPE_CHECKING:
++        assert isinstance(response, HITLDetailResponse)
++    return response
++
++
++def get_hitl_detail_content_detail(ti_id: UUID) -> HITLDetailResponse:
++    from airflow.sdk.execution_time.task_runner import SUPERVISOR_COMMS
++
++    response = SUPERVISOR_COMMS.send(msg=GetHITLDetailResponse(ti_id=ti_id))
++
++    if TYPE_CHECKING:
++        assert isinstance(response, HITLDetailResponse)
++    return response
+diff --git a/task-sdk/src/airflow/sdk/execution_time/supervisor.py b/task-sdk/src/airflow/sdk/execution_time/supervisor.py
+index 69041197..f5eede62 100644
+--- a/task-sdk/src/airflow/sdk/execution_time/supervisor.py
++++ b/task-sdk/src/airflow/sdk/execution_time/supervisor.py
+@@ -67,8 +67,9 @@ from airflow.sdk.execution_time import comms
+ from airflow.sdk.execution_time.comms import (
+     AssetEventsResult,
+     AssetResult,
+     ConnectionResult,
++    CreateHITLDetailPayload,
+     DagRunStateResult,
+     DeferTask,
+     DeleteVariable,
+     DeleteXCom,
+@@ -1229,8 +1230,19 @@ class ActivitySubprocess(WatchedSubprocess):
+             if send_fds is not None:
+                 self._send_new_log_fd(req_id)
+                 # Since we've sent the message, return. Nothing else in this ifelse/switch should return directly
+                 return
++        elif isinstance(msg, CreateHITLDetailPayload):
++            resp = self.client.hitl.add_response(
++                ti_id=msg.ti_id,
++                options=msg.options,
++                subject=msg.subject,
++                body=msg.body,
++                defaults=msg.defaults,
++                params=msg.params,
++                multiple=msg.multiple,
++            )
++            self.send_msg(resp, request_id=req_id, error=None, **dump_opts)
+         else:
+             log.error("Unhandled request", msg=msg)
+             self.send_msg(
+                 None,
+diff --git a/task-sdk/tests/task_sdk/api/test_client.py b/task-sdk/tests/task_sdk/api/test_client.py
+index 7fa17ba1..4f4af1e1 100644
+--- a/task-sdk/tests/task_sdk/api/test_client.py
++++ b/task-sdk/tests/task_sdk/api/test_client.py
+@@ -18,36 +18,44 @@
+ from __future__ import annotations
+ 
+ import json
+ import pickle
++from datetime import datetime
++from typing import TYPE_CHECKING
+ from unittest import mock
+ 
+ import httpx
+ import pytest
+ import uuid6
+ from task_sdk import make_client, make_client_w_dry_run, make_client_w_responses
++from uuid6 import uuid7
+ 
+ from airflow.sdk.api.client import RemoteValidationError, ServerResponseError
+ from airflow.sdk.api.datamodels._generated import (
+     AssetEventsResponse,
+     AssetResponse,
+     ConnectionResponse,
+     DagRunState,
+     DagRunStateResponse,
++    HITLDetailResponse,
+     VariableResponse,
+     XComResponse,
+ )
+ from airflow.sdk.exceptions import ErrorType
+ from airflow.sdk.execution_time.comms import (
+     DeferTask,
+     ErrorResponse,
++    HITLDetailRequestResult,
+     OKResponse,
+     RescheduleTask,
+     TaskRescheduleStartDate,
+ )
+ from airflow.utils import timezone
+ from airflow.utils.state import TerminalTIState
+ 
++if TYPE_CHECKING:
++    from time_machine import TimeMachineFixture
++
+ 
+ class TestClient:
+     @pytest.mark.parametrize(
+         ["path", "json_response"],
+@@ -1149,4 +1157,102 @@ class TestTaskRescheduleOperations:
+         result = client.task_instances.get_reschedule_start_date(id=ti_id, try_number=1)
+ 
+         assert isinstance(result, TaskRescheduleStartDate)
+         assert result.start_date == "2024-01-01T00:00:00Z"
++
++
++class TestHITLOperations:
++    def test_add_response(self) -> None:
++        ti_id = uuid7()
++
++        def handle_request(request: httpx.Request) -> httpx.Response:
++            if request.url.path in (f"/hitl-details/{ti_id}"):
++                return httpx.Response(
++                    status_code=201,
++                    json={
++                        "ti_id": str(ti_id),
++                        "options": ["Approval", "Reject"],
++                        "subject": "This is subject",
++                        "body": "This is body",
++                        "defaults": ["Approval"],
++                        "params": None,
++                        "multiple": False,
++                    },
++                )
++            return httpx.Response(status_code=400, json={"detail": "Bad Request"})
++
++        client = make_client(transport=httpx.MockTransport(handle_request))
++        result = client.hitl.add_response(
++            ti_id=ti_id,
++            options=["Approval", "Reject"],
++            subject="This is subject",
++            body="This is body",
++            defaults=["Approval"],
++            params=None,
++            multiple=False,
++        )
++        assert isinstance(result, HITLDetailRequestResult)
++        assert result.ti_id == ti_id
++        assert result.options == ["Approval", "Reject"]
++        assert result.subject == "This is subject"
++        assert result.body == "This is body"
++        assert result.defaults == ["Approval"]
++        assert result.params is None
++        assert result.multiple is False
++
++    def test_update_response(self, time_machine: TimeMachineFixture) -> None:
++        time_machine.move_to(datetime(2025, 7, 3, 0, 0, 0))
++        ti_id = uuid7()
++
++        def handle_request(request: httpx.Request) -> httpx.Response:
++            if request.url.path in (f"/hitl-details/{ti_id}"):
++                return httpx.Response(
++                    status_code=200,
++                    json={
++                        "chosen_options": ["Approval"],
++                        "params_input": {},
++                        "user_id": "admin",
++                        "response_received": True,
++                        "response_at": "2025-07-03T00:00:00Z",
++                    },
++                )
++            return httpx.Response(status_code=400, json={"detail": "Bad Request"})
++
++        client = make_client(transport=httpx.MockTransport(handle_request))
++        result = client.hitl.update_response(
++            ti_id=ti_id,
++            chosen_options=["Approve"],
++            params_input={},
++        )
++        assert isinstance(result, HITLDetailResponse)
++        assert result.response_received is True
++        assert result.chosen_options == ["Approval"]
++        assert result.params_input == {}
++        assert result.user_id == "admin"
++        assert result.response_at == timezone.datetime(2025, 7, 3, 0, 0, 0)
++
++    def test_get_detail_response(self, time_machine: TimeMachineFixture) -> None:
++        time_machine.move_to(datetime(2025, 7, 3, 0, 0, 0))
++        ti_id = uuid7()
++
++        def handle_request(request: httpx.Request) -> httpx.Response:
++            if request.url.path in (f"/hitl-details/{ti_id}"):
++                return httpx.Response(
++                    status_code=200,
++                    json={
++                        "chosen_options": ["Approval"],
++                        "params_input": {},
++                        "user_id": "admin",
++                        "response_received": True,
++                        "response_at": "2025-07-03T00:00:00Z",
++                    },
++                )
++            return httpx.Response(status_code=400, json={"detail": "Bad Request"})
++
++        client = make_client(transport=httpx.MockTransport(handle_request))
++        result = client.hitl.get_detail_response(ti_id=ti_id)
++        assert isinstance(result, HITLDetailResponse)
++        assert result.response_received is True
++        assert result.chosen_options == ["Approval"]
++        assert result.params_input == {}
++        assert result.user_id == "admin"
++        assert result.response_at == timezone.datetime(2025, 7, 3, 0, 0, 0)
+diff --git a/task-sdk/tests/task_sdk/execution_time/test_hitl.py b/task-sdk/tests/task_sdk/execution_time/test_hitl.py
+new file mode 100644
+index 00000000..cab17e30
+--- /dev/null
++++ b/task-sdk/tests/task_sdk/execution_time/test_hitl.py
+@@ -0,0 +1,95 @@
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from uuid6 import uuid7
++
++from airflow.sdk.api.datamodels._generated import HITLDetailResponse
++from airflow.sdk.execution_time.comms import CreateHITLDetailPayload
++from airflow.sdk.execution_time.hitl import (
++    add_hitl_detail,
++    get_hitl_detail_content_detail,
++    update_htil_detail_response,
++)
++from airflow.utils import timezone
++
++TI_ID = uuid7()
++
++
++def test_add_hitl_detail(mock_supervisor_comms) -> None:
++    add_hitl_detail(
++        ti_id=TI_ID,
++        options=["Approve", "Reject"],
++        subject="Subject",
++        body="Optional body",
++        defaults=["Approve", "Reject"],
++        params={"input_1": 1},
++        multiple=False,
++    )
++    mock_supervisor_comms.send.assert_called_with(
++        msg=CreateHITLDetailPayload(
++            ti_id=TI_ID,
++            options=["Approve", "Reject"],
++            subject="Subject",
++            body="Optional body",
++            defaults=["Approve", "Reject"],
++            params={"input_1": 1},
++            multiple=False,
++        )
++    )
++
++
++def test_update_htil_detail_response(mock_supervisor_comms) -> None:
++    timestamp = timezone.utcnow()
++    mock_supervisor_comms.send.return_value = HITLDetailResponse(
++        response_received=True,
++        chosen_options=["Approve"],
++        response_at=timestamp,
++        user_id="admin",
++        params_input={"input_1": 1},
++    )
++    resp = update_htil_detail_response(
++        ti_id=TI_ID,
++        chosen_options=["Approve"],
++        params_input={"input_1": 1},
++    )
++    assert resp == HITLDetailResponse(
++        response_received=True,
++        chosen_options=["Approve"],
++        response_at=timestamp,
++        user_id="admin",
++        params_input={"input_1": 1},
++    )
++
++
++def test_get_hitl_detail_content_detail(mock_supervisor_comms) -> None:
++    mock_supervisor_comms.send.return_value = HITLDetailResponse(
++        response_received=False,
++        chosen_options=None,
++        response_at=None,
++        user_id=None,
++        params_input={},
++    )
++    resp = get_hitl_detail_content_detail(TI_ID)
++    assert resp == HITLDetailResponse(
++        response_received=False,
++        chosen_options=None,
++        response_at=None,
++        user_id=None,
++        params_input={},
++    )
+diff --git a/task-sdk/tests/task_sdk/execution_time/test_supervisor.py b/task-sdk/tests/task_sdk/execution_time/test_supervisor.py
+index 67f565ff..db71ab76 100644
+--- a/task-sdk/tests/task_sdk/execution_time/test_supervisor.py
++++ b/task-sdk/tests/task_sdk/execution_time/test_supervisor.py
+@@ -59,8 +59,9 @@ from airflow.sdk.execution_time.comms import (
+     AssetEventsResult,
+     AssetResult,
+     CommsDecoder,
+     ConnectionResult,
++    CreateHITLDetailPayload,
+     DagRunStateResult,
+     DeferTask,
+     DeleteVariable,
+     DeleteXCom,
+@@ -80,8 +81,9 @@ from airflow.sdk.execution_time.comms import (
+     GetVariable,
+     GetXCom,
+     GetXComSequenceItem,
+     GetXComSequenceSlice,
++    HITLDetailRequestResult,
+     InactiveAssetsResult,
+     OKResponse,
+     PrevSuccessfulDagRunResult,
+     PutVariable,
+@@ -1769,8 +1771,51 @@ class TestHandleRequest:
+                 XComSequenceSliceResult(root=["foo", "bar"]),
+                 None,
+                 id="get_xcom_seq_slice",
+             ),
++            pytest.param(
++                CreateHITLDetailPayload(
++                    ti_id=TI_ID,
++                    options=["Approve", "Reject"],
++                    subject="This is subject",
++                    body="This is body",
++                    defaults=["Approve"],
++                    multiple=False,
++                    params={},
++                ),
++                {
++                    "ti_id": str(TI_ID),
++                    "options": ["Approve", "Reject"],
++                    "subject": "This is subject",
++                    "body": "This is body",
++                    "defaults": ["Approve"],
++                    "multiple": False,
++                    "params": {},
++                    "type": "HITLDetailRequestResult",
++                },
++                "hitl.add_response",
++                (),
++                {
++                    "body": "This is body",
++                    "defaults": ["Approve"],
++                    "multiple": False,
++                    "options": ["Approve", "Reject"],
++                    "params": {},
++                    "subject": "This is subject",
++                    "ti_id": TI_ID,
++                },
++                HITLDetailRequestResult(
++                    ti_id=TI_ID,
++                    options=["Approve", "Reject"],
++                    subject="This is subject",
++                    body="This is body",
++                    defaults=["Approve"],
++                    multiple=False,
++                    params={},
++                ),
++                None,
++                id="create_hitl_detail_payload",
++            ),
+         ],
+     )
+     def test_handle_requests(
+         self,

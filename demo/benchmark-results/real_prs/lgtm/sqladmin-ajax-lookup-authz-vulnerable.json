@@ -1,0 +1,257 @@
+{
+  "id": "sqladmin-ajax-lookup-authz-vulnerable",
+  "repo": "smithyhq/sqladmin",
+  "pr": 292,
+  "title": "The remote_ajax_refs feature added an ajax_lookup endpoint that skipped both the login and is_accessible checks enforced on all other admin routes.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "1a907efc5e5a3e46e6609dfdd7e8d3bdd0331a8a",
+  "pr_sha": "4dc4bfd523fc11965c3adcf305694204c30f2c28",
+  "files_changed": 13,
+  "python_files_changed": 9,
+  "added_lines": 482,
+  "diff_chars": 21910,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 184.1,
+  "index_seconds": 0.3,
+  "index_reused": false,
+  "index_chunks": 31,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:ajax-lookup-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "sqladmin/application.py",
+      "line": 519,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new ajax_lookup endpoint (sqladmin/application.py:519-537) returns model rows from a user-controlled identity/name/term without any authentication or authorization check. Every other data-returning admin endpoint (index, list, details, delete, create, edit, export) is decorated with @login_required (lines 340, 346, 371, 392, 409, 444, 483), and the sibling export endpoint additionally enforces"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 12,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 21,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:ajax-lookup-authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new ajax_lookup endpoint (sqladmin/application.py:519-537) returns model rows from a user-controlled identity/name/term without any authentication or authorization check. Every other data-returning admin endpoint (index, list, details, delete, create, edit, export) is decorated with @login_required (lines 340, 346, 371, 392, 409, 444, 483), and the sibling export endpoint additionally enforces model_view.is_accessible(request) via _export (lines 225-228). ajax_lookup has neither @login_required nor an is_accessible check, so when an AuthenticationBackend is configured, an unauthenticated caller can enumerate and read model data. This violates the documented model where is_accessible 'controls if this Model/View should be accessed' and where the backend's authenticate() 'will be called for each incoming request to validate the authentication'.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            519,
+            537
+          ],
+          "source": null,
+          "content": "    async def ajax_lookup(self, request: Request) -> Response:\n        \"\"\"Ajax lookup route.\"\"\"\n\n        identity = request.path_params[\"identity\"]\n        model_view = self._find_model_view(identity)\n\n        name = request.query_params.get(\"name\")\n        term = request.query_params.get(\"term\")\n\n        if not name or not term:\n            raise HTTPException(status_code=400)\n\n        try:\n            loader: QueryAjaxModelLoader = model_view._form_ajax_refs[name]\n        except KeyError:\n            raise HTTPException(status_code=400)\n\n        data = [loader.format(m) for m in await loader.get_list(term)]\n        return JSONResponse({\"results\": data})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            483,
+            494
+          ],
+          "source": null,
+          "content": "    @login_required\n    async def export(self, request: Request) -> Response:\n        \"\"\"Export model endpoint.\"\"\"\n\n        await self._export(request)\n\n        identity = request.path_params[\"identity\"]\n        export_type = request.path_params[\"export_type\"]\n\n        model_view = self._find_model_view(identity)\n        rows = await model_view.get_model_objects(limit=model_view.export_max_rows)\n        return model_view.export_data(rows, export_type=export_type)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            225,
+            228
+          ],
+          "source": null,
+          "content": "    async def _export(self, request: Request) -> None:\n        model_view = self._find_model_view(request.path_params[\"identity\"])\n        if not model_view.can_export or not model_view.is_accessible(request):\n            raise HTTPException(status_code=403)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/authentication.py",
+          "lines": [
+            42,
+            56
+          ],
+          "source": null,
+          "content": "def login_required(func: Callable[..., Any]) -> Callable[..., Any]:\n    \"\"\"Decorator to check authentication of Admin routes.\n    If no authentication backend is setup, this will do nothing.\n    \"\"\"\n\n    @functools.wraps(func)\n    async def wrapper_decorator(*args: Any, **kwargs: Any) -> Any:\n        admin, request = args[0], args[1]\n        auth_backend = admin.authentication_backend\n        if auth_backend is not None:\n            is_authenticated = await auth_backend.authenticate(request)\n            if not is_authenticated:\n                return RedirectResponse(request.url_for(\"admin:login\"), status_code=302)\n\n        return await func(*args, **kwargs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/authentication.md",
+          "content": "The `is_accessible` controls if this Model/View should be accessed.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/authentication.md",
+          "content": "`authenticate`: Will be called for validating each incoming request.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            328,
+            330
+          ],
+          "source": null,
+          "content": "            Route(\n                \"/{identity}/ajax/lookup\", endpoint=self.ajax_lookup, name=\"ajax_lookup\"\n            ),",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            340,
+            342
+          ],
+          "source": null,
+          "content": "    @login_required\n    async def index(self, request: Request) -> Response:\n        \"\"\"Index route which can be overridden to create dashboards.\"\"\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/authentication.md",
+          "content": "authenticate: Will be called for validating each incoming request.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            124,
+            124
+          ],
+          "source": null,
+          "content": "view.ajax_lookup_url = f\"{self.base_url}/{view.identity}/ajax/lookup\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            328,
+            330
+          ],
+          "source": null,
+          "content": "Route(\n                \"/{identity}/ajax/lookup\", endpoint=self.ajax_lookup, name=\"ajax_lookup\"\n            ),",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            519,
+            537
+          ],
+          "source": null,
+          "content": "async def ajax_lookup(self, request: Request) -> Response:\n        \"\"\"Ajax lookup route.\"\"\"\n\n        identity = request.path_params[\"identity\"]\n        model_view = self._find_model_view(identity)\n\n        name = request.query_params.get(\"name\")\n        term = request.query_params.get(\"term\")\n\n        if not name or not term:\n            raise HTTPException(status_code=400)\n\n        try:\n            loader: QueryAjaxModelLoader = model_view._form_ajax_refs[name]\n        except KeyError:\n            raise HTTPException(status_code=400)\n\n        data = [loader.format(m) for m in await loader.get_list(term)]\n        return JSONResponse({\"results\": data})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "sqladmin/application.py",
+          "lines": [
+            340,
+            341
+          ],
+          "source": null,
+          "content": "@login_required\n    async def index(self, request: Request) -> Response:",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/authentication.md",
+          "content": "SQLAdmin does not enforce any authentication to your application, but provides an optional `AuthenticationBackend` you can use. ... The `is_accessible` controls if this Model/View should be accessed.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Decorate ajax_lookup with @login_required and add an authorization guard (e.g. `if not model_view.is_accessible(request): raise HTTPException(status_code=403)`) before returning data, mirroring the export/_export pattern.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8994,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "sqladmin/application.py",
+      "line": 519,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "sqladmin-ajax-lookup-authz",
+  "url": "https://github.com/smithyhq/sqladmin/pull/292",
+  "category": "authz",
+  "cwe": "CWE-862",
+  "ghsa": "GHSA-54mc-gghv-4cfj",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "sqladmin/application.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

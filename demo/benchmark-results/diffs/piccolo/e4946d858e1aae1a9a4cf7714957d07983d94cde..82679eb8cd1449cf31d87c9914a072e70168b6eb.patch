@@ -1,0 +1,150 @@
+diff --git a/piccolo/engine/base.py b/piccolo/engine/base.py
+index 77de5ce..95d1b8a 100644
+--- a/piccolo/engine/base.py
++++ b/piccolo/engine/base.py
+@@ -2,8 +2,9 @@ from __future__ import annotations
+ 
+ import contextvars
+ import logging
+ import pprint
++import string
+ import typing as t
+ from abc import ABCMeta, abstractmethod
+ 
+ from piccolo.querystring import QueryString
+@@ -14,8 +15,22 @@ if t.TYPE_CHECKING:  # pragma: no cover
+     from piccolo.query.base import Query
+ 
+ 
+ logger = logging.getLogger(__name__)
++# This is a set to speed up lookups from O(n) when
++# using str vs O(1) when using set[str]
++VALID_SAVEPOINT_CHARACTERS: t.Final[set[str]] = set(
++    string.ascii_letters + string.digits + "-" + "_"
++)
++
++
++def validate_savepoint_name(savepoint_name: str) -> None:
++    """Validates a save point's name meets the required character set."""
++    if not all(i in VALID_SAVEPOINT_CHARACTERS for i in savepoint_name):
++        raise ValueError(
++            "Savepoint names can only contain the following characters:"
++            f" {VALID_SAVEPOINT_CHARACTERS}"
++        )
+ 
+ 
+ class Batch:
+     pass
+diff --git a/piccolo/engine/postgres.py b/piccolo/engine/postgres.py
+index 42a8d6b..b5c1797 100644
+--- a/piccolo/engine/postgres.py
++++ b/piccolo/engine/postgres.py
+@@ -3,9 +3,9 @@ from __future__ import annotations
+ import contextvars
+ import typing as t
+ from dataclasses import dataclass
+ 
+-from piccolo.engine.base import Batch, Engine
++from piccolo.engine.base import Batch, Engine, validate_savepoint_name
+ from piccolo.engine.exceptions import TransactionError
+ from piccolo.query.base import DDL, Query
+ from piccolo.querystring import QueryString
+ from piccolo.utils.lazy_loader import LazyLoader
+@@ -128,13 +128,15 @@ class Savepoint:
+         self.name = name
+         self.transaction = transaction
+ 
+     async def rollback_to(self):
++        validate_savepoint_name(self.name)
+         await self.transaction.connection.execute(
+             f"ROLLBACK TO SAVEPOINT {self.name}"
+         )
+ 
+     async def release(self):
++        validate_savepoint_name(self.name)
+         await self.transaction.connection.execute(
+             f"RELEASE SAVEPOINT {self.name}"
+         )
+ 
+@@ -235,8 +237,9 @@ class PostgresTransaction:
+         return self._savepoint_id
+ 
+     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:
+         name = name or f"savepoint_{self.get_savepoint_id()}"
++        validate_savepoint_name(name)
+         await self.connection.execute(f"SAVEPOINT {name}")
+         return Savepoint(name=name, transaction=self)
+ 
+     ###########################################################################
+diff --git a/piccolo/engine/sqlite.py b/piccolo/engine/sqlite.py
+index 9084baf..7d0b3ea 100644
+--- a/piccolo/engine/sqlite.py
++++ b/piccolo/engine/sqlite.py
+@@ -9,9 +9,9 @@ import typing as t
+ import uuid
+ from dataclasses import dataclass
+ from decimal import Decimal
+ 
+-from piccolo.engine.base import Batch, Engine
++from piccolo.engine.base import Batch, Engine, validate_savepoint_name
+ from piccolo.engine.exceptions import TransactionError
+ from piccolo.query.base import DDL, Query
+ from piccolo.querystring import QueryString
+ from piccolo.utils.encoding import dump_json, load_json
+@@ -308,13 +308,15 @@ class Savepoint:
+         self.name = name
+         self.transaction = transaction
+ 
+     async def rollback_to(self):
++        validate_savepoint_name(self.name)
+         await self.transaction.connection.execute(
+             f"ROLLBACK TO SAVEPOINT {self.name}"
+         )
+ 
+     async def release(self):
++        validate_savepoint_name(self.name)
+         await self.transaction.connection.execute(
+             f"RELEASE SAVEPOINT {self.name}"
+         )
+ 
+@@ -412,8 +414,9 @@ class SQLiteTransaction:
+         return self._savepoint_id
+ 
+     async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:
+         name = name or f"savepoint_{self.get_savepoint_id()}"
++        validate_savepoint_name(name)
+         await self.connection.execute(f"SAVEPOINT {name}")
+         return Savepoint(name=name, transaction=self)
+ 
+     ###########################################################################
+diff --git a/tests/engine/test_transaction.py b/tests/engine/test_transaction.py
+index bf24896..3cba32c 100644
+--- a/tests/engine/test_transaction.py
++++ b/tests/engine/test_transaction.py
+@@ -1,8 +1,10 @@
+ import asyncio
+ import typing as t
+ from unittest import TestCase
+ 
++import pytest
++
+ from piccolo.engine.postgres import Atomic
+ from piccolo.engine.sqlite import SQLiteEngine, TransactionType
+ from piccolo.table import drop_db_tables_sync
+ from piccolo.utils.sync import run_sync
+@@ -295,4 +297,15 @@ class TestSavepoint(TestCase):
+ 
+         self.assertListEqual(
+             Manager.select(Manager.name).run_sync(), [{"name": "Manager 1"}]
+         )
++
++    def test_savepoint_sqli_checks(self):
++        # Added to test the fix for GHSA-xq59-7jf3-rjc6
++        async def run_test():
++            async with Manager._meta.db.transaction() as transaction:
++                await transaction.savepoint(
++                    "my_savepoint; SELECT * FROM Manager"
++                )
++
++        with pytest.raises(ValueError):
++            run_sync(run_test())

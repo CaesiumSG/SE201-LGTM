@@ -1,0 +1,422 @@
+diff --git a/src/sentry/api/endpoints/user_notification_options_detail.py b/src/sentry/api/endpoints/user_notification_options_detail.py
+new file mode 100644
+index 000000000..34077b6f5
+--- /dev/null
++++ b/src/sentry/api/endpoints/user_notification_options_detail.py
+@@ -0,0 +1,25 @@
++from rest_framework import status
++from rest_framework.request import Request
++from rest_framework.response import Response
++
++from sentry.api.base import control_silo_endpoint
++from sentry.api.bases.user import UserEndpoint
++from sentry.models import User
++from sentry.models.notificationsettingoption import NotificationSettingOption
++
++
++@control_silo_endpoint
++class UserNotificationOptionsDetailEndpoint(UserEndpoint):
++    # TODO(Steve): Make not private when we launch new system
++    private = True
++
++    def delete(self, request: Request, user: User, notification_option_id: str) -> Response:
++        try:
++            option = NotificationSettingOption.objects.get(
++                id=notification_option_id,
++            )
++        except NotificationSettingOption.DoesNotExist:
++            return Response(status=status.HTTP_404_NOT_FOUND)
++
++        option.delete()
++        return Response(status=status.HTTP_204_NO_CONTENT)
+diff --git a/src/sentry/api/endpoints/user_notification_providers.py b/src/sentry/api/endpoints/user_notification_providers.py
+new file mode 100644
+index 000000000..c526ce5da
+--- /dev/null
++++ b/src/sentry/api/endpoints/user_notification_providers.py
+@@ -0,0 +1,84 @@
++from django.db import router, transaction
++from rest_framework import status
++from rest_framework.request import Request
++from rest_framework.response import Response
++
++from sentry.api.base import control_silo_endpoint
++from sentry.api.bases.user import UserEndpoint
++from sentry.api.exceptions import ParameterValidationError
++from sentry.api.serializers import serialize
++from sentry.api.validators.notifications import validate_type
++from sentry.models import User
++from sentry.models.notificationsettingprovider import NotificationSettingProvider
++from sentry.notifications.serializers import NotificationSettingsProviderSerializer
++from sentry.notifications.types import NotificationSettingsOptionEnum
++from sentry.notifications.validators import (
++    UserNotificationSettingsProvidersDetailsSerializer,
++    allowed_providers,
++)
++
++
++@control_silo_endpoint
++class UserNotificationProvidersEndpoint(UserEndpoint):
++    # TODO(Steve): Make not private when we launch new system
++    private = True
++
++    def get(self, request: Request, user: User) -> Response:
++        """
++        Retrieve the notification provider preferences for a user.
++        Returns a list of NotificationSettingProvider rows.
++        """
++        notifications_settings = NotificationSettingProvider.objects.filter(
++            user_id=user.id,
++        )
++        notification_type = request.GET.get("type")
++        if notification_type:
++            try:
++                validate_type(notification_type)
++            except ParameterValidationError:
++                return self.respond({"type": ["Invalid type"]}, status=400)
++            notifications_settings = notifications_settings.filter(
++                type=notification_type,
++            )
++
++        notification_preferences = serialize(
++            list(notifications_settings), request.user, NotificationSettingsProviderSerializer()
++        )
++
++        return Response(notification_preferences)
++
++    def put(self, request: Request, user: User) -> Response:
++        """
++        Update the notification provider preferences for a user.
++        Provider is an array of provider names.
++        Returns an array of NotificationSettingProvider rows for the updated providers.
++        """
++        serializer = UserNotificationSettingsProvidersDetailsSerializer(data=request.data)
++        if not serializer.is_valid():
++            return self.respond(serializer.errors, status=400)
++
++        data = serializer.validated_data
++        new_rows = []
++        with transaction.atomic(router.db_for_write(NotificationSettingProvider)):
++            for provider in allowed_providers:
++                value = (
++                    NotificationSettingsOptionEnum.ALWAYS.value
++                    if provider in data["provider"]
++                    else NotificationSettingsOptionEnum.NEVER.value
++                )
++                (
++                    notification_setting_provider,
++                    created,
++                ) = NotificationSettingProvider.objects.update_or_create(
++                    user_id=user.id,
++                    scope_type=data["scope_type"],
++                    scope_identifier=data["scope_identifier"],
++                    type=data["type"],
++                    provider=provider,
++                    defaults={"value": value},
++                )
++                new_rows.append(notification_setting_provider)
++        return Response(
++            serialize(new_rows, request.user, NotificationSettingsProviderSerializer()),
++            status=status.HTTP_201_CREATED,
++        )
+diff --git a/src/sentry/api/urls.py b/src/sentry/api/urls.py
+index 9ab65e9a1..48b2753db 100644
+--- a/src/sentry/api/urls.py
++++ b/src/sentry/api/urls.py
+@@ -546,8 +546,10 @@ from .endpoints.user_index import UserIndexEndpoint
+ from .endpoints.user_ips import UserIPsEndpoint
+ from .endpoints.user_notification_details import UserNotificationDetailsEndpoint
+ from .endpoints.user_notification_fine_tuning import UserNotificationFineTuningEndpoint
+ from .endpoints.user_notification_options import UserNotificationOptionsEndpoint
++from .endpoints.user_notification_options_detail import UserNotificationOptionsDetailEndpoint
++from .endpoints.user_notification_providers import UserNotificationProvidersEndpoint
+ from .endpoints.user_notification_settings_details import UserNotificationSettingsDetailsEndpoint
+ from .endpoints.user_organizationintegrations import UserOrganizationIntegrationsEndpoint
+ from .endpoints.user_organizations import UserOrganizationsEndpoint
+ from .endpoints.user_password import UserPasswordEndpoint
+@@ -823,8 +825,18 @@ USER_URLS = [
+         r"^(?P<user_id>[^\/]+)/notification-options/$",
+         UserNotificationOptionsEndpoint.as_view(),
+         name="sentry-api-0-user-notification-options",
+     ),
++    re_path(
++        r"^(?P<user_id>[^\/]+)/notification-options/(?P<notification_option_id>[^\/]+)/$",
++        UserNotificationOptionsDetailEndpoint.as_view(),
++        name="sentry-api-0-user-notification-options-details",
++    ),
++    re_path(
++        r"^(?P<user_id>[^\/]+)/notification-providers/$",
++        UserNotificationProvidersEndpoint.as_view(),
++        name="sentry-api-0-user-notification-providers",
++    ),
+     re_path(
+         r"^(?P<user_id>[^\/]+)/password/$",
+         UserPasswordEndpoint.as_view(),
+         name="sentry-api-0-user-password",
+diff --git a/src/sentry/notifications/serializers.py b/src/sentry/notifications/serializers.py
+index 8f671f025..8c1c3159d 100644
+--- a/src/sentry/notifications/serializers.py
++++ b/src/sentry/notifications/serializers.py
+@@ -3,8 +3,9 @@ from __future__ import annotations
+ from typing import Any, Mapping, Optional
+ 
+ from sentry.api.serializers import Serializer
+ from sentry.models.notificationsettingoption import NotificationSettingOption
++from sentry.models.notificationsettingprovider import NotificationSettingProvider
+ 
+ 
+ class NotificationSettingsBaseSerializer(Serializer):
+     def serialize(
+@@ -31,4 +32,18 @@ class NotificationSettingsOptionSerializer(NotificationSettingsBaseSerializer):
+         *args: Any,
+         **kwargs: Any,
+     ) -> Mapping[str, Optional[str]]:
+         return super().serialize(obj, **kwargs)
++
++
++class NotificationSettingsProviderSerializer(NotificationSettingsBaseSerializer):
++    def serialize(
++        self,
++        obj: NotificationSettingProvider,
++        *args: Any,
++        **kwargs: Any,
++    ) -> Mapping[str, Optional[str]]:
++        output = super().serialize(obj, **kwargs)
++        return {
++            **output,
++            "provider": obj.provider,
++        }
+diff --git a/src/sentry/notifications/validators.py b/src/sentry/notifications/validators.py
+index adbbf273e..a06363aa8 100644
+--- a/src/sentry/notifications/validators.py
++++ b/src/sentry/notifications/validators.py
+@@ -2,9 +2,9 @@ from rest_framework import serializers
+ 
+ from sentry.api.exceptions import ParameterValidationError
+ from sentry.api.serializers.rest_framework.base import CamelSnakeSerializer
+ from sentry.api.validators.notifications import validate_scope_type, validate_type, validate_value
+-from sentry.notifications.types import NOTIFICATION_SETTING_V2_CHOICES
++from sentry.notifications.types import NOTIFICATION_SETTING_V2_CHOICES, NotificationScopeEnum
+ from sentry.types.integrations import ExternalProviderEnum
+ 
+ allowed_providers = [
+     ExternalProviderEnum.EMAIL.value,
+@@ -49,4 +49,26 @@ class UserNotificationSettingOptionWithValueSerializer(
+             validate_value(int_type, data["value"])
+         except ParameterValidationError:
+             raise serializers.ValidationError("Invalid type for value")
+         return data
++
++
++class UserNotificationSettingsProvidersDetailsSerializer(
++    UserNotificationSettingsOptionsDetailsSerializer
++):
++    provider = serializers.ListField(child=serializers.CharField())
++
++    def validate_provider(self, value):
++        for provider in value:
++            if provider not in allowed_providers:
++                raise serializers.ValidationError("Invalid provider")
++        return value
++
++    def validate_scope_type(self, value):
++        # for now, we limit the scopes for provider settings
++        if value not in [
++            NotificationScopeEnum.USER.value,
++            NotificationScopeEnum.TEAM.value,
++            NotificationScopeEnum.ORGANIZATION.value,
++        ]:
++            raise serializers.ValidationError("Invalid scope type")
++        return value
+diff --git a/tests/sentry/api/endpoints/test_user_notification_options_details.py b/tests/sentry/api/endpoints/test_user_notification_options_details.py
+new file mode 100644
+index 000000000..d8c9516e2
+--- /dev/null
++++ b/tests/sentry/api/endpoints/test_user_notification_options_details.py
+@@ -0,0 +1,43 @@
++from rest_framework import status
++
++from sentry.models.notificationsettingoption import NotificationSettingOption
++from sentry.notifications.types import (
++    NotificationScopeEnum,
++    NotificationSettingEnum,
++    NotificationSettingsOptionEnum,
++)
++from sentry.testutils.cases import APITestCase
++from sentry.testutils.silo import control_silo_test
++
++
++class UserNotificationOptionsDetailsBaseTest(APITestCase):
++    endpoint = "sentry-api-0-user-notification-options-details"
++
++
++@control_silo_test(stable=True)
++class UserNotificationOptionsDetailsDeleteTest(UserNotificationOptionsDetailsBaseTest):
++    method = "DELETE"
++
++    def setUp(self):
++        super().setUp()
++        self.login_as(self.user)
++
++        option = NotificationSettingOption.objects.create(
++            user_id=self.user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++        self.get_success_response(
++            "me",
++            option.id,
++        )
++        assert not NotificationSettingOption.objects.filter(id=option.id).exists()
++
++    def test_invalid_option(self):
++        self.get_error_response(
++            "me",
++            "123",
++            status_code=status.HTTP_404_NOT_FOUND,
++        )
+diff --git a/tests/sentry/api/endpoints/test_user_notification_providers.py b/tests/sentry/api/endpoints/test_user_notification_providers.py
+new file mode 100644
+index 000000000..dab17e864
+--- /dev/null
++++ b/tests/sentry/api/endpoints/test_user_notification_providers.py
+@@ -0,0 +1,137 @@
++from rest_framework import status
++
++from sentry.models.notificationsettingprovider import NotificationSettingProvider
++from sentry.notifications.types import (
++    NotificationScopeEnum,
++    NotificationSettingEnum,
++    NotificationSettingsOptionEnum,
++)
++from sentry.testutils.cases import APITestCase
++from sentry.testutils.silo import control_silo_test
++from sentry.types.integrations import ExternalProviderEnum
++
++
++class UserNotificationProvidersBaseTest(APITestCase):
++    endpoint = "sentry-api-0-user-notification-providers"
++
++
++@control_silo_test(stable=True)
++class UserNotificationProvidersGetTest(UserNotificationProvidersBaseTest):
++    def setUp(self):
++        super().setUp()
++        self.login_as(self.user)
++
++    def test_simple(self):
++        other_user = self.create_user()
++        NotificationSettingProvider.objects.create(
++            user_id=self.user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            provider=ExternalProviderEnum.SLACK.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++        NotificationSettingProvider.objects.create(
++            user_id=self.user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            provider=ExternalProviderEnum.EMAIL.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++        NotificationSettingProvider.objects.create(
++            user_id=self.user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.WORKFLOW.value,
++            provider=ExternalProviderEnum.EMAIL.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++        NotificationSettingProvider.objects.create(
++            user_id=other_user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            provider=ExternalProviderEnum.SLACK.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++
++        response = self.get_success_response("me", type="alerts").data
++        assert len(response) == 2
++        slack_item = next(item for item in response if item["provider"] == "slack")
++        email_item = next(item for item in response if item["provider"] == "email")
++
++        assert slack_item["scopeType"] == "organization"
++        assert slack_item["scopeIdentifier"] == str(self.organization.id)
++        assert slack_item["user_id"] == str(self.user.id)
++        assert slack_item["team_id"] is None
++        assert slack_item["value"] == "always"
++        assert slack_item["type"] == "alerts"
++        assert slack_item["provider"] == "slack"
++
++        assert email_item["provider"] == "email"
++
++        response = self.get_success_response("me").data
++        assert len(response) == 3
++
++    def test_invalid_type(self):
++        response = self.get_error_response(
++            "me",
++            type="invalid",
++            status_code=status.HTTP_400_BAD_REQUEST,
++        )
++        assert response.data["type"] == ["Invalid type"]
++
++
++@control_silo_test(stable=True)
++class UserNotificationProvidersPutTest(UserNotificationProvidersBaseTest):
++    method = "PUT"
++
++    def setUp(self):
++        super().setUp()
++        self.login_as(self.user)
++
++    def test_simple(self):
++        response = self.get_success_response(
++            "me",
++            user_id=self.user.id,
++            scope_type="organization",
++            scope_identifier=self.organization.id,
++            type="alerts",
++            status_code=status.HTTP_201_CREATED,
++            value="always",
++            provider=["slack"],
++        )
++        assert NotificationSettingProvider.objects.filter(
++            user_id=self.user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=self.organization.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++            provider=ExternalProviderEnum.SLACK.value,
++        ).exists()
++        assert len(response.data) == 3
++
++    def test_invalid_scope_type(self):
++        response = self.get_error_response(
++            "me",
++            user_id=self.user.id,
++            scope_type="project",
++            scope_identifier=self.project.id,
++            type="alerts",
++            status_code=status.HTTP_400_BAD_REQUEST,
++            provider=["slack"],
++        )
++        assert response.data["scopeType"] == ["Invalid scope type"]
++
++    def test_invalid_provider(self):
++        response = self.get_error_response(
++            "me",
++            user_id=self.user.id,
++            scope_type="organization",
++            scope_identifier=self.organization.id,
++            type="alerts",
++            status_code=status.HTTP_400_BAD_REQUEST,
++            provider=["github"],
++        )
++        assert response.data["provider"] == ["Invalid provider"]

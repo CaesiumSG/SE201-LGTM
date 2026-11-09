@@ -1,0 +1,863 @@
+{
+  "id": "django-explain-options-sqli-vulnerable",
+  "repo": "django/django",
+  "pr": 9053,
+  "title": "QuerySet.explain(**options) interpolated option keys directly into the EXPLAIN prefix on PostgreSQL, so an app passing a user-controlled dict could inject SQL.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "df90e462d91d3a77aa89b69d791bf17c2bf7ff9b",
+  "pr_sha": "c1c163b42717ed5e051098ebf0e2f5c77810f20e",
+  "files_changed": 15,
+  "python_files_changed": 13,
+  "added_lines": 207,
+  "diff_chars": 14952,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 236.7,
+  "index_seconds": 28.0,
+  "index_reused": false,
+  "index_chunks": 3142,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:explain-backends:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "django/db/backends/postgresql/operations.py",
+      "line": 274,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "PostgreSQL's explain_query_prefix() concatenates the option NAMES (name.upper()) directly into the SQL text via `prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())`. The base explain_query_prefix() only rejects options when features.validates_explain_options is True, but PostgreSQL sets validates_explain_options = False, so no allowlist is applied to the option names. These names or"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 20,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 31,
+  "reviewer_units": 6,
+  "findings": [
+    {
+      "finding_id": "sqli:explain-backends:1",
+      "cwe_id": "CWE-89",
+      "explanation": "PostgreSQL's explain_query_prefix() concatenates the option NAMES (name.upper()) directly into the SQL text via `prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())`. The base explain_query_prefix() only rejects options when features.validates_explain_options is True, but PostgreSQL sets validates_explain_options = False, so no allowlist is applied to the option names. These names originate from the public QuerySet.explain(**options) API (query.py:720 -> compiler.py:534-537), so an attacker-controlled option name is interpolated into the executed EXPLAIN statement without binding or allowlisting.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "django/db/backends/postgresql/operations.py",
+          "lines": [
+            263,
+            275
+          ],
+          "source": null,
+          "content": "    def explain_query_prefix(self, format=None, **options):\n        prefix = super().explain_query_prefix(format)\n        extra = {}\n        if format:\n            extra['FORMAT'] = format\n        if options:\n            extra.update({\n                name.upper(): 'true' if value else 'false'\n                for name, value in options.items()\n            })\n        if extra:\n            prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\n        return prefix",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/db/backends/postgresql/features.py",
+          "lines": [
+            53,
+            54
+          ],
+          "source": null,
+          "content": "    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\n    validates_explain_options = False  # A query will error on invalid options.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/db/backends/base/operations.py",
+          "lines": [
+            670,
+            672
+          ],
+          "source": null,
+          "content": "        if options:\n            raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n        return self.explain_prefix",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "django/db/models/query.py",
+          "lines": [
+            720,
+            721
+          ],
+          "source": null,
+          "content": "    def explain(self, *, format=None, **options):\n        return self.query.explain(using=self.db, format=format, **options)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/topics/security.txt",
+          "content": "you should always be careful to properly escape any parameters that the user can control.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate the option names against a fixed allowlist of supported PostgreSQL EXPLAIN options (e.g. ANALYZE, BUFFERS, VERBOSE, SETTINGS, TIMING, WAL) before interpolating them into the SQL text, rather than relying on the database to error on invalid options.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7893,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "django/db/backends/postgresql/operations.py",
+      "line": 274,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "QuerySet public methods and how query methods are exposed, e.g. exists, using, only"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b status=ok truncated=true incomplete=true query=\"QuerySet public methods and how query methods are exposed, e.g. exists, using, o\"]\n**Exploration: QuerySet public methods and how query methods are exposed, e.g. exists, using, only**\n\nFound 104 symbols across 3 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `RawQuerySet` (django/db/models/query.py:1263) \u2014 4 callers in `django/db/models/query.py`; tests: `tests/raw_query/tests.py`\n- `EmptyQuerySet` (django/db/models/query.py:1253) \u2014 11 callers in `django/db/models/query.py`; tests: `tests/basic/tests.py`, `tests/model_forms/tests.py`\n- `queryset` (django/contrib/admin/filters.py:48) \u2014 1 caller in `django/contrib/admin/views/main.py`; no tests found within 3 caller hops\n- `QuerySet` (django/db/models/query.py:180) \u2014 13 callers in `django/db/models/__init__.py`, `django/db/models/fields/related_descriptors.py`, `django/db/models/manager.py`, `django/views/generic/list.py` +1 more; tests: `tests/basic/tests.py`, `tests/generic_views/models.py`, `tests/prefetch_related/models.py`, `tests/prefetch_related/tests.py`\n\n**Relationships**\n\n**instantiates:**\n- using \u2192 RawQuerySet\n- test_rawqueryset_repr \u2192 RawQuerySet\n- raw \u2192 RawQuerySet\n- __iter__ \u2192 InvalidQuery\n- __init__ \u2192 RawQuery\n- test_emptyqs \u2192 EmptyQuerySet\n- test_model_multiple_choice_required_false \u2192 ModelMultipleChoiceField\n- queryset \u2192 IncorrectLookupParameters\n- get_queryset \u2192 IncorrectLookupParameters\n- get_filters \u2192 IncorrectLookupParameters\n- ... and 3 more\n\n**decorates:**\n- columns \u2192 cached_property\n- model_fields \u2192 cached_property\n- name \u2192 cached_property\n\n**calls:**\n- __iter__ \u2192 resolve_model_init_order\n- using \u2192 chain\n- model_fields \u2192 get_attname_column\n- __iter__ \u2192 get_converters\n- __iter__ \u2192 from_db\n- __iter__ \u2192 apply_converters\n- test_emptyqs \u2192 assertRaisesMessage\n- intersection \u2192 _combinator_query\n- test_model_multiple_choice_required_false \u2192 assertQuerysetEqual\n- __or__ \u2192 _merge_known_related_objects\n- ... and 81 more\n\n**references:**\n- test_emptyqs \u2192 EmptyQuerySet\n- intersection \u2192 EmptyQuerySet\n- test_model_multiple_choice_required_false \u2192 EmptyQuerySet\n- __or__ \u2192 EmptyQuerySet\n- test_emptyqs_customqs \u2192 EmptyQuerySet\n- test_emptyqs_values \u2192 EmptyQuerySet\n- union \u2192 EmptyQuerySet\n- __and__ \u2192 EmptyQuerySet\n- difference \u2192 EmptyQuerySet\n- test_model_multiple_choice_required_false \u2192 ValidationError\n- ... and 12 more\n\n**extends:**\n- FieldListFilter \u2192 ListFilter\n- BooleanFieldListFilter \u2192 FieldListFilter\n- AllValuesFieldListFilter \u2192 FieldListFilter\n- RelatedFieldListFilter \u2192 FieldListFilter\n- ChoicesFieldListFilter \u2192 FieldListFilter\n- DateFieldListFilter \u2192 FieldListFilter\n- SimpleListFilter \u2192 ListFilter\n- CustomQuerySet \u2192 QuerySet\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/query.py`** \u2014 calls(calls), cached_property(decorates), can_filter(calls), clear_ordering(calls), imports(imports), InvalidQuery(imports), InvalidQuery(instantiates), cached_property(imports), __deepcopy__(method), __getstate__(method), +58 more\n\n```python\n180\tclass QuerySet:\n181\t    \"\"\"Represent a lazy database lookup for a set of objects.\"\"\"\n182\t\n183\t    def __init__(self, model=None, query=None, using=None, hints=None):\n184\t        self.model = model\n185\t        self._db = using\n186\t        self._hints = hints or {}\n187\t        self.query = query or sql.Query(self.model)\n188\t        self._result_cache = None\n189\t        self._sticky_filter = False\n190\t        self._for_write = False\n191\t        self._prefetch_related_lookups = ()\n192\t        self._prefetch_done = False\n193\t        self._known_related_objects = {}  # {rel_field: {pk: rel_obj}}\n194\t        self._iterable_class = ModelIterable\n195\t        self._fields = None\n196\t\n197\t    def as_manager(cls):\n198\t        # Address the circular dependency between `Queryset` and `Manager`.\n\n... (gap) ...\n\n302\t        qs._fetch_all()\n303\t        return qs._result_cache[0]\n304\t\n305\t    def __and__(self, other):\n306\t        self._merge_sanity_check(other)\n307\t        if isinstance(other, EmptyQuerySet):\n308\t            return other\n309\t        if isinstance(self, EmptyQuerySet):\n310\t            return self\n311\t        combined = self._chain()\n312\t        combined._merge_known_related_objects(other)\n313\t        combined.query.combine(other.query, sql.AND)\n314\t        return combined\n315\t\n316\t    def __or__(self, other):\n317\t        self._merge_sanity_check(other)\n318\t        if isinstance(self, EmptyQuerySet):\n319\t            return other\n320\t        if isinstance(other, EmptyQuerySet):\n321\t            return self\n322\t        combined = self._chain()\n323\t        combined._merge_known_related_objects(other)\n324\t        combined.query.combine(other.query, sql.OR)\n325\t        return combined\n326\t\n327\t    ####################################\n328\t    # METHODS THAT DO DATABASE QUERIES #\n\n... (gap) ...\n\n588\t        obj.query.add_ordering(*order_by)\n589\t        return obj.get()\n590\t\n591\t    def earliest(self, *fields, field_name=None):\n592\t        return self._earliest_or_latest(*fields, field_name=field_name)\n593\t\n594\t    def latest(self, *fields, field_name=None):\n595\t        return self.reverse()._earliest_or_latest(*fields, field_name=field_name)\n\n... (gap) ...\n\n707\t    _update.alters_data = True\n708\t    _update.queryset_only = False\n709\t\n710\t    def exists(self):\n711\t        if self._result_cache is None:\n712\t            return self.query.has_results(using=self.db)\n713\t        return bool(self._r\n[TRUNCATED omitted_chars=19354]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "SQLCompiler as_sql and execute_sql methods"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b status=ok truncated=true incomplete=true query=\"SQLCompiler as_sql and execute_sql methods\"]\n**Interface dispatch (a named method has many implementations)**\n\n- `as_sql` \u2192 runtime dispatch to **41** types implementing `Func` \u2014 the static path ends here, the target is chosen at runtime. e.g. `SearchVector.as_sql` (django/contrib/postgres/search.py:73), `SearchRank.as_sql` (django/contrib/postgres/search.py:186), `Aggregate.as_sql` (django/db/models/aggregates.py:62) +38 more\n\n> The method above is dispatched at runtime to one of the listed implementations (a registry / plugin / strategy interface) \u2014 there is no single static caller\u2192callee edge; the implementations ARE the continuations. To follow one, run codegraph_explore on a listed target.\n\n> Full source for these symbols is below \u2014 the call flow among them, followed by their bodies.\n**Exploration: SQLCompiler as_sql and execute_sql methods**\n\nFound 78 symbols across 3 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `as_sql` (django/db/models/sql/compiler.py:1207) \u2014 2 callers in `django/db/models/sql/compiler.py`; no tests found within 3 caller hops\n- `execute_sql` (django/db/models/sql/compiler.py:1025) \u2014 4 callers in `django/db/models/query.py`, `django/db/models/sql/compiler.py`, `django/db/models/sql/query.py`; tested via callers: `tests/aggregation/tests.py`, `tests/aggregation_regress/tests.py` +1\n\n**Relationships**\n\n**calls:**\n- execute_sql \u2192 execute\n- execute_sql \u2192 as_sql\n- execute_sql \u2192 get_meta\n- execute \u2192 _param_generator\n- execute \u2192 _fix_for_params\n- execute \u2192 _guess_input_sizes\n- get_hstore_oids \u2192 execute\n- create_default_site \u2192 execute\n- get_citext_oids \u2192 execute\n- execute \u2192 execute\n- ... and 138 more\n\n**extends:**\n- SQLInsertCompiler \u2192 SQLCompiler\n- SQLInsertCompiler \u2192 SQLInsertCompiler\n- SQLUpdateCompiler \u2192 SQLCompiler\n- SQLUpdateCompiler \u2192 SQLUpdateCompiler\n- SQLInsertCompiler \u2192 SQLCompiler\n- SQLUpdateCompiler \u2192 SQLCompiler\n- SQLCompiler \u2192 SQLCompiler\n\n**instantiates:**\n- prepare_value \u2192 FieldError\n- get_initial_alias \u2192 BaseTable\n- trim_start \u2192 BaseTable\n- as_sql \u2192 SubqueryConstraint\n- test_empty_nodes \u2192 NothingNode\n- test_empty_full_handling_conjunction \u2192 NothingNode\n- test_empty_full_handling_disjunction \u2192 NothingNode\n- set_empty \u2192 NothingNode\n- test_empty_nodes \u2192 WhereNode\n- test_empty_full_handling_conjunction \u2192 WhereNode\n- ... and 3 more\n\n**references:**\n- as_sql \u2192 quote_name_unless_alias\n- as_sql \u2192 quote_name_unless_alias\n- as_sql \u2192 quote_name_unless_alias\n- as_sql \u2192 quote_name_unless_alias\n- as_sql \u2192 quote_name_unless_alias\n- as_subquery_condition \u2192 quote_name_unless_alias\n- is_empty \u2192 NothingNode\n- test_empty_nodes \u2192 EmptyResultSet\n- test_empty_full_handling_conjunction \u2192 EmptyResultSet\n- test_empty_full_handling_disjunction \u2192 EmptyResultSet\n- ... and 1 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/sql/compiler.py`** \u2014 instantiates(instantiates), calls(calls), append(calls), compile(calls), get_meta(calls), as_sql(calls), FieldError(instantiates), as_sql(method), quote_name_unless_alias(references), get_compiler(calls), +53 more\n\n```python\n430\t            params.extend(part)\n431\t        return result, params\n432\t\n433\t    def as_sql(self, with_limits=True, with_col_aliases=False):\n434\t        \"\"\"\n435\t        Create the SQL for this query. Return the SQL string and list of\n436\t        parameters.\n437\t\n438\t        If 'with_limits' is False, any limit/offset information is not included\n439\t        in the query.\n440\t        \"\"\"\n441\t        refcounts_before = self.query.alias_refcount.copy()\n442\t        try:\n443\t            extra_select, order_by, group_by = self.pre_sql_setup()\n444\t            for_update_part = None\n445\t            # Is a LIMIT/OFFSET clause needed?\n446\t            with_limit_offset = with_limits and (self.query.high_mark is not None or self.query.low_mark)\n447\t            combinator = self.query.combinator\n448\t            features = self.connection.features\n449\t            if combinator:\n450\t                if not getattr(features, 'supports_select_{}'.format(combinator)):\n451\t                    raise NotSupportedError('{} is not supported on this database backend.'.format(combinator))\n452\t                result, params = self.get_combinator_sql(combinator, self.query.combinator_all)\n453\t            else:\n454\t                distinct_fields, distinct_params = self.get_distinct()\n455\t                # This must come after 'select', 'ordering', and 'distinct'\n456\t                # (see docstring of get_from_clause() for details).\n457\t                from_, f_params = self.get_from_clause()\n458\t                where, w_params = self.compile(self.where) if self.where is not None else (\"\", [])\n459\t                having, h_params = self.compile(self.having) if self.having is not None else (\"\", [])\n460\t                result = ['SELECT']\n461\t                params = []\n462\t\n463\t                if self.query.distinct:\n464\t                    distinct_result, distinct_params = self.connection.ops.distinct_sql(\n465\t                        distinct_fields,\n466\t                        distinct_params,\n467\t                    )\n468\t                    result += distinct_result\n469\t                    params += distinct_params\n470\t\n471\t                out_cols = []\n472\t                col_idx = 1\n473\t                for _, (s_sql, s_params), alias in self.select + extra_select:\n474\t                    if alias:\n475\t               \n[TRUNCATED omitted_chars=19264]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1020,
+                  "end_line": 1060,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b path=django/db/models/sql/compiler.py lines=1020-1060]\n1020:         # This is always executed on a query clone, so we can modify self.query\n1021:         self.query.add_extra({'a': 1}, None, None, None, None, None)\n1022:         self.query.set_extra_mask(['a'])\n1023:         return bool(self.execute_sql(SINGLE))\n1024: \n1025:     def execute_sql(self, result_type=MULTI, chunked_fetch=False, chunk_size=GET_ITERATOR_CHUNK_SIZE):\n1026:         \"\"\"\n1027:         Run the query against the database and return the result(s). The\n1028:         return value is a single data item if result_type is SINGLE, or an\n1029:         iterator over the results if the result_type is MULTI.\n1030: \n1031:         result_type is either MULTI (use fetchmany() to retrieve all rows),\n1032:         SINGLE (only retrieve a single row), or None. In this last case, the\n1033:         cursor is returned if any query is executed, since it's used by\n1034:         subclasses such as InsertQuery). It's possible, however, that no query\n1035:         is needed, as the filters describe an empty set. In that case, None is\n1036:         returned, to avoid any unnecessary database interaction.\n1037:         \"\"\"\n1038:         result_type = result_type or NO_RESULTS\n1039:         try:\n1040:             sql, params = self.as_sql()\n1041:             if not sql:\n1042:                 raise EmptyResultSet\n1043:         except EmptyResultSet:\n1044:             if result_type == MULTI:\n1045:                 return iter([])\n1046:             else:\n1047:                 return\n1048:         if chunked_fetch:\n1049:             cursor = self.connection.chunked_cursor()\n1050:         else:\n1051:             cursor = self.connection.cursor()\n1052:         try:\n1053:             cursor.execute(sql, params)\n1054:         except Exception:\n1055:             # Might fail for server-side cursors (e.g. connection closed)\n1056:             cursor.close()\n1057:             raise\n1058: \n1059:         if result_type == CURSOR:\n1060:             # Give the caller the cursor to process and close.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 500,
+                  "end_line": 525,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b path=django/db/models/sql/query.py lines=500-525]\n500:         return self.where\n501: \n502:     def has_results(self, using):\n503:         q = self.clone()\n504:         if not q.distinct:\n505:             if q.group_by is True:\n506:                 q.add_fields((f.attname for f in self.model._meta.concrete_fields), False)\n507:                 q.set_group_by()\n508:             q.clear_select_clause()\n509:         q.clear_ordering(True)\n510:         q.set_limits(high=1)\n511:         compiler = q.get_compiler(using=using)\n512:         return compiler.has_results()\n513: \n514:     def combine(self, rhs, connector):\n515:         \"\"\"\n516:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n517:         being applied *after* (that is, \"to the right of\") anything in the\n518:         current query. 'rhs' is not modified during a call to this function.\n519: \n520:         The 'connector' parameter describes how to connect filters from the\n521:         'rhs' query.\n522:         \"\"\"\n523:         assert self.model == rhs.model, \\\n524:             \"Cannot combine queries on two different base models.\"\n525:         assert self.can_filter(), \\\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/basic/tests.py",
+                  "start_line": 540,
+                  "end_line": 575,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b path=tests/basic/tests.py lines=540-575]\n540:         'in_bulk',\n541:         'iterator',\n542:         'earliest',\n543:         'latest',\n544:         'first',\n545:         'last',\n546:         'order_by',\n547:         'select_for_update',\n548:         'select_related',\n549:         'prefetch_related',\n550:         'values',\n551:         'values_list',\n552:         'update',\n553:         'reverse',\n554:         'defer',\n555:         'only',\n556:         'using',\n557:         'exists',\n558:         '_insert',\n559:         '_update',\n560:         'raw',\n561:         'union',\n562:         'intersection',\n563:         'difference',\n564:     ]\n565: \n566:     def test_manager_methods(self):\n567:         \"\"\"\n568:         This test ensures that the correct set of methods from `QuerySet`\n569:         are copied onto `Manager`.\n570: \n571:         It's particularly useful to prevent accidentally leaking new methods\n572:         into `Manager`. New `QuerySet` methods that should also be copied onto\n573:         `Manager` will need to be added to `ManagerTest.QUERYSET_PROXY_METHODS`.\n574:         \"\"\"\n575:         self.assertEqual(\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/runtests.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=df90e462d91d3a77aa89b69d791bf17c2bf7ff9b path=tests/runtests.py lines=1-40]\n1: #!/usr/bin/env python\n2: import argparse\n3: import atexit\n4: import copy\n5: import os\n6: import shutil\n7: import subprocess\n8: import sys\n9: import tempfile\n10: import warnings\n11: \n12: import django\n13: from django.apps import apps\n14: from django.conf import settings\n15: from django.db import connection, connections\n16: from django.test import TestCase, TransactionTestCase\n17: from django.test.runner import default_test_processes\n18: from django.test.selenium import SeleniumTestCaseBase\n19: from django.test.utils import get_runner\n20: from django.utils.deprecation import RemovedInDjango30Warning\n21: from django.utils.log import DEFAULT_LOGGING\n22: \n23: # Make deprecation warnings errors to ensure no usage of deprecated features.\n24: warnings.simplefilter(\"error\", RemovedInDjango30Warning)\n25: # Make runtime warning errors to ensure no usage of error prone patterns.\n26: warnings.simplefilter(\"error\", RuntimeWarning)\n27: # Ignore known warnings in test dependencies.\n28: warnings.filterwarnings(\"ignore\", \"'U' mode is deprecated\", DeprecationWarning, module='docutils.io')\n29: \n30: RUNTESTS_DIR = os.path.abspath(os.path.dirname(__file__))\n31: \n32: TEMPLATE_DIR = os.path.join(RUNTESTS_DIR, 'templates')\n33: \n34: # Create a specific subdirectory for the duration of the test suite.\n35: TMPDIR = tempfile.mkdtemp(prefix='django_')\n36: # Set the TMPDIR environment variable in addition to tempfile.tempdir\n37: # so that children processes inherit it.\n38: tempfile.tempdir = os.environ['TMPDIR'] = TMPDIR\n39: \n40: # Removing the temporary TMPDIR.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/features.py",
+                  "start_line": 240,
+                  "end_line": 280,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/features.py lines=240-280]\n240:     supports_cast_with_precision = True\n241: \n242:     # SQL to create a procedure for use by the Django test suite. The\n243:     # functionality of the procedure isn't important.\n244:     create_test_procedure_without_params_sql = None\n245:     create_test_procedure_with_int_param_sql = None\n246: \n247:     # Does the backend support keyword parameters for cursor.callproc()?\n248:     supports_callproc_kwargs = False\n249: \n250:     # Convert CharField results from bytes to str in database functions.\n251:     db_functions_convert_bytes_to_str = False\n252: \n253:     # What formats does the backend EXPLAIN syntax support?\n254:     supported_explain_formats = set()\n255: \n256:     # Does DatabaseOperations.explain_query_prefix() raise ValueError if\n257:     # unknown kwargs are passed to QuerySet.explain()?\n258:     validates_explain_options = True\n259: \n260:     def __init__(self, connection):\n261:         self.connection = connection\n262: \n263:     @cached_property\n264:     def supports_explaining_query_execution(self):\n265:         \"\"\"Does this backend support explaining query execution?\"\"\"\n266:         return self.connection.ops.explain_prefix is not None\n267: \n268:     @cached_property\n269:     def supports_transactions(self):\n270:         \"\"\"Confirm support for transactions.\"\"\"\n271:         with self.connection.cursor() as cursor:\n272:             cursor.execute('CREATE TABLE ROLLBACK_TEST (X INT)')\n273:             self.connection.set_autocommit(False)\n274:             cursor.execute('INSERT INTO ROLLBACK_TEST (X) VALUES (8)')\n275:             self.connection.rollback()\n276:             self.connection.set_autocommit(True)\n277:             cursor.execute('SELECT COUNT(X) FROM ROLLBACK_TEST')\n278:             count, = cursor.fetchone()\n279:             cursor.execute('DROP TABLE ROLLBACK_TEST')\n280:         return count == 0\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 40,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/operations.py lines=40-60]\n40: \n41:     # Start and end points for window expressions.\n42:     PRECEDING = 'PRECEDING'\n43:     FOLLOWING = 'FOLLOWING'\n44:     UNBOUNDED_PRECEDING = 'UNBOUNDED ' + PRECEDING\n45:     UNBOUNDED_FOLLOWING = 'UNBOUNDED ' + FOLLOWING\n46:     CURRENT_ROW = 'CURRENT ROW'\n47: \n48:     # Prefix for EXPLAIN queries, or None EXPLAIN isn't supported.\n49:     explain_prefix = None\n50: \n51:     def __init__(self, connection):\n52:         self.connection = connection\n53:         self._cache = None\n54: \n55:     def autoinc_sql(self, table, column):\n56:         \"\"\"\n57:         Return any SQL needed to support auto-incrementing primary keys, or\n58:         None if no SQL is necessary.\n59: \n60:         This SQL is executed when a table is created.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 525,
+                  "end_line": 545,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/compiler.py lines=525-545]\n525:                         raise NotImplementedError('annotate() + distinct(fields) is not implemented.')\n526:                     order_by = order_by or self.connection.ops.force_no_ordering()\n527:                     result.append('GROUP BY %s' % ', '.join(grouping))\n528: \n529:                 if having:\n530:                     result.append('HAVING %s' % having)\n531:                     params.extend(h_params)\n532: \n533:             if self.query.explain_query:\n534:                 result.insert(0, self.connection.ops.explain_query_prefix(\n535:                     self.query.explain_format,\n536:                     **self.query.explain_options\n537:                 ))\n538: \n539:             if order_by:\n540:                 ordering = []\n541:                 for _, (o_sql, o_params, _) in order_by:\n542:                     ordering.append(o_sql)\n543:                     params.extend(o_params)\n544:                 result.append('ORDER BY %s' % ', '.join(ordering))\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1100,
+                  "end_line": 1125,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/compiler.py lines=1100-1125]\n1100: \n1101:         for index, select_col in enumerate(self.query.select):\n1102:             lhs_sql, lhs_params = self.compile(select_col)\n1103:             rhs = '%s.%s' % (qn(alias), qn2(columns[index]))\n1104:             self.query.where.add(\n1105:                 QueryWrapper('%s = %s' % (lhs_sql, rhs), lhs_params), 'AND')\n1106: \n1107:         sql, params = self.as_sql()\n1108:         return 'EXISTS (%s)' % sql, params\n1109: \n1110:     def explain_query(self):\n1111:         result = list(self.execute_sql())\n1112:         # Some backends return 1 item tuples with strings, and others return\n1113:         # tuples with integers and strings. Flatten them out into strings.\n1114:         for row in result[0]:\n1115:             if not isinstance(row, str):\n1116:                 yield ' '.join(str(c) for c in row)\n1117:             else:\n1118:                 yield row\n1119: \n1120: \n1121: class SQLInsertCompiler(SQLCompiler):\n1122:     return_id = False\n1123: \n1124:     def field_as_sql(self, field, val):\n1125:         \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 710,
+                  "end_line": 730,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/query.py lines=710-730]\n710:     def exists(self):\n711:         if self._result_cache is None:\n712:             return self.query.has_results(using=self.db)\n713:         return bool(self._result_cache)\n714: \n715:     def _prefetch_related_objects(self):\n716:         # This method can only be called once the result cache has been filled.\n717:         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n718:         self._prefetch_done = True\n719: \n720:     def explain(self, *, format=None, **options):\n721:         return self.query.explain(using=self.db, format=format, **options)\n722: \n723:     ##################################################\n724:     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n725:     ##################################################\n726: \n727:     def raw(self, raw_query, params=None, translations=None, using=None):\n728:         if using is None:\n729:             using = self.db\n730:         return RawQuerySet(raw_query, model=self.model, params=params, translations=translations, using=using)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 215,
+                  "end_line": 235,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/query.py lines=215-235]\n215: \n216:         self.extra_tables = ()\n217:         self.extra_order_by = ()\n218: \n219:         # A tuple that is a set of model field names and either True, if these\n220:         # are the fields to defer, or False if these are the only fields to\n221:         # load.\n222:         self.deferred_loading = (frozenset(), True)\n223: \n224:         self._filtered_relations = {}\n225: \n226:         self.explain_query = False\n227:         self.explain_format = None\n228:         self.explain_options = {}\n229: \n230:     @property\n231:     def extra(self):\n232:         if self._extra is None:\n233:             self._extra = OrderedDict()\n234:         return self._extra\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 510,
+                  "end_line": 530,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/query.py lines=510-530]\n510:                 q.add_fields((f.attname for f in self.model._meta.concrete_fields), False)\n511:                 q.set_group_by()\n512:             q.clear_select_clause()\n513:         q.clear_ordering(True)\n514:         q.set_limits(high=1)\n515:         compiler = q.get_compiler(using=using)\n516:         return compiler.has_results()\n517: \n518:     def explain(self, using, format=None, **options):\n519:         q = self.clone()\n520:         q.explain_query = True\n521:         q.explain_format = format\n522:         q.explain_options = options\n523:         compiler = q.get_compiler(using=using)\n524:         return '\\n'.join(compiler.explain_query())\n525: \n526:     def combine(self, rhs, connector):\n527:         \"\"\"\n528:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n529:         being applied *after* (that is, \"to the right of\") anything in the\n530:         current query. 'rhs' is not modified during a call to this function.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 650,
+                  "end_line": 675,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/operations.py lines=650-672]\n650:         Return SQL for start and end points in an OVER clause window frame.\n651:         \"\"\"\n652:         if not self.connection.features.supports_over_clause:\n653:             raise NotSupportedError('This backend does not support window expressions.')\n654:         return self.window_frame_start(start), self.window_frame_end(end)\n655: \n656:     def window_frame_range_start_end(self, start=None, end=None):\n657:         return self.window_frame_rows_start_end(start, end)\n658: \n659:     def explain_query_prefix(self, format=None, **options):\n660:         if not self.connection.features.supports_explaining_query_execution:\n661:             raise NotSupportedError('This backend does not support explaining query execution.')\n662:         if format:\n663:             supported_formats = self.connection.features.supported_explain_formats\n664:             normalized_format = format.upper()\n665:             if normalized_format not in supported_formats:\n666:                 msg = '%s is not a recognized format.' % normalized_format\n667:                 if supported_formats:\n668:                     msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))\n669:                 raise ValueError(msg)\n670:         if options:\n671:             raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n672:         return self.explain_prefix\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/mysql/operations.py",
+                  "start_line": 265,
+                  "end_line": 285,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/mysql/operations.py lines=265-284]\n265:         rhs_sql, rhs_params = rhs\n266:         if internal_type == 'TimeField':\n267:             return (\n268:                 \"((TIME_TO_SEC(%(lhs)s) * 1000000 + MICROSECOND(%(lhs)s)) -\"\n269:                 \" (TIME_TO_SEC(%(rhs)s) * 1000000 + MICROSECOND(%(rhs)s)))\"\n270:             ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, lhs_params * 2 + rhs_params * 2\n271:         else:\n272:             return \"TIMESTAMPDIFF(MICROSECOND, %s, %s)\" % (rhs_sql, lhs_sql), rhs_params + lhs_params\n273: \n274:     def explain_query_prefix(self, format=None, **options):\n275:         # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n276:         if format and format.upper() == 'TEXT':\n277:             format = 'TRADITIONAL'\n278:         prefix = super().explain_query_prefix(format, **options)\n279:         if format:\n280:             prefix += ' FORMAT=%s' % format\n281:         if self.connection.features.needs_explain_extended and format is None:\n282:             # EXTENDED and FORMAT are mutually exclusive options.\n283:             prefix += ' EXTENDED'\n284:         return prefix\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 255,
+                  "end_line": 276,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/postgresql/operations.py lines=255-275]\n255:         start_, end_ = super().window_frame_range_start_end(start, end)\n256:         if (start and start < 0) or (end and end > 0):\n257:             raise NotSupportedError(\n258:                 'PostgreSQL only supports UNBOUNDED together with PRECEDING '\n259:                 'and FOLLOWING.'\n260:             )\n261:         return start_, end_\n262: \n263:     def explain_query_prefix(self, format=None, **options):\n264:         prefix = super().explain_query_prefix(format)\n265:         extra = {}\n266:         if format:\n267:             extra['FORMAT'] = format\n268:         if options:\n269:             extra.update({\n270:                 name.upper(): 'true' if value else 'false'\n271:                 for name, value in options.items()\n272:             })\n273:         if extra:\n274:             prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\n275:         return prefix\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/mysql/features.py",
+                  "start_line": 45,
+                  "end_line": 95,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/mysql/features.py lines=45-95]\n45:         CREATE PROCEDURE test_procedure (P_I INTEGER)\n46:         BEGIN\n47:             DECLARE V_I INTEGER;\n48:             SET V_I = P_I;\n49:         END;\n50:     \"\"\"\n51:     db_functions_convert_bytes_to_str = True\n52:     # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n53:     supported_explain_formats = {'JSON', 'TEXT', 'TRADITIONAL'}\n54: \n55:     @cached_property\n56:     def _mysql_storage_engine(self):\n57:         \"Internal method used in Django tests. Don't rely on this from your code\"\n58:         with self.connection.cursor() as cursor:\n59:             cursor.execute(\"SELECT ENGINE FROM INFORMATION_SCHEMA.ENGINES WHERE SUPPORT = 'DEFAULT'\")\n60:             result = cursor.fetchone()\n61:         return result[0]\n62: \n63:     @cached_property\n64:     def can_introspect_foreign_keys(self):\n65:         \"Confirm support for introspected foreign keys\"\n66:         return self._mysql_storage_engine != 'MyISAM'\n67: \n68:     @cached_property\n69:     def has_zoneinfo_database(self):\n70:         # Test if the time zone definitions are installed.\n71:         with self.connection.cursor() as cursor:\n72:             cursor.execute(\"SELECT 1 FROM mysql.time_zone LIMIT 1\")\n73:             return cursor.fetchone() is not None\n74: \n75:     @cached_property\n76:     def is_sql_auto_is_null_enabled(self):\n77:         with self.connection.cursor() as cursor:\n78:             cursor.execute('SELECT @@SQL_AUTO_IS_NULL')\n79:             result = cursor.fetchone()\n80:             return result and result[0] == 1\n81: \n82:     @cached_property\n83:     def supports_over_clause(self):\n84:         return self.connection.mysql_version >= (8, 0, 2)\n85: \n86:     @cached_property\n87:     def needs_explain_extended(self):\n88:         # EXTENDED is deprecated (and not required) in 5.7 and removed in 8.0.\n89:         return self.connection.mysql_version < (5, 7)\n90: \n91:     @cached_property\n92:     def supports_transactions(self):\n93:         \"\"\"\n94:         All storage engines except MyISAM support transactions.\n95:         \"\"\"\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/features.py",
+                  "start_line": 45,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/postgresql/features.py lines=45-60]\n45:         DECLARE\n46:             V_I INTEGER;\n47:         BEGIN\n48:             V_I := P_I;\n49:         END;\n50:     $$ LANGUAGE plpgsql;\"\"\"\n51:     supports_over_clause = True\n52:     supports_aggregate_filter_clause = True\n53:     supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\n54:     validates_explain_options = False  # A query will error on invalid options.\n55: \n56:     @cached_property\n57:     def is_postgresql_9_5(self):\n58:         return self.connection.pg_version >= 90500\n59: \n60:     has_select_for_update_skip_locked = is_postgresql_9_5\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/sqlite3/operations.py",
+                  "start_line": 15,
+                  "end_line": 30,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "start_line": 1,
+                  "end_line": 99,
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"explain-core\",\n      \"title\": \"Add QuerySet.explain() public API and core SQL plumbing\",\n      \"rationale\": \"These hunks together define the new user-facing explain() method, the Query state it sets, the compiler that injects the EXPLAIN prefix and executes/returns the plan, and the base operations hook that validates format/options.\",\n      \"hunks\": [\n        \"django/db/models/query.py#0\",\n        \"django/db/models/sql/query.py#0\",\n        \"django/db/models/sql/query.py#1\",\n        \"django/db/models/sql/compiler.py#0\",\n        \"django/db/models/sql/compiler.py#1\",\n        \"django/db/backends/base/operations.py#0\",\n        \"django/db/backends/base/operations.py#1\",\n        \"django/db/backends/base/features.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"django/db/models/sql/compiler.py\", \"symbol\": \"SQLCompiler.execute_sql\", \"start_line\": 1025, \"end_line\": 1057, \"snapshot\": \"base\", \"why\": \"explain_query() calls execute_sql() to run the EXPLAIN statement\"},\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"Query.has_results\", \"start_line\": 502, \"end_line\": 512, \"snapshot\": \"base\", \"why\": \"explain() mirrors the clone-then-compile pattern used by has_results()\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"QuerySet.exists\", \"start_line\": 710, \"end_line\": 713, \"snapshot\": \"base\", \"why\": \"explain() is added alongside other terminal QuerySet methods\"}\n      ]\n    },\n    {\n      \"id\": \"explain-backends\",\n      \"title\": \"Per-backend EXPLAIN support (MySQL, PostgreSQL, SQLite)\",\n      \"rationale\": \"These hunks declare each backend's explain_prefix, supported formats, and override explain_query_prefix() to emit backend-specific EXPLAIN syntax.\",\n      \"hunks\": [\n        \"django/db/backends/mysql/features.py#0\",\n        \"django/db/backends/mysql/features.py#1\",\n        \"django/db/backends/mysql/operations.py#0\",\n        \"django/db/backends/mysql/operations.py#1\",\n        \"django/db/backends/postgresql/features.py#0\",\n        \"django/db/backends/postgresql/operations.py#0\",\n        \"django/db/backends/postgresql/operations.py#1\",\n        \"django/db/backends/sqlite3/operations.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"django/db/backends/base/operations.py\", \"symbol\": \"BaseDatabaseOperations.explain_query_prefix\", \"start_line\": 659, \"end_line\": 672, \"snapshot\": \"pr\", \"why\": \"Base method that MySQL/PostgreSQL overrides to add FORMAT/options\"},\n        {\"path\": \"django/db/backends/base/features.py\", \"symbol\": \"DatabaseFeatures.supports_explaining_query_execution\", \"start_line\": 263, \"end_line\": 266, \"snapshot\": \"pr\", \"why\": \"Feature flag derived from ops.explain_prefix that gates explain support\"}\n      ]\n    },\n    {\n      \"id\": \"explain-tests\",\n      \"title\": \"Tests for the new explain() feature\",\n      \"rationale\": \"These hunks add the dedicated explain test suite, register explain in the QuerySet proxy-method list, and suppress a MySQLdb warning triggered by EXPLAIN queries.\",\n      \"hunks\": [\n        \"tests/queries/test_explain.py#0\",\n        \"tests/basic/tests.py#0\",\n        \"tests/runtests.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"tests/basic/tests.py\", \"symbol\": \"ManagerTest.QUERYSET_PROXY_METHODS\", \"start_line\": 540, \"end_line\": 564, \"snapshot\": \"base\", \"why\": \"explain must be added so it is copied onto Manager\"},\n        {\"path\": \"tests/runtests.py\", \"symbol\": \"warnings.filterwarnings\", \"start_line\": 23, \"end_line\": 28, \"snapshot\": \"base\", \"why\": \"New MySQLdb warning filter is inserted among existing warning filters\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "explain-core",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "QuerySet explain method authorization access control"
+                },
+                "result": "[docs/ref/models/querysets.txt:1-47] (relevance 0.48)\n==========================\n``QuerySet`` API reference\n==========================\n\n.. currentmodule:: django.db.models.query\n\nThis document describes the details of the ``QuerySet`` API. It builds on the\nmaterial presented in the :doc:`model </topics/db/models>` and :doc:`database\nquery </topics/db/queries>` guides, so you'll probably want to read and\nunderstand those documents before reading this one.\n\nThroughout this reference we'll use the :ref:`example Weblog models\n<queryset-model-example>` presented in the :doc:`database query guide\n</topics/db/queries>`.\n\n.. _when-querysets-are-evaluated:\n\nWhen ``QuerySet``\\s are evaluated\n=================================\n\nInternally, a ``QuerySet`` can be constructed, filtered, sliced, and generally\npassed around without actually hitting the database. No database activity\nactually occurs until you do something to evaluate the queryset.\n\nYou can evaluate a ``QuerySet`` in the following ways:\n\n* **Iteration.** A ``QuerySet`` is iterable, and it executes its database\n  query the first time you iterate over it. For example, this will print\n  the headline of all entries in the database::\n\n      for e in Entry.objects.all():\n          print(e.headline)\n\n  Note: Don't use this if all you want to do is determine if at least one\n  result exists. It's more efficient to use :meth:`~QuerySet.exists`.\n\n* **Slicing.** As explained in :ref:`limiting-querysets`, a ``QuerySet`` can\n  be sliced, using Python's array-slicing syntax. Slicing an unevaluated\n  ``QuerySet`` usually returns another unevaluated ``QuerySet``, but Django\n  will execute the database query if you use the \"step\" parameter of slice\n  syntax, and will return a list. Slicing a ``QuerySet`` that has been\n  evaluated also returns a list.\n\n  Also note that even though slicing an unevaluated ``QuerySet`` returns\n  another unevaluated ``QuerySet``, modifying it further (e.g., adding\n  more filters, or modifying ordering) is not allowed, since that does not\n  translate well into SQL and it would not have a clear meaning either.\n\n---\n\n[docs/faq/admin.txt:30-67] (relevance 0.47)\nModelAdmin methods <model-admin-methods>` for an example.\n\nHow do I limit admin access so that objects can only be edited by the users who created them?\n=============================================================================================\n\nThe :class:`~django.contrib.admin.ModelAdmin` class also provides customization\nhooks that allow you to control the visibility and editability of objects in the\nadmin. Using the same trick of extracting the user from the request, the\n:meth:`~django.contrib.admin.ModelAdmin.get_queryset` and\n:meth:`~django.contrib.admin.ModelAdmin.has_change_permission` can be used to\ncontrol the visibility and editability of objects in the admin.\n\nMy admin-site CSS and images showed up fine using the development server, but they're not displaying when using mod_wsgi.\n=========================================================================================================================\n\nSee :ref:`serving the admin files <serving-the-admin-files>`\nin the \"How to use Django with mod_wsgi\" documentation.\n\nMy \"list_filter\" contains a ManyToManyField, but the filter doesn't display.\n============================================================================\n\nDjango won't bother displaying the filter for a ``ManyToManyField`` if there\nare fewer than two related objects.\n\nFor example, if your :attr:`~django.contrib.admin.ModelAdmin.list_filter`\nincludes :doc:`sites </ref/contrib/sites>`, and there's only one site in your\ndatabase, it won't display a \"Site\" filter. In that case, filtering by site\nwould be meaningless.\n\nSome objects aren't appearing in the admin.\n===========================================\n\nInconsistent row counts may be caused by missing foreign key values or a\nforeign key field incorrectly set to :attr:`null=False\n<django.db.models.Field.null>`. If you have a record with a\n:class:`~django.db.models.ForeignKey` pointing to a nonexistent object and\nthat foreign key is included is\n:attr:`~django.contrib.admin.ModelAdmin.list_display`, the record will not be\n\n---\n\n[docs/releases/1.6.txt:1084-1132] (relevance 0.47)\n``django.contrib.auth.get_permission_codename('action', Model._meta)`` where\n``'action'`` is ``'add'``, ``'change'``, or ``'delete'``.\n\n``get_query_set`` and similar methods renamed to ``get_queryset``\n-----------------------------------------------------------------\n\nMethods that return a ``QuerySet`` such as ``Manager.get_query_set`` or\n``ModelAdmin.queryset`` have been renamed to ``get_queryset``.\n\nIf you are writing a library that implements, for example, a\n``Manager.get_query_set`` method, and you need to support old Django versions,\nyou should rename the method and conditionally add an alias with the old name::\n\n    class CustomManager(models.Manager):\n        def get_queryset(self):\n            pass # ...\n\n        if django.VERSION < (1, 6):\n            get_query_set = get_queryset\n\n        # For Django >= 1.6, models.Manager provides a get_query_set fallback\n        # that emits a warning when used.\n\nIf you are writing a library that needs to call the ``get_queryset`` method and\nmust support old Django versions, you should write::\n\n    get_queryset = (some_manager.get_query_set\n                    if hasattr(some_manager, 'get_query_set')\n                    else some_manager.get_queryset)\n    return get_queryset() # etc\n\nIn the general case of a custom manager that both implements its own\n``get_queryset`` method and calls that method, and needs to work with older Django\nversions, and libraries that have not been updated yet, it is useful to define\na ``get_queryset_compat`` method as below and use it internally to your manager::\n\n    class YourCustomManager(models.Manager):\n        def get_queryset(self):\n            return YourCustomQuerySet() # for example\n\n        if django.VERSION < (1, 6):\n            get_query_set = get_queryset\n\n        def active(self): # for example\n            return self.get_queryset_compat().filter(active=True)\n\n        def get_queryset_compat(self):\n            get_queryset = (self.get_query_set\n                            if hasattr(self, 'get_query_set')\n\n---\n\n[docs/topics/db/managers.txt:278-336] (relevance 0.46)\nof ``Manager`` with a copy of a custom ``QuerySet``\u2019s methods::\n\n    class Person(models.Model):\n        ...\n        people = PersonQuerySet.as_manager()\n\nThe ``Manager`` instance created by :meth:`QuerySet.as_manager()\n<django.db.models.query.QuerySet.as_manager>` will be virtually\nidentical to the ``PersonManager`` from the previous example.\n\nNot every ``QuerySet`` method makes sense at the ``Manager`` level; for\ninstance we intentionally prevent the :meth:`QuerySet.delete()\n<django.db.models.query.QuerySet.delete>` method from being copied onto\nthe ``Manager`` class.\n\nMethods are copied according to the following rules:\n\n- Public methods are copied by default.\n- Private methods (starting with an underscore) are not copied by default.\n- Methods with a ``queryset_only`` attribute set to ``False`` are always copied.\n- Methods with a ``queryset_only`` attribute set to ``True`` are never copied.\n\nFor example::\n\n    class CustomQuerySet(models.QuerySet):\n        # Available on both Manager and QuerySet.\n        def public_method(self):\n            return\n\n        # Available only on QuerySet.\n        def _private_method(self):\n            return\n\n        # Available only on QuerySet.\n        def opted_out_public_method(self):\n            return\n        opted_out_public_method.queryset_only = True\n\n        # Available on both Manager and QuerySet.\n        def _opted_in_private_method(self):\n            return\n        _opted_in_private_method.queryset_only = False\n\n``from_queryset()``\n~~~~~~~~~~~~~~~~~~~\n\n.. classmethod:: from_queryset(queryset_class)\n\nFor advanced usage you might want both a custom ``Manager`` and a custom\n``QuerySet``. You can do"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "QuerySet explain method and how it is called, any permission checks"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e status=ok truncated=true incomplete=true query=\"QuerySet explain method and how it is called, any permission checks\"]\n**Exploration: QuerySet explain method and how it is called, any permission checks**\n\nFound 106 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `queryset` (django/contrib/admin/filters.py:48) \u2014 1 caller in `django/contrib/admin/views/main.py`; no tests found within 3 caller hops\n- `check` (django/contrib/admin/checks.py:70) \u2014 3 callers; tests: `tests/modeladmin/test_checks.py`\n\n**Relationships**\n\n**extends:**\n- Permission \u2192 Model\n- FieldListFilter \u2192 ListFilter\n- BooleanFieldListFilter \u2192 FieldListFilter\n- AllValuesFieldListFilter \u2192 FieldListFilter\n- RelatedFieldListFilter \u2192 FieldListFilter\n- ChoicesFieldListFilter \u2192 FieldListFilter\n- DateFieldListFilter \u2192 FieldListFilter\n- SimpleListFilter \u2192 ListFilter\n- ModelAdminChecks \u2192 BaseModelAdminChecks\n- InlineModelAdminChecks \u2192 BaseModelAdminChecks\n- ... and 5 more\n\n**instantiates:**\n- queryset \u2192 IncorrectLookupParameters\n- get_queryset \u2192 IncorrectLookupParameters\n- get_filters \u2192 IncorrectLookupParameters\n- __init__ \u2192 ImproperlyConfigured\n- _check_date_hierarchy \u2192 Error\n- Permission \u2192 ForeignKey\n- Permission \u2192 CharField\n- Permission \u2192 PermissionManager\n- create_permissions \u2192 Permission\n\n**references:**\n- test_invalid_params \u2192 IncorrectLookupParameters\n- test_result_list_editable \u2192 IncorrectLookupParameters\n- test_fieldlistfilter_invalid_lookup_parameters \u2192 IncorrectLookupParameters\n- ModelAdmin \u2192 ModelAdminChecks\n- _check_date_hierarchy \u2192 date_hierarchy\n- InlineModelAdmin \u2192 InlineModelAdminChecks\n- check_related_objects \u2192 Query\n- Permission \u2192 ContentType\n- Permission \u2192 CASCADE\n- Visa \u2192 Permission\n- ... and 12 more\n\n**calls:**\n- __init__ \u2192 prepare_lookup_value\n- __init__ \u2192 expected_parameters\n- get_for_models \u2192 create\n- get_queryset \u2192 queryset\n- get_queryset \u2192 apply_select_related\n- get_queryset \u2192 get_search_results\n- get_queryset \u2192 get_ordering\n- get_queryset \u2192 order_by\n- get_queryset \u2192 get_filters\n- get_queryset \u2192 distinct\n- ... and 63 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/query.py`** \u2014 calls(calls), __init__(method), add_distinct_fields(calls), distinct(method), explain(method), order_by(method), Query(instantiates), references(references)\n\n```python\n180\tclass QuerySet:\n181\t    \"\"\"Represent a lazy database lookup for a set of objects.\"\"\"\n182\t\n183\t    def __init__(self, model=None, query=None, using=None, hints=None):\n184\t        self.model = model\n185\t        self._db = using\n186\t        self._hints = hints or {}\n187\t        self.query = query or sql.Query(self.model)\n188\t        self._result_cache = None\n189\t        self._sticky_filter = False\n190\t        self._for_write = False\n191\t        self._prefetch_related_lookups = ()\n192\t        self._prefetch_done = False\n193\t        self._known_related_objects = {}  # {rel_field: {pk: rel_obj}}\n194\t        self._iterable_class = ModelIterable\n195\t        self._fields = None\n196\t\n197\t    def as_manager(cls):\n198\t        # Address the circular dependency between `Queryset` and `Manager`.\n\n... (gap: __deepcopy__ (django/db/models/query.py:210), __getstate__ (django/db/models/query.py:220), __setstate__ (django/db/models/query.py:225), __repr__ (django/db/models/query.py:243), __len__ (django/db/models/query.py:249), __iter__ (django/db/models/query.py:253), +28 more) ...\n\n717\t        prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n718\t        self._prefetch_done = True\n719\t\n720\t    def explain(self, *, format=None, **options):\n721\t        return self.query.explain(using=self.db, format=format, **options)\n722\t\n723\t    ##################################################\n724\t    # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n\n... (gap: raw (django/db/models/query.py:727), _values (django/db/models/query.py:732), values (django/db/models/query.py:740), values_list (django/db/models/query.py:746), dates (django/db/models/query.py:777), datetimes (django/db/models/query.py:793), +14 more) ...\n\n1009\t\n1010\t        return clone\n1011\t\n1012\t    def order_by(self, *field_names):\n1013\t        \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1014\t        assert self.query.can_filter(), \\\n1015\t            \"Cannot reorder a query once a slice has been taken.\"\n1016\t        obj = self._chain()\n1017\t        obj.query.clear_ordering(force_empty=False)\n1018\t        obj.query.add_ordering(*field_names)\n1019\t        return obj\n1020\t\n1021\t    def distinct(self, *field_names):\n1022\t        \"\"\"\n1023\t        Return a new QuerySet instance that will select only distinct results.\n1024\t        \"\"\"\n1025\t        assert self.query.can_filter(), \\\n1026\t            \"Cannot create distinct fields once a slice has been taken.\"\n1027\t        obj = self._chain()\n1028\t        obj.query.add_distinct_fields(*field_names)\n1029\t        return obj\n1030\t\n1031\t    def extra(self, select=None, where=None, params=None, tables=None,\n1032\t              order_by=None, select_params=None):\n```\n\n**`django/contrib/admin/checks.py`** \u2014 calls(calls), Error(instantiates), _check_filter_item(calls), _check_raw_id_fields_item(calls), _check_raw_id_fields_item(method), _check_fieldsets_item(calls), _check_fieldsets_item(method), _check_field_spec_item(method), _check_filter_item(method), _check_radio_fields_key(calls), +84 more\n\n```python\n67\t\n68\tclass BaseModelAdminChecks:\n69\t\n70\t    def check(self\n[TRUNCATED omitted_chars=19334]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1020,
+                  "end_line": 1060,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/compiler.py lines=1020-1060]\n1020: \n1021:     def has_results(self):\n1022:         \"\"\"\n1023:         Backends (e.g. NoSQL) can override this in order to use optimized\n1024:         versions of \"query has any results.\"\n1025:         \"\"\"\n1026:         # This is always executed on a query clone, so we can modify self.query\n1027:         self.query.add_extra({'a': 1}, None, None, None, None, None)\n1028:         self.query.set_extra_mask(['a'])\n1029:         return bool(self.execute_sql(SINGLE))\n1030: \n1031:     def execute_sql(self, result_type=MULTI, chunked_fetch=False, chunk_size=GET_ITERATOR_CHUNK_SIZE):\n1032:         \"\"\"\n1033:         Run the query against the database and return the result(s). The\n1034:         return value is a single data item if result_type is SINGLE, or an\n1035:         iterator over the results if the result_type is MULTI.\n1036: \n1037:         result_type is either MULTI (use fetchmany() to retrieve all rows),\n1038:         SINGLE (only retrieve a single row), or None. In this last case, the\n1039:         cursor is returned if any query is executed, since it's used by\n1040:         subclasses such as InsertQuery). It's possible, however, that no query\n1041:         is needed, as the filters describe an empty set. In that case, None is\n1042:         returned, to avoid any unnecessary database interaction.\n1043:         \"\"\"\n1044:         result_type = result_type or NO_RESULTS\n1045:         try:\n1046:             sql, params = self.as_sql()\n1047:             if not sql:\n1048:                 raise EmptyResultSet\n1049:         except EmptyResultSet:\n1050:             if result_type == MULTI:\n1051:                 return iter([])\n1052:             else:\n1053:                 return\n1054:         if chunked_fetch:\n1055:             cursor = self.connection.chunked_cursor()\n1056:         else:\n1057:             cursor = self.connection.cursor()\n1058:         try:\n1059:             cursor.execute(sql, params)\n1060:         except Exception:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 500,
+                  "end_line": 525,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/query.py lines=500-525]\n500:             number = 0\n501:         return number\n502: \n503:     def has_filters(self):\n504:         return self.where\n505: \n506:     def has_results(self, using):\n507:         q = self.clone()\n508:         if not q.distinct:\n509:             if q.group_by is True:\n510:                 q.add_fields((f.attname for f in self.model._meta.concrete_fields), False)\n511:                 q.set_group_by()\n512:             q.clear_select_clause()\n513:         q.clear_ordering(True)\n514:         q.set_limits(high=1)\n515:         compiler = q.get_compiler(using=using)\n516:         return compiler.has_results()\n517: \n518:     def explain(self, using, format=None, **options):\n519:         q = self.clone()\n520:         q.explain_query = True\n521:         q.explain_format = format\n522:         q.explain_options = options\n523:         compiler = q.get_compiler(using=using)\n524:         return '\\n'.join(compiler.explain_query())\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "security policy authorization access control rules for ORM query methods"
+                },
+                "result": "[docs/ref/contrib/auth.txt:238-286] (relevance 0.41)\nIf ``obj`` is passed in, only returns the permissions for this\n        specific object.\n\n    .. method:: has_perm(perm, obj=None)\n\n        Returns ``True`` if the user has the specified permission, where perm\n        is in the format ``\"<app label>.<permission codename>\"``. (see\n        documentation on :ref:`permissions <topic-authorization>`). If the user is\n        inactive, this method will always return ``False``.\n\n        If ``obj`` is passed in, this method won't check for a permission for\n        the model, but for this specific object.\n\n    .. method:: has_perms(perm_list, obj=None)\n\n        Returns ``True`` if the user has each of the specified permissions,\n        where each perm is in the format\n        ``\"<app label>.<permission codename>\"``. If the user is inactive,\n        this method will always return ``False``.\n\n        If ``obj`` is passed in, this method won't check for permissions for\n        the model, but for the specific object.\n\n    .. method:: has_module_perms(package_name)\n\n        Returns ``True`` if the user has any permissions in the given package\n        (the Django app label). If the user is inactive, this method will\n        always return ``False``.\n\n    .. method:: email_user(subject, message, from_email=None, **kwargs)\n\n        Sends an email to the user. If ``from_email`` is ``None``, Django uses\n        the :setting:`DEFAULT_FROM_EMAIL`. Any ``**kwargs`` are passed to the\n        underlying :meth:`~django.core.mail.send_mail()` call.\n\nManager methods\n---------------\n\n.. class:: models.UserManager\n\n    The :class:`~django.contrib.auth.models.User` model has a custom manager\n    that has the following helper methods (in addition to the methods provided\n    by :class:`~django.contrib.auth.models.BaseUserManager`):\n\n    .. method:: create_user(username, email=None, password=None, **extra_fields)\n\n        Creates, saves and returns a :class:`~django.contrib.auth.models.User`.\n\n        The :attr:`~django.contrib.auth.models.User.username` and\n\n---\n\n[docs/faq/admin.txt:30-67] (relevance 0.41)\nModelAdmin methods <model-admin-methods>` for an example.\n\nHow do I limit admin access so that objects can only be edited by the users who created them?\n=============================================================================================\n\nThe :class:`~django.contrib.admin.ModelAdmin` class also provides customization\nhooks that allow you to control the visibility and editability of objects in the\nadmin. Using the same trick of extracting the user from the request, the\n:meth:`~django.contrib.admin.ModelAdmin.get_queryset` and\n:meth:`~django.contrib.admin.ModelAdmin.has_change_permission` can be used to\ncontrol the visibility and editability of objects in the admin.\n\nMy admin-site CSS and images showed up fine using the development server, but they're not displaying when using mod_wsgi.\n=========================================================================================================================\n\nSee :ref:`serving the admin files <serving-the-admin-files>`\nin the \"How to use Django with mod_wsgi\" documentation.\n\nMy \"list_filter\" contains a ManyToManyField, but the filter doesn't display.\n============================================================================\n\nDjango won't bother displaying the filter for a ``ManyToManyField`` if there\nare fewer than two related objects.\n\nFor example, if your :attr:`~django.contrib.admin.ModelAdmin.list_filter`\nincludes :doc:`sites </ref/contrib/sites>`, and there's only one site in your\ndatabase, it won't display a \"Site\" filter. In that case, filtering by site\nwould be meaningless.\n\nSome objects aren't appearing in the admin.\n===========================================\n\nInconsistent row counts may be caused by missing foreign key values or a\nforeign key field incorrectly set to :attr:`null=False\n<django.db.models.Field.null>`. If you have a record with a\n:class:`~django.db.models.ForeignKey` pointing to a nonexistent object and\nthat foreign key is included is\n:attr:`~django.contrib.admin.ModelAdmin.list_display`, the record will not be\n\n---\n\n[docs/internals/contributing/bugs-and-features.txt:1-49] (relevance 0.40)\n======================================\nReporting bugs and requesting features\n======================================\n\n.. Important::\n\n    Please report security issues **only** to\n    security@djangoproject.com.  This is a private list only open to\n    long-time, highly trusted Django developers, and its archives are\n    not public. For further details, please see :doc:`our security\n    policies </internals/security>`.\n\nOtherwise, before reporting a bug or requesting a new feature on the\n`ticket tracker <https://code.djangoproject.com/>`_, consider these points:\n\n* Check that someone hasn't already filed the bug or feature request by\n  `searching`_ or running `custom queries`_ in the ticket tracker.\n\n* Don't use the ticket system to ask support questions. Use the\n  |django-users| list or the `#django`_ IRC channel for that.\n\n* Don't reopen issues that have been marked \"wontfix\" without finding consensus\n  to do so on |django-developers|.\n\n* Don't use the ticket tracker for lengthy discussions, because they're\n  likely to get lost. If a particular ticket is controversial, please move the\n  discussion to |django-developers|.\n\n.. _reporting-bugs:\n\nReporting bugs\n==============\n\nWell-written bug reports are *incredibly* helpful. However, there's a certain\namount of overhead involved in working with any bug tracking system so your\nhelp in keeping our ticket tracker as useful as possible is appreciated. In\nparticular:\n\n* **Do** read the :doc:`FAQ </faq/index>` to see if your issue might\n  be a well-known question.\n\n* **Do** ask on |django-users| or `#django`_ *first* if you're not sure if\n  what you're seeing is a bug.\n\n* **Do** write complete, reproducible, specific bug reports. You must\n  include a clear, concise description of the problem, and a set of\n  instructions for replicating it. Add as much debug information as you can:\n  code snippets, test cases, exception backtraces, screenshots, etc. A nice\n  small test case is the best way to report a bug, as it gives us an easy\n\n---\n\n[docs/topics/auth/customizing.txt:207-248] (relevance 0.39)\nin `django/contrib/auth/backends.py`_, which is the default backend and queries\nthe ``auth_permission`` table most of the time. If you wish to provide\ncustom behavior for only part of the backend API, you can take advantage of\nPython inheritance and subclass ``ModelBackend`` instead of implementing the\ncomplete API in a custom backend.\n\n.. _django/contrib/auth/backends.py: https://github.com/django/django/blob/master/django/contrib/auth/backends.py\n\n.. _anonymous_auth:\n\nAuthorization for anonymous users\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn anonymous user is one that is not authenticated i.e. they have provided no\nvalid authentication details. However, that does not necessarily mean they are\nnot authorized to do anything. At the most basic level, most websites\nauthorize anonymous users to browse most of the site, and many allow anonymous\nposting of comments etc.\n\nDjango's permission framework does not have a place to store permissions for\nanonymous users. However, the user object passed to an authentication backend\nmay be an :class:`django.contrib.auth.models.AnonymousUser` object, allowing\nthe backend to specify custom authorization behavior for anonymous users. This\nis especially useful for the authors of re-usable apps, who can delegate all\nquestions of authorization to the auth backend, rather than needing settings,\nfor example, to control anonymous access.\n\n.. _inactive_auth:\n\nAuthorization for inactive users\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn inactive user is one that has its\n:attr:`~django.contrib.auth.models.User.is_active` field set to ``False``. The\n:class:`~django.contrib.auth.backends.ModelBackend` and\n:class:`~django.contrib.auth.backends.RemoteUserBackend` authent"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis, this section adds a `QuerySet.explain()` method to the Django ORM core. This is a framework-level database introspection feature (like `exists()`, `count()`, `first()`), not an application-level endpoint. The authorization model in Django is that the ORM layer does not perform per-request authorization \u2014 that is the responsibility of the application/view layer. The `explain()` method simply executes an `EXPLAIN` SQL statement on the same query the caller already has access to construct. There is no user-controlled identifier being fetched without ownership verification (CWE-639), no protected operation exposed without authentication at the framework level (CWE-862), and no incorrect authorization check (CWE-863). The policy documents I found describe application-level authorization patterns (ModelAdmin permissions, auth backends) but do not impose authorization requirements on ORM query methods themselves.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "explain-backends",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 650,
+                  "end_line": 680,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/operations.py lines=650-672]\n650:         Return SQL for start and end points in an OVER clause window frame.\n651:         \"\"\"\n652:         if not self.connection.features.supports_over_clause:\n653:             raise NotSupportedError('This backend does not support window expressions.')\n654:         return self.window_frame_start(start), self.window_frame_end(end)\n655: \n656:     def window_frame_range_start_end(self, start=None, end=None):\n657:         return self.window_frame_rows_start_end(start, end)\n658: \n659:     def explain_query_prefix(self, format=None, **options):\n660:         if not self.connection.features.supports_explaining_query_execution:\n661:             raise NotSupportedError('This backend does not support explaining query execution.')\n662:         if format:\n663:             supported_formats = self.connection.features.supported_explain_formats\n664:             normalized_format = format.upper()\n665:             if normalized_format not in supported_formats:\n666:                 msg = '%s is not a recognized format.' % normalized_format\n667:                 if supported_formats:\n668:                     msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))\n669:                 raise ValueError(msg)\n670:         if options:\n671:             raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n672:         return self.explain_prefix\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "EXPLAIN query plan access control authorization"
+                },
+                "result": "[docs/topics/auth/default.txt:1632-1641] (relevance 0.38)\nthem superuser status because they will be able to elevate permissions of\nusers including themselves!\n\nChanging passwords\n------------------\n\nUser passwords are not displayed in the admin (nor stored in the database), but\nthe :doc:`password storage details </topics/auth/passwords>` are displayed.\nIncluded in the display of this information is a link to\na password change form that allows admins to change user passwords.\n\n---\n\n[docs/topics/auth/index.txt:1-57] (relevance 0.37)\n=============================\nUser authentication in Django\n=============================\n\n.. toctree::\n   :hidden:\n\n   default\n   passwords\n   customizing\n\n.. module:: django.contrib.auth\n   :synopsis: Django's authentication framework.\n\nDjango comes with a user authentication system. It handles user accounts,\ngroups, permissions and cookie-based user sessions. This section of the\ndocumentation explains how the default implementation works out of the box, as\nwell as how to :doc:`extend and customize </topics/auth/customizing>` it to\nsuit your project's needs.\n\nOverview\n========\n\nThe Django authentication system handles both authentication and authorization.\nBriefly, authentication verifies a user is who they claim to be, and\nauthorization determines what an authenticated user is allowed to do. Here the\nterm authentication is used to refer to both tasks.\n\nThe auth system consists of:\n\n* Users\n* Permissions: Binary (yes/no) flags designating whether a user may perform\n  a certain task.\n* Groups: A generic way of applying labels and permissions to more than one\n  user.\n* A configurable password hashing system\n* Forms and view tools for logging in users, or restricting content\n* A pluggable backend system\n\nThe authentication system in Django aims to be very generic and doesn't provide\nsome features commonly found in web authentication systems. Solutions for some\nof these common problems have been implemented in third-party packages:\n\n* Password strength checking\n* Throttling of login attempts\n* Authentication against third-parties (OAuth, for example)\n\nInstallation\n============\n\nAuthentication support is bundled as a Django contrib module in\n``django.contrib.auth``. By default, the required configuration is already\nincluded in the :file:`settings.py` generated by :djadmin:`django-admin\nstartproject <startproject>`, these consist of two items listed in your\n:setting:`INSTALLED_APPS` setting:\n\n1. ``'django.contrib.auth'`` contains the core of the authentication framework,\n\n---\n\n[docs/ref/models/options.txt:302-352] (relevance 0.36)\nimplicitly include all of its default orderings as well.\n\n    If a query doesn't have an ordering specified, results are returned from\n    the database in an unspecified order. A particular ordering is guaranteed\n    only when ordering by a set of fields that uniquely identify each object in\n    the results. For example, if a ``name`` field isn't unique, ordering by it\n    won't guarantee objects with the same name always appear in the same order.\n\n``permissions``\n---------------\n\n.. attribute:: Options.permissions\n\n    Extra permissions to enter into the permissions table when creating this object.\n    Add, delete and change permissions are automatically created for each\n    model. This example specifies an extra permission, ``can_deliver_pizzas``::\n\n        permissions = ((\"can_deliver_pizzas\", \"Can deliver pizzas\"),)\n\n    This is a list or tuple of 2-tuples in the format ``(permission_code,\n    human_readable_permission_name)``.\n\n``default_permissions``\n-----------------------\n\n.. attribute:: Options.default_permissions\n\n    Defaults to ``('add', 'change', 'delete')``. You may customize this list,\n    for example, by setting this to an empty list if your app doesn't require\n    any of the default permissions. It must be specified on the model before\n    the model is created by :djadmin:`migrate` in order to prevent any omitted\n    permissions from being created.\n\n``proxy``\n---------\n\n.. attribute:: Options.proxy\n\n    If ``proxy = True``, a model which subclasses another model will be treated as\n    a :ref:`proxy model <proxy-models>`.\n\n``required_db_features``\n------------------------\n\n.. attribute:: Options.required_db_features\n\n    List of database features that the current connection should have so that\n    the model is considered during the migration phase. For example, if you set\n    this list to ``['gis_enabled']``, the model will only be synchronized on\n    GIS-enabled databases. It's also useful to skip some models when testing\n    with several database backends. Avoid relations between models that may or\n\n---\n\n[docs/topics/auth/default.txt:738-787] (relevance 0.35)\n# Or multiple of permissions:\n            permission_required = ('polls.can_open', 'polls.can_edit')\n\n    You can set any of the parameters of\n    :class:`~django.contrib.auth.mixins.AccessMixin` to customize the handling\n    of unauthorized users.\n\n    You may also override these methods:\n\n    .. method:: get_permission_required()\n\n        Returns an iterable of permission names used by the mixin. Defaults to\n        the ``permission_required`` attribute, converted to a tuple if\n        necessary.\n\n    .. method:: has_permission()\n\n        Returns a boolean denoting whether the current user has permission to\n        execute the decorated view. By default, this returns the result of\n        calling :meth:`~django.contrib.auth.models.User.has_perms()` with the\n        list of permissions returned by :meth:`get_permission_required()`.\n\nRedirecting unauthorized requests in class-based views\n------------------------------------------------------\n\nTo ease the handling of access restrictions in :doc:`class-based views\n</ref/class-based-views/index>`, the ``AccessMixin`` can be used to configure\nthe behavior of a view when access is denied. Authenticated users are denied\naccess with an HTTP 403 Forbidden response. Anonymous users are redirected to\nthe login page or shown an HTTP 403 Forbidden response, depending on the\n:attr:`~django.contrib.auth.mixins.AccessMixin.raise_exception` attribute.\n\n.. versionchanged:: 2.1\n\n    In older versions, authenticated users who lacked permissions were\n    redirected to the login page (which resulted in a loop) instead of\n    receiving an HTTP 403 Forbidden response.\n\n.. class:: AccessMixin\n\n    .. attribute:: login_url\n\n        Default return value for :meth:`get_login_url`.  Defaults to ``None``\n        in which case :meth:`get_login_url` falls back to\n        :setting:`settings.LOGIN_URL <LOGIN_URL>`.\n\n    .. attribute:: permission_denied_message\n\n        Default return value for :meth:`get_permission_denied_message`.\n        Defaults to an empty string.\n\n---\n\n[docs/topics/auth/customizing.txt:207-248] (relevance 0.35)\nin `django/contrib/auth/backends.py`_, which is the default backend and queries\nthe ``auth_permission`` table most of the time. If you wish to provide\ncustom behavior for only part of the backend API, you can take advantage of\nPython inheritance and subclass ``ModelBackend`` instead of implementing the\ncomplete API in a custom backend.\n\n.. _django/contrib/auth/backends.py: https://github.com/django/django/blob/master/django/contrib/auth/backends.py\n\n.. _anonymous_auth:\n\nAuthorization for anonymous users\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn anonymous user is one that is not authenticated i.e. they have provided no\nvalid authentication details. However, that does not necessarily mean they are\nnot authorized to do anything. At the most basic level, most websites\nauthorize anonymous users to browse most of the site, and many allow anonymous\nposting of comments etc.\n\nDjango's permission framework does not have a place to store permissions for\nanonymous users. However, the user object passed to an authentication backend\nmay be an :class:`django.contrib.auth.models.AnonymousUser` object, allowing\nthe backend to specify custom authorization behavior for anonymous users. This\nis especial"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 259,
+                  "end_line": 276,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/postgresql/operations.py lines=259-275]\n259:                 'and FOLLOWING.'\n260:             )\n261:         return start_, end_\n262: \n263:     def explain_query_prefix(self, format=None, **options):\n264:         prefix = super().explain_query_prefix(format)\n265:         extra = {}\n266:         if format:\n267:             extra['FORMAT'] = format\n268:         if options:\n269:             extra.update({\n270:                 name.upper(): 'true' if value else 'false'\n271:                 for name, value in options.items()\n272:             })\n273:         if extra:\n274:             prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\n275:         return prefix\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/mysql/operations.py",
+                  "start_line": 270,
+                  "end_line": 285,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/mysql/operations.py lines=270-284]\n270:             ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, lhs_params * 2 + rhs_params * 2\n271:         else:\n272:             return \"TIMESTAMPDIFF(MICROSECOND, %s, %s)\" % (rhs_sql, lhs_sql), rhs_params + lhs_params\n273: \n274:     def explain_query_prefix(self, format=None, **options):\n275:         # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n276:         if format and format.upper() == 'TEXT':\n277:             format = 'TRADITIONAL'\n278:         prefix = super().explain_query_prefix(format, **options)\n279:         if format:\n280:             prefix += ' FORMAT=%s' % format\n281:         if self.connection.features.needs_explain_extended and format is None:\n282:             # EXTENDED and FORMAT are mutually exclusive options.\n283:             prefix += ' EXTENDED'\n284:         return prefix\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_query_prefix",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"explain_query_prefix\"]\ndjango/db/backends/base/features.py:256:    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\ndjango/db/backends/base/operations.py:659:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:274:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:278:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/backends/postgresql/operations.py:263:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:264:        prefix = super().explain_query_prefix(format)\ndjango/db/models/sql/compiler.py:534:                result.insert(0, self.connection.ops.explain_query_prefix(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review consists entirely of database backend feature flags and SQL `EXPLAIN` query-prefix construction helpers. These are internal ORM/database-layer utilities that build SQL strings for query-plan inspection. They do not fetch objects by user-controlled identifiers, do not perform protected operations requiring authentication/role checks, and do not contain authorization decision logic. The retrieved security policy excerpts concern the Django authentication/authorization framework (auth backends, permissions, anonymous/inactive users), which is unrelated to this database-backend code. There is no IDOR, missing authorization, or incorrect authorization introduced by these changes.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "explain-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "queryset explain method authorization access control"
+                },
+                "result": "[docs/ref/models/querysets.txt:1-47] (relevance 0.48)\n==========================\n``QuerySet`` API reference\n==========================\n\n.. currentmodule:: django.db.models.query\n\nThis document describes the details of the ``QuerySet`` API. It builds on the\nmaterial presented in the :doc:`model </topics/db/models>` and :doc:`database\nquery </topics/db/queries>` guides, so you'll probably want to read and\nunderstand those documents before reading this one.\n\nThroughout this reference we'll use the :ref:`example Weblog models\n<queryset-model-example>` presented in the :doc:`database query guide\n</topics/db/queries>`.\n\n.. _when-querysets-are-evaluated:\n\nWhen ``QuerySet``\\s are evaluated\n=================================\n\nInternally, a ``QuerySet`` can be constructed, filtered, sliced, and generally\npassed around without actually hitting the database. No database activity\nactually occurs until you do something to evaluate the queryset.\n\nYou can evaluate a ``QuerySet`` in the following ways:\n\n* **Iteration.** A ``QuerySet`` is iterable, and it executes its database\n  query the first time you iterate over it. For example, this will print\n  the headline of all entries in the database::\n\n      for e in Entry.objects.all():\n          print(e.headline)\n\n  Note: Don't use this if all you want to do is determine if at least one\n  result exists. It's more efficient to use :meth:`~QuerySet.exists`.\n\n* **Slicing.** As explained in :ref:`limiting-querysets`, a ``QuerySet`` can\n  be sliced, using Python's array-slicing syntax. Slicing an unevaluated\n  ``QuerySet`` usually returns another unevaluated ``QuerySet``, but Django\n  will execute the database query if you use the \"step\" parameter of slice\n  syntax, and will return a list. Slicing a ``QuerySet`` that has been\n  evaluated also returns a list.\n\n  Also note that even though slicing an unevaluated ``QuerySet`` returns\n  another unevaluated ``QuerySet``, modifying it further (e.g., adding\n  more filters, or modifying ordering) is not allowed, since that does not\n  translate well into SQL and it would not have a clear meaning either.\n\n---\n\n[docs/faq/admin.txt:30-67] (relevance 0.47)\nModelAdmin methods <model-admin-methods>` for an example.\n\nHow do I limit admin access so that objects can only be edited by the users who created them?\n=============================================================================================\n\nThe :class:`~django.contrib.admin.ModelAdmin` class also provides customization\nhooks that allow you to control the visibility and editability of objects in the\nadmin. Using the same trick of extracting the user from the request, the\n:meth:`~django.contrib.admin.ModelAdmin.get_queryset` and\n:meth:`~django.contrib.admin.ModelAdmin.has_change_permission` can be used to\ncontrol the visibility and editability of objects in the admin.\n\nMy admin-site CSS and images showed up fine using the development server, but they're not displaying when using mod_wsgi.\n=========================================================================================================================\n\nSee :ref:`serving the admin files <serving-the-admin-files>`\nin the \"How to use Django with mod_wsgi\" documentation.\n\nMy \"list_filter\" contains a ManyToManyField, but the filter doesn't display.\n============================================================================\n\nDjango won't bother displaying the filter for a ``ManyToManyField`` if there\nare fewer than two related objects.\n\nFor example, if your :attr:`~django.contrib.admin.ModelAdmin.list_filter`\nincludes :doc:`sites </ref/contrib/sites>`, and there's only one site in your\ndatabase, it won't display a \"Site\" filter. In that case, filtering by site\nwould be meaningless.\n\nSome objects aren't appearing in the admin.\n===========================================\n\nInconsistent row counts may be caused by missing foreign key values or a\nforeign key field incorrectly set to :attr:`null=False\n<django.db.models.Field.null>`. If you have a record with a\n:class:`~django.db.models.ForeignKey` pointing to a nonexistent object and\nthat foreign key is included is\n:attr:`~django.contrib.admin.ModelAdmin.list_display`, the record will not be\n\n---\n\n[docs/releases/1.6.txt:1084-1132] (relevance 0.47)\n``django.contrib.auth.get_permission_codename('action', Model._meta)`` where\n``'action'`` is ``'add'``, ``'change'``, or ``'delete'``.\n\n``get_query_set`` and similar methods renamed to ``get_queryset``\n-----------------------------------------------------------------\n\nMethods that return a ``QuerySet`` such as ``Manager.get_query_set`` or\n``ModelAdmin.queryset`` have been renamed to ``get_queryset``.\n\nIf you are writing a library that implements, for example, a\n``Manager.get_query_set`` method, and you need to support old Django versions,\nyou should rename the method and conditionally add an alias with the old name::\n\n    class CustomManager(models.Manager):\n        def get_queryset(self):\n            pass # ...\n\n        if django.VERSION < (1, 6):\n            get_query_set = get_queryset\n\n        # For Django >= 1.6, models.Manager provides a get_query_set fallback\n        # that emits a warning when used.\n\nIf you are writing a library that needs to call the ``get_queryset`` method and\nmust support old Django versions, you should write::\n\n    get_queryset = (some_manager.get_query_set\n                    if hasattr(some_manager, 'get_query_set')\n                    else some_manager.get_queryset)\n    return get_queryset() # etc\n\nIn the general case of a custom manager that both implements its own\n``get_queryset`` method and calls that method, and needs to work with older Django\nversions, and libraries that have not been updated yet, it is useful to define\na ``get_queryset_compat`` method as below and use it internally to your manager::\n\n    class YourCustomManager(models.Manager):\n        def get_queryset(self):\n            return YourCustomQuerySet() # for example\n\n        if django.VERSION < (1, 6):\n            get_query_set = get_queryset\n\n        def active(self): # for example\n            return self.get_queryset_compat().filter(active=True)\n\n        def get_queryset_compat(self):\n            get_queryset = (self.get_query_set\n                            if hasattr(self, 'get_query_set')\n\n---\n\n[docs/topics/db/managers.txt:278-336] (relevance 0.46)\nof ``Manager`` with a copy of a custom ``QuerySet``\u2019s methods::\n\n    class Person(models.Model):\n        ...\n        people = PersonQuerySet.as_manager()\n\nThe ``Manager`` instance created by :meth:`QuerySet.as_manager()\n<django.db.models.query.QuerySet.as_manager>` will be virtually\nidentical to the ``PersonManager`` from the previous example.\n\nNot every ``QuerySet`` method makes sense at the ``Manager`` level; for\ninstance we intentionally prevent the :meth:`QuerySet.delete()\n<django.db.models.query.QuerySet.delete>` method from being copied onto\nthe ``Manager`` class.\n\nMethods are copied according to the following rules:\n\n- Public methods are copied by default.\n- Private methods (starting with an underscore) are not copied by default.\n- Methods with a ``queryset_only`` attribute set to ``False`` are always copied.\n- Methods with a ``queryset_only`` attribute set to ``True`` are never copied.\n\nFor example::\n\n    class CustomQuerySet(models.QuerySet):\n        # Available on both Manager and QuerySet.\n        def public_method(self):\n            return\n\n        # Available only on QuerySet.\n        def _private_method(self):\n            return\n\n        # Available only on QuerySet.\n        def opted_out_public_method(self):\n            return\n        opted_out_public_method.queryset_only = True\n\n        # Available on both Manager and QuerySet.\n        def _opted_in_private_method(self):\n            return\n        _opted_in_private_method.queryset_only = False\n\n``from_queryset()``\n~~~~~~~~~~~~~~~~~~~\n\n.. classmethod:: from_queryset(queryset_class)\n\nFor advanced usage you might want both a custom ``Manager`` and a custom\n``QuerySet``. You can do"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "QuerySet.explain method definition and manager proxy methods"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e status=ok truncated=true incomplete=true query=\"QuerySet.explain method definition and manager proxy methods\"]\n**Exploration: QuerySet.explain method definition and manager proxy methods**\n\nFound 79 symbols across 4 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `Manager` (django/db/models/manager.py:165) \u2014 44 callers in `django/db/models/__init__.py`, `django/db/models/base.py`, `django/db/models/options.py`, `django/db/migrations/state.py` +1 more; tests: `tests/migrations/test_state.py`, `tests/fixtures_regress/models.py`, `tests/sites_framework/models.py`, `tests/managers_regress/models.py` +13\n- `Query` (django/db/models/sql/query.py:133) \u2014 8 callers in `django/contrib/gis/db/models/lookups.py`, `django/db/models/sql/compiler.py`, `django/db/models/sql/subqueries.py`, `django/db/models/query.py` +1 more; tested via callers: `tests/gis_tests/rasterapp/test_rasterfield.py`, `tests/queries/test_iterator.py` +1\n- `explain` (django/db/models/sql/query.py:518) \u2014 1 caller in `django/db/models/query.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- CategoryMetaDataManager \u2192 Manager\n- AnnotatedBookManager \u2192 Manager\n- MemberManager \u2192 Manager\n- BookManager \u2192 Manager\n- _Manager \u2192 Manager\n- OnlyFred \u2192 Manager\n- TestManager \u2192 Manager\n- EmptyManager \u2192 Manager\n- EmptyManager \u2192 Manager\n- OrderedObjectManager \u2192 Manager\n- ... and 21 more\n\n**calls:**\n- explain \u2192 explain\n- explain \u2192 explain_query\n- explain \u2192 clone\n- explain \u2192 get_compiler\n- __init__ \u2192 prepare_lookup_value\n- __init__ \u2192 expected_parameters\n- get_for_models \u2192 create\n- get_queryset \u2192 queryset\n- get_queryset \u2192 apply_select_related\n- get_queryset \u2192 get_search_results\n- ... and 46 more\n\n**instantiates:**\n- queryset \u2192 IncorrectLookupParameters\n- get_queryset \u2192 IncorrectLookupParameters\n- get_filters \u2192 IncorrectLookupParameters\n- __init__ \u2192 ImproperlyConfigured\n\n**references:**\n- test_invalid_params \u2192 IncorrectLookupParameters\n- test_result_list_editable \u2192 IncorrectLookupParameters\n- test_fieldlistfilter_invalid_lookup_parameters \u2192 IncorrectLookupParameters\n- create_generic_related_manager \u2192 GenericRelatedObjectManager\n- get_ordering \u2192 order_by\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/query.py`** \u2014 calls(calls), __deepcopy__(method), __getstate__(method), _fetch_all(calls), _fetch_all(method), __setstate__(method), __iter__(method), count(method), bulk_create(method), atomic(calls), +36 more\n\n```python\n180\tclass QuerySet:\n181\t    \"\"\"Represent a lazy database lookup for a set of objects.\"\"\"\n182\t\n183\t    def __init__(self, model=None, query=None, using=None, hints=None):\n184\t        self.model = model\n185\t        self._db = using\n186\t        self._hints = hints or {}\n187\t        self.query = query or sql.Query(self.model)\n188\t        self._result_cache = None\n189\t        self._sticky_filter = False\n190\t        self._for_write = False\n191\t        self._prefetch_related_lookups = ()\n192\t        self._prefetch_done = False\n193\t        self._known_related_objects = {}  # {rel_field: {pk: rel_obj}}\n194\t        self._iterable_class = ModelIterable\n195\t        self._fields = None\n196\t\n197\t    def as_manager(cls):\n198\t        # Address the circular dependency between `Queryset` and `Manager`.\n\n... (gap) ...\n\n553\t                ))\n554\t        return lookup, params\n555\t\n556\t    def _earliest_or_latest(self, *fields, field_name=None):\n557\t        \"\"\"\n558\t        Return the latest object, according to the model's\n559\t        'get_latest_by' option or optional given field_name.\n560\t        \"\"\"\n561\t        if fields and field_name is not None:\n562\t            raise ValueError('Cannot use both positional arguments and the field_name keyword argument.')\n563\t\n564\t        if field_name is not None:\n565\t            warnings.warn(\n566\t                'The field_name keyword argument to earliest() and latest() '\n567\t                'is deprecated in favor of passing positional arguments.',\n568\t                RemovedInDjango30Warning,\n569\t            )\n570\t            order_by = (field_name,)\n571\t        elif fields:\n572\t            order_by = fields\n573\t        else:\n574\t            order_by = getattr(self.model._meta, 'get_latest_by')\n575\t            if order_by and not isinstance(order_by, (tuple, list)):\n576\t                order_by = (order_by,)\n577\t        if order_by is None:\n578\t            raise ValueError(\n579\t                \"earliest() and latest() require either fields as positional \"\n580\t                \"arguments or 'get_latest_by' in the model's Meta.\"\n581\t            )\n582\t\n583\t        assert self.query.can_filter(), \\\n584\t            \"Cannot change a query once a slice has been taken.\"\n585\t        obj = self._chain()\n586\t        obj.query.set_limits(high=1)\n587\t        obj.query.clear_ordering(force_empty=True)\n588\t        obj.query.add_ordering(*order_by)\n589\t        return obj.get()\n590\t\n591\t    def earliest(self, *fields, field_name=None):\n592\t        return self._earliest_or_latest(*fields, field_name=field_name)\n593\t\n594\t    def latest(self, *fields, field_name=None):\n595\t        return self.reverse()._earliest_or_latest(*fields, field_name=field_name)\n596\t\n597\t    def first(self):\n598\t        \"\"\"Return the first object of a query or None if no match is found.\"\"\"\n599\t        for obj in (self if self.ordered else self.order_by('pk'))[:1]:\n600\t            return obj\n601\t\n602\t    def last(self):\n603\t        \"\"\"Return the last object of a query\n[TRUNCATED omitted_chars=19360]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 505,
+                  "end_line": 545,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/query.py lines=505-545]\n505: \n506:     def has_results(self, using):\n507:         q = self.clone()\n508:         if not q.distinct:\n509:             if q.group_by is True:\n510:                 q.add_fields((f.attname for f in self.model._meta.concrete_fields), False)\n511:                 q.set_group_by()\n512:             q.clear_select_clause()\n513:         q.clear_ordering(True)\n514:         q.set_limits(high=1)\n515:         compiler = q.get_compiler(using=using)\n516:         return compiler.has_results()\n517: \n518:     def explain(self, using, format=None, **options):\n519:         q = self.clone()\n520:         q.explain_query = True\n521:         q.explain_format = format\n522:         q.explain_options = options\n523:         compiler = q.get_compiler(using=using)\n524:         return '\\n'.join(compiler.explain_query())\n525: \n526:     def combine(self, rhs, connector):\n527:         \"\"\"\n528:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n529:         being applied *after* (that is, \"to the right of\") anything in the\n530:         current query. 'rhs' is not modified during a call to this function.\n531: \n532:         The 'connector' parameter describes how to connect filters from the\n533:         'rhs' query.\n534:         \"\"\"\n535:         assert self.model == rhs.model, \\\n536:             \"Cannot combine queries on two different base models.\"\n537:         assert self.can_filter(), \\\n538:             \"Cannot combine queries once a slice has been taken.\"\n539:         assert self.distinct == rhs.distinct, \\\n540:             \"Cannot combine a unique query with a non-unique query.\"\n541:         assert self.distinct_fields == rhs.distinct_fields, \\\n542:             \"Cannot combine queries with different distinct fields.\"\n543: \n544:         # Work out how to relabel the rhs aliases, if necessary.\n545:         change_map = {}\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "django/db/models/query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"def explain\"]\ndjango/db/models/query.py:720:    def explain(self, *, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 715,
+                  "end_line": 730,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/query.py lines=715-730]\n715:     def _prefetch_related_objects(self):\n716:         # This method can only be called once the result cache has been filled.\n717:         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n718:         self._prefetch_done = True\n719: \n720:     def explain(self, *, format=None, **options):\n721:         return self.query.explain(using=self.db, format=format, **options)\n722: \n723:     ##################################################\n724:     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n725:     ##################################################\n726: \n727:     def raw(self, raw_query, params=None, translations=None, using=None):\n728:         if using is None:\n729:             using = self.db\n730:         return RawQuerySet(raw_query, model=self.model, params=params, translations=translations, using=using)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:explain-core",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 655,
+                  "end_line": 675,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/operations.py lines=655-672]\n655: \n656:     def window_frame_range_start_end(self, start=None, end=None):\n657:         return self.window_frame_rows_start_end(start, end)\n658: \n659:     def explain_query_prefix(self, format=None, **options):\n660:         if not self.connection.features.supports_explaining_query_execution:\n661:             raise NotSupportedError('This backend does not support explaining query execution.')\n662:         if format:\n663:             supported_formats = self.connection.features.supported_explain_formats\n664:             normalized_format = format.upper()\n665:             if normalized_format not in supported_formats:\n666:                 msg = '%s is not a recognized format.' % normalized_format\n667:                 if supported_formats:\n668:                     msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))\n669:                 raise ValueError(msg)\n670:         if options:\n671:             raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n672:         return self.explain_prefix\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "supported_explain_formats",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"supported_explain_formats\"]\ndjango/db/backends/base/features.py:254:    supported_explain_formats = set()\ndjango/db/backends/base/operations.py:663:            supported_formats = self.connection.features.supported_explain_formats\ndjango/db/backends/mysql/features.py:53:    supported_explain_formats = {'JSON', 'TEXT', 'TRADITIONAL'}\ndjango/db/backends/postgresql/features.py:53:    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\ntests/queries/test_explain.py:24:        supported_formats = connection.features.supported_explain_formats\ntests/queries/test_explain.py:45:        if connection.features.supported_explain_formats:\ntests/queries/test_explain.py:46:            msg += ' Allowed formats: %s' % ', '.join(sorted(connection.features.supported_explain_formats))\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_prefix",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"explain_prefix\"]\ndjango/db/backends/base/features.py:266:        return self.connection.ops.explain_prefix is not None\ndjango/db/backends/base/operations.py:49:    explain_prefix = None\ndjango/db/backends/base/operations.py:672:        return self.explain_prefix\ndjango/db/backends/mysql/operations.py:29:    explain_prefix = 'EXPLAIN'\ndjango/db/backends/postgresql/operations.py:10:    explain_prefix = 'EXPLAIN'\ndjango/db/backends/sqlite3/operations.py:22:    explain_prefix = 'EXPLAIN QUERY PLAN'\ntests/queries/test_explain.py:34:                        self.assertTrue(captured_queries[0]['sql'].startswith(connection.ops.explain_prefix))\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1025,
+                  "end_line": 1060,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/compiler.py lines=1025-1060]\n1025:         \"\"\"\n1026:         # This is always executed on a query clone, so we can modify self.query\n1027:         self.query.add_extra({'a': 1}, None, None, None, None, None)\n1028:         self.query.set_extra_mask(['a'])\n1029:         return bool(self.execute_sql(SINGLE))\n1030: \n1031:     def execute_sql(self, result_type=MULTI, chunked_fetch=False, chunk_size=GET_ITERATOR_CHUNK_SIZE):\n1032:         \"\"\"\n1033:         Run the query against the database and return the result(s). The\n1034:         return value is a single data item if result_type is SINGLE, or an\n1035:         iterator over the results if the result_type is MULTI.\n1036: \n1037:         result_type is either MULTI (use fetchmany() to retrieve all rows),\n1038:         SINGLE (only retrieve a single row), or None. In this last case, the\n1039:         cursor is returned if any query is executed, since it's used by\n1040:         subclasses such as InsertQuery). It's possible, however, that no query\n1041:         is needed, as the filters describe an empty set. In that case, None is\n1042:         returned, to avoid any unnecessary database interaction.\n1043:         \"\"\"\n1044:         result_type = result_type or NO_RESULTS\n1045:         try:\n1046:             sql, params = self.as_sql()\n1047:             if not sql:\n1048:                 raise EmptyResultSet\n1049:         except EmptyResultSet:\n1050:             if result_type == MULTI:\n1051:                 return iter([])\n1052:             else:\n1053:                 return\n1054:         if chunked_fetch:\n1055:             cursor = self.connection.chunked_cursor()\n1056:         else:\n1057:             cursor = self.connection.cursor()\n1058:         try:\n1059:             cursor.execute(sql, params)\n1060:         except Exception:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"def explain\"]\ndjango/db/backends/base/operations.py:659:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:274:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:263:    def explain_query_prefix(self, format=None, **options):\ndjango/db/models/query.py:720:    def explain(self, *, format=None, **options):\ndjango/db/models/sql/compiler.py:1110:    def explain_query(self):\ndjango/db/models/sql/query.py:518:    def explain(self, using, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:explain-backends",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 640,
+                  "end_line": 690,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/base/operations.py lines=640-672]\n640:             if end == 0:\n641:                 return self.CURRENT_ROW\n642:             elif end > 0:\n643:                 return '%d %s' % (end, self.FOLLOWING)\n644:         elif end is None:\n645:             return self.UNBOUNDED_FOLLOWING\n646:         raise ValueError(\"end argument must be a positive integer, zero, or None, but got '%s'.\" % end)\n647: \n648:     def window_frame_rows_start_end(self, start=None, end=None):\n649:         \"\"\"\n650:         Return SQL for start and end points in an OVER clause window frame.\n651:         \"\"\"\n652:         if not self.connection.features.supports_over_clause:\n653:             raise NotSupportedError('This backend does not support window expressions.')\n654:         return self.window_frame_start(start), self.window_frame_end(end)\n655: \n656:     def window_frame_range_start_end(self, start=None, end=None):\n657:         return self.window_frame_rows_start_end(start, end)\n658: \n659:     def explain_query_prefix(self, format=None, **options):\n660:         if not self.connection.features.supports_explaining_query_execution:\n661:             raise NotSupportedError('This backend does not support explaining query execution.')\n662:         if format:\n663:             supported_formats = self.connection.features.supported_explain_formats\n664:             normalized_format = format.upper()\n665:             if normalized_format not in supported_formats:\n666:                 msg = '%s is not a recognized format.' % normalized_format\n667:                 if supported_formats:\n668:                     msg += ' Allowed formats: %s' % ', '.join(sorted(supported_formats))\n669:                 raise ValueError(msg)\n670:         if options:\n671:             raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\n672:         return self.explain_prefix\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_query_prefix|supported_explain_formats|validates_explain_options",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"explain_query_prefix|supported_explain_formats|validates_explain_options\"]\ndjango/db/backends/base/features.py:254:    supported_explain_formats = set()\ndjango/db/backends/base/features.py:256:    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\ndjango/db/backends/base/features.py:258:    validates_explain_options = True\ndjango/db/backends/base/operations.py:659:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/base/operations.py:663:            supported_formats = self.connection.features.supported_explain_formats\ndjango/db/backends/mysql/features.py:53:    supported_explain_formats = {'JSON', 'TEXT', 'TRADITIONAL'}\ndjango/db/backends/mysql/operations.py:274:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:278:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/backends/postgresql/features.py:53:    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\ndjango/db/backends/postgresql/features.py:54:    validates_explain_options = False  # A query will error on invalid options.\ndjango/db/backends/postgresql/operations.py:263:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:264:        prefix = super().explain_query_prefix(format)\ndjango/db/models/sql/compiler.py:534:                result.insert(0, self.connection.ops.explain_query_prefix(\ntests/queries/test_explain.py:24:        supported_formats = connection.features.supported_explain_formats\ntests/queries/test_explain.py:38:    @skipUnlessDBFeature('validates_explain_options')\ntests/queries/test_explain.py:45:        if connection.features.supported_explain_formats:\ntests/queries/test_explain.py:46:            msg += ' Allowed formats: %s' % ', '.join(sorted(connection.features.supported_explain_formats))\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 515,
+                  "end_line": 555,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/sql/compiler.py lines=515-555]\n515:                 if where:\n516:                     result.append('WHERE %s' % where)\n517:                     params.extend(w_params)\n518: \n519:                 grouping = []\n520:                 for g_sql, g_params in group_by:\n521:                     grouping.append(g_sql)\n522:                     params.extend(g_params)\n523:                 if grouping:\n524:                     if distinct_fields:\n525:                         raise NotImplementedError('annotate() + distinct(fields) is not implemented.')\n526:                     order_by = order_by or self.connection.ops.force_no_ordering()\n527:                     result.append('GROUP BY %s' % ', '.join(grouping))\n528: \n529:                 if having:\n530:                     result.append('HAVING %s' % having)\n531:                     params.extend(h_params)\n532: \n533:             if self.query.explain_query:\n534:                 result.insert(0, self.connection.ops.explain_query_prefix(\n535:                     self.query.explain_format,\n536:                     **self.query.explain_options\n537:                 ))\n538: \n539:             if order_by:\n540:                 ordering = []\n541:                 for _, (o_sql, o_params, _) in order_by:\n542:                     ordering.append(o_sql)\n543:                     params.extend(o_params)\n544:                 result.append('ORDER BY %s' % ', '.join(ordering))\n545: \n546:             if with_limit_offset:\n547:                 result.append(self.connection.ops.limit_offset_sql(self.query.low_mark, self.query.high_mark))\n548: \n549:             if for_update_part and not self.connection.features.for_update_after_from:\n550:                 result.append(for_update_part)\n551: \n552:             if self.query.subquery and extra_select:\n553:                 # If the query is used as a subquery, the extra selects would\n554:                 # result in more columns than the left-hand side expression is\n555:                 # expecting. This can happen when a subquery uses a combination\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_format|explain_options|def explain",
+                  "file_glob": "django/db/models/query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"explain_format|explain_options|def explain\"]\ndjango/db/models/query.py:720:    def explain(self, *, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 715,
+                  "end_line": 745,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/models/query.py lines=715-745]\n715:     def _prefetch_related_objects(self):\n716:         # This method can only be called once the result cache has been filled.\n717:         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n718:         self._prefetch_done = True\n719: \n720:     def explain(self, *, format=None, **options):\n721:         return self.query.explain(using=self.db, format=format, **options)\n722: \n723:     ##################################################\n724:     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n725:     ##################################################\n726: \n727:     def raw(self, raw_query, params=None, translations=None, using=None):\n728:         if using is None:\n729:             using = self.db\n730:         return RawQuerySet(raw_query, model=self.model, params=params, translations=translations, using=using)\n731: \n732:     def _values(self, *fields, **expressions):\n733:         clone = self._chain()\n734:         if expressions:\n735:             clone = clone.annotate(**expressions)\n736:         clone._fields = fields\n737:         clone.query.set_values(fields)\n738:         return clone\n739: \n740:     def values(self, *fields, **expressions):\n741:         fields += tuple(expressions)\n742:         clone = self._values(*fields, **expressions)\n743:         clone._iterable_class = ValuesIterable\n744:         return clone\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The `format` value is validated against a fixed allowlist (`supported_explain_formats`) in the base `explain_query_prefix` before the MySQL/PostgreSQL overrides append it, so it is allowlisted. However, the PostgreSQL override interpolates the **option names** (`name.upper()`) directly into the SQL text via `'%s %s' % i`, and the base method only raises for options when `validates_explain_options` is True \u2014 which PostgreSQL sets to `False`. Since `explain(**options)` is a public API, an attacker-controlled option name is concatenated into the executed SQL without any allowlist.\n\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"PostgreSQL's explain_query_prefix() concatenates the option NAMES (name.upper()) directly into the SQL text via `prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())`. The base explain_query_prefix() only rejects options when features.validates_explain_options is True, but PostgreSQL sets validates_explain_options = False, so no allowlist is applied to the option names. These names originate from the public QuerySet.explain(**options) API (query.py:720 -> compiler.py:534-537), so an attacker-controlled option name is interpolated into the executed EXPLAIN statement without binding or allowlisting.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"django/db/backends/postgresql/operations.py\", \"lines\": [263, 275], \"content\": \"    def explain_query_prefix(self, format=None, **options):\\n        prefix = super().explain_query_prefix(format)\\n        extra = {}\\n        if format:\\n            extra['FORMAT'] = format\\n        if options:\\n            extra.update({\\n                name.upper(): 'true' if value else 'false'\\n                for name, value in options.items()\\n            })\\n        if extra:\\n            prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\\n        return prefix\"},\n        {\"type\": \"code\", \"file\": \"django/db/backends/postgresql/features.py\", \"lines\": [53, 54], \"content\": \"    supported_explain_formats = {'JSON', 'TEXT', 'XML', 'YAML'}\\n    validates_explain_options = False  # A query will error on invalid options.\"},\n        {\"type\": \"code\", \"file\": \"django/db/backends/base/operations.py\", \"lines\": [670, 672], \"content\": \"        if options:\\n            raise ValueError('Unknown options: %s' % ', '.join(sorted(options.keys())))\\n        return self.explain_prefix\"},\n        {\"type\": \"code\", \"file\": \"django/db/models/query.py\", \"lines\": [720, 721], \"content\": \"    def explain(self, *, format=None, **options):\\n        return self.query.explain(using=self.db, format=format, **options)\"},\n        {\"type\": \"policy\", \"source\": \"docs/topics/security.txt\", \"content\": \"you should always be careful to properly escape any parameters that the user can control.\"}\n      ],\n      \"suggested_fix\": \"Validate the option names against a fixed allowlist of supported PostgreSQL EXPLAIN options (e.g. ANALYZE, BUFFERS, VERBOSE, SETTINGS, TIMING, WAL) before interpolating them into the SQL text, rather than relying on the database to error on invalid options.\",\n      \"file\": \"django/db/backends/postgresql/operations.py\",\n      \"line\": 274\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:explain-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=tests/queries/test_explain.py lines=1-99]\n1: import unittest\n2: \n3: from django.db import NotSupportedError, connection, transaction\n4: from django.db.models import Count\n5: from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature\n6: from django.test.utils import CaptureQueriesContext\n7: \n8: from .models import Tag\n9: \n10: \n11: @skipUnlessDBFeature('supports_explaining_query_execution')\n12: class ExplainTests(TestCase):\n13: \n14:     def test_basic(self):\n15:         querysets = [\n16:             Tag.objects.filter(name='test'),\n17:             Tag.objects.filter(name='test').select_related('parent'),\n18:             Tag.objects.filter(name='test').prefetch_related('children'),\n19:             Tag.objects.filter(name='test').annotate(Count('children')),\n20:             Tag.objects.filter(name='test').values_list('name'),\n21:             Tag.objects.order_by().union(Tag.objects.order_by().filter(name='test')),\n22:             Tag.objects.all().select_for_update().filter(name='test'),\n23:         ]\n24:         supported_formats = connection.features.supported_explain_formats\n25:         all_formats = (None,) + tuple(supported_formats) + tuple(f.lower() for f in supported_formats)\n26:         for idx, queryset in enumerate(querysets):\n27:             for format in all_formats:\n28:                 with self.subTest(format=format, queryset=idx):\n29:                     if connection.vendor == 'mysql':\n30:                         # This does a query and caches the result.\n31:                         connection.features.needs_explain_extended\n32:                     with self.assertNumQueries(1), CaptureQueriesContext(connection) as captured_queries:\n33:                         result = queryset.explain(format=format)\n34:                         self.assertTrue(captured_queries[0]['sql'].startswith(connection.ops.explain_prefix))\n35:                         self.assertIsInstance(result, str)\n36:                         self.assertTrue(result)\n37: \n38:     @skipUnlessDBFeature('validates_explain_options')\n39:     def test_unknown_options(self):\n40:         with self.assertRaisesMessage(ValueError, 'Unknown options: test, test2'):\n41:             Tag.objects.all().explain(test=1, test2=1)\n42: \n43:     def test_unknown_format(self):\n44:         msg = 'DOES NOT EXIST is not a recognized format.'\n45:         if connection.features.supported_explain_formats:\n46:             msg += ' Allowed formats: %s' % ', '.join(sorted(connection.features.supported_explain_formats))\n47:         with self.assertRaisesMessage(ValueError, msg):\n48:             Tag.objects.all().explain(format='does not exist')\n49: \n50:     @unittest.skipUnless(connection.vendor == 'postgresql', 'PostgreSQL specific')\n51:     def test_postgres_options(self):\n52:         qs = Tag.objects.filter(name='test')\n53:         test_options = [\n54:             {'COSTS': False, 'BUFFERS': True, 'ANALYZE': True},\n55:             {'costs': False, 'buffers': True, 'analyze': True},\n56:             {'verbose': True, 'timing': True, 'analyze': True},\n57:             {'verbose': False, 'timing': False, 'analyze': True},\n58:         ]\n59:         if connection.pg_version >= 100000:\n60:             test_options.append({'summary': True})\n61:         for options in test_options:\n62:             with self.subTest(**options), transaction.atomic():\n63:                 with CaptureQueriesContext(connection) as captured_queries:\n64:                     qs.explain(format='text', **options)\n65:                 self.assertEqual(len(captured_queries), 1)\n66:                 for name, value in options.items():\n67:                     option = '{} {}'.format(name.upper(), 'true' if value else 'false')\n68:                     self.assertIn(option, captured_queries[0]['sql'])\n69: \n70:     @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL specific')\n71:     def test_mysql_text_to_traditional(self):\n72:         with CaptureQueriesContext(connection) as captured_queries:\n73:             Tag.objects.filter(name='test').explain(format='text')\n74:         self.assertEqual(len(captured_queries), 1)\n75:         self.assertIn('FORMAT=TRADITIONAL', captured_queries[0]['sql'])\n76: \n77:     @unittest.skipUnless(connection.vendor == 'mysql', 'MySQL < 5.7 specific')\n78:     def test_mysql_extended(self):\n79:         # Inner skip to avoid module level query for MySQL version.\n80:         if not connection.features.needs_explain_extended:\n81:             raise unittest.SkipTest('MySQL < 5.7 specific')\n82:         qs = Tag.objects.filter(name='test')\n83:         with CaptureQueriesContext(connection) as captured_queries:\n84:             qs.explain(format='json')\n85:         self.assertEqual(len(captured_queries), 1)\n86:         self.assertNotIn('EXTENDED', captured_queries[0]['sql'])\n87:         with CaptureQueriesContext(connection) as captured_queries:\n88:             qs.explain(format='text')\n89:         self.assertEqual(len(captured_queries), 1)\n90:         self.assertNotIn('EXTENDED', captured_queries[0]['sql'])\n91: \n92: \n93: @skipIfDBFeature('supports_explaining_query_execution')\n94: class ExplainUnsupportedTests(TestCase):\n95: \n96:     def test_message(self):\n97:         msg = 'This backend does not support explaining query execution.'\n98:         with self.assertRaisesMessage(NotSupportedError, msg):\n99:             Tag.objects.filter(name='test').explain()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/runtests.py",
+                  "start_line": 1,
+                  "end_line": 45,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=tests/runtests.py lines=1-45]\n1: #!/usr/bin/env python\n2: import argparse\n3: import atexit\n4: import copy\n5: import os\n6: import shutil\n7: import subprocess\n8: import sys\n9: import tempfile\n10: import warnings\n11: \n12: import django\n13: from django.apps import apps\n14: from django.conf import settings\n15: from django.db import connection, connections\n16: from django.test import TestCase, TransactionTestCase\n17: from django.test.runner import default_test_processes\n18: from django.test.selenium import SeleniumTestCaseBase\n19: from django.test.utils import get_runner\n20: from django.utils.deprecation import RemovedInDjango30Warning\n21: from django.utils.log import DEFAULT_LOGGING\n22: \n23: try:\n24:     import MySQLdb\n25: except ImportError:\n26:     pass\n27: else:\n28:     # Ignore informational warnings from QuerySet.explain().\n29:     warnings.filterwarnings('ignore', '\\(1003, *', category=MySQLdb.Warning)\n30: \n31: # Make deprecation warnings errors to ensure no usage of deprecated features.\n32: warnings.simplefilter(\"error\", RemovedInDjango30Warning)\n33: # Make runtime warning errors to ensure no usage of error prone patterns.\n34: warnings.simplefilter(\"error\", RuntimeWarning)\n35: # Ignore known warnings in test dependencies.\n36: warnings.filterwarnings(\"ignore\", \"'U' mode is deprecated\", DeprecationWarning, module='docutils.io')\n37: \n38: RUNTESTS_DIR = os.path.abspath(os.path.dirname(__file__))\n39: \n40: TEMPLATE_DIR = os.path.join(RUNTESTS_DIR, 'templates')\n41: \n42: # Create a specific subdirectory for the duration of the test suite.\n43: TMPDIR = tempfile.mkdtemp(prefix='django_')\n44: # Set the TMPDIR environment variable in addition to tempfile.tempdir\n45: # so that children processes inherit it.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/basic/tests.py",
+                  "start_line": 540,
+                  "end_line": 575,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=tests/basic/tests.py lines=540-575]\n540:         'in_bulk',\n541:         'iterator',\n542:         'earliest',\n543:         'latest',\n544:         'first',\n545:         'last',\n546:         'order_by',\n547:         'select_for_update',\n548:         'select_related',\n549:         'prefetch_related',\n550:         'values',\n551:         'values_list',\n552:         'update',\n553:         'reverse',\n554:         'defer',\n555:         'only',\n556:         'using',\n557:         'exists',\n558:         'explain',\n559:         '_insert',\n560:         '_update',\n561:         'raw',\n562:         'union',\n563:         'intersection',\n564:         'difference',\n565:     ]\n566: \n567:     def test_manager_methods(self):\n568:         \"\"\"\n569:         This test ensures that the correct set of methods from `QuerySet`\n570:         are copied onto `Manager`.\n571: \n572:         It's particularly useful to prevent accidentally leaking new methods\n573:         into `Manager`. New `QuerySet` methods that should also be copied onto\n574:         `Manager` will need to be added to `ManagerTest.QUERYSET_PROXY_METHODS`.\n575:         \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e pattern=\"def explain\"]\ndjango/db/backends/base/operations.py:659:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:274:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:263:    def explain_query_prefix(self, format=None, **options):\ndjango/db/models/query.py:720:    def explain(self, *, format=None, **options):\ndjango/db/models/sql/compiler.py:1110:    def explain_query(self):\ndjango/db/models/sql/query.py:518:    def explain(self, using, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 255,
+                  "end_line": 290,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c1c163b42717ed5e051098ebf0e2f5c77810f20e path=django/db/backends/postgresql/operations.py lines=255-275]\n255:         start_, end_ = super().window_frame_range_start_end(start, end)\n256:         if (start and start < 0) or (end and end > 0):\n257:             raise NotSupportedError(\n258:                 'PostgreSQL only supports UNBOUNDED together with PRECEDING '\n259:                 'and FOLLOWING.'\n260:             )\n261:         return start_, end_\n262: \n263:     def explain_query_prefix(self, format=None, **options):\n264:         prefix = super().explain_query_prefix(format)\n265:         extra = {}\n266:         if format:\n267:             extra['FORMAT'] = format\n268:         if options:\n269:             extra.update({\n270:                 name.upper(): 'true' if value else 'false'\n271:                 for name, value in options.items()\n272:             })\n273:         if extra:\n274:             prefix += ' (%s)' % ', '.join('%s %s' % i for i in extra.items())\n275:         return prefix\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/mysql/operations.py",
+                  "start_line": 265,
+                  "end_line": 300,
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "sqli:explain-backends:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.7893,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "django-explain-options-sqli",
+  "url": "https://github.com/django/django/pull/9053",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-w24h-v9qh-8gxj",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "django/db/backends/postgresql/operations.py",
+    "django/db/models/sql/query.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

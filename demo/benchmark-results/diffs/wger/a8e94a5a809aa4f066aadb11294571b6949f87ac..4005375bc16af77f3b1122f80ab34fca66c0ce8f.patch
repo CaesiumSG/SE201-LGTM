@@ -1,0 +1,489 @@
+diff --git a/wger/manager/api/consts.py b/wger/manager/api/consts.py
+new file mode 100644
+index 0000000..eb870d8
+--- /dev/null
++++ b/wger/manager/api/consts.py
+@@ -0,0 +1,10 @@
++CONFIG_FIELDS = (
++    'id',
++    'slot_config',
++    'iteration',
++    'value',
++    'operation',
++    'step',
++    'replace',
++    'need_log_to_apply',
++)
+diff --git a/wger/manager/api/serializers.py b/wger/manager/api/serializers.py
+index cf3825b..9c8fb0c 100644
+--- a/wger/manager/api/serializers.py
++++ b/wger/manager/api/serializers.py
+@@ -18,11 +18,14 @@
+ # Third Party
+ from rest_framework import serializers
+ 
+ # wger
+-from wger.core.models import DaysOfWeek
++from wger.manager.api.consts import CONFIG_FIELDS
+ from wger.manager.models import (
+     Day,
++    MaxRepsConfig,
++    MaxRestConfig,
++    MaxWeightConfig,
+     RepsConfig,
+     RestConfig,
+     RiRConfig,
+     Routine,
+@@ -81,18 +84,19 @@ class WeightConfigSerializer(serializers.ModelSerializer):
+     """
+ 
+     class Meta:
+         model = WeightConfig
+-        fields = (
+-            'id',
+-            'slot_config',
+-            'iteration',
+-            'value',
+-            'operation',
+-            'step',
+-            'replace',
+-            'need_log_to_apply',
+-        )
++        fields = CONFIG_FIELDS
++
++
++class MaxWeightConfigSerializer(serializers.ModelSerializer):
++    """
++    Max Weight Config serializer
++    """
++
++    class Meta:
++        model = MaxWeightConfig
++        fields = CONFIG_FIELDS
+ 
+ 
+ class RepsConfigSerializer(serializers.ModelSerializer):
+     """
+@@ -100,18 +104,19 @@ class RepsConfigSerializer(serializers.ModelSerializer):
+     """
+ 
+     class Meta:
+         model = RepsConfig
+-        fields = (
+-            'id',
+-            'slot_config',
+-            'iteration',
+-            'value',
+-            'operation',
+-            'step',
+-            'replace',
+-            'need_log_to_apply',
+-        )
++        fields = CONFIG_FIELDS
++
++
++class MaxRepsConfigSerializer(serializers.ModelSerializer):
++    """
++    Max Repetition Config serializer
++    """
++
++    class Meta:
++        model = MaxRepsConfig
++        fields = CONFIG_FIELDS
+ 
+ 
+ class SetNrConfigSerializer(serializers.ModelSerializer):
+     """
+@@ -119,17 +124,9 @@ class SetNrConfigSerializer(serializers.ModelSerializer):
+     """
+ 
+     class Meta:
+         model = SetsConfig
+-        fields = (
+-            'id',
+-            'slot_config',
+-            'iteration',
+-            'value',
+-            'operation',
+-            'step',
+-            'replace',
+-        )
++        fields = CONFIG_FIELDS
+ 
+ 
+ class RiRConfigSerializer(serializers.ModelSerializer):
+     """
+@@ -137,17 +134,9 @@ class RiRConfigSerializer(serializers.ModelSerializer):
+     """
+ 
+     class Meta:
+         model = RiRConfig
+-        fields = (
+-            'id',
+-            'slot_config',
+-            'iteration',
+-            'value',
+-            'operation',
+-            'step',
+-            'replace',
+-        )
++        fields = CONFIG_FIELDS
+ 
+ 
+ class RestConfigSerializer(serializers.ModelSerializer):
+     """
+@@ -155,49 +144,57 @@ class RestConfigSerializer(serializers.ModelSerializer):
+     """
+ 
+     class Meta:
+         model = RestConfig
+-        fields = (
+-            'id',
+-            'slot_config',
+-            'iteration',
+-            'value',
+-            'operation',
+-            'step',
+-            'replace',
+-        )
++        fields = CONFIG_FIELDS
++
++
++class MaxRestConfigSerializer(serializers.ModelSerializer):
++    """
++    Rest Config serializer
++    """
++
++    class Meta:
++        model = MaxRestConfig
++        fields = CONFIG_FIELDS
+ 
+ 
+ class SlotConfigSerializer(serializers.ModelSerializer):
+     """
+     Slot configuration
+     """
+ 
+     weight_configs = WeightConfigSerializer(source='weightconfig_set', many=True)
++    max_weight_configs = WeightConfigSerializer(source='maxweightconfig_set', many=True)
+     reps_configs = RepsConfigSerializer(source='repsconfig_set', many=True)
++    max_reps_configs = RepsConfigSerializer(source='maxrepsconfig_set', many=True)
+     set_nr_configs = SetNrConfigSerializer(source='setsconfig_set', many=True)
+     rir_configs = RiRConfigSerializer(source='rirconfig_set', many=True)
+     rest_configs = RestConfigSerializer(source='restconfig_set', many=True)
++    max_rest_configs = RestConfigSerializer(source='maxrestconfig_set', many=True)
+ 
+     class Meta:
+         model = SlotConfig
+         fields = (
+             'id',
+             'slot',
+             'exercise',
+-            'repetition_unit',
+-            'repetition_rounding',
+-            'weight_unit',
+-            'weight_rounding',
+             'order',
+             'comment',
+             'type',
+             'class_name',
+-            'weight_configs',
++            'repetition_unit',
++            'repetition_rounding',
+             'reps_configs',
++            'max_reps_configs',
++            'weight_unit',
++            'weight_rounding',
++            'weight_configs',
++            'max_weight_configs',
+             'set_nr_configs',
+             'rir_configs',
+             'rest_configs',
++            'max_rest_configs',
+         )
+ 
+ 
+ class SlotSerializer(serializers.ModelSerializer):
+diff --git a/wger/manager/api/views.py b/wger/manager/api/views.py
+index c7503ea..ebd9e33 100644
+--- a/wger/manager/api/views.py
++++ b/wger/manager/api/views.py
+@@ -28,26 +28,44 @@ from rest_framework.decorators import action
+ from rest_framework.response import Response
+ 
+ # wger
+ from wger.exercises.models import ExerciseBase
++from wger.manager.api.consts import CONFIG_FIELDS
+ from wger.manager.api.serializers import (
+     DaySerializer,
+     LogDataSerializer,
++    MaxRepsConfigSerializer,
++    MaxRestConfigSerializer,
++    MaxWeightConfigSerializer,
++    RepsConfigSerializer,
++    RestConfigSerializer,
++    RiRConfigSerializer,
+     RoutineSerializer,
+     RoutineStructureSerializer,
+     ScheduleSerializer,
+     ScheduleStepSerializer,
++    SetNrConfigSerializer,
++    WeightConfigSerializer,
+     WorkoutDayDataDisplayModeSerializer,
+     WorkoutDayDataGymModeSerializer,
+     WorkoutLogSerializer,
+     WorkoutSerializer,
+     WorkoutSessionSerializer,
+     WorkoutTemplateSerializer,
+ )
+ from wger.manager.models import (
++    MaxRepsConfig,
++    MaxRestConfig,
++    MaxWeightConfig,
++    RepsConfig,
++    RestConfig,
++    RiRConfig,
+     Routine,
+     Schedule,
+     ScheduleStep,
++    SetsConfig,
++    SlotConfig,
++    WeightConfig,
+     Workout,
+     WorkoutLog,
+     WorkoutSession,
+ )
+@@ -415,4 +433,166 @@ class WorkoutLogViewSet(WgerOwnerObjectModelViewSet):
+         """
+         Return objects to check for ownership permission
+         """
+         return [(Workout, 'workout')]
++
++
++class AbstractConfigViewSet(WgerOwnerObjectModelViewSet):
++    """
++    API endpoint for weight config objects
++    """
++
++    is_private = True
++    ordering_fields = '__all__'
++    filterset_fields = CONFIG_FIELDS
++
++    def get_owner_objects(self):
++        """
++        Return objects to check for ownership permission
++        """
++        return [(SlotConfig, 'slot_config')]
++
++
++class WeightConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for weight config objects
++    """
++
++    serializer_class = WeightConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return WeightConfig.objects.none()
++
++        return WeightConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)
++
++
++class MaxWeightConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for max weight config objects
++    """
++
++    serializer_class = MaxWeightConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return MaxWeightConfig.objects.none()
++
++        return MaxWeightConfig.objects.filter(
++            slot_config__slot__day__routine__user=self.request.user
++        )
++
++
++class RepsConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for reps config objects
++    """
++
++    serializer_class = RepsConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return RepsConfig.objects.none()
++
++        return RepsConfig.objects.all()
++
++
++class MaxRepsConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for max reps config objects
++    """
++
++    serializer_class = MaxRepsConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return MaxRepsConfig.objects.none()
++
++        return MaxRepsConfig.objects.all()
++
++
++class SetsConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for set config objects
++    """
++
++    serializer_class = SetNrConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return SetsConfig.objects.none()
++
++        return SetsConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)
++
++
++class RestConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for set config objects
++    """
++
++    serializer_class = RestConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return RestConfig.objects.none()
++
++        return RestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)
++
++
++class MaxRestConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for max rest config objects
++    """
++
++    serializer_class = MaxRestConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return MaxRestConfig.objects.none()
++
++        return MaxRestConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)
++
++
++class RiRConfigViewSet(AbstractConfigViewSet):
++    """
++    API endpoint for set config objects
++    """
++
++    serializer_class = RiRConfigSerializer
++
++    def get_queryset(self):
++        """
++        Only allow access to appropriate objects
++        """
++        # REST API generation
++        if getattr(self, 'swagger_fake_view', False):
++            return RiRConfig.objects.none()
++
++        return RiRConfig.objects.filter(slot_config__slot__day__routine__user=self.request.user)
+diff --git a/wger/manager/models/abstract_config.py b/wger/manager/models/abstract_config.py
+index 3924058..b224742 100644
+--- a/wger/manager/models/abstract_config.py
++++ b/wger/manager/models/abstract_config.py
+@@ -94,4 +94,10 @@ class AbstractChangeConfig(models.Model):
+             self.need_log_to_apply = False
+             self.step = None
+             self.operation = None
+         super().save(**kwargs)
++
++    def get_owner_object(self):
++        """
++        Config has no owner information
++        """
++        return self.slot_config.slot.day.routine
+diff --git a/wger/urls.py b/wger/urls.py
+index 484748e..9f88454 100644
+--- a/wger/urls.py
++++ b/wger/urls.py
+@@ -71,11 +71,33 @@ router.register(
+     manager_api_views.PublicWorkoutTemplateViewSet,
+     basename='public-templates',
+ )
+ router.register(
+-    r'workoutsession', manager_api_views.WorkoutSessionViewSet, basename='workoutsession'
++    r'workoutsession',
++    manager_api_views.WorkoutSessionViewSet,
++    basename='workoutsession',
+ )
+ router.register(r'workoutlog', manager_api_views.WorkoutLogViewSet, basename='workoutlog')
++router.register(r'weight-config', manager_api_views.WeightConfigViewSet, basename='weight-config')
++router.register(
++    r'max-weight-config',
++    manager_api_views.MaxWeightConfigViewSet,
++    basename='max-weight-config',
++)
++router.register(r'reps-config', manager_api_views.RepsConfigViewSet, basename='reps-config')
++router.register(
++    r'max-reps-config',
++    manager_api_views.MaxRepsConfigViewSet,
++    basename='max-reps-config',
++)
++router.register(r'sets-config', manager_api_views.SetsConfigViewSet, basename='sets-config')
++router.register(r'rest-config', manager_api_views.RestConfigViewSet, basename='rest-config')
++router.register(
++    r'max-rest-config',
++    manager_api_views.MaxRestConfigViewSet,
++    basename='max-rest-config',
++)
++router.register(r'rir-config', manager_api_views.RiRConfigViewSet, basename='rir-config')
+ router.register(r'schedulestep', manager_api_views.ScheduleStepViewSet, basename='schedulestep')
+ router.register(r'schedule', manager_api_views.ScheduleViewSet, basename='schedule')
+ 
+ # Core app
+diff --git a/wger/utils/viewsets.py b/wger/utils/viewsets.py
+index 2325080..e09f7a3 100644
+--- a/wger/utils/viewsets.py
++++ b/wger/utils/viewsets.py
+@@ -48,7 +48,7 @@ class WgerOwnerObjectModelViewSet(viewsets.ModelViewSet):
+             if request.data.get(entry[1]):
+                 pk = request.data.get(entry[1])
+                 obj = entry[0].objects.get(pk=pk)
+                 if obj.get_owner_object().user != request.user:
+-                    raise exceptions.PermissionDenied('You are not allowed to do this')
++                    raise exceptions.PermissionDenied('You are not allowed to do this 111111')
+         else:
+             return super().update(request, *args, **kwargs)

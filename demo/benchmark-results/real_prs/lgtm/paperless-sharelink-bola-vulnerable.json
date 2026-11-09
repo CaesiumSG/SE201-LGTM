@@ -1,0 +1,112 @@
+{
+  "id": "paperless-sharelink-bola-vulnerable",
+  "repo": "paperless-ngx/paperless-ngx",
+  "pr": 3996,
+  "title": "The share-links feature let any user with add_sharelink create a public link to any document, including ones they could not view.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "3a36d9b1aebb5d2ad5296db5db970d209c4f9495",
+  "pr_sha": "7c9ab8c0b6ac7d6910ac8e4f98ca736a2e0e9ee7",
+  "files_changed": 35,
+  "python_files_changed": 10,
+  "added_lines": 535,
+  "diff_chars": 29162,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 210.9,
+  "index_seconds": 2.2,
+  "index_reused": false,
+  "index_chunks": 292,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "safe": 1
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 8,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 32,
+  "reviewer_units": 6,
+  "findings": [
+    {
+      "finding_id": "authz:sharelink-api:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new share_links action gates access with `if currentUser is not None and not has_perms_owner_aware(...)`. The `currentUser is not None` guard means that when the request is unauthenticated (request.user is AnonymousUser, which is not None) the permission check is still applied, but the intent of the guard is ambiguous. More importantly, the check uses `has_perms_owner_aware(currentUser, \"change_document\", doc)`, which returns True when `doc.owner is None` (see permissions.py:122: `return obj.owner is None or obj.owner == user or checker.has_perm(perms, obj)`). Per the documented permission model (docs/usage.md: 'After migration to version 1.14.0 all existing documents... will have no explicit owner set which means they will be visible / editable by all users'), unowned documents are intentionally accessible to all users, so this is consistent with policy. However, the `currentUser is not None` condition is a bypassable/incorrect guard: it implies that a None user would skip the check, but DRF's IsAuthenticated already rejects anonymous requests, so the guard is dead/incorrect logic rather than a real bypass. No confirmed policy violation is established from the evidence, so this is not reported as a confirmed flaw.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            557,
+            567
+          ],
+          "source": null,
+          "content": "@action(methods=[\"get\"], detail=True)\n    def share_links(self, request, pk=None):\n        currentUser = request.user\n        try:\n            doc = Document.objects.get(pk=pk)\n            if currentUser is not None and not has_perms_owner_aware(\n                currentUser,\n                \"change_document\",\n                doc,\n            ):\n                return HttpResponseForbidden(\"Insufficient permissions\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/documents/permissions.py",
+          "lines": [
+            120,
+            122
+          ],
+          "source": null,
+          "content": "def has_perms_owner_aware(user, perms, obj):\n    checker = ObjectPermissionChecker(user)\n    return obj.owner is None or obj.owner == user or checker.has_perm(perms, obj)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/usage.md",
+          "content": "After migration to version 1.14.0 all existing documents, tags etc. will have no explicit owner set which means they will be visible / editable by all users. Once an object has an owner set, only the owner can explicitly grant / revoke permissions.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Remove the `currentUser is not None` guard and rely on the DRF IsAuthenticated permission plus a direct `has_perms_owner_aware(request.user, \"change_document\", doc)` check, so the authorization decision is explicit and not dependent on a None-user branch.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.5607,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/documents/views.py",
+      "line": 562,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "paperless-sharelink-bola",
+  "url": "https://github.com/paperless-ngx/paperless-ngx/pull/3996",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-386h-chg4-cfw9",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/documents/serialisers.py",
+    "src/documents/views.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

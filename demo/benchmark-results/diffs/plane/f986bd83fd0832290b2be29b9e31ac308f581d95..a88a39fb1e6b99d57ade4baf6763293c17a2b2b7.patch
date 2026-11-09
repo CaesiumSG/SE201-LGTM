@@ -1,0 +1,595 @@
+diff --git a/apiserver/plane/app/serializers/base.py b/apiserver/plane/app/serializers/base.py
+index f84d349a..10260de5 100644
+--- a/apiserver/plane/app/serializers/base.py
++++ b/apiserver/plane/app/serializers/base.py
+@@ -48,46 +48,49 @@ class DynamicBaseSerializer(BaseSerializer):
+             elif isinstance(item, dict):
+                 allowed.append(list(item.keys())[0])
+ 
+         for field in allowed:
+-            from . import (
+-                WorkspaceLiteSerializer,
+-                ProjectLiteSerializer,
+-                UserLiteSerializer,
+-                StateLiteSerializer,
+-                IssueSerializer,
+-                LabelSerializer,
+-                CycleIssueSerializer,
+-                IssueLiteSerializer,
+-                IssueRelationSerializer,
+-                InboxIssueLiteSerializer,
+-                IssueReactionLiteSerializer,
+-                IssueLinkLiteSerializer,
+-            )
+-
+-            # Expansion mapper
+-            expansion = {
+-                "user": UserLiteSerializer,
+-                "workspace": WorkspaceLiteSerializer,
+-                "project": ProjectLiteSerializer,
+-                "default_assignee": UserLiteSerializer,
+-                "project_lead": UserLiteSerializer,
+-                "state": StateLiteSerializer,
+-                "created_by": UserLiteSerializer,
+-                "issue": IssueSerializer,
+-                "actor": UserLiteSerializer,
+-                "owned_by": UserLiteSerializer,
+-                "members": UserLiteSerializer,
+-                "assignees": UserLiteSerializer,
+-                "labels": LabelSerializer,
+-                "issue_cycle": CycleIssueSerializer,
+-                "parent": IssueLiteSerializer,
+-                "issue_relation": IssueRelationSerializer,
+-                "issue_inbox": InboxIssueLiteSerializer,
+-                "issue_reactions": IssueReactionLiteSerializer,
+-                "issue_link": IssueLinkLiteSerializer,
+-                "sub_issues": IssueLiteSerializer,
+-            }
++            if field not in self.fields:
++                from . import (
++                    WorkspaceLiteSerializer,
++                    ProjectLiteSerializer,
++                    UserLiteSerializer,
++                    StateLiteSerializer,
++                    IssueSerializer,
++                    LabelSerializer,
++                    CycleIssueSerializer,
++                    IssueLiteSerializer,
++                    IssueRelationSerializer,
++                    InboxIssueLiteSerializer,
++                    IssueReactionLiteSerializer,
++                    IssueLinkLiteSerializer,
++                    RelatedIssueSerializer,
++                )
++
++                # Expansion mapper
++                expansion = {
++                    "user": UserLiteSerializer,
++                    "workspace": WorkspaceLiteSerializer,
++                    "project": ProjectLiteSerializer,
++                    "default_assignee": UserLiteSerializer,
++                    "project_lead": UserLiteSerializer,
++                    "state": StateLiteSerializer,
++                    "created_by": UserLiteSerializer,
++                    "issue": IssueSerializer,
++                    "actor": UserLiteSerializer,
++                    "owned_by": UserLiteSerializer,
++                    "members": UserLiteSerializer,
++                    "assignees": UserLiteSerializer,
++                    "labels": LabelSerializer,
++                    "issue_cycle": CycleIssueSerializer,
++                    "parent": IssueLiteSerializer,
++                    "issue_relation": IssueRelationSerializer,
++                    "issue_related": RelatedIssueSerializer,
++                    "issue_inbox": InboxIssueLiteSerializer,
++                    "issue_reactions": IssueReactionLiteSerializer,
++                    "issue_link": IssueLinkLiteSerializer,
++                    "sub_issues": IssueLiteSerializer,
++                }
+ 
+             if field not in self.fields and field in expansion:
+                 self.fields[field] = expansion[field](
+                     many=(
+@@ -103,8 +106,9 @@ class DynamicBaseSerializer(BaseSerializer):
+                             "issue_reactions",
+                             "issue_attachment",
+                             "issue_link",
+                             "sub_issues",
++                            "issue_related",
+                         ]
+                         else False
+                     )
+                 )
+@@ -132,8 +136,9 @@ class DynamicBaseSerializer(BaseSerializer):
+                         IssueLiteSerializer,
+                         IssueReactionLiteSerializer,
+                         IssueAttachmentLiteSerializer,
+                         IssueLinkLiteSerializer,
++                        RelatedIssueSerializer,
+                     )
+ 
+                     # Expansion mapper
+                     expansion = {
+@@ -152,8 +157,9 @@ class DynamicBaseSerializer(BaseSerializer):
+                         "labels": LabelSerializer,
+                         "issue_cycle": CycleIssueSerializer,
+                         "parent": IssueLiteSerializer,
+                         "issue_relation": IssueRelationSerializer,
++                        "issue_related": RelatedIssueSerializer,
+                         "issue_inbox": InboxIssueLiteSerializer,
+                         "issue_reactions": IssueReactionLiteSerializer,
+                         "issue_attachment": IssueAttachmentLiteSerializer,
+                         "issue_link": IssueLinkLiteSerializer,
+diff --git a/apiserver/plane/app/urls/issue.py b/apiserver/plane/app/urls/issue.py
+index 23330e8e..e8ad4408 100644
+--- a/apiserver/plane/app/urls/issue.py
++++ b/apiserver/plane/app/urls/issue.py
+@@ -20,9 +20,11 @@ from plane.app.views import (
+     LabelViewSet,
+     BulkArchiveIssuesEndpoint,
+     DeletedIssuesListViewSet,
+     IssuePaginatedViewSet,
++    IssueDetailEndpoint,
+     IssueAttachmentV2Endpoint,
++    IssueBulkUpdateDateEndpoint,
+ )
+ 
+ urlpatterns = [
+     path(
+@@ -39,8 +41,14 @@ urlpatterns = [
+             }
+         ),
+         name="project-issue",
+     ),
++    path(
++        "workspaces/<str:slug>/projects/<uuid:project_id>/issues-detail/",
++        IssueDetailEndpoint.as_view(),
++        name="project-issue-detail",
++    ),
++    # updated v1 paginated issues
+     # updated v2 paginated issues
+     path(
+         "workspaces/<str:slug>/projects/<uuid:project_id>/v2/issues/",
+         IssuePaginatedViewSet.as_view({"get": "list"}),
+@@ -306,5 +314,10 @@ urlpatterns = [
+         "workspaces/<str:slug>/projects/<uuid:project_id>/deleted-issues/",
+         DeletedIssuesListViewSet.as_view(),
+         name="deleted-issues",
+     ),
++    path(
++        "workspaces/<str:slug>/projects/<uuid:project_id>/issue-dates/",
++        IssueBulkUpdateDateEndpoint.as_view(),
++        name="project-issue-dates",
++    ),
+ ]
+diff --git a/apiserver/plane/app/views/__init__.py b/apiserver/plane/app/views/__init__.py
+index 606d05e0..1f94cb7a 100644
+--- a/apiserver/plane/app/views/__init__.py
++++ b/apiserver/plane/app/views/__init__.py
+@@ -129,8 +129,10 @@ from .issue.base import (
+     IssueUserDisplayPropertyEndpoint,
+     BulkDeleteIssuesEndpoint,
+     DeletedIssuesListViewSet,
+     IssuePaginatedViewSet,
++    IssueDetailEndpoint,
++    IssueBulkUpdateDateEndpoint,
+ )
+ 
+ from .issue.activity import (
+     IssueActivityEndpoint,
+diff --git a/apiserver/plane/app/views/issue/base.py b/apiserver/plane/app/views/issue/base.py
+index 16c96adc..d82ae432 100644
+--- a/apiserver/plane/app/views/issue/base.py
++++ b/apiserver/plane/app/views/issue/base.py
+@@ -975,4 +975,195 @@ class IssuePaginatedViewSet(BaseViewSet):
+             ),
+         )
+ 
+         return Response(paginated_data, status=status.HTTP_200_OK)
++
++
++class IssueDetailEndpoint(BaseAPIView):
++    @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST])
++    def get(self, request, slug, project_id):
++        filters = issue_filters(request.query_params, "GET")
++        issue = (
++            Issue.issue_objects.filter(
++                workspace__slug=slug, project_id=project_id
++            )
++            .select_related("workspace", "project", "state", "parent")
++            .prefetch_related("assignees", "labels", "issue_module__module")
++            .annotate(
++                cycle_id=Subquery(
++                    CycleIssue.objects.filter(
++                        issue=OuterRef("id"), deleted_at__isnull=True
++                    ).values("cycle_id")[:1]
++                )
++            )
++            .annotate(
++                label_ids=Coalesce(
++                    ArrayAgg(
++                        "labels__id",
++                        distinct=True,
++                        filter=Q(
++                            ~Q(labels__id__isnull=True)
++                            & Q(label_issue__deleted_at__isnull=True),
++                        ),
++                    ),
++                    Value([], output_field=ArrayField(UUIDField())),
++                ),
++                assignee_ids=Coalesce(
++                    ArrayAgg(
++                        "assignees__id",
++                        distinct=True,
++                        filter=Q(
++                            ~Q(assignees__id__isnull=True)
++                            & Q(assignees__member_project__is_active=True)
++                            & Q(issue_assignee__deleted_at__isnull=True)
++                        ),
++                    ),
++                    Value([], output_field=ArrayField(UUIDField())),
++                ),
++                module_ids=Coalesce(
++                    ArrayAgg(
++                        "issue_module__module_id",
++                        distinct=True,
++                        filter=Q(
++                            ~Q(issue_module__module_id__isnull=True)
++                            & Q(issue_module__module__archived_at__isnull=True)
++                            & Q(issue_module__deleted_at__isnull=True)
++                        ),
++                    ),
++                    Value([], output_field=ArrayField(UUIDField())),
++                ),
++            )
++            .annotate(
++                link_count=IssueLink.objects.filter(issue=OuterRef("id"))
++                .order_by()
++                .annotate(count=Func(F("id"), function="Count"))
++                .values("count")
++            )
++            .annotate(
++                attachment_count=FileAsset.objects.filter(
++                    issue_id=OuterRef("id"),
++                    entity_type=FileAsset.EntityTypeContext.ISSUE_ATTACHMENT,
++                )
++                .order_by()
++                .annotate(count=Func(F("id"), function="Count"))
++                .values("count")
++            )
++            .annotate(
++                sub_issues_count=Issue.issue_objects.filter(
++                    parent=OuterRef("id")
++                )
++                .order_by()
++                .annotate(count=Func(F("id"), function="Count"))
++                .values("count")
++            )
++        )
++        issue = issue.filter(**filters)
++        order_by_param = request.GET.get("order_by", "-created_at")
++        # Issue queryset
++        issue, order_by_param = order_issue_queryset(
++            issue_queryset=issue,
++            order_by_param=order_by_param,
++        )
++        return self.paginate(
++            request=request,
++            order_by=order_by_param,
++            queryset=(issue),
++            on_results=lambda issue: IssueSerializer(
++                issue,
++                many=True,
++                fields=self.fields,
++                expand=self.expand,
++            ).data,
++        )
++
++
++class IssueBulkUpdateDateEndpoint(BaseAPIView):
++
++    def validate_dates(
++        self, current_start, current_target, new_start, new_target
++    ):
++        """
++        Validate that start date is before target date.
++        """
++        start = new_start or current_start
++        target = new_target or current_target
++
++        if start and target and start > target:
++            return False
++        return True
++
++    @allow_permission([ROLE.ADMIN, ROLE.MEMBER])
++    def post(self, request, slug, project_id):
++
++        updates = request.data.get("updates", [])
++
++        issue_ids = [update["id"] for update in updates]
++        epoch = int(timezone.now().timestamp())
++
++        # Fetch all relevant issues in a single query
++        issues = list(Issue.objects.filter(id__in=issue_ids))
++        issues_dict = {str(issue.id): issue for issue in issues}
++        issues_to_update = []
++
++        for update in updates:
++            issue_id = update["id"]
++            issue = issues_dict.get(issue_id)
++
++            if not issue:
++                continue
++
++            start_date = update.get("start_date")
++            target_date = update.get("target_date")
++            validate_dates = self.validate_dates(
++                issue.start_date, issue.target_date, start_date, target_date
++            )
++            if not validate_dates:
++                return Response(
++                    {
++                        "message": "Start date cannot exceed target date",
++                    },
++                    status=status.HTTP_400_BAD_REQUEST,
++                )
++
++            if start_date:
++                issue_activity.delay(
++                    type="issue.activity.updated",
++                    requested_data=json.dumps(
++                        {"start_date": update.get("start_date")}
++                    ),
++                    current_instance=json.dumps(
++                        {"start_date": str(issue.start_date)}
++                    ),
++                    issue_id=str(issue_id),
++                    actor_id=str(request.user.id),
++                    project_id=str(project_id),
++                    epoch=epoch,
++                )
++                issue.start_date = start_date
++                issues_to_update.append(issue)
++
++            if target_date:
++                issue_activity.delay(
++                    type="issue.activity.updated",
++                    requested_data=json.dumps(
++                        {"target_date": update.get("target_date")}
++                    ),
++                    current_instance=json.dumps(
++                        {"target_date": str(issue.target_date)}
++                    ),
++                    issue_id=str(issue_id),
++                    actor_id=str(request.user.id),
++                    project_id=str(project_id),
++                    epoch=epoch,
++                )
++                issue.target_date = target_date
++                issues_to_update.append(issue)
++
++        # Bulk update issues
++        Issue.objects.bulk_update(
++            issues_to_update, ["start_date", "target_date"]
++        )
++
++        return Response(
++            {"message": "Issues updated successfully"},
++            status=status.HTTP_200_OK,
++        )
+diff --git a/apiserver/plane/app/views/issue/relation.py b/apiserver/plane/app/views/issue/relation.py
+index 1a0400f5..f169a65b 100644
+--- a/apiserver/plane/app/views/issue/relation.py
++++ b/apiserver/plane/app/views/issue/relation.py
+@@ -37,8 +37,9 @@ from plane.db.models import (
+     IssueLink,
+     CycleIssue,
+ )
+ from plane.bgtasks.issue_activities_task import issue_activity
++from plane.utils.issue_relation_mapper import get_actual_relation
+ 
+ 
+ class IssueRelationViewSet(BaseViewSet):
+     serializer_class = IssueRelationSerializer
+@@ -88,8 +89,28 @@ class IssueRelationViewSet(BaseViewSet):
+         relates_to_issues_related = issue_relations.filter(
+             related_issue_id=issue_id, relation_type="relates_to"
+         ).values_list("issue_id", flat=True)
+ 
++        # get all start after issues
++        start_after_issues = issue_relations.filter(
++            relation_type="start_before", related_issue_id=issue_id
++        ).values_list("issue_id", flat=True)
++
++        # get all start_before issues
++        start_before_issues = issue_relations.filter(
++            relation_type="start_before", issue_id=issue_id
++        ).values_list("related_issue_id", flat=True)
++
++        # get all finish after issues
++        finish_after_issues = issue_relations.filter(
++            relation_type="finish_before", related_issue_id=issue_id
++        ).values_list("issue_id", flat=True)
++
++        # get all finish before issues
++        finish_before_issues = issue_relations.filter(
++            relation_type="finish_before", issue_id=issue_id
++        ).values_list("related_issue_id", flat=True)
++
+         queryset = (
+             Issue.issue_objects.filter(workspace__slug=slug)
+             .select_related("workspace", "project", "state", "parent")
+             .prefetch_related("assignees", "labels", "issue_module__module")
+@@ -210,31 +231,71 @@ class IssueRelationViewSet(BaseViewSet):
+                     output_field=CharField(),
+                 )
+             )
+             .values(*fields),
++            "start_after": queryset.filter(pk__in=start_after_issues)
++            .annotate(
++                relation_type=Value(
++                    "start_after",
++                    output_field=CharField(),
++                )
++            )
++            .values(*fields),
++            "start_before": queryset.filter(pk__in=start_before_issues)
++            .annotate(
++                relation_type=Value(
++                    "start_before",
++                    output_field=CharField(),
++                )
++            )
++            .values(*fields),
++            "finish_after": queryset.filter(pk__in=finish_after_issues)
++            .annotate(
++                relation_type=Value(
++                    "finish_after",
++                    output_field=CharField(),
++                )
++            )
++            .values(*fields),
++            "finish_before": queryset.filter(pk__in=finish_before_issues)
++            .annotate(
++                relation_type=Value(
++                    "finish_before",
++                    output_field=CharField(),
++                )
++            )
++            .values(*fields),
+         }
+ 
+         return Response(response_data, status=status.HTTP_200_OK)
+ 
+     def create(self, request, slug, project_id, issue_id):
+         relation_type = request.data.get("relation_type", None)
++        if relation_type is None:
++            return Response(
++                {"message": "Issue relation type is required"},
++                status=status.HTTP_400_BAD_REQUEST,
++            )
++
+         issues = request.data.get("issues", [])
+         project = Project.objects.get(pk=project_id)
+ 
+         issue_relation = IssueRelation.objects.bulk_create(
+             [
+                 IssueRelation(
+                     issue_id=(
+-                        issue if relation_type == "blocking" else issue_id
++                        issue
++                        if relation_type
++                        in ["blocking", "start_after", "finish_after"]
++                        else issue_id
+                     ),
+                     related_issue_id=(
+-                        issue_id if relation_type == "blocking" else issue
+-                    ),
+-                    relation_type=(
+-                        "blocked_by"
+-                        if relation_type == "blocking"
+-                        else relation_type
++                        issue_id
++                        if relation_type
++                        in ["blocking", "start_after", "finish_after"]
++                        else issue
+                     ),
++                    relation_type=(get_actual_relation(relation_type)),
+                     project_id=project_id,
+                     workspace_id=project.workspace_id,
+                     created_by=request.user,
+                     updated_by=request.user,
+diff --git a/apiserver/plane/bgtasks/issue_activities_task.py b/apiserver/plane/bgtasks/issue_activities_task.py
+index 0cee9bae..371204aa 100644
+--- a/apiserver/plane/bgtasks/issue_activities_task.py
++++ b/apiserver/plane/bgtasks/issue_activities_task.py
+@@ -30,8 +30,9 @@ from plane.db.models import (
+ )
+ from plane.settings.redis import redis_instance
+ from plane.utils.exception_logger import log_exception
+ from plane.bgtasks.webhook_task import webhook_activity
++from plane.utils.issue_relation_mapper import get_inverse_relation
+ 
+ 
+ # Track Changes in name
+ def track_name(
+@@ -1393,29 +1394,23 @@ def create_issue_relation_activity(
+                     old_identifier=related_issue,
+                     epoch=epoch,
+                 )
+             )
++            inverse_relation = get_inverse_relation(
++                requested_data.get("relation_type")
++            )
+             issue = Issue.objects.get(pk=issue_id)
+             issue_activities.append(
+                 IssueActivity(
+                     issue_id=related_issue,
+                     actor_id=actor_id,
+                     verb="updated",
+                     old_value="",
+                     new_value=f"{issue.project.identifier}-{issue.sequence_id}",
+-                    field=(
+-                        "blocking"
+-                        if requested_data.get("relation_type") == "blocked_by"
+-                        else (
+-                            "blocked_by"
+-                            if requested_data.get("relation_type")
+-                            == "blocking"
+-                            else requested_data.get("relation_type")
+-                        )
+-                    ),
++                    field=inverse_relation,
+                     project_id=project_id,
+                     workspace_id=workspace_id,
+-                    comment=f'added {"blocking" if requested_data.get("relation_type") == "blocked_by" else ("blocked_by" if requested_data.get("relation_type") == "blocking" else requested_data.get("relation_type")),} relation',
++                    comment=f"added {inverse_relation} relation",
+                     old_identifier=issue_id,
+                     epoch=epoch,
+                 )
+             )
+diff --git a/apiserver/plane/db/models/issue.py b/apiserver/plane/db/models/issue.py
+index 4bc529f5..c7b234ff 100644
+--- a/apiserver/plane/db/models/issue.py
++++ b/apiserver/plane/db/models/issue.py
+@@ -278,8 +278,10 @@ class IssueRelation(ProjectBaseModel):
+     RELATION_CHOICES = (
+         ("duplicate", "Duplicate"),
+         ("relates_to", "Relates To"),
+         ("blocked_by", "Blocked By"),
++        ("start_before", "Start Before"),
++        ("finish_before", "Finish Before"),
+     )
+ 
+     issue = models.ForeignKey(
+         Issue, related_name="issue_relation", on_delete=models.CASCADE
+diff --git a/apiserver/plane/utils/issue_relation_mapper.py b/apiserver/plane/utils/issue_relation_mapper.py
+new file mode 100644
+index 00000000..f3188eb2
+--- /dev/null
++++ b/apiserver/plane/utils/issue_relation_mapper.py
+@@ -0,0 +1,24 @@
++def get_inverse_relation(relation_type):
++    relation_mapping = {
++        "start_after": "start_before",
++        "finish_after": "finish_before",
++        "blocked_by": "blocking",
++        "blocking": "blocked_by",
++        "start_before": "start_after",
++        "finish_before": "finish_after",
++    }
++    return relation_mapping.get(relation_type, relation_type)
++
++
++def get_actual_relation(relation_type):
++    # This function is used to get the actual relation type which is store in database
++    actual_relation = {
++        "start_after": "start_before",
++        "finish_after": "finish_before",
++        "blocking": "blocked_by",
++        "blocked_by": "blocked_by",
++        "start_before": "start_before",
++        "finish_before": "finish_before",
++    }
++
++    return actual_relation.get(relation_type, relation_type)

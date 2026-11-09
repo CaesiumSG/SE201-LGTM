@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -21,8 +23,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DATA = HERE / ".data" / "apps"
 VENV_PY = DATA / "venv" / "bin" / "python"
-APPS = {
-    "cyberjj999/shoply-demo": {"launcher": HERE / "apps" / "shoply_launcher.py", "port": 8791},
+APPS = {   # by repository name, so a fork under any owner runs too
+    "shoply-demo": {"launcher": HERE / "apps" / "shoply_launcher.py", "port": 8791},
 }
 
 
@@ -39,7 +41,7 @@ class LiveApps:
         self.lock = threading.Lock()
 
     def supported(self, repo: str) -> bool:
-        return repo in APPS
+        return repo.partition("/")[2] in APPS
 
     def _ready(self, port: int, timeout: float = 15) -> bool:
         end = time.time() + timeout
@@ -74,17 +76,32 @@ class LiveApps:
                 return
             time.sleep(0.25)
 
+    @staticmethod
+    def _make_venv(ws: Path) -> None:
+        """First run on this machine: the app's own environment, with the app's requirements (about 20 s)."""
+        reqs = ws / "requirements.txt"
+        venv = VENV_PY.parent.parent
+        try:
+            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True, timeout=120)
+            subprocess.run([str(VENV_PY), "-m", "pip", "install", "--quiet",
+                            *(["-r", str(reqs)] if reqs.is_file() else ["flask>=3.0", "sqlalchemy>=2.0"])],
+                           check=True, capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as exc:
+            shutil.rmtree(venv, ignore_errors=True)
+            detail = getattr(exc, "stderr", "") or str(exc)
+            raise LiveAppError(f"Could not set up the app's environment in {venv}: {str(detail)[-300:]}", 500) from exc
+
     def start(self, repo: str) -> dict:
         """(Re)start the app from the workspace's current files, with fresh demo data."""
-        cfg = APPS.get(repo)
+        cfg = APPS.get(repo.partition("/")[2])
         if not cfg:
             raise LiveAppError("This repository has no app to run.", 404)
-        if not VENV_PY.exists():
-            raise LiveAppError("The app's environment is missing: create demo/.data/apps/venv with Flask and SQLAlchemy.", 500)
         owner, name = repo.split("/")
         ws = self.root / owner / name
         if not (ws / ".git").is_dir():
             raise LiveAppError("Open the repository in the workspace first.", 409)
+        if not VENV_PY.exists():
+            self._make_venv(ws)
         with self.lock:
             self.stop(repo)
             self._free_port(cfg)
@@ -105,7 +122,7 @@ class LiveApps:
         return {"running": True, "routes": self.call(repo, "GET", "/__lgtm/routes")["body"]}
 
     def call(self, repo: str, method: str, path: str, token: str | None = None, body=None) -> dict:
-        cfg = APPS.get(repo)
+        cfg = APPS.get(repo.partition("/")[2])
         if not cfg:
             raise LiveAppError("This repository has no app to run.", 404)
         p = self.procs.get(repo)
@@ -135,7 +152,7 @@ class LiveApps:
         return {"status": status, "body": parsed, "ms": round((time.monotonic() - started) * 1000)}
 
     def log(self, repo: str) -> str:
-        cfg = APPS.get(repo)
+        cfg = APPS.get(repo.partition("/")[2])
         name = repo.split("/")[-1]
         f = DATA / f"{name}.log"
         return f.read_text(encoding="utf-8", errors="replace")[-6000:] if cfg and f.is_file() else ""

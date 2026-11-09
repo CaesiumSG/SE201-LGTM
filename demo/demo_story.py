@@ -21,11 +21,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import demo_repos
 import liveapp
 import suggest
 import workspace
 
-REPO = "cyberjj999/shoply-demo"
+
+def _repo() -> str:
+    """shoply-demo on this machine: the original, or the fork under the GitHub App's owner."""
+    return demo_repos.resolve(demo_repos.SHOPLY)
+
 PRESET = "shoply-order-details"
 SHOP_PORT = 8793                       # the Shop view's shop
 PROBE_PORT = 8792                      # the probe's own shop, apart from App mode's (8791)
@@ -52,11 +57,11 @@ class Story:
     def info(self) -> dict:
         p = self.ws.preset(PRESET)
         rec = self.recorded()
-        return {"repo": REPO, "task": {"id": p["id"], "ask": p["ask"], "title": p.get("title"), "branch": p["branch"],
+        return {"repo": _repo(), "task": {"id": p["id"], "ask": p["ask"], "title": p.get("title"), "branch": p["branch"],
                                        "message": p["message"]},
                 "model": workspace.WRITER_MODEL, "writer": self.writer_available(),
                 "recorded": {k: rec[k] for k in ("at", "model", "seconds")} if rec else None,
-                "backup_pr": self.backup_pr(), "state": self.ws.state(REPO)}
+                "backup_pr": self.backup_pr(), "state": self.ws.state(_repo())}
 
     @staticmethod
     def writer_available() -> bool:
@@ -73,7 +78,7 @@ class Story:
         if os.environ.get("DEMO_BACKUP_PR"):
             return int(os.environ["DEMO_BACKUP_PR"])
         rows = self.store.q("SELECT pr_number, conclusion FROM runs WHERE repo=? AND source='github' AND status='completed' "
-                            "AND head_ref LIKE 'demo/order-details%' ORDER BY created_at", (REPO,))
+                            "AND head_ref LIKE 'demo/order-details%' ORDER BY created_at", (_repo(),))
         seen: dict[int, list[str]] = {}
         for r in rows:
             seen.setdefault(r["pr_number"], []).append(r["conclusion"])
@@ -82,7 +87,7 @@ class Story:
 
     # ------------------------------------------------------------------ step 2: a clean copy for the model
     def start(self) -> dict:
-        r = self.ws.open(REPO, PRESET)
+        r = self.ws.open(_repo(), PRESET)
         step = r["script"]["steps"][0]
         return {"path": step["path"], "before": step["before"], "state": r["state"]}
 
@@ -111,7 +116,7 @@ class Story:
     # ------------------------------------------------------------------ probes: real requests to the shop
     def probe(self, ref: str, pr: int | None = None) -> dict:
         """Run the shop as ``ref`` ("draft": the workspace files; "main"; or a commit sha) and attack it."""
-        d = self.ws.dir(REPO)
+        d = self.ws.dir(_repo())
         with self.probe_lock, tempfile.TemporaryDirectory(prefix="lgtm-probe-") as tmp:
             src = Path(tmp) / "src"
             if ref == "draft":
@@ -180,7 +185,7 @@ class Story:
         if not path.startswith("/") or method not in ("GET", "POST", "PUT", "DELETE"):
             raise StoryError("Bad request")
         with self.shop_lock:
-            d = self.ws.dir(REPO)
+            d = self.ws.dir(_repo())
             if ref == "main":
                 key = self.ws.git(d, "rev-parse", f"origin/{self.ws.default_branch(d)}").strip()
             elif ref == "draft":
@@ -243,15 +248,15 @@ class Story:
         if hit and time.time() - hit[0] < 15:
             return hit[1]
         try:
-            raw = self.ws.gh("pr", "view", str(pr), "--repo", REPO, "--json", "number,url,state,headRefName,title,baseRefOid")
+            raw = self.ws.gh("pr", "view", str(pr), "--repo", _repo(), "--json", "number,url,state,headRefName,title,baseRefOid")
             meta = json.loads(raw)
         except Exception:  # noqa: BLE001 - GitHub unreachable: the stored runs still tell the story
-            meta = {"number": pr, "url": f"https://github.com/{REPO}/pull/{pr}", "state": "UNKNOWN"}
+            meta = {"number": pr, "url": f"https://github.com/{_repo()}/pull/{pr}", "state": "UNKNOWN"}
         self._pr_cache[pr] = (time.time(), meta)
         return meta
 
     def rounds(self, pr: int) -> dict:
-        runs = self.store.q("SELECT * FROM runs WHERE repo=? AND pr_number=? AND source='github' ORDER BY created_at", (REPO, pr))
+        runs = self.store.q("SELECT * FROM runs WHERE repo=? AND pr_number=? AND source='github' ORDER BY created_at", (_repo(), pr))
         out = []
         for r in runs:
             fs = self.store.q("SELECT * FROM findings WHERE run_id=? AND flagged=1", (r["id"],)) if r["status"] == "completed" else []
@@ -270,12 +275,12 @@ class Story:
     def view(self, pr: int, sha: str, path: str, base: str | None) -> dict:
         """A file at ``sha`` ("main", "draft" for the workspace's uncommitted files, or a commit), and its whole-file
         diff against ``base`` (default: the commit before), for the editor."""
-        d = self.ws.dir(REPO)
+        d = self.ws.dir(_repo())
         if pr:
             self.ws.git(d, "fetch", "--quiet", "origin", f"+refs/pull/{pr}/head:refs/remotes/pr/{pr}", auth=True, check=False)
         main = f"origin/{self.ws.default_branch(d)}"
         if sha == "draft":
-            f = self.ws.read(REPO, path)
+            f = self.ws.read(_repo(), path)
             if f.get("content") is None:
                 raise StoryError(f"{path} cannot be shown", 404)
             diff = self.ws.git(d, "diff", "-U100000", "HEAD", "--", path, check=False)
@@ -293,7 +298,7 @@ class Story:
 
     def files(self) -> list[str]:
         """The repository's files on main, for the editor's explorer."""
-        d = self.ws.dir(REPO)
+        d = self.ws.dir(_repo())
         out = self.ws.git(d, "ls-tree", "-r", "--name-only", f"origin/{self.ws.default_branch(d)}")
         return [f for f in out.splitlines() if f.endswith((".py", ".md")) and not f.endswith("__init__.py")]
 
@@ -306,8 +311,8 @@ class Story:
         if not branch or not data["rounds"]:
             raise StoryError("This pull request is not known here yet.", 409)
         head = data["rounds"][-1]["sha"]
-        d = self.ws.dir(REPO)
-        meta = self.ws.meta.setdefault(REPO, {})
+        d = self.ws.dir(_repo())
+        meta = self.ws.meta.setdefault(_repo(), {})
         if self.ws.git(d, "rev-parse", "HEAD").strip() != head or meta.get("pushed") != branch:
             self.ws.git(d, "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", auth=True)
             self.ws.git(d, "checkout", "--quiet", "--force", "-B", branch, head)
@@ -328,11 +333,11 @@ class Story:
         for s in run["suggestions"]:
             by_path.setdefault(s["path"], []).append(s)
         for path, items in by_path.items():
-            lines = (self.ws.read(REPO, path).get("content") or "").split("\n")
+            lines = (self.ws.read(_repo(), path).get("content") or "").split("\n")
             for s in sorted(items, key=lambda x: -x["start_line"]):
                 lines = suggest.apply_span(lines, s["start_line"], s["end_line"], s["replacement"])
-            self.ws.write(REPO, path, "\n".join(lines))
-        yield from self.ws.push_stream(REPO, branch, "Apply LGTM's suggested fix", "", login, "fix", PRESET)
+            self.ws.write(_repo(), path, "\n".join(lines))
+        yield from self.ws.push_stream(_repo(), branch, "Apply LGTM's suggested fix", "", login, "fix", PRESET)
 
     # ------------------------------------------------------------------ start over
     def close(self, pr: int | None) -> dict:
@@ -340,13 +345,13 @@ class Story:
         if pr and pr != self.backup_pr():
             meta = self.pr_meta(pr)
             if meta.get("state") == "OPEN":
-                self.ws.gh("pr", "close", str(pr), "--repo", REPO, "--delete-branch",
+                self.ws.gh("pr", "close", str(pr), "--repo", _repo(), "--delete-branch",
                            "--comment", "Demo run finished: closed without merging.")
                 closed = True
             self._pr_cache.pop(pr, None)
-        self.ws.meta.pop(REPO, None)
+        self.ws.meta.pop(_repo(), None)
         self.ws.save_meta()
-        self.ws.open(REPO)
+        self.ws.open(_repo())
         return {"closed": closed}
 
 

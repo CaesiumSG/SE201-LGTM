@@ -1,0 +1,922 @@
+diff --git a/django/contrib/gis/db/backends/postgis/adapter.py b/django/contrib/gis/db/backends/postgis/adapter.py
+index cb0d466a8..2d2d9578e 100644
+--- a/django/contrib/gis/db/backends/postgis/adapter.py
++++ b/django/contrib/gis/db/backends/postgis/adapter.py
+@@ -5,18 +5,29 @@ from __future__ import unicode_literals
+ 
+ from psycopg2 import Binary
+ from psycopg2.extensions import ISQLQuote
+ 
++from django.contrib.gis.db.backends.postgis.pgraster import to_pgraster
++from django.contrib.gis.geometry.backend import Geometry
++
+ 
+ class PostGISAdapter(object):
+-    def __init__(self, geom, geography=False):
+-        "Initializes on the geometry."
++    def __init__(self, obj, geography=False):
++        """
++        Initialize on the spatial object.
++        """
++        self.is_geometry = isinstance(obj, Geometry)
++
+         # Getting the WKB (in string form, to allow easy pickling of
+-        # the adaptor) and the SRID from the geometry.
+-        self.ewkb = bytes(geom.ewkb)
+-        self.srid = geom.srid
++        # the adaptor) and the SRID from the geometry or raster.
++        if self.is_geometry:
++            self.ewkb = bytes(obj.ewkb)
++            self._adapter = Binary(self.ewkb)
++        else:
++            self.ewkb = to_pgraster(obj)
++
++        self.srid = obj.srid
+         self.geography = geography
+-        self._adapter = Binary(self.ewkb)
+ 
+     def __conform__(self, proto):
+         # Does the given protocol conform to what Psycopg2 expects?
+         if proto == ISQLQuote:
+@@ -39,13 +50,20 @@ class PostGISAdapter(object):
+         """
+         This method allows escaping the binary in the style required by the
+         server's `standard_conforming_string` setting.
+         """
+-        self._adapter.prepare(conn)
++        if self.is_geometry:
++            self._adapter.prepare(conn)
+ 
+     def getquoted(self):
+-        "Returns a properly quoted string for use in PostgreSQL/PostGIS."
+-        # psycopg will figure out whether to use E'\\000' or '\000'
+-        return str('%s(%s)' % (
+-            'ST_GeogFromWKB' if self.geography else 'ST_GeomFromEWKB',
+-            self._adapter.getquoted().decode())
+-        )
++        """
++        Return a properly quoted string for use in PostgreSQL/PostGIS.
++        """
++        if self.is_geometry:
++            # Psycopg will figure out whether to use E'\\000' or '\000'.
++            return str('%s(%s)' % (
++                'ST_GeogFromWKB' if self.geography else 'ST_GeomFromEWKB',
++                self._adapter.getquoted().decode())
++            )
++        else:
++            # For rasters, add explicit type cast to WKB string.
++            return "'%s'::raster" % self.ewkb
+diff --git a/django/contrib/gis/db/backends/postgis/operations.py b/django/contrib/gis/db/backends/postgis/operations.py
+index 89ddc1112..8216668ca 100644
+--- a/django/contrib/gis/db/backends/postgis/operations.py
++++ b/django/contrib/gis/db/backends/postgis/operations.py
+@@ -3,39 +3,93 @@ import re
+ from django.conf import settings
+ from django.contrib.gis.db.backends.base.operations import \
+     BaseSpatialOperations
+ from django.contrib.gis.db.backends.utils import SpatialOperator
++from django.contrib.gis.gdal import GDALRaster
+ from django.contrib.gis.geometry.backend import Geometry
+ from django.contrib.gis.measure import Distance
+ from django.core.exceptions import ImproperlyConfigured
+ from django.db.backends.postgresql.operations import DatabaseOperations
+ from django.db.utils import ProgrammingError
++from django.utils import six
+ from django.utils.functional import cached_property
+ 
+ from .adapter import PostGISAdapter
+ from .models import PostGISGeometryColumns, PostGISSpatialRefSys
+ from .pgraster import from_pgraster, get_pgraster_srid, to_pgraster
+ 
++# Identifier to mark raster lookups as bilateral.
++BILATERAL = 'bilateral'
++
+ 
+ class PostGISOperator(SpatialOperator):
+-    def __init__(self, geography=False, **kwargs):
+-        # Only a subset of the operators and functions are available
+-        # for the geography type.
++    def __init__(self, geography=False, raster=False, **kwargs):
++        # Only a subset of the operators and functions are available for the
++        # geography type.
+         self.geography = geography
++        # Only a subset of the operators and functions are available for the
++        # raster type. Lookups that don't suport raster will be converted to
++        # polygons. If the raster argument is set to BILATERAL, then the
++        # operator cannot handle mixed geom-raster lookups.
++        self.raster = raster
+         super(PostGISOperator, self).__init__(**kwargs)
+ 
+-    def as_sql(self, connection, lookup, *args):
++    def as_sql(self, connection, lookup, template_params, *args):
+         if lookup.lhs.output_field.geography and not self.geography:
+             raise ValueError('PostGIS geography does not support the "%s" '
+                              'function/operator.' % (self.func or self.op,))
+-        return super(PostGISOperator, self).as_sql(connection, lookup, *args)
++
++        template_params = self.check_raster(lookup, template_params)
++        return super(PostGISOperator, self).as_sql(connection, lookup, template_params, *args)
++
++    def check_raster(self, lookup, template_params):
++        # Get rhs value.
++        if isinstance(lookup.rhs, (tuple, list)):
++            rhs_val = lookup.rhs[0]
++            spheroid = lookup.rhs[-1] == 'spheroid'
++        else:
++            rhs_val = lookup.rhs
++            spheroid = False
++
++        # Check which input is a raster.
++        lhs_is_raster = lookup.lhs.field.geom_type == 'RASTER'
++        rhs_is_raster = isinstance(rhs_val, GDALRaster)
++
++        # Look for band indices and inject them if provided.
++        if lookup.band_lhs is not None and lhs_is_raster:
++            if not self.func:
++                raise ValueError('Band indices are not allowed for this operator, it works on bbox only.')
++            template_params['lhs'] = '%s, %s' % (template_params['lhs'], lookup.band_lhs)
++
++        if lookup.band_rhs is not None and rhs_is_raster:
++            if not self.func:
++                raise ValueError('Band indices are not allowed for this operator, it works on bbox only.')
++            template_params['rhs'] = '%s, %s' % (template_params['rhs'], lookup.band_rhs)
++
++        # Convert rasters to polygons if necessary.
++        if not self.raster or spheroid:
++            # Operators without raster support.
++            if lhs_is_raster:
++                template_params['lhs'] = 'ST_Polygon(%s)' % template_params['lhs']
++            if rhs_is_raster:
++                template_params['rhs'] = 'ST_Polygon(%s)' % template_params['rhs']
++        elif self.raster == BILATERAL:
++            # Operators with raster support but don't support mixed (rast-geom)
++            # lookups.
++            if lhs_is_raster and not rhs_is_raster:
++                template_params['lhs'] = 'ST_Polygon(%s)' % template_params['lhs']
++            elif rhs_is_raster and not lhs_is_raster:
++                template_params['rhs'] = 'ST_Polygon(%s)' % template_params['rhs']
++
++        return template_params
+ 
+ 
+ class PostGISDistanceOperator(PostGISOperator):
+     sql_template = '%(func)s(%(lhs)s, %(rhs)s) %(op)s %(value)s'
+ 
+     def as_sql(self, connection, lookup, template_params, sql_params):
+         if not lookup.lhs.output_field.geography and lookup.lhs.output_field.geodetic(connection):
++            template_params = self.check_raster(lookup, template_params)
+             sql_template = self.sql_template
+             if len(lookup.rhs) == 3 and lookup.rhs[-1] == 'spheroid':
+                 template_params.update({'op': self.op, 'func': 'ST_Distance_Spheroid'})
+                 sql_template = '%(func)s(%(lhs)s, %(rhs)s, %%s) %(op)s %(value)s'
+@@ -57,35 +111,35 @@ class PostGISOperations(BaseSpatialOperations, DatabaseOperations):
+ 
+     Adapter = PostGISAdapter
+ 
+     gis_operators = {
+-        'bbcontains': PostGISOperator(op='~'),
+-        'bboverlaps': PostGISOperator(op='&&', geography=True),
+-        'contained': PostGISOperator(op='@'),
+-        'contains': PostGISOperator(func='ST_Contains'),
+-        'overlaps_left': PostGISOperator(op='&<'),
+-        'overlaps_right': PostGISOperator(op='&>'),
++        'bbcontains': PostGISOperator(op='~', raster=True),
++        'bboverlaps': PostGISOperator(op='&&', geography=True, raster=True),
++        'contained': PostGISOperator(op='@', raster=True),
++        'overlaps_left': PostGISOperator(op='&<', raster=BILATERAL),
++        'overlaps_right': PostGISOperator(op='&>', raster=BILATERAL),
+         'overlaps_below': PostGISOperator(op='&<|'),
+         'overlaps_above': PostGISOperator(op='|&>'),
+         'left': PostGISOperator(op='<<'),
+         'right': PostGISOperator(op='>>'),
+         'strictly_below': PostGISOperator(op='<<|'),
+         'strictly_above': PostGISOperator(op='|>>'),
+-        'same_as': PostGISOperator(op='~='),
+-        'exact': PostGISOperator(op='~='),  # alias of same_as
+-        'contains_properly': PostGISOperator(func='ST_ContainsProperly'),
+-        'coveredby': PostGISOperator(func='ST_CoveredBy', geography=True),
+-        'covers': PostGISOperator(func='ST_Covers', geography=True),
++        'same_as': PostGISOperator(op='~=', raster=BILATERAL),
++        'exact': PostGISOperator(op='~=', raster=BILATERAL),  # alias of same_as
++        'contains': PostGISOperator(func='ST_Contains', raster=BILATERAL),
++        'contains_properly': PostGISOperator(func='ST_ContainsProperly', raster=BILATERAL),
++        'coveredby': PostGISOperator(func='ST_CoveredBy', geography=True, raster=BILATERAL),
++        'covers': PostGISOperator(func='ST_Covers', geography=True, raster=BILATERAL),
+         'crosses': PostGISOperator(func='ST_Crosses'),
+-        'disjoint': PostGISOperator(func='ST_Disjoint'),
++        'disjoint': PostGISOperator(func='ST_Disjoint', raster=BILATERAL),
+         'equals': PostGISOperator(func='ST_Equals'),
+-        'intersects': PostGISOperator(func='ST_Intersects', geography=True),
++        'intersects': PostGISOperator(func='ST_Intersects', geography=True, raster=BILATERAL),
+         'isvalid': PostGISOperator(func='ST_IsValid'),
+-        'overlaps': PostGISOperator(func='ST_Overlaps'),
++        'overlaps': PostGISOperator(func='ST_Overlaps', raster=BILATERAL),
+         'relate': PostGISOperator(func='ST_Relate'),
+-        'touches': PostGISOperator(func='ST_Touches'),
+-        'within': PostGISOperator(func='ST_Within'),
+-        'dwithin': PostGISOperator(func='ST_DWithin', geography=True),
++        'touches': PostGISOperator(func='ST_Touches', raster=BILATERAL),
++        'within': PostGISOperator(func='ST_Within', raster=BILATERAL),
++        'dwithin': PostGISOperator(func='ST_DWithin', geography=True, raster=BILATERAL),
+         'distance_gt': PostGISDistanceOperator(func='ST_Distance', op='>', geography=True),
+         'distance_gte': PostGISDistanceOperator(func='ST_Distance', op='>=', geography=True),
+         'distance_lt': PostGISDistanceOperator(func='ST_Distance', op='<', geography=True),
+         'distance_lte': PostGISDistanceOperator(func='ST_Distance', op='<=', geography=True),
+@@ -271,25 +325,25 @@ class PostGISOperations(BaseSpatialOperations, DatabaseOperations):
+         return params
+ 
+     def get_geom_placeholder(self, f, value, compiler):
+         """
+-        Provides a proper substitution value for Geometries that are not in the
+-        SRID of the field.  Specifically, this routine will substitute in the
+-        ST_Transform() function call.
++        Provide a proper substitution value for Geometries or rasters that are
++        not in the SRID of the field. Specifically, this routine will
++        substitute in the ST_Transform() function call.
+         """
+         # Get the srid for this object
+         if value is None:
+             value_srid = None
+-        elif f.geom_type == 'RASTER':
++        elif f.geom_type == 'RASTER' and isinstance(value, six.string_types):
+             value_srid = get_pgraster_srid(value)
+         else:
+             value_srid = value.srid
+ 
+         # Adding Transform() to the SQL placeholder if the value srid
+         # is not equal to the field srid.
+         if value_srid is None or value_srid == f.srid:
+             placeholder = '%s'
+-        elif f.geom_type == 'RASTER':
++        elif f.geom_type == 'RASTER' and isinstance(value, six.string_types):
+             placeholder = '%s((%%s)::raster, %s)' % (self.transform, f.srid)
+         else:
+             placeholder = '%s(%%s, %s)' % (self.transform, f.srid)
+ 
+diff --git a/django/contrib/gis/db/models/fields.py b/django/contrib/gis/db/models/fields.py
+index 8452a11c5..91a12623c 100644
+--- a/django/contrib/gis/db/models/fields.py
++++ b/django/contrib/gis/db/models/fields.py
+@@ -1,8 +1,11 @@
+ from django.contrib.gis import forms
+-from django.contrib.gis.db.models.lookups import gis_lookups
++from django.contrib.gis.db.models.lookups import (
++    RasterBandTransform, gis_lookups,
++)
+ from django.contrib.gis.db.models.proxy import SpatialProxy
+ from django.contrib.gis.gdal import HAS_GDAL
++from django.contrib.gis.gdal.error import GDALException
+ from django.contrib.gis.geometry.backend import Geometry, GeometryException
+ from django.core.exceptions import ImproperlyConfigured
+ from django.db.models.expressions import Expression
+ from django.db.models.fields import Field
+@@ -156,8 +159,84 @@ class BaseSpatialField(Field):
+         given value.
+         """
+         return connection.ops.get_geom_placeholder(self, value, compiler)
+ 
++    def get_srid(self, obj):
++        """
++        Return the default SRID for the given geometry or raster, taking into
++        account the SRID set for the field. For example, if the input geometry
++        or raster doesn't have an SRID, then the SRID of the field will be
++        returned.
++        """
++        srid = obj.srid  # SRID of given geometry.
++        if srid is None or self.srid == -1 or (srid == -1 and self.srid != -1):
++            return self.srid
++        else:
++            return srid
++
++    def get_db_prep_save(self, value, connection):
++        """
++        Prepare the value for saving in the database.
++        """
++        if not value:
++            return None
++        else:
++            return connection.ops.Adapter(self.get_prep_value(value))
++
++    def get_prep_value(self, value):
++        """
++        Spatial lookup values are either a parameter that is (or may be
++        converted to) a geometry or raster, or a sequence of lookup values
++        that begins with a geometry or raster. This routine sets up the
++        geometry or raster value properly and preserves any other lookup
++        parameters.
++        """
++        from django.contrib.gis.gdal import GDALRaster
++
++        value = super(BaseSpatialField, self).get_prep_value(value)
++        # For IsValid lookups, boolean values are allowed.
++        if isinstance(value, (Expression, bool)):
++            return value
++        elif isinstance(value, (tuple, list)):
++            obj = value[0]
++            seq_value = True
++        else:
++            obj = value
++            seq_value = False
++
++        # When the input is not a geometry or raster, attempt to construct one
++        # from the given string input.
++        if isinstance(obj, (Geometry, GDALRaster)):
++            pass
++        elif isinstance(obj, (bytes, six.string_types)) or hasattr(obj, '__geo_interface__'):
++            try:
++                obj = Geometry(obj)
++            except (GeometryException, GDALException):
++                try:
++                    obj = GDALRaster(obj)
++                except GDALException:
++                    raise ValueError("Couldn't create spatial object from lookup value '%s'." % obj)
++        elif isinstance(obj, dict):
++            try:
++                obj = GDALRaster(obj)
++            except GDALException:
++                raise ValueError("Couldn't create spatial object from lookup value '%s'." % obj)
++        else:
++            raise ValueError('Cannot use object with type %s for a spatial lookup parameter.' % type(obj).__name__)
++
++        # Assigning the SRID value.
++        obj.srid = self.get_srid(obj)
++
++        if seq_value:
++            lookup_val = [obj]
++            lookup_val.extend(value[1:])
++            return tuple(lookup_val)
++        else:
++            return obj
++
++for klass in gis_lookups.values():
++    BaseSpatialField.register_lookup(klass)
++
+ 
+ class GeometryField(GeoSelectFormatMixin, BaseSpatialField):
+     """
+     The base Geometry field -- maps to the OpenGIS Specification Geometry type.
+@@ -223,8 +302,10 @@ class GeometryField(GeoSelectFormatMixin, BaseSpatialField):
+         begins with a geometry.  This routine will setup the geometry
+         value properly, and preserve any other lookup parameters before
+         returning to the caller.
+         """
++        from django.contrib.gis.gdal import GDALRaster
++
+         value = super(GeometryField, self).get_prep_value(value)
+         if isinstance(value, (Expression, bool)):
+             return value
+         elif isinstance(value, (tuple, list)):
+@@ -235,9 +316,9 @@ class GeometryField(GeoSelectFormatMixin, BaseSpatialField):
+             seq_value = False
+ 
+         # When the input is not a GEOS geometry, attempt to construct one
+         # from the given string input.
+-        if isinstance(geom, Geometry):
++        if isinstance(geom, (Geometry, GDALRaster)):
+             pass
+         elif isinstance(geom, (bytes, six.string_types)) or hasattr(geom, '__geo_interface__'):
+             try:
+                 geom = Geometry(geom)
+@@ -264,20 +345,8 @@ class GeometryField(GeoSelectFormatMixin, BaseSpatialField):
+             if not srid and self.srid != -1:
+                 value.srid = self.srid
+         return value
+ 
+-    def get_srid(self, geom):
+-        """
+-        Returns the default SRID for the given geometry, taking into account
+-        the SRID set for the field.  For example, if the input geometry
+-        has no SRID, then that of the field will be returned.
+-        """
+-        gsrid = geom.srid  # SRID of given geometry.
+-        if gsrid is None or self.srid == -1 or (gsrid == -1 and self.srid != -1):
+-            return self.srid
+-        else:
+-            return gsrid
+-
+     # ### Routines overloaded from Field ###
+     def contribute_to_class(self, cls, name, **kwargs):
+         super(GeometryField, self).contribute_to_class(cls, name, **kwargs)
+ 
+@@ -315,19 +384,8 @@ class GeometryField(GeoSelectFormatMixin, BaseSpatialField):
+         else:
+             params = [connection.ops.Adapter(value)]
+         return params
+ 
+-    def get_db_prep_save(self, value, connection):
+-        "Prepares the value for saving in the database."
+-        if not value:
+-            return None
+-        else:
+-            return connection.ops.Adapter(self.get_prep_value(value))
+-
+-
+-for klass in gis_lookups.values():
+-    GeometryField.register_lookup(klass)
+-
+ 
+ # The OpenGIS Geometry Type Fields
+ class PointField(GeometryField):
+     geom_type = 'POINT'
+@@ -386,8 +444,9 @@ class RasterField(BaseSpatialField):
+     """
+ 
+     description = _("Raster Field")
+     geom_type = 'RASTER'
++    geography = False
+ 
+     def __init__(self, *args, **kwargs):
+         if not HAS_GDAL:
+             raise ImproperlyConfigured('RasterField requires GDAL.')
+@@ -420,4 +479,16 @@ class RasterField(BaseSpatialField):
+         # instantiation of all GDALRasters can potentially be expensive. This
+         # delays the instantiation of the objects to the moment of evaluation
+         # of the raster attribute.
+         setattr(cls, self.attname, SpatialProxy(GDALRaster, self))
++
++    def get_transform(self, name):
++        try:
++            band_index = int(name)
++            return type(
++                'SpecificRasterBandTransform',
++                (RasterBandTransform, ),
++                {'band_index': band_index}
++            )
++        except ValueError:
++            pass
++        return super(RasterField, self).get_transform(name)
+diff --git a/django/contrib/gis/db/models/lookups.py b/django/contrib/gis/db/models/lookups.py
+index 158fb5cfa..a5bf428aa 100644
+--- a/django/contrib/gis/db/models/lookups.py
++++ b/django/contrib/gis/db/models/lookups.py
+@@ -4,18 +4,25 @@ import re
+ 
+ from django.core.exceptions import FieldDoesNotExist
+ from django.db.models.constants import LOOKUP_SEP
+ from django.db.models.expressions import Col, Expression
+-from django.db.models.lookups import BuiltinLookup, Lookup
++from django.db.models.lookups import BuiltinLookup, Lookup, Transform
+ from django.utils import six
+ 
+ gis_lookups = {}
+ 
+ 
++class RasterBandTransform(Transform):
++    def as_sql(self, compiler, connection):
++        return compiler.compile(self.lhs)
++
++
+ class GISLookup(Lookup):
+     sql_template = None
+     transform_func = None
+     distance = False
++    band_rhs = None
++    band_lhs = None
+ 
+     def __init__(self, *args, **kwargs):
+         super(GISLookup, self).__init__(*args, **kwargs)
+         self.template_params = {}
+@@ -27,12 +34,12 @@ class GISLookup(Lookup):
+         The lookup is a string either specifying the geographic field, e.g.
+         'point, 'the_geom', or a related lookup on a geographic field like
+         'address__point'.
+ 
+-        If a GeometryField exists according to the given lookup on the model
+-        options, it will be returned.  Otherwise returns None.
++        If a BaseSpatialField exists according to the given lookup on the model
++        options, it will be returned. Otherwise return None.
+         """
+-        from django.contrib.gis.db.models.fields import GeometryField
++        from django.contrib.gis.db.models.fields import BaseSpatialField
+         # This takes into account the situation where the lookup is a
+         # lookup to a related geographic field, e.g., 'address__point'.
+         field_list = lookup.split(LOOKUP_SEP)
+ 
+@@ -54,13 +61,36 @@ class GISLookup(Lookup):
+         except (FieldDoesNotExist, AttributeError):
+             return False
+ 
+         # Finally, make sure we got a Geographic field and return.
+-        if isinstance(geo_fld, GeometryField):
++        if isinstance(geo_fld, BaseSpatialField):
+             return geo_fld
+         else:
+             return False
+ 
++    def process_band_indices(self, only_lhs=False):
++        """
++        Extract the lhs band index from the band transform class and the rhs
++        band index from the input tuple.
++        """
++        # PostGIS band indices are 1-based, so the band index needs to be
++        # increased to be consistent with the GDALRaster band indices.
++        if only_lhs:
++            self.band_rhs = 1
++            self.band_lhs = self.lhs.band_index + 1
++            return
++
++        if isinstance(self.lhs, RasterBandTransform):
++            self.band_lhs = self.lhs.band_index + 1
++        else:
++            self.band_lhs = 1
++
++        self.band_rhs = self.rhs[1]
++        if len(self.rhs) == 1:
++            self.rhs = self.rhs[0]
++        else:
++            self.rhs = (self.rhs[0], ) + self.rhs[2:]
++
+     def get_db_prep_lookup(self, value, connection):
+         # get_db_prep_lookup is called by process_rhs from super class
+         if isinstance(value, (tuple, list)):
+             # First param is assumed to be the geometric object
+@@ -69,12 +99,11 @@ class GISLookup(Lookup):
+             params = [connection.ops.Adapter(value)]
+         return ('%s', params)
+ 
+     def process_rhs(self, compiler, connection):
+-        rhs, rhs_params = super(GISLookup, self).process_rhs(compiler, connection)
+         if hasattr(self.rhs, '_as_sql'):
+             # If rhs is some QuerySet, don't touch it
+-            return rhs, rhs_params
++            return super(GISLookup, self).process_rhs(compiler, connection)
+ 
+         geom = self.rhs
+         if isinstance(self.rhs, Col):
+             # Make sure the F Expression destination field exists, and
+@@ -84,11 +113,21 @@ class GISLookup(Lookup):
+             if not hasattr(geo_fld, 'srid'):
+                 raise ValueError('No geographic field found in expression.')
+             self.rhs.srid = geo_fld.srid
+         elif isinstance(self.rhs, Expression):
+-            raise ValueError('Complex expressions not supported for GeometryField')
++            raise ValueError('Complex expressions not supported for spatial fields.')
+         elif isinstance(self.rhs, (list, tuple)):
+             geom = self.rhs[0]
++            # Check if a band index was passed in the query argument.
++            if ((len(self.rhs) == 2 and not self.lookup_name == 'relate') or
++                    (len(self.rhs) == 3 and self.lookup_name == 'relate')):
++                self.process_band_indices()
++            elif len(self.rhs) > 2:
++                raise ValueError('Tuple too long for lookup %s.' % self.lookup_name)
++        elif isinstance(self.lhs, RasterBandTransform):
++            self.process_band_indices(only_lhs=True)
++
++        rhs, rhs_params = super(GISLookup, self).process_rhs(compiler, connection)
+         rhs = connection.ops.get_geom_placeholder(self.lhs.output_field, geom, compiler)
+         return rhs, rhs_params
+ 
+     def get_rhs_op(self, connection, rhs):
+@@ -273,8 +312,10 @@ gis_lookups['intersects'] = IntersectsLookup
+ class IsValidLookup(BuiltinLookup):
+     lookup_name = 'isvalid'
+ 
+     def as_sql(self, compiler, connection):
++        if self.lhs.field.geom_type == 'RASTER':
++            raise ValueError('The isvalid lookup is only available on geometry fields.')
+         gis_op = connection.ops.gis_operators[self.lookup_name]
+         sql, params = self.process_lhs(compiler, connection)
+         sql = '%(func)s(%(lhs)s)' % {'func': gis_op.func, 'lhs': sql}
+         if not self.rhs:
+@@ -322,11 +363,19 @@ class DistanceLookupBase(GISLookup):
+     distance = True
+     sql_template = '%(func)s(%(lhs)s, %(rhs)s) %(op)s %(value)s'
+ 
+     def process_rhs(self, compiler, connection):
+-        if not isinstance(self.rhs, (tuple, list)) or not 2 <= len(self.rhs) <= 3:
+-            raise ValueError("2 or 3-element tuple required for '%s' lookup." % self.lookup_name)
++        if not isinstance(self.rhs, (tuple, list)) or not 2 <= len(self.rhs) <= 4:
++            raise ValueError("2, 3, or 4-element tuple required for '%s' lookup." % self.lookup_name)
++        elif len(self.rhs) == 4 and not self.rhs[3] == 'spheroid':
++            raise ValueError("For 4-element tuples the last argument must be the 'speroid' directive.")
++
++        # Check if the second parameter is a band index.
++        if len(self.rhs) > 2 and not self.rhs[2] == 'spheroid':
++            self.process_band_indices()
++
+         params = [connection.ops.Adapter(self.rhs[0])]
++
+         # Getting the distance parameter in the units of the field.
+         dist_param = self.rhs[1]
+         if hasattr(dist_param, 'resolve_expression'):
+             dist_param = dist_param.resolve_expression(compiler.query)
+diff --git a/tests/gis_tests/gis_migrations/test_operations.py b/tests/gis_tests/gis_migrations/test_operations.py
+index e2f5e106d..aa6b13bdd 100644
+--- a/tests/gis_tests/gis_migrations/test_operations.py
++++ b/tests/gis_tests/gis_migrations/test_operations.py
+@@ -81,11 +81,11 @@ class OperationTests(TransactionTestCase):
+             args.append(field_class(srid=4326, blank=blank))
+         operation = migration_class(*args)
+         new_state = project_state.clone()
+         operation.state_forwards('gis', new_state)
++        self.current_state = new_state
+         with connection.schema_editor() as editor:
+             operation.database_forwards('gis', editor, project_state, new_state)
+-        self.current_state = new_state
+ 
+     def test_add_geom_field(self):
+         """
+         Test the AddField operation with a geometry-enabled column.
+diff --git a/tests/gis_tests/rasterapp/models.py b/tests/gis_tests/rasterapp/models.py
+index 4f172d447..81f039b8d 100644
+--- a/tests/gis_tests/rasterapp/models.py
++++ b/tests/gis_tests/rasterapp/models.py
+@@ -2,8 +2,20 @@ from ..models import models
+ 
+ 
+ class RasterModel(models.Model):
+     rast = models.RasterField('A Verbose Raster Name', null=True, srid=4326, spatial_index=True, blank=True)
++    rastprojected = models.RasterField('A Projected Raster Table', srid=3086, null=True)
++    geom = models.PointField(null=True)
++
++    class Meta:
++        required_db_features = ['supports_raster']
++
++    def __str__(self):
++        return str(self.id)
++
++
++class RasterRelatedModel(models.Model):
++    rastermodel = models.ForeignKey(RasterModel, models.CASCADE)
+ 
+     class Meta:
+         required_db_features = ['supports_raster']
+ 
+diff --git a/tests/gis_tests/rasterapp/test_rasterfield.py b/tests/gis_tests/rasterapp/test_rasterfield.py
+index 4dbe01960..82bed69de 100644
+--- a/tests/gis_tests/rasterapp/test_rasterfield.py
++++ b/tests/gis_tests/rasterapp/test_rasterfield.py
+@@ -1,21 +1,49 @@
+ import json
+ 
++from django.contrib.gis.db.models.lookups import (
++    DistanceLookupBase, gis_lookups,
++)
++from django.contrib.gis.gdal import HAS_GDAL
++from django.contrib.gis.geos import GEOSGeometry
++from django.contrib.gis.measure import D
+ from django.contrib.gis.shortcuts import numpy
+ from django.core.exceptions import ImproperlyConfigured
++from django.db.models import Q
+ from django.test import (
+     TestCase, TransactionTestCase, mock, skipUnlessDBFeature,
+ )
+ 
+ from ..data.rasters.textrasters import JSON_RASTER
+ from ..models import models
+-from .models import RasterModel
++from .models import RasterModel, RasterRelatedModel
++
++if HAS_GDAL:
++    from django.contrib.gis.gdal import GDALRaster
+ 
+ 
+ @skipUnlessDBFeature('supports_raster')
+ class RasterFieldTest(TransactionTestCase):
+     available_apps = ['gis_tests.rasterapp']
+ 
++    def setUp(self):
++        rast = GDALRaster({
++            "srid": 4326,
++            "origin": [0, 0],
++            "scale": [-1, 1],
++            "skew": [0, 0],
++            "width": 5,
++            "height": 5,
++            "nr_of_bands": 2,
++            "bands": [{"data": range(25)}, {"data": range(25, 50)}],
++        })
++        model_instance = RasterModel.objects.create(
++            rast=rast,
++            rastprojected=rast,
++            geom="POINT (-95.37040 29.70486)",
++        )
++        RasterRelatedModel.objects.create(rastermodel=model_instance)
++
+     def test_field_null_value(self):
+         """
+         Test creating a model where the RasterField has a null value.
+         """
+@@ -88,8 +116,222 @@ class RasterFieldTest(TransactionTestCase):
+             RasterModel._meta.get_field('rast').verbose_name,
+             'A Verbose Raster Name'
+         )
+ 
++    def test_all_gis_lookups_with_rasters(self):
++        """
++        Evaluate all possible lookups for all input combinations (i.e.
++        raster-raster, raster-geom, geom-raster) and for projected and
++        unprojected coordinate systems. This test just checks that the lookup
++        can be called, but doesn't check if the result makes logical sense.
++        """
++        from django.contrib.gis.db.backends.postgis.operations import PostGISOperations
++
++        # Create test raster and geom.
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        stx_pnt = GEOSGeometry('POINT (-95.370401017314293 29.704867409475465)', 4326)
++        stx_pnt.transform(3086)
++
++        # Loop through all the GIS lookups.
++        for name, lookup in gis_lookups.items():
++            # Construct lookup filter strings.
++            combo_keys = [
++                field + name for field in [
++                    'rast__', 'rast__', 'rastprojected__0__', 'rast__',
++                    'rastprojected__', 'geom__', 'rast__',
++                ]
++            ]
++            if issubclass(lookup, DistanceLookupBase):
++                # Set lookup values for distance lookups.
++                combo_values = [
++                    (rast, 50, 'spheroid'),
++                    (rast, 0, 50, 'spheroid'),
++                    (rast, 0, D(km=1)),
++                    (stx_pnt, 0, 500),
++                    (stx_pnt, D(km=1000)),
++                    (rast, 500),
++                    (json.loads(JSON_RASTER), 500),
++                ]
++            elif name == 'relate':
++                # Set lookup values for the relate lookup.
++                combo_values = [
++                    (rast, 'T*T***FF*'),
++                    (rast, 0, 'T*T***FF*'),
++                    (rast, 0, 'T*T***FF*'),
++                    (stx_pnt, 0, 'T*T***FF*'),
++                    (stx_pnt, 'T*T***FF*'),
++                    (rast, 'T*T***FF*'),
++                    (json.loads(JSON_RASTER), 'T*T***FF*'),
++                ]
++            elif name == 'isvalid':
++                # The isvalid lookup doesn't make sense for rasters.
++                continue
++            elif PostGISOperations.gis_operators[name].func:
++                # Set lookup values for all function based operators.
++                combo_values = [
++                    rast, (rast, 0), (rast, 0), (stx_pnt, 0), stx_pnt,
++                    rast, rast, json.loads(JSON_RASTER)
++                ]
++            else:
++                # Override band lookup for these, as it's not supported.
++                combo_keys[2] = 'rastprojected__' + name
++                # Set lookup values for all other operators.
++                combo_values = [rast, rast, rast, stx_pnt, stx_pnt, rast, rast, json.loads(JSON_RASTER)]
++
++            # Create query filter combinations.
++            combos = [{x[0]: x[1]} for x in zip(combo_keys, combo_values)]
++
++            for combo in combos:
++                # Apply this query filter.
++                qs = RasterModel.objects.filter(**combo)
++
++                # Evaluate normal filter qs.
++                self.assertTrue(qs.count() in [0, 1])
++
++            # Evaluate on conditional Q expressions.
++            qs = RasterModel.objects.filter(Q(**combos[0]) & Q(**combos[1]))
++            self.assertTrue(qs.count() in [0, 1])
++
++    def test_dwithin_gis_lookup_ouptut_with_rasters(self):
++        """
++        Check the logical functionality of the dwithin lookup for different
++        input parameters.
++        """
++        # Create test raster and geom.
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        stx_pnt = GEOSGeometry('POINT (-95.370401017314293 29.704867409475465)', 4326)
++        stx_pnt.transform(3086)
++
++        # Filter raster with different lookup raster formats.
++        qs = RasterModel.objects.filter(rastprojected__dwithin=(rast, D(km=1)))
++        self.assertEqual(qs.count(), 1)
++
++        qs = RasterModel.objects.filter(rastprojected__dwithin=(json.loads(JSON_RASTER), D(km=1)))
++        self.assertEqual(qs.count(), 1)
++
++        qs = RasterModel.objects.filter(rastprojected__dwithin=(JSON_RASTER, D(km=1)))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter in an unprojected coordinate system.
++        qs = RasterModel.objects.filter(rast__dwithin=(rast, 40))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter with band index transform.
++        qs = RasterModel.objects.filter(rast__1__dwithin=(rast, 1, 40))
++        self.assertEqual(qs.count(), 1)
++        qs = RasterModel.objects.filter(rast__1__dwithin=(rast, 40))
++        self.assertEqual(qs.count(), 1)
++        qs = RasterModel.objects.filter(rast__dwithin=(rast, 1, 40))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter raster by geom.
++        qs = RasterModel.objects.filter(rast__dwithin=(stx_pnt, 500))
++        self.assertEqual(qs.count(), 1)
++
++        qs = RasterModel.objects.filter(rastprojected__dwithin=(stx_pnt, D(km=10000)))
++        self.assertEqual(qs.count(), 1)
++
++        qs = RasterModel.objects.filter(rast__dwithin=(stx_pnt, 5))
++        self.assertEqual(qs.count(), 0)
++
++        qs = RasterModel.objects.filter(rastprojected__dwithin=(stx_pnt, D(km=100)))
++        self.assertEqual(qs.count(), 0)
++
++        # Filter geom by raster.
++        qs = RasterModel.objects.filter(geom__dwithin=(rast, 500))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter through related model.
++        qs = RasterRelatedModel.objects.filter(rastermodel__rast__dwithin=(rast, 40))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter through related model with band index transform
++        qs = RasterRelatedModel.objects.filter(rastermodel__rast__1__dwithin=(rast, 40))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter through conditional statements.
++        qs = RasterModel.objects.filter(Q(rast__dwithin=(rast, 40)) & Q(rastprojected__dwithin=(stx_pnt, D(km=10000))))
++        self.assertEqual(qs.count(), 1)
++
++        # Filter through different lookup.
++        qs = RasterModel.objects.filter(rastprojected__bbcontains=rast)
++        self.assertEqual(qs.count(), 1)
++
++    def test_lookup_input_tuple_too_long(self):
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        qs = RasterModel.objects.filter(rast__bbcontains=(rast, 1, 2))
++        msg = 'Tuple too long for lookup bbcontains.'
++        with self.assertRaisesMessage(ValueError, msg):
++            qs.count()
++
++    def test_lookup_input_band_not_allowed(self):
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        qs = RasterModel.objects.filter(rast__bbcontains=(rast, 1))
++        msg = 'Band indices are not allowed for this operator, it works on bbox only.'
++        with self.assertRaisesMessage(ValueError, msg):
++            qs.count()
++
++    def test_isvalid_lookup_with_raster_error(self):
++        qs = RasterModel.objects.filter(rast__isvalid=True)
++        msg = 'The isvalid lookup is only available on geometry fields.'
++        with self.assertRaisesMessage(ValueError, msg):
++            qs.count()
++
++    def test_result_of_gis_lookup_with_rasters(self):
++        # Point is in the interior
++        qs = RasterModel.objects.filter(rast__contains=GEOSGeometry('POINT (-0.5 0.5)', 4326))
++        self.assertEqual(qs.count(), 1)
++        # Point is in the exterior
++        qs = RasterModel.objects.filter(rast__contains=GEOSGeometry('POINT (0.5 0.5)', 4326))
++        self.assertEqual(qs.count(), 0)
++        # A point on the boundary is not contained properly
++        qs = RasterModel.objects.filter(rast__contains_properly=GEOSGeometry('POINT (0 0)', 4326))
++        self.assertEqual(qs.count(), 0)
++        # Raster is located left of the point
++        qs = RasterModel.objects.filter(rast__left=GEOSGeometry('POINT (1 0)', 4326))
++        self.assertEqual(qs.count(), 1)
++
++    def test_lookup_with_raster_bbox(self):
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        # Shift raster upwards
++        rast.origin.y = 2
++        # The raster in the model is not strictly below
++        qs = RasterModel.objects.filter(rast__strictly_below=rast)
++        self.assertEqual(qs.count(), 0)
++        # Shift raster further upwards
++        rast.origin.y = 6
++        # The raster in the model is strictly below
++        qs = RasterModel.objects.filter(rast__strictly_below=rast)
++        self.assertEqual(qs.count(), 1)
++
++    def test_lookup_with_polygonized_raster(self):
++        rast = GDALRaster(json.loads(JSON_RASTER))
++        # Move raster to overlap with the model point on the left side
++        rast.origin.x = -95.37040 + 1
++        rast.origin.y = 29.70486
++        # Raster overlaps with point in model
++        qs = RasterModel.objects.filter(geom__intersects=rast)
++        self.assertEqual(qs.count(), 1)
++        # Change left side of raster to be nodata values
++        rast.bands[0].data(data=[0, 0, 0, 1, 1], shape=(5, 1))
++        rast.bands[0].nodata_value = 0
++        qs = RasterModel.objects.filter(geom__intersects=rast)
++        # Raster does not overlap anymore after polygonization
++        # where the nodata zone is not included.
++        self.assertEqual(qs.count(), 0)
++
++    def test_lookup_value_error(self):
++        # Test with invalid dict lookup parameter
++        obj = dict()
++        msg = "Couldn't create spatial object from lookup value '%s'." % obj
++        with self.assertRaisesMessage(ValueError, msg):
++            RasterModel.objects.filter(geom__intersects=obj)
++        # Test with invalid string lookup parameter
++        obj = '00000'
++        msg = "Couldn't create spatial object from lookup value '%s'." % obj
++        with self.assertRaisesMessage(ValueError, msg):
++            RasterModel.objects.filter(geom__intersects=obj)
++
+ 
+ @mock.patch('django.contrib.gis.db.models.fields.HAS_GDAL', False)
+ class RasterFieldWithoutGDALTest(TestCase):
+ 

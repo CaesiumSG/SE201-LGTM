@@ -1,0 +1,166 @@
+diff --git a/weblate/api/serializers.py b/weblate/api/serializers.py
+index b70eb1f..e852013 100644
+--- a/weblate/api/serializers.py
++++ b/weblate/api/serializers.py
+@@ -26,8 +26,9 @@ from weblate.accounts.models import Subscription
+ from weblate.addons.models import ADDONS, Addon
+ from weblate.auth.models import Group, Permission, Role, User
+ from weblate.checks.models import CHECKS
+ from weblate.lang.models import Language, Plural
++from weblate.memory.models import Memory
+ from weblate.screenshots.models import Screenshot
+ from weblate.trans.defines import LANGUAGE_NAME_LENGTH, REPO_LENGTH
+ from weblate.trans.models import (
+     AutoComponentList,
+@@ -905,8 +906,24 @@ class PluralField(serializers.ListField):
+     def get_attribute(self, instance):
+         return getattr(instance, f"get_{self.field_name}_plurals")()
+ 
+ 
++class MemorySerializer(serializers.ModelSerializer):
++    class Meta:
++        model = Memory
++        fields = (
++            "id",
++            "source",
++            "target",
++            "source_language",
++            "target_language",
++            "origin",
++            "project",
++            "from_file",
++            "shared",
++        )
++
++
+ class UnitSerializer(serializers.ModelSerializer):
+     web_url = AbsoluteURLField(source="get_absolute_url", read_only=True)
+     translation = MultiFieldHyperlinkedIdentityField(
+         view_name="api:translation-detail",
+diff --git a/weblate/api/tests.py b/weblate/api/tests.py
+index 0332f4b..102db5d 100644
+--- a/weblate/api/tests.py
++++ b/weblate/api/tests.py
+@@ -30,8 +30,9 @@ from weblate_language_data.languages import LANGUAGES
+ 
+ from weblate.accounts.models import Subscription
+ from weblate.auth.models import Group, Role, User
+ from weblate.lang.models import Language
++from weblate.memory.models import Memory
+ from weblate.screenshots.models import Screenshot
+ from weblate.trans.models import (
+     Change,
+     Component,
+@@ -2182,8 +2183,34 @@ class LanguageAPITest(APIBaseTest):
+         )
+         self.assertEqual(Language.objects.get(code="cs").name, "New Language")
+ 
+ 
++class MemoryAPITest(APIBaseTest):
++    def test_get(self):
++        self.do_request(
++            "api:memory-list",
++            method="get",
++            superuser=True,
++            code=200,
++        )
++
++        self.do_request(
++            "api:memory-list",
++            method="get",
++            superuser=False,
++            code=403,
++        )
++
++    def test_delete(self):
++        self.do_request(
++            "api:memory-detail",
++            kwargs={"pk": Memory.objects.first().pk},
++            method="delete",
++            superuser=True,
++            code=204,
++        )
++
++
+ class TranslationAPITest(APIBaseTest):
+     def test_list_translations(self):
+         response = self.client.get(reverse("api:translation-list"))
+         self.assertEqual(response.data["count"], 8)
+diff --git a/weblate/api/urls.py b/weblate/api/urls.py
+index ee0f159..da066c1 100644
+--- a/weblate/api/urls.py
++++ b/weblate/api/urls.py
+@@ -27,8 +27,9 @@ from weblate.api.views import (
+     ComponentListViewSet,
+     ComponentViewSet,
+     GroupViewSet,
+     LanguageViewSet,
++    MemoryViewSet,
+     Metrics,
+     ProjectViewSet,
+     RoleViewSet,
+     ScreenshotViewSet,
+@@ -45,8 +46,9 @@ router.register("groups", GroupViewSet)
+ router.register("roles", RoleViewSet)
+ router.register("projects", ProjectViewSet)
+ router.register("components", ComponentViewSet)
+ router.register("translations", TranslationViewSet)
++router.register("memory", MemoryViewSet)
+ router.register("languages", LanguageViewSet)
+ router.register("component-lists", ComponentListViewSet)
+ router.register("changes", ChangeViewSet)
+ router.register("units", UnitViewSet)
+diff --git a/weblate/api/views.py b/weblate/api/views.py
+index 9cfdd33..1d9220f 100644
+--- a/weblate/api/views.py
++++ b/weblate/api/views.py
+@@ -63,8 +63,9 @@ from weblate.api.serializers import (
+     GroupSerializer,
+     LanguageSerializer,
+     LockRequestSerializer,
+     LockSerializer,
++    MemorySerializer,
+     MonolingualUnitSerializer,
+     NotificationSerializer,
+     ProjectSerializer,
+     RepoRequestSerializer,
+@@ -82,8 +83,9 @@ from weblate.api.serializers import (
+ from weblate.auth.models import Group, Role, User
+ from weblate.checks.models import Check
+ from weblate.formats.models import EXPORTERS
+ from weblate.lang.models import Language
++from weblate.memory.models import Memory
+ from weblate.screenshots.models import Screenshot
+ from weblate.trans.exceptions import FileParseError
+ from weblate.trans.forms import AutoForm
+ from weblate.trans.models import (
+@@ -981,8 +983,29 @@ class ComponentViewSet(
+             name=instance.full_slug.replace("/", "-"),
+         )
+ 
+ 
++class MemoryViewSet(viewsets.ModelViewSet, DestroyModelMixin):
++    """Memory API."""
++
++    queryset = Memory.objects.none()
++    serializer_class = MemorySerializer
++
++    def get_queryset(self):
++        if not self.request.user.is_superuser:
++            self.permission_denied(self.request, "Access not allowed")
++        return Memory.objects.order_by("id")
++
++    def perm_check(self, request, instance):
++        if not request.user.has_perm("memory.delete", instance):
++            self.permission_denied(request, "Can not delete memory entry")
++
++    def destroy(self, request, *args, **kwargs):
++        instance = self.get_object()
++        self.perm_check(request, instance)
++        return super().destroy(request, *args, **kwargs)
++
++
+ class TranslationViewSet(MultipleFieldMixin, WeblateViewSet, DestroyModelMixin):
+     """Translation components API."""
+ 
+     queryset = Translation.objects.none()

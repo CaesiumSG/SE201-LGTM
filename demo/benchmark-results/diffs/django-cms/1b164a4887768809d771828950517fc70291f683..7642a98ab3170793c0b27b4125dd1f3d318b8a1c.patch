@@ -1,0 +1,318 @@
+diff --git a/cms/admin/placeholderadmin.py b/cms/admin/placeholderadmin.py
+index 667a53e..5b8dbaa 100644
+--- a/cms/admin/placeholderadmin.py
++++ b/cms/admin/placeholderadmin.py
+@@ -532,13 +532,25 @@ class PlaceholderAdmin(BaseEditableAdminMixin, admin.ModelAdmin):
+             pk=source_plugin_id,
+             language=source_language,
+         )
+         old_plugins = [source_plugin] + list(source_plugin.get_descendants())
++        source_placeholder = source_plugin.placeholder
+ 
+         if not self.has_copy_plugins_permission(request, old_plugins):
+             message = _('You do not have permission to copy these plugins.')
+             raise PermissionDenied(message)
+ 
++        # Check source-side permission as well: copying reads the source
++        # plugins, so a user without access to the source placeholder must not
++        # be able to exfiltrate its content into their clipboard.
++        if not source_placeholder.has_add_plugins_permission(request.user, old_plugins):
++            message = _('You do not have permission to copy these plugins.')
++            raise PermissionDenied(message)
++
++        if not source_placeholder.check_source(request.user):
++            message = _('You do not have permission to copy these plugins.')
++            raise PermissionDenied(message)
++
+         if not target_placeholder.check_source(request.user):
+             message = _('You do not have permission to copy these plugins.')
+             raise PermissionDenied(message)
+ 
+@@ -562,8 +574,19 @@ class PlaceholderAdmin(BaseEditableAdminMixin, admin.ModelAdmin):
+         if not self.has_copy_plugins_permission(request, old_plugins):
+             message = _('You do not have permission to copy this placeholder.')
+             raise PermissionDenied(message)
+ 
++        # Check source-side permission as well: copying reads the source
++        # plugins, so a user without access to the source placeholder must not
++        # be able to exfiltrate its content into their clipboard.
++        if not source_placeholder.has_add_plugins_permission(request.user, old_plugins):
++            message = _('You do not have permission to copy this placeholder.')
++            raise PermissionDenied(message)
++
++        if not source_placeholder.check_source(request.user):
++            message = _('You do not have permission to copy this placeholder.')
++            raise PermissionDenied(message)
++
+         if not target_placeholder.check_source(request.user):
+             message = _('You do not have permission to copy this placeholder.')
+             raise PermissionDenied(message)
+ 
+@@ -761,8 +784,26 @@ class PlaceholderAdmin(BaseEditableAdminMixin, admin.ModelAdmin):
+             target_parent = plugin.parent
+         else:
+             target_parent = None
+ 
++        # Reparenting an existing plugin under itself or one of its own
++        # descendants would create a cycle in the plugin tree. The recursive
++        # descendant/ancestor queries would then loop indefinitely, stalling
++        # request handling (denial of service). Reject such moves.
++        # (Copies and cut-to-clipboard create new plugins, so they are safe.)
++        if (
++            target_parent
++            and not move_a_copy
++            and not move_to_clipboard
++            and (
++                target_parent.pk == plugin.pk
++                or target_parent.pk in plugin._get_descendants_ids()
++            )
++        ):
++            return HttpResponseBadRequest(
++                "A plugin cannot be moved inside itself or one of its descendants."
++            )
++
+         old_parent = None
+         fetch_tree = True
+ 
+         if move_a_copy and plugin.plugin_type == "PlaceholderPlugin":
+diff --git a/cms/tests/test_placeholder_admin.py b/cms/tests/test_placeholder_admin.py
+index 74070c9..be0c4bb 100644
+--- a/cms/tests/test_placeholder_admin.py
++++ b/cms/tests/test_placeholder_admin.py
+@@ -301,4 +301,114 @@ class PlaceholderAdminTestCase(CMSTestCase):
+         with self.login_user_context(user):
+             response = self.client.get(f"{toolbar_endpoint}?obj_id={content.id}&obj_type=cms.pagecontent&cms_path={edit_endpoint}")
+ 
+         self.assertContains(response, '<span>Page<span class="cms-icon cms-icon-arrow"></span></span>')  # Contains page menu
++
++
++class PlaceholderAdminSecurityTestCase(CMSTestCase):
++    def test_move_plugin_rejects_cyclic_reparenting(self):
++        """A plugin must not be reparented under one of its own descendants.
++
++        Doing so creates a cycle in the plugin tree, which makes the recursive
++        descendant/ancestor queries loop indefinitely (denial of service).
++        """
++        superuser = self.get_superuser()
++        placeholder = Placeholder.objects.create(slot="source")
++        parent = add_plugin(
++            placeholder, "LinkPlugin", "en", name="parent", external_link="https://example.com"
++        )
++        child = add_plugin(
++            placeholder, "LinkPlugin", "en", name="child", external_link="https://example.com", target=parent
++        )
++        endpoint = self.get_move_plugin_uri(parent)
++        with self.login_user_context(superuser):
++            data = {
++                "plugin_id": parent.pk,
++                "target_language": "en",
++                "target_position": child.position,
++                # child is a descendant of parent: reparenting parent under it
++                # would create a cycle.
++                "plugin_parent": child.pk,
++            }
++            response = self.client.post(endpoint, data)
++
++        self.assertEqual(response.status_code, 400)
++        parent.refresh_from_db()
++        child.refresh_from_db()
++        # No cycle: parent stays at the root, child stays under parent.
++        self.assertIsNone(parent.parent_id)
++        self.assertEqual(child.parent_id, parent.pk)
++
++    def test_copy_plugin_to_clipboard_requires_source_permission(self):
++        """Copying a plugin to the clipboard must check source-side permission.
++
++        Otherwise a staff user with no access to a placeholder can exfiltrate
++        its (secret) plugin content by copying it into their own clipboard.
++        """
++        attacker = self._create_user(
++            "attacker", is_staff=True, is_superuser=False, permissions=["add_link"]
++        )
++        user_settings = UserSettings.objects.create(
++            language="en",
++            user=attacker,
++            clipboard=Placeholder.objects.create(),
++        )
++        user_settings.clipboard.source = user_settings
++        user_settings.clipboard.save()
++
++        # A placeholder the attacker has no permission on.
++        victim_placeholder = Placeholder.objects.create(slot="secret")
++        victim_plugin = add_plugin(
++            victim_placeholder,
++            "LinkPlugin",
++            "en",
++            name="VictimSecretLink",
++            external_link="https://secret.example.com",
++        )
++        endpoint = self.get_copy_plugin_uri(victim_plugin)
++        with self.login_user_context(attacker):
++            data = {
++                "source_language": "en",
++                "source_placeholder_id": victim_placeholder.pk,
++                "source_plugin_id": victim_plugin.pk,
++                "target_language": "en",
++                "target_placeholder_id": user_settings.clipboard.pk,
++            }
++            response = self.client.post(endpoint, data)
++
++        self.assertEqual(response.status_code, 403)
++        self.assertFalse(user_settings.clipboard.get_plugins("en").exists())
++
++    def test_copy_placeholder_to_clipboard_requires_source_permission(self):
++        """Copying a whole placeholder to the clipboard must check source-side
++        permission as well."""
++        attacker = self._create_user(
++            "attacker", is_staff=True, is_superuser=False, permissions=["add_link"]
++        )
++        user_settings = UserSettings.objects.create(
++            language="en",
++            user=attacker,
++            clipboard=Placeholder.objects.create(),
++        )
++        user_settings.clipboard.source = user_settings
++        user_settings.clipboard.save()
++
++        victim_placeholder = Placeholder.objects.create(slot="secret")
++        add_plugin(
++            victim_placeholder,
++            "LinkPlugin",
++            "en",
++            name="VictimSecretLink",
++            external_link="https://secret.example.com",
++        )
++        endpoint = self.get_copy_placeholder_uri(victim_placeholder)
++        with self.login_user_context(attacker):
++            data = {
++                "source_language": "en",
++                "source_placeholder_id": victim_placeholder.pk,
++                "target_language": "en",
++                "target_placeholder_id": user_settings.clipboard.pk,
++            }
++            response = self.client.post(endpoint, data)
++
++        self.assertEqual(response.status_code, 403)
++        self.assertFalse(user_settings.clipboard.get_plugins("en").exists())
+diff --git a/cms/tests/test_placeholder_app_admin.py b/cms/tests/test_placeholder_app_admin.py
+index d8b5b6d..650781c 100644
+--- a/cms/tests/test_placeholder_app_admin.py
++++ b/cms/tests/test_placeholder_app_admin.py
+@@ -620,8 +620,9 @@ class AppAdminPermissionsTest(AppAdminTestCase):
+             user=staff_user,
+             clipboard=Placeholder.objects.create(),
+         )
+ 
++        self.add_permission(staff_user, 'change_example1')
+         self.add_permission(staff_user, 'add_link')
+         self.add_permission(staff_user, 'add_style')
+ 
+         data = {
+diff --git a/cms/tests/test_views.py b/cms/tests/test_views.py
+index ed18dd1..f349ab1 100644
+--- a/cms/tests/test_views.py
++++ b/cms/tests/test_views.py
+@@ -535,4 +535,74 @@ class EndpointTests(CMSTestCase):
+             setting.save()
+ 
+             response = self.client.get(structure_endpoint_url)
+             self.assertContains(response, "<strong>Text</strong>")
++
++
++class EndpointPermissionTests(CMSTestCase):
++    """Security tests for the object render endpoints (edit/preview/structure).
++
++    The structure endpoint must enforce the same page-view permission as the
++    edit and preview endpoints, which deny access to staff users that cannot
++    view a restricted page.
++    """
++
++    def setUp(self) -> None:
++        from cms.api import add_plugin, assign_user_to_page
++
++        self.page = create_page("restricted", "simple.html", "en")
++        self.page_content = self.page.get_content_obj("en")
++        placeholder = self.page_content.get_placeholders().first()
++        # Secret content that must not leak to unauthorized staff users.
++        add_plugin(
++            placeholder,
++            "LinkPlugin",
++            "en",
++            name="SuperSecretLinkName",
++            external_link="https://secret.example.com",
++        )
++        # Restrict the page to view: granting view to the superuser turns the
++        # page into a view-restricted page for everybody else.
++        assign_user_to_page(self.page, self.get_superuser(), can_view=True)
++        self.content_type = ContentType.objects.get_for_model(PageContent)
++
++    def _endpoint(self, name):
++        return admin_reverse(name, args=(self.content_type.id, self.page_content.pk))
++
++    def test_edit_and_preview_endpoints_deny_view_restricted_page(self):
++        """Baseline: edit and preview already deny access via render_page()."""
++        staff = self.get_staff_user_with_no_permissions()
++        with self.login_user_context(staff):
++            for name in (
++                "cms_placeholder_render_object_edit",
++                "cms_placeholder_render_object_preview",
++            ):
++                response = self.client.get(self._endpoint(name))
++                self.assertEqual(
++                    response.status_code,
++                    404,
++                    msg=f"{name} leaked a view-restricted page (status {response.status_code})",
++                )
++
++    def test_structure_endpoint_denies_view_restricted_page(self):
++        """The structure endpoint must not render a page the user cannot view."""
++        staff = self.get_staff_user_with_no_permissions()
++        with self.login_user_context(staff):
++            response = self.client.get(
++                self._endpoint("cms_placeholder_render_object_structure")
++            )
++        self.assertEqual(
++            response.status_code,
++            404,
++            msg="structure endpoint leaked a view-restricted page",
++        )
++        self.assertNotContains(
++            response, "SuperSecretLinkName", status_code=404
++        )
++
++    def test_structure_endpoint_allows_permitted_user(self):
++        """A user who may view the page still gets the structure board."""
++        with self.login_user_context(self.get_superuser()):
++            response = self.client.get(
++                self._endpoint("cms_placeholder_render_object_structure")
++            )
++        self.assertContains(response, "SuperSecretLinkName")
+diff --git a/cms/views.py b/cms/views.py
+index f9d0b5f..3a4895d 100644
+--- a/cms/views.py
++++ b/cms/views.py
+@@ -46,8 +46,9 @@ from cms.utils.i18n import (
+     get_redirect_on_fallback,
+     is_language_prefix_patterns_used,
+ )
+ from cms.utils.page import get_page_from_request
++from cms.utils.page_permissions import user_can_view_page
+ from cms.utils.placeholder import get_declared_placeholders_for_obj, get_placeholder_conf
+ 
+ 
+ def _clean_redirect_url(redirect_url, language):
+@@ -254,8 +255,14 @@ def render_object_structure(request, content_type_id, object_id):
+     try:
+         if issubclass(content_type.model_class(), PageContent):
+             content_type_obj = PageContent._base_manager.select_related("page").get(pk=object_id)
+             request.current_page = content_type_obj.page
++            # Enforce the same page-view permission as the edit and preview
++            # endpoints (which check it via render_page()). Without this, a
++            # staff user who cannot view a restricted page could still read its
++            # plugin structure through this endpoint.
++            if not user_can_view_page(request.user, content_type_obj.page):
++                raise Http404
+         else:
+             content_type_obj = content_type.get_object_for_this_type(pk=object_id)
+     except ObjectDoesNotExist as err:
+         raise Http404 from err

@@ -1,0 +1,1189 @@
+diff --git a/src/app/settings.py b/src/app/settings.py
+index 44d1d3d..1cef3c8 100644
+--- a/src/app/settings.py
++++ b/src/app/settings.py
+@@ -20,9 +20,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
+ # Quick-start development settings - unsuitable for production
+ # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
+ 
+ # SECURITY WARNING: keep the secret key used in production secret!
+-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
++SECRET_KEY = os.getenv("KHOJ_DJANGO_SECRET_KEY")
+ 
+ # SECURITY WARNING: don't run with debug turned on in production!
+ DEBUG = os.getenv("DJANGO_DEBUG", "False") == "True"
+ 
+diff --git a/src/database/adapters/__init__.py b/src/database/adapters/__init__.py
+index fa37aa9..4f71c7a 100644
+--- a/src/database/adapters/__init__.py
++++ b/src/database/adapters/__init__.py
+@@ -1,9 +1,9 @@
+-from typing import Type, TypeVar, List
+-from datetime import date
++from typing import Optional, Type, TypeVar, List
++from datetime import date, datetime, timedelta
+ import secrets
+ from typing import Type, TypeVar, List
+-from datetime import date
++from datetime import date, timezone
+ 
+ from django.db import models
+ from django.contrib.sessions.backends.db import SessionStore
+ from pgvector.django import CosineDistance
+@@ -29,8 +29,9 @@ from database.models import (
+     Entry,
+     GithubRepoConfig,
+     Conversation,
+     ChatModelOptions,
++    Subscription,
+     UserConversationConfig,
+     OpenAIProcessorConversationConfig,
+     OfflineChatProcessorConversationConfig,
+ )
+@@ -102,8 +103,59 @@ async def create_google_user(token: dict) -> KhojUser:
+ 
+     return user
+ 
+ 
++def get_user_subscription(email: str) -> Optional[Subscription]:
++    return Subscription.objects.filter(user__email=email).first()
++
++
++async def set_user_subscription(
++    email: str, is_recurring=None, renewal_date=None, type="standard"
++) -> Optional[Subscription]:
++    user_subscription = await Subscription.objects.filter(user__email=email).afirst()
++    if not user_subscription:
++        user = await get_user_by_email(email)
++        if not user:
++            return None
++        user_subscription = await Subscription.objects.acreate(
++            user=user, type=type, is_recurring=is_recurring, renewal_date=renewal_date
++        )
++        return user_subscription
++    elif user_subscription:
++        user_subscription.type = type
++        if is_recurring is not None:
++            user_subscription.is_recurring = is_recurring
++        if renewal_date is False:
++            user_subscription.renewal_date = None
++        elif renewal_date is not None:
++            user_subscription.renewal_date = renewal_date
++        await user_subscription.asave()
++        return user_subscription
++    else:
++        return None
++
++
++def get_user_subscription_state(user_subscription: Subscription) -> str:
++    """Get subscription state of user
++    Valid state transitions: trial -> subscribed <-> unsubscribed OR expired
++    """
++    if not user_subscription:
++        return "trial"
++    elif user_subscription.type == Subscription.Type.TRIAL:
++        return "trial"
++    elif user_subscription.is_recurring and user_subscription.renewal_date >= datetime.now(tz=timezone.utc):
++        return "subscribed"
++    elif not user_subscription.is_recurring and user_subscription.renewal_date >= datetime.now(tz=timezone.utc):
++        return "unsubscribed"
++    elif not user_subscription.is_recurring and user_subscription.renewal_date < datetime.now(tz=timezone.utc):
++        return "expired"
++    return "invalid"
++
++
++async def get_user_by_email(email: str) -> KhojUser:
++    return await KhojUser.objects.filter(email=email).afirst()
++
++
+ async def get_user_by_token(token: dict) -> KhojUser:
+     google_user = await GoogleUser.objects.filter(sub=token.get("sub")).select_related("user").afirst()
+     if not google_user:
+         return None
+@@ -286,15 +338,23 @@ class EntryAdapters:
+         deleted_count, _ = Entry.objects.filter(user=user, file_path=file_path).delete()
+         return deleted_count
+ 
+     @staticmethod
+-    def delete_all_entries(user: KhojUser, file_type: str = None):
++    def delete_all_entries_by_type(user: KhojUser, file_type: str = None):
+         if file_type is None:
+             deleted_count, _ = Entry.objects.filter(user=user).delete()
+         else:
+             deleted_count, _ = Entry.objects.filter(user=user, file_type=file_type).delete()
+         return deleted_count
+ 
++    @staticmethod
++    def delete_all_entries(user: KhojUser, file_source: str = None):
++        if file_source is None:
++            deleted_count, _ = Entry.objects.filter(user=user).delete()
++        else:
++            deleted_count, _ = Entry.objects.filter(user=user, file_source=file_source).delete()
++        return deleted_count
++
+     @staticmethod
+     def get_existing_entry_hashes_by_file(user: KhojUser, file_path: str):
+         return Entry.objects.filter(user=user, file_path=file_path).values_list("hashed_value", flat=True)
+ 
+@@ -317,10 +377,14 @@ class EntryAdapters:
+     async def adelete_entry_by_file(user: KhojUser, file_path: str):
+         return await Entry.objects.filter(user=user, file_path=file_path).adelete()
+ 
+     @staticmethod
+-    def aget_all_filenames(user: KhojUser):
+-        return Entry.objects.filter(user=user).distinct("file_path").values_list("file_path", flat=True)
++    def aget_all_filenames_by_source(user: KhojUser, file_source: str):
++        return (
++            Entry.objects.filter(user=user, file_source=file_source)
++            .distinct("file_path")
++            .values_list("file_path", flat=True)
++        )
+ 
+     @staticmethod
+     async def adelete_all_entries(user: KhojUser):
+         return await Entry.objects.filter(user=user).adelete()
+@@ -383,4 +447,8 @@ class EntryAdapters:
+ 
+     @staticmethod
+     def get_unique_file_types(user: KhojUser):
+         return Entry.objects.filter(user=user).values_list("file_type", flat=True).distinct()
++
++    @staticmethod
++    def get_unique_file_source(user: KhojUser):
++        return Entry.objects.filter(user=user).values_list("file_source", flat=True).distinct()
+diff --git a/src/database/migrations/0012_entry_file_source.py b/src/database/migrations/0012_entry_file_source.py
+new file mode 100644
+index 0000000..187136a
+--- /dev/null
++++ b/src/database/migrations/0012_entry_file_source.py
+@@ -0,0 +1,21 @@
++# Generated by Django 4.2.5 on 2023-11-07 07:24
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ("database", "0011_merge_20231102_0138"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="entry",
++            name="file_source",
++            field=models.CharField(
++                choices=[("computer", "Computer"), ("notion", "Notion"), ("github", "Github")],
++                default="computer",
++                max_length=30,
++            ),
++        ),
++    ]
+diff --git a/src/database/migrations/0013_subscription.py b/src/database/migrations/0013_subscription.py
+new file mode 100644
+index 0000000..931cea1
+--- /dev/null
++++ b/src/database/migrations/0013_subscription.py
+@@ -0,0 +1,37 @@
++# Generated by Django 4.2.5 on 2023-11-09 01:27
++
++from django.conf import settings
++from django.db import migrations, models
++import django.db.models.deletion
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ("database", "0012_entry_file_source"),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name="Subscription",
++            fields=[
++                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                ("updated_at", models.DateTimeField(auto_now=True)),
++                (
++                    "type",
++                    models.CharField(
++                        choices=[("trial", "Trial"), ("standard", "Standard")], default="trial", max_length=20
++                    ),
++                ),
++                ("is_recurring", models.BooleanField(default=False)),
++                ("renewal_date", models.DateTimeField(default=None, null=True)),
++                (
++                    "user",
++                    models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, to=settings.AUTH_USER_MODEL),
++                ),
++            ],
++            options={
++                "abstract": False,
++            },
++        ),
++    ]
+diff --git a/src/database/models/__init__.py b/src/database/models/__init__.py
+index 5dd9622..28f8cd2 100644
+--- a/src/database/models/__init__.py
++++ b/src/database/models/__init__.py
+@@ -45,8 +45,19 @@ class KhojApiUser(models.Model):
+     name = models.CharField(max_length=50)
+     accessed_at = models.DateTimeField(null=True, default=None)
+ 
+ 
++class Subscription(BaseModel):
++    class Type(models.TextChoices):
++        TRIAL = "trial"
++        STANDARD = "standard"
++
++    user = models.OneToOneField(KhojUser, on_delete=models.CASCADE)
++    type = models.CharField(max_length=20, choices=Type.choices, default=Type.TRIAL)
++    is_recurring = models.BooleanField(default=False)
++    renewal_date = models.DateTimeField(null=True, default=None)
++
++
+ class NotionConfig(BaseModel):
+     token = models.CharField(max_length=200)
+     user = models.ForeignKey(KhojUser, on_delete=models.CASCADE)
+ 
+@@ -130,13 +141,19 @@ class Entry(BaseModel):
+         NOTION = "notion"
+         GITHUB = "github"
+         CONVERSATION = "conversation"
+ 
++    class EntrySource(models.TextChoices):
++        COMPUTER = "computer"
++        NOTION = "notion"
++        GITHUB = "github"
++
+     user = models.ForeignKey(KhojUser, on_delete=models.CASCADE, default=None, null=True, blank=True)
+     embeddings = VectorField(dimensions=384)
+     raw = models.TextField()
+     compiled = models.TextField()
+     heading = models.CharField(max_length=1000, default=None, null=True, blank=True)
++    file_source = models.CharField(max_length=30, choices=EntrySource.choices, default=EntrySource.COMPUTER)
+     file_type = models.CharField(max_length=30, choices=EntryType.choices, default=EntryType.PLAINTEXT)
+     file_path = models.CharField(max_length=400, default=None, null=True, blank=True)
+     file_name = models.CharField(max_length=400, default=None, null=True, blank=True)
+     url = models.URLField(max_length=400, default=None, null=True, blank=True)
+diff --git a/src/khoj/configure.py b/src/khoj/configure.py
+index bc9e9bf..6f0589a 100644
+--- a/src/khoj/configure.py
++++ b/src/khoj/configure.py
+@@ -1,6 +1,5 @@
+ # Standard Packages
+-import sys
+ import logging
+ import json
+ from enum import Enum
+ from typing import Optional
+@@ -108,9 +107,8 @@ def configure_server(
+         state.SearchType = configure_search_types(state.config)
+         state.search_models = configure_search(state.search_models, state.config.search_type)
+         initialize_content(regenerate, search_type, init, user)
+     except Exception as e:
+-        logger.error(f"🚨 Failed to configure search models", exc_info=True)
+         raise e
+     finally:
+         state.config_lock.release()
+ 
+@@ -124,19 +122,20 @@ def initialize_content(regenerate: bool, search_type: Optional[SearchType] = Non
+                 state.content_index = load_content(state.config.content_type, state.content_index, state.search_models)
+             else:
+                 logger.info("📬 Updating content index...")
+                 all_files = collect_files(user=user)
+-                state.content_index = configure_content(
++                state.content_index, status = configure_content(
+                     state.content_index,
+                     state.config.content_type,
+                     all_files,
+                     state.search_models,
+                     regenerate,
+                     search_type,
+                     user=user,
+                 )
++                if not status:
++                    raise RuntimeError("Failed to update content index")
+         except Exception as e:
+-            logger.error(f"🚨 Failed to index content", exc_info=True)
+             raise e
+ 
+ 
+ def configure_routes(app):
+@@ -145,12 +144,16 @@ def configure_routes(app):
+     from khoj.routers.api_beta import api_beta
+     from khoj.routers.web_client import web_client
+     from khoj.routers.indexer import indexer
+     from khoj.routers.auth import auth_router
++    from khoj.routers.subscription import subscription_router
+ 
+     app.include_router(api, prefix="/api")
+     app.include_router(api_beta, prefix="/api/beta")
+     app.include_router(indexer, prefix="/api/v1/index")
++    if state.billing_enabled:
++        logger.info("💳 Enabled Billing")
++        app.include_router(subscription_router, prefix="/api/subscription")
+     app.include_router(web_client)
+     app.include_router(auth_router, prefix="/auth")
+ 
+ 
+@@ -164,15 +167,17 @@ def update_search_index():
+     try:
+         logger.info("📬 Updating content index via Scheduler")
+         for user in get_all_users():
+             all_files = collect_files(user=user)
+-            state.content_index = configure_content(
++            state.content_index, success = configure_content(
+                 state.content_index, state.config.content_type, all_files, state.search_models, user=user
+             )
+         all_files = collect_files(user=None)
+-        state.content_index = configure_content(
++        state.content_index, success = configure_content(
+             state.content_index, state.config.content_type, all_files, state.search_models, user=None
+         )
++        if not success:
++            raise RuntimeError("Failed to update content index")
+         logger.info("📪 Content index updated via Scheduler")
+     except Exception as e:
+         logger.error(f"🚨 Error updating content index via Scheduler: {e}", exc_info=True)
+ 
+diff --git a/src/khoj/processor/github/github_to_entries.py b/src/khoj/processor/github/github_to_entries.py
+index 14e9b69..5627945 100644
+--- a/src/khoj/processor/github/github_to_entries.py
++++ b/src/khoj/processor/github/github_to_entries.py
+@@ -103,9 +103,14 @@ class GithubToEntries(TextToEntries):
+     def update_entries_with_ids(self, current_entries, user: KhojUser = None):
+         # Identify, mark and merge any new entries with previous entries
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+-                current_entries, DbEntry.EntryType.GITHUB, key="compiled", logger=logger, user=user
++                current_entries,
++                DbEntry.EntryType.GITHUB,
++                DbEntry.EntrySource.GITHUB,
++                key="compiled",
++                logger=logger,
++                user=user,
+             )
+ 
+         return num_new_embeddings, num_deleted_embeddings
+ 
+diff --git a/src/khoj/processor/markdown/markdown_to_entries.py b/src/khoj/processor/markdown/markdown_to_entries.py
+index e0b7636..0dd7174 100644
+--- a/src/khoj/processor/markdown/markdown_to_entries.py
++++ b/src/khoj/processor/markdown/markdown_to_entries.py
+@@ -46,8 +46,9 @@ class MarkdownToEntries(TextToEntries):
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+                 current_entries,
+                 DbEntry.EntryType.MARKDOWN,
++                DbEntry.EntrySource.COMPUTER,
+                 "compiled",
+                 logger,
+                 deletion_file_names,
+                 user,
+diff --git a/src/khoj/processor/notion/notion_to_entries.py b/src/khoj/processor/notion/notion_to_entries.py
+index a4b15d4..7a88e2a 100644
+--- a/src/khoj/processor/notion/notion_to_entries.py
++++ b/src/khoj/processor/notion/notion_to_entries.py
+@@ -249,8 +249,13 @@ class NotionToEntries(TextToEntries):
+     def update_entries_with_ids(self, current_entries, user: KhojUser = None):
+         # Identify, mark and merge any new entries with previous entries
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+-                current_entries, DbEntry.EntryType.NOTION, key="compiled", logger=logger, user=user
++                current_entries,
++                DbEntry.EntryType.NOTION,
++                DbEntry.EntrySource.NOTION,
++                key="compiled",
++                logger=logger,
++                user=user,
+             )
+ 
+         return num_new_embeddings, num_deleted_embeddings
+diff --git a/src/khoj/processor/org_mode/org_to_entries.py b/src/khoj/processor/org_mode/org_to_entries.py
+index bf6df6d..04ce97e 100644
+--- a/src/khoj/processor/org_mode/org_to_entries.py
++++ b/src/khoj/processor/org_mode/org_to_entries.py
+@@ -47,8 +47,9 @@ class OrgToEntries(TextToEntries):
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+                 current_entries,
+                 DbEntry.EntryType.ORG,
++                DbEntry.EntrySource.COMPUTER,
+                 "compiled",
+                 logger,
+                 deletion_file_names,
+                 user,
+diff --git a/src/khoj/processor/pdf/pdf_to_entries.py b/src/khoj/processor/pdf/pdf_to_entries.py
+index 81c2250..3a47096 100644
+--- a/src/khoj/processor/pdf/pdf_to_entries.py
++++ b/src/khoj/processor/pdf/pdf_to_entries.py
+@@ -45,8 +45,9 @@ class PdfToEntries(TextToEntries):
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+                 current_entries,
+                 DbEntry.EntryType.PDF,
++                DbEntry.EntrySource.COMPUTER,
+                 "compiled",
+                 logger,
+                 deletion_file_names,
+                 user,
+diff --git a/src/khoj/processor/plaintext/plaintext_to_entries.py b/src/khoj/processor/plaintext/plaintext_to_entries.py
+index fd5e1de..d42dae3 100644
+--- a/src/khoj/processor/plaintext/plaintext_to_entries.py
++++ b/src/khoj/processor/plaintext/plaintext_to_entries.py
+@@ -55,8 +55,9 @@ class PlaintextToEntries(TextToEntries):
+         with timer("Identify new or updated entries", logger):
+             num_new_embeddings, num_deleted_embeddings = self.update_embeddings(
+                 current_entries,
+                 DbEntry.EntryType.PLAINTEXT,
++                DbEntry.EntrySource.COMPUTER,
+                 key="compiled",
+                 logger=logger,
+                 deletion_filenames=deletion_file_names,
+                 user=user,
+diff --git a/src/khoj/processor/text_to_entries.py b/src/khoj/processor/text_to_entries.py
+index 501ef5d..3d79e02 100644
+--- a/src/khoj/processor/text_to_entries.py
++++ b/src/khoj/processor/text_to_entries.py
+@@ -77,8 +77,9 @@ class TextToEntries(ABC):
+     def update_embeddings(
+         self,
+         current_entries: List[Entry],
+         file_type: str,
++        file_source: str,
+         key="compiled",
+         logger: logging.Logger = None,
+         deletion_filenames: Set[str] = None,
+         user: KhojUser = None,
+@@ -92,11 +93,11 @@ class TextToEntries(ABC):
+                 hashes_by_file.setdefault(entry.file, set()).add(TextToEntries.hash_func(key)(entry))
+ 
+         num_deleted_entries = 0
+         if regenerate:
+-            with timer("Prepared dataset for regeneration in", logger):
++            with timer("Cleared existing dataset for regeneration in", logger):
+                 logger.debug(f"Deleting all entries for file type {file_type}")
+-                num_deleted_entries = EntryAdapters.delete_all_entries(user, file_type)
++                num_deleted_entries = EntryAdapters.delete_all_entries_by_type(user, file_type)
+ 
+         hashes_to_process = set()
+         with timer("Identified entries to add to database in", logger):
+             for file in tqdm(hashes_by_file, desc="Identify new entries"):
+@@ -131,8 +132,9 @@ class TextToEntries(ABC):
+                             raw=entry.raw,
+                             compiled=entry.compiled,
+                             heading=entry.heading[:1000],  # Truncate to max chars of field allowed
+                             file_path=entry.file,
++                            file_source=file_source,
+                             file_type=file_type,
+                             hashed_value=entry_hash,
+                             corpus_id=entry.corpus_id,
+                         )
+diff --git a/src/khoj/routers/api.py b/src/khoj/routers/api.py
+index 84e63b0..81e805c 100644
+--- a/src/khoj/routers/api.py
++++ b/src/khoj/routers/api.py
+@@ -22,9 +22,8 @@ from khoj.utils.helpers import ConversationCommand, is_none_or_empty, timer, com
+ from khoj.utils.rawconfig import (
+     FullConfig,
+     SearchConfig,
+     SearchResponse,
+-    TextContentConfig,
+     GithubContentConfig,
+     NotionContentConfig,
+ )
+ from khoj.utils.state import SearchType
+@@ -50,8 +49,9 @@ from database.models import (
+     LocalOrgConfig,
+     LocalPdfConfig,
+     LocalPlaintextConfig,
+     KhojUser,
++    Entry as DbEntry,
+     GithubConfig,
+     NotionConfig,
+ )
+ 
+@@ -60,13 +60,15 @@ from database.models import (
+ api = APIRouter()
+ logger = logging.getLogger(__name__)
+ 
+ 
+-def map_config_to_object(content_type: str):
+-    if content_type == "github":
++def map_config_to_object(content_source: str):
++    if content_source == DbEntry.EntrySource.GITHUB:
+         return GithubConfig
+-    if content_type == "notion":
++    if content_source == DbEntry.EntrySource.GITHUB:
+         return NotionConfig
++    if content_source == DbEntry.EntrySource.COMPUTER:
++        return "Computer"
+ 
+ 
+ async def map_config_to_db(config: FullConfig, user: KhojUser):
+     if config.content_type:
+@@ -163,9 +165,9 @@ async def set_config_data(
+     )
+     return state.config
+ 
+ 
+-@api.post("/config/data/content_type/github", status_code=200)
++@api.post("/config/data/content-source/github", status_code=200)
+ @requires(["authenticated"])
+ async def set_content_config_github_data(
+     request: Request,
+     updated_config: Union[GithubContentConfig, None],
+@@ -191,9 +193,9 @@ async def set_content_config_github_data(
+ 
+     return {"status": "ok"}
+ 
+ 
+-@api.post("/config/data/content_type/notion", status_code=200)
++@api.post("/config/data/content-source/notion", status_code=200)
+ @requires(["authenticated"])
+ async def set_content_config_notion_data(
+     request: Request,
+     updated_config: Union[NotionContentConfig, None],
+@@ -218,13 +220,13 @@ async def set_content_config_notion_data(
+ 
+     return {"status": "ok"}
+ 
+ 
+-@api.delete("/config/data/content_type/{content_type}", status_code=200)
++@api.delete("/config/data/content-source/{content_source}", status_code=200)
+ @requires(["authenticated"])
+-async def remove_content_config_data(
++async def remove_content_source_data(
+     request: Request,
+-    content_type: str,
++    content_source: str,
+     client: Optional[str] = None,
+ ):
+     user = request.user.object
+ 
+@@ -232,17 +234,17 @@ async def remove_content_config_data(
+         request=request,
+         telemetry_type="api",
+         api="delete_content_config",
+         client=client,
+-        metadata={"content_type": content_type},
++        metadata={"content_source": content_source},
+     )
+ 
+-    content_object = map_config_to_object(content_type)
++    content_object = map_config_to_object(content_source)
+     if content_object is None:
+-        raise ValueError(f"Invalid content type: {content_type}")
+-
+-    await content_object.objects.filter(user=user).adelete()
+-    await sync_to_async(EntryAdapters.delete_all_entries)(user, content_type)
++        raise ValueError(f"Invalid content source: {content_source}")
++    elif content_object != "Computer":
++        await content_object.objects.filter(user=user).adelete()
++    await sync_to_async(EntryAdapters.delete_all_entries)(user, content_source)
+ 
+     enabled_content = await sync_to_async(EntryAdapters.get_unique_file_types)(user)
+     return {"status": "ok"}
+ 
+@@ -267,12 +269,13 @@ async def remove_file_data(
+ 
+     return {"status": "ok"}
+ 
+ 
+-@api.get("/config/data/all", response_model=List[str])
++@api.get("/config/data/{content_source}", response_model=List[str])
+ @requires(["authenticated"])
+ async def get_all_filenames(
+     request: Request,
++    content_source: str,
+     client: Optional[str] = None,
+ ):
+     user = request.user.object
+ 
+@@ -282,29 +285,9 @@ async def get_all_filenames(
+         api="get_all_filenames",
+         client=client,
+     )
+ 
+-    return await sync_to_async(list)(EntryAdapters.aget_all_filenames(user))
+-
+-
+-@api.delete("/config/data/all", status_code=200)
+-@requires(["authenticated"])
+-async def remove_all_config_data(
+-    request: Request,
+-    client: Optional[str] = None,
+-):
+-    user = request.user.object
+-
+-    update_telemetry_state(
+-        request=request,
+-        telemetry_type="api",
+-        api="delete_all_config",
+-        client=client,
+-    )
+-
+-    await EntryAdapters.adelete_all_entries(user)
+-
+-    return {"status": "ok"}
++    return await sync_to_async(list)(EntryAdapters.aget_all_filenames_by_source(user, content_source))
+ 
+ 
+ @api.post("/config/data/conversation/model", status_code=200)
+ @requires(["authenticated"])
+diff --git a/src/khoj/routers/auth.py b/src/khoj/routers/auth.py
+index ebabeb8..4a3cbce 100644
+--- a/src/khoj/routers/auth.py
++++ b/src/khoj/routers/auth.py
+@@ -23,9 +23,11 @@ logger = logging.getLogger(__name__)
+ 
+ auth_router = APIRouter()
+ 
+ if not state.anonymous_mode and not (os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET")):
+-    logger.info("Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables to use Google OAuth")
++    logger.warn(
++        "🚨 Use --anonymous-mode flag to disable Google OAuth or set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET environment variables to enable it"
++    )
+ else:
+     config = Config(environ=os.environ)
+ 
+     oauth = OAuth(config)
+diff --git a/src/khoj/routers/indexer.py b/src/khoj/routers/indexer.py
+index 1bbf53c..a7a1249 100644
+--- a/src/khoj/routers/indexer.py
++++ b/src/khoj/routers/indexer.py
+@@ -125,9 +125,9 @@ async def update(
+             configure_search(state.search_models, state.config.search_type)
+ 
+         # Extract required fields from config
+         loop = asyncio.get_event_loop()
+-        state.content_index = await loop.run_in_executor(
++        state.content_index, success = await loop.run_in_executor(
+             None,
+             configure_content,
+             state.content_index,
+             state.config.content_type,
+@@ -137,15 +137,18 @@ async def update(
+             t,
+             False,
+             user,
+         )
++        if not success:
++            raise RuntimeError("Failed to update content index")
+         logger.info(f"Finished processing batch indexing request")
+     except Exception as e:
+         logger.error(f"Failed to process batch indexing request: {e}", exc_info=True)
+         logger.error(
+             f"🚨 Failed to {force} update {t} content index triggered via API call by {client} client: {e}",
+             exc_info=True,
+         )
++        return Response(content="Failed", status_code=500)
+ 
+     update_telemetry_state(
+         request=request,
+         telemetry_type="api",
+@@ -181,20 +184,21 @@ def configure_content(
+     regenerate: bool = False,
+     t: Optional[state.SearchType] = None,
+     full_corpus: bool = True,
+     user: KhojUser = None,
+-) -> Optional[ContentIndex]:
++) -> tuple[Optional[ContentIndex], bool]:
+     content_index = ContentIndex()
+ 
++    success = True
+     if t is not None and not t.value in [type.value for type in state.SearchType]:
+         logger.warning(f"🚨 Invalid search type: {t}")
+-        return None
++        return None, False
+ 
+     search_type = t.value if t else None
+ 
+     if files is None:
+         logger.warning(f"🚨 No files to process for {search_type} search.")
+-        return None
++        return None, True
+ 
+     try:
+         # Initialize Org Notes Search
+         if (search_type == None or search_type == state.SearchType.Org.value) and files["org"]:
+@@ -208,8 +212,9 @@ def configure_content(
+                 user=user,
+             )
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup org: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         # Initialize Markdown Search
+         if (search_type == None or search_type == state.SearchType.Markdown.value) and files["markdown"]:
+@@ -224,8 +229,9 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup markdown: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         # Initialize PDF Search
+         if (search_type == None or search_type == state.SearchType.Pdf.value) and files["pdf"]:
+@@ -240,8 +246,9 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup PDF: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         # Initialize Plaintext Search
+         if (search_type == None or search_type == state.SearchType.Plaintext.value) and files["plaintext"]:
+@@ -256,8 +263,9 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup plaintext: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         # Initialize Image Search
+         if (
+@@ -273,8 +281,9 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup images: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         github_config = GithubConfig.objects.filter(user=user).prefetch_related("githubrepoconfig").first()
+         if (search_type == None or search_type == state.SearchType.Github.value) and github_config is not None:
+@@ -290,8 +299,9 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup GitHub: {e}", exc_info=True)
++        success = False
+ 
+     try:
+         # Initialize Notion Search
+         notion_config = NotionConfig.objects.filter(user=user).first()
+@@ -307,14 +317,15 @@ def configure_content(
+             )
+ 
+     except Exception as e:
+         logger.error(f"🚨 Failed to setup GitHub: {e}", exc_info=True)
++        success = False
+ 
+     # Invalidate Query Cache
+     if user:
+         state.query_cache[user.uuid] = LRU()
+ 
+-    return content_index
++    return content_index, success
+ 
+ 
+ def load_content(
+     content_config: Optional[ContentConfig],
+diff --git a/src/khoj/routers/subscription.py b/src/khoj/routers/subscription.py
+new file mode 100644
+index 0000000..3457b67
+--- /dev/null
++++ b/src/khoj/routers/subscription.py
+@@ -0,0 +1,106 @@
++# Standard Packages
++from datetime import datetime, timezone
++import logging
++import os
++
++# External Packages
++from asgiref.sync import sync_to_async
++from fastapi import APIRouter, Request
++from starlette.authentication import requires
++import stripe
++
++# Internal Packages
++from database import adapters
++
++
++# Stripe integration for Khoj Cloud Subscription
++stripe.api_key = os.getenv("STRIPE_API_KEY")
++endpoint_secret = os.getenv("STRIPE_SIGNING_SECRET")
++logger = logging.getLogger(__name__)
++subscription_router = APIRouter()
++
++
++@subscription_router.post("")
++async def subscribe(request: Request):
++    """Webhook for Stripe to send subscription events to Khoj Cloud"""
++    event = None
++    try:
++        payload = await request.body()
++        sig_header = request.headers["stripe-signature"]
++        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
++    except ValueError as e:
++        # Invalid payload
++        raise e
++    except stripe.error.SignatureVerificationError as e:
++        # Invalid signature
++        raise e
++
++    event_type = event["type"]
++    if event_type not in {
++        "invoice.paid",
++        "customer.subscription.updated",
++        "customer.subscription.deleted",
++        "subscription_schedule.canceled",
++    }:
++        logger.warn(f"Unhandled Stripe event type: {event['type']}")
++        return {"success": False}
++
++    # Retrieve the customer's details
++    subscription = event["data"]["object"]
++    customer_id = subscription["customer"]
++    customer = stripe.Customer.retrieve(customer_id)
++    customer_email = customer["email"]
++
++    # Handle valid stripe webhook events
++    success = True
++    if event_type in {"invoice.paid"}:
++        # Mark the user as subscribed and update the next renewal date on payment
++        subscription = stripe.Subscription.list(customer=customer_id).data[0]
++        renewal_date = datetime.fromtimestamp(subscription["current_period_end"], tz=timezone.utc)
++        user = await adapters.set_user_subscription(customer_email, is_recurring=True, renewal_date=renewal_date)
++        success = user is not None
++    elif event_type in {"customer.subscription.updated"}:
++        user_subscription = await sync_to_async(adapters.get_user_subscription)(customer_email)
++        # Allow updating subscription status if paid user
++        if user_subscription and user_subscription.renewal_date:
++            # Mark user as unsubscribed or resubscribed
++            is_recurring = not subscription["cancel_at_period_end"]
++            updated_user = await adapters.set_user_subscription(customer_email, is_recurring=is_recurring)
++            success = updated_user is not None
++    elif event_type in {"customer.subscription.deleted"}:
++        # Reset the user to trial state
++        user = await adapters.set_user_subscription(
++            customer_email, is_recurring=False, renewal_date=False, type="trial"
++        )
++        success = user is not None
++
++    logger.info(f'Stripe subscription {event["type"]} for {customer["email"]}')
++    return {"success": success}
++
++
++@subscription_router.patch("")
++@requires(["authenticated"])
++async def update_subscription(request: Request, email: str, operation: str):
++    # Retrieve the customer's details
++    customers = stripe.Customer.list(email=email).auto_paging_iter()
++    customer = next(customers, None)
++    if customer is None:
++        return {"success": False, "message": "Customer not found"}
++
++    if operation == "cancel":
++        customer_id = customer.id
++        for subscription in stripe.Subscription.list(customer=customer_id):
++            stripe.Subscription.modify(subscription.id, cancel_at_period_end=True)
++        return {"success": True}
++
++    elif operation == "resubscribe":
++        subscriptions = stripe.Subscription.list(customer=customer.id).auto_paging_iter()
++        # Find the subscription that is set to cancel at the end of the period
++        for subscription in subscriptions:
++            if subscription.cancel_at_period_end:
++                # Update the subscription to not cancel at the end of the period
++                stripe.Subscription.modify(subscription.id, cancel_at_period_end=False)
++                return {"success": True}
++        return {"success": False, "message": "No subscription found that is set to cancel"}
++
++    return {"success": False, "message": "Invalid operation"}
+diff --git a/src/khoj/routers/web_client.py b/src/khoj/routers/web_client.py
+index 35603e1..229cee6 100644
+--- a/src/khoj/routers/web_client.py
++++ b/src/khoj/routers/web_client.py
+@@ -7,26 +7,30 @@ from fastapi import APIRouter
+ from fastapi import Request
+ from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+ from fastapi.templating import Jinja2Templates
+ from starlette.authentication import requires
++from database import adapters
++from database.models import KhojUser
+ from khoj.utils.rawconfig import (
+-    TextContentConfig,
+     GithubContentConfig,
+     GithubRepoConfig,
+     NotionContentConfig,
+ )
+ 
+ # Internal Packages
+ from khoj.utils import constants, state
+-from database.adapters import EntryAdapters, get_user_github_config, get_user_notion_config, ConversationAdapters
+-from database.models import LocalOrgConfig, LocalMarkdownConfig, LocalPdfConfig, LocalPlaintextConfig
++from database.adapters import (
++    EntryAdapters,
++    get_user_github_config,
++    get_user_notion_config,
++    ConversationAdapters,
++    get_user_subscription_state,
++)
+ 
+ # Initialize Router
+ web_client = APIRouter()
+ templates = Jinja2Templates(directory=constants.web_directory)
+ 
+-VALID_TEXT_CONTENT_TYPES = ["org", "markdown", "pdf", "plaintext"]
+-
+ 
+ # Create Routes
+ @web_client.get("/", response_class=FileResponse)
+ @requires(["authenticated"], redirect="login_page")
+@@ -108,43 +112,28 @@ def login_page(request: Request):
+         },
+     )
+ 
+ 
+-def map_config_to_object(content_type: str):
+-    if content_type == "org":
+-        return LocalOrgConfig
+-    if content_type == "markdown":
+-        return LocalMarkdownConfig
+-    if content_type == "pdf":
+-        return LocalPdfConfig
+-    if content_type == "plaintext":
+-        return LocalPlaintextConfig
+-
+-
+ @web_client.get("/config", response_class=HTMLResponse)
+ @requires(["authenticated"], redirect="login_page")
+ def config_page(request: Request):
+-    user = request.user.object
++    user: KhojUser = request.user.object
+     user_picture = request.session.get("user", {}).get("picture")
+-    enabled_content = set(EntryAdapters.get_unique_file_types(user).all())
++    user_subscription = adapters.get_user_subscription(user.email)
++    user_subscription_state = get_user_subscription_state(user_subscription)
++    subscription_renewal_date = (
++        user_subscription.renewal_date.strftime("%d %b %Y")
++        if user_subscription and user_subscription.renewal_date
++        else None
++    )
++    enabled_content_source = set(EntryAdapters.get_unique_file_source(user).all())
+ 
+     successfully_configured = {
+-        "pdf": ("pdf" in enabled_content),
+-        "markdown": ("markdown" in enabled_content),
+-        "org": ("org" in enabled_content),
+-        "image": False,
+-        "github": ("github" in enabled_content),
+-        "notion": ("notion" in enabled_content),
+-        "plaintext": ("plaintext" in enabled_content),
++        "computer": ("computer" in enabled_content_source),
++        "github": ("github" in enabled_content_source),
++        "notion": ("notion" in enabled_content_source),
+     }
+ 
+-    if state.content_index:
+-        successfully_configured.update(
+-            {
+-                "image": state.content_index.image is not None,
+-            }
+-        )
+-
+     conversation_options = ConversationAdapters.get_conversation_processor_options().all()
+     all_conversation_options = list()
+     for conversation_option in conversation_options:
+         all_conversation_options.append({"chat_model": conversation_option.chat_model, "id": conversation_option.id})
+@@ -156,17 +145,21 @@ def config_page(request: Request):
+         context={
+             "request": request,
+             "current_model_state": successfully_configured,
+             "anonymous_mode": state.anonymous_mode,
+-            "username": user.username if user else None,
++            "username": user.username,
+             "conversation_options": all_conversation_options,
+             "selected_conversation_config": selected_conversation_config.id if selected_conversation_config else None,
+             "user_photo": user_picture,
++            "billing_enabled": state.billing_enabled,
++            "subscription_state": user_subscription_state,
++            "subscription_renewal_date": subscription_renewal_date,
++            "khoj_cloud_subscription_url": os.getenv("KHOJ_CLOUD_SUBSCRIPTION_URL"),
+         },
+     )
+ 
+ 
+-@web_client.get("/config/content_type/github", response_class=HTMLResponse)
++@web_client.get("/config/content-source/github", response_class=HTMLResponse)
+ @requires(["authenticated"], redirect="login_page")
+ def github_config_page(request: Request):
+     user = request.user.object
+     user_picture = request.session.get("user", {}).get("picture")
+@@ -191,9 +184,9 @@ def github_config_page(request: Request):
+     else:
+         current_config = {}  # type: ignore
+ 
+     return templates.TemplateResponse(
+-        "content_type_github_input.html",
++        "content_source_github_input.html",
+         context={
+             "request": request,
+             "current_config": current_config,
+             "username": user.username,
+@@ -201,9 +194,9 @@ def github_config_page(request: Request):
+         },
+     )
+ 
+ 
+-@web_client.get("/config/content_type/notion", response_class=HTMLResponse)
++@web_client.get("/config/content-source/notion", response_class=HTMLResponse)
+ @requires(["authenticated"], redirect="login_page")
+ def notion_config_page(request: Request):
+     user = request.user.object
+     user_picture = request.session.get("user", {}).get("picture")
+@@ -215,9 +208,9 @@ def notion_config_page(request: Request):
+ 
+     current_config = json.loads(current_config.json())
+ 
+     return templates.TemplateResponse(
+-        "content_type_notion_input.html",
++        "content_source_notion_input.html",
+         context={
+             "request": request,
+             "current_config": current_config,
+             "username": user.username,
+@@ -225,34 +218,18 @@ def notion_config_page(request: Request):
+         },
+     )
+ 
+ 
+-@web_client.get("/config/content_type/{content_type}", response_class=HTMLResponse)
++@web_client.get("/config/content-source/computer", response_class=HTMLResponse)
+ @requires(["authenticated"], redirect="login_page")
+-def content_config_page(request: Request, content_type: str):
+-    if content_type not in VALID_TEXT_CONTENT_TYPES:
+-        return templates.TemplateResponse("config.html", context={"request": request})
+-
+-    object = map_config_to_object(content_type)
++def computer_config_page(request: Request):
+     user = request.user.object
+     user_picture = request.session.get("user", {}).get("picture")
+-    config = object.objects.filter(user=user).first()
+-    if config == None:
+-        config = object.objects.create(user=user)
+-
+-    current_config = TextContentConfig(
+-        input_files=config.input_files,
+-        input_filter=config.input_filter,
+-        index_heading_entries=config.index_heading_entries,
+-    )
+-    current_config = json.loads(current_config.json())
+ 
+     return templates.TemplateResponse(
+-        "content_type_input.html",
++        "content_source_computer_input.html",
+         context={
+             "request": request,
+-            "current_config": current_config,
+-            "content_type": content_type,
+             "username": user.username,
+             "user_photo": user_picture,
+         },
+     )
+diff --git a/src/khoj/search_type/text_search.py b/src/khoj/search_type/text_search.py
+index 14f5b77..ba2fc9e 100644
+--- a/src/khoj/search_type/text_search.py
++++ b/src/khoj/search_type/text_search.py
+@@ -203,13 +203,14 @@ def setup(
+         num_new_embeddings, num_deleted_embeddings = text_to_entries().process(
+             files=files, full_corpus=full_corpus, user=user, regenerate=regenerate
+         )
+ 
+-    file_names = [file_name for file_name in files]
++    if files:
++        file_names = [file_name for file_name in files]
+ 
+-    logger.info(
+-        f"Deleted {num_deleted_embeddings} entries. Created {num_new_embeddings} new entries for user {user} from files {file_names}"
+-    )
++        logger.info(
++            f"Deleted {num_deleted_embeddings} entries. Created {num_new_embeddings} new entries for user {user} from files {file_names}"
++        )
+ 
+ 
+ def cross_encoder_score(query: str, hits: List[SearchResponse]) -> List[SearchResponse]:
+     """Score all retrieved entries using the cross-encoder"""
+diff --git a/src/khoj/utils/state.py b/src/khoj/utils/state.py
+index 748ca15..098ae35 100644
+--- a/src/khoj/utils/state.py
++++ b/src/khoj/utils/state.py
+@@ -1,5 +1,6 @@
+ # Standard Packages
++import os
+ import threading
+ from typing import List, Dict
+ from collections import defaultdict
+ 
+@@ -34,4 +35,9 @@ telemetry: List[Dict[str, str]] = []
+ khoj_version: str = None
+ device = get_device()
+ chat_on_gpu: bool = True
+ anonymous_mode: bool = False
++billing_enabled: bool = (
++    os.getenv("STRIPE_API_KEY") is not None
++    and os.getenv("STRIPE_SIGNING_SECRET") is not None
++    and os.getenv("KHOJ_CLOUD_SUBSCRIPTION_URL") is not None
++)
+diff --git a/tests/conftest.py b/tests/conftest.py
+index fbb9847..5910412 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -195,9 +195,9 @@ def chat_client(search_config: SearchConfig, default_user2: KhojUser):
+     )
+ 
+     # Index Markdown Content for Search
+     all_files = fs_syncer.collect_files(user=default_user2)
+-    state.content_index = configure_content(
++    state.content_index, _ = configure_content(
+         state.content_index, state.config.content_type, all_files, state.search_models, user=default_user2
+     )
+ 
+     # Initialize Processor from Config
+diff --git a/tests/test_helpers.py b/tests/test_helpers.py
+index 3049904..fdd29b0 100644
+--- a/tests/test_helpers.py
++++ b/tests/test_helpers.py
+@@ -63,8 +63,9 @@ def test_encode_docs_memory_leak():
+     iterations = 50
+     batch_size = 20
+     embeddings_model = EmbeddingsModel()
+     memory_usage_trend = []
++    device = f"{helpers.get_device()}".upper()
+ 
+     # Act
+     # Encode random strings repeatedly and record memory usage trend
+     for iteration in range(iterations):
+@@ -75,9 +76,10 @@ def test_encode_docs_memory_leak():
+ 
+     # Calculate slope of line fitting memory usage history
+     memory_usage_trend = np.array(memory_usage_trend)
+     slope, _, _, _, _ = linregress(np.arange(len(memory_usage_trend)), memory_usage_trend)
++    print(f"Memory usage increased at ~{slope:.2f} MB per iteration on {device}")
+ 
+     # Assert
+     # If slope is positive memory utilization is increasing
+     # Positive threshold of 2, from observing memory usage trend on MPS vs CPU device
+-    assert slope < 2, f"Memory usage increasing at ~{slope:.2f} MB per iteration"
++    assert slope < 2, f"Memory leak suspected on {device}. Memory usage increased at ~{slope:.2f} MB per iteration"
+diff --git a/tests/test_text_search.py b/tests/test_text_search.py
+index 7d8c30f..3d729ab 100644
+--- a/tests/test_text_search.py
++++ b/tests/test_text_search.py
+@@ -57,9 +57,9 @@ def test_get_org_files_with_org_suffixed_dir_doesnt_raise_error(tmp_path, defaul
+ 
+ 
+ # ----------------------------------------------------------------------------------------------------
+ @pytest.mark.django_db
+-def test_text_search_setup_with_empty_file_raises_error(
++def test_text_search_setup_with_empty_file_creates_no_entries(
+     org_config_with_only_new_file: LocalOrgConfig, default_user: KhojUser, caplog
+ ):
+     # Arrange
+     data = get_org_files(org_config_with_only_new_file)

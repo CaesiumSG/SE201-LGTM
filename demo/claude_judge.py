@@ -32,6 +32,7 @@ SYSTEM = (
 class ClaudeJudge:
     def __init__(self, key: str | None, budget: float):
         self.key, self.budget = key, budget
+        self.key_error: str | None = None
         self.calls = 0
         self._client = None
         self._lock = threading.Lock()
@@ -42,6 +43,27 @@ class ClaudeJudge:
 
             self._client = anthropic.AnthropicBedrock(api_key=self.key, aws_region="us-east-1", timeout=60, max_retries=2)
         return self._client
+
+    def check_key(self) -> str | None:
+        """One tiny call, so a wrong or expired key shows up at startup instead of as reviews that find nothing.
+
+        Returns None when the key works (or could not be checked for a reason other than the key), else the reason.
+        """
+        if not self.key:
+            return None
+        try:
+            import anthropic
+
+            self.client().messages.create(model=MODEL, max_tokens=1, messages=[{"role": "user", "content": "ok"}])
+        except ImportError:
+            self.key_error = "the anthropic package is missing: pip install -e \".[demo]\""
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+            body = getattr(exc, "body", None)
+            detail = body.get("Message") or body.get("message") if isinstance(body, dict) else None
+            self.key_error = f"Bedrock rejected the key in .env ({detail or exc.__class__.__name__})"
+        except Exception:  # noqa: BLE001 - offline or throttled: not the key's fault, so don't block reviews
+            pass
+        return self.key_error
 
     def answer(self, request: dict) -> dict:
         if not self.key:
@@ -107,7 +129,7 @@ def serve(key: str | None, budget: float) -> ClaudeJudge:
         def do_GET(self):  # noqa: N802
             if self.path.rstrip("/") == "/v1/models":
                 return self.reply({"models": [{"name": "claude-judge", "description": f"Claude ({MODEL}) answering Kev's questions"}],
-                                   "ready": bool(judge.key)})
+                                   "ready": bool(judge.key) and not judge.key_error, "error": judge.key_error})
             self.reply({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def do_POST(self):  # noqa: N802

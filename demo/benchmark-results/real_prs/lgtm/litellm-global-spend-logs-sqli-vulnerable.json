@@ -1,0 +1,199 @@
+{
+  "id": "litellm-global-spend-logs-sqli-vulnerable",
+  "repo": "BerriAI/litellm",
+  "pr": 2271,
+  "title": "The /global/spend/logs endpoint gained an api_key filter that was concatenated straight into a raw SQL string.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "aac2f4d41595755af282f959dbf957ef684e7846",
+  "pr_sha": "65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b",
+  "files_changed": 26,
+  "python_files_changed": 2,
+  "added_lines": 54,
+  "diff_chars": 2741,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 145.3,
+  "index_seconds": 11.2,
+  "index_reused": false,
+  "index_chunks": 1370,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 2,
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:global-spend-logs-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4099,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR adds a new per-key branch to /global/spend/logs that returns spend data for an arbitrary api_key supplied by the caller. The endpoint's only authorization is dependencies=[Depends(user_api_key_auth)], which authenticates any valid key but does not enforce an admin role. The endpoint's own description and docstring label it 'Admin-only endpoint', yet the function never receives or checks the"
+    },
+    {
+      "finding_id": "authz:monthly-global-spend-perkey-view:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4100,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new else-branch in global_spend_logs (proxy_server.py:4099-4112) SELECTs from the MonthlyGlobalSpendPerKey view created by this hunk, filtering by a user-supplied api_key query parameter. The endpoint is documented as 'Admin-only endpoint' (proxy_server.py:4075, 4081) but is protected only by `dependencies=[Depends(user_api_key_auth)]` (proxy_server.py:4070), which authenticates any valid key "
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 11,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "authz:global-spend-logs-authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The PR adds a new per-key branch to /global/spend/logs that returns spend data for an arbitrary api_key supplied by the caller. The endpoint's only authorization is dependencies=[Depends(user_api_key_auth)], which authenticates any valid key but does not enforce an admin role. The endpoint's own description and docstring label it 'Admin-only endpoint', yet the function never receives or checks the UserAPIKeyAuth object (e.g. user_role == 'proxy_admin'), so a non-admin key can query spend for any other key's api_key. This is a newly introduced authorization gap: the per-key branch did not exist in the base snapshot.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4067,
+            4112
+          ],
+          "source": null,
+          "content": "@router.get(\n    \"/global/spend/logs\",\n    tags=[\"Budget & Spend Tracking\"],\n    dependencies=[Depends(user_api_key_auth)],\n)\nasync def global_spend_logs(\n    api_key: str = fastapi.Query(\n        default=None,\n        description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n    )\n):\n    ...\n    else:\n        sql_query = (\n            \"\"\"\n            SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n            WHERE \"api_key\" = '\"\"\"\n            + api_key\n            + \"\"\"'\n            ORDER BY \"date\";\n        \"\"\"\n        )\n\n        response = await prisma_client.db.query_raw(query=sql_query)\n\n        return response",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            334,
+            338
+          ],
+          "source": null,
+          "content": "### CHECK IF ADMIN ###\n        # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\n        is_master_key_valid = secrets.compare_digest(api_key, master_key)\n        if is_master_key_valid:\n            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/my-website/docs/proxy/ui.md",
+          "content": "You can restrict UI Access to just admins - includes you (proxy_admin) and people you give view only access to (proxy_admin_viewer) for seeing global spend.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Inject the UserAPIKeyAuth object into global_spend_logs (e.g. user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)) and, in the per-key branch, verify user_api_key_dict.user_role == 'proxy_admin' (or an equivalent admin role) before querying MonthlyGlobalSpendPerKey for a caller-supplied api_key; otherwise raise a 403.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.6087,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4099,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:monthly-global-spend-perkey-view:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new else-branch in global_spend_logs (proxy_server.py:4099-4112) SELECTs from the MonthlyGlobalSpendPerKey view created by this hunk, filtering by a user-supplied api_key query parameter. The endpoint is documented as 'Admin-only endpoint' (proxy_server.py:4075, 4081) but is protected only by `dependencies=[Depends(user_api_key_auth)]` (proxy_server.py:4070), which authenticates any valid key without an admin/role check. There is no verification that the requester is an admin or that they own the api_key they are querying, so any authenticated non-admin key can read the spend of any other key (IDOR/missing authorization). The view creation in utils.py:595-617 is what newly exposes this per-key spend data to the endpoint.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4067,
+            4076
+          ],
+          "source": null,
+          "content": "@router.get(\n    \"/global/spend/logs\",\n    tags=[\"Budget & Spend Tracking\"],\n    dependencies=[Depends(user_api_key_auth)],\n)\nasync def global_spend_logs(\n    api_key: str = fastapi.Query(\n        default=None,\n        description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n    )\n):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4099,
+            4112
+          ],
+          "source": null,
+          "content": "    else:\n        sql_query = (\n            \"\"\"\n            SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n            WHERE \"api_key\" = '\"\"\"\n            + api_key\n            + \"\"\"'\n            ORDER BY \"date\";\n        \"\"\"\n        )\n\n        response = await prisma_client.db.query_raw(query=sql_query)\n\n        return response",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/utils.py",
+          "lines": [
+            595,
+            617
+          ],
+          "source": null,
+          "content": "        try:\n            await self.db.query_raw(\n                \"\"\"SELECT 1 FROM \"MonthlyGlobalSpendPerKey\" LIMIT 1\"\"\"\n            )\n            print(\"MonthlyGlobalSpendPerKey Exists!\")  # noqa\n        except Exception as e:\n            sql_query = \"\"\"\n                CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n                SELECT\n                DATE(\"startTime\") AS date, \n                SUM(\"spend\") AS spend,\n                api_key as api_key\n                FROM \n                \"LiteLLM_SpendLogs\" \n                WHERE \n                \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n                GROUP BY \n                DATE(\"startTime\"),\n                api_key;\n            \"\"\"\n            await self.db.execute_raw(query=sql_query)\n\n            print(\"MonthlyGlobalSpendPerKey Created!\")  # noqa",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Add an admin/role check to the /global/spend/logs endpoint (e.g. require the authenticated user to have the admin role, or verify the requester owns the queried api_key) before returning per-key spend data, consistent with the 'Admin-only endpoint' documentation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8624,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4100,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "litellm-global-spend-logs-sqli",
+  "url": "https://github.com/BerriAI/litellm/pull/2271",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-h6m6-jj8v-94jj",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "litellm/proxy/proxy_server.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

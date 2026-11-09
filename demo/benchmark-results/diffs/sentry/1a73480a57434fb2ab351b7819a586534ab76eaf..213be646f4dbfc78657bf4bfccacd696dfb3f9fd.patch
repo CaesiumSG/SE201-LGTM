@@ -1,0 +1,691 @@
+diff --git a/src/sentry/api/endpoints/rule_snooze.py b/src/sentry/api/endpoints/rule_snooze.py
+new file mode 100644
+index 000000000..926300dd2
+--- /dev/null
++++ b/src/sentry/api/endpoints/rule_snooze.py
+@@ -0,0 +1,128 @@
++import datetime
++
++from rest_framework import serializers, status
++from rest_framework.request import Request
++from rest_framework.response import Response
++
++from sentry import audit_log, features
++from sentry.api.base import region_silo_endpoint
++from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint
++from sentry.api.serializers import Serializer, register, serialize
++from sentry.api.serializers.rest_framework.base import CamelSnakeSerializer
++from sentry.incidents.models import AlertRule
++from sentry.models import Organization, Rule, RuleSnooze, Team
++
++
++class RuleSnoozeValidator(CamelSnakeSerializer):
++    target = serializers.CharField(required=True, allow_null=False)
++    rule = serializers.BooleanField(required=False, allow_null=True)
++    alert_rule = serializers.BooleanField(required=False, allow_null=True)
++    until = serializers.DateTimeField(required=False, allow_null=True)
++
++
++@register(RuleSnooze)
++class RuleSnoozeSerializer(Serializer):  # type: ignore
++    def serialize(self, obj, attrs, user, **kwargs):
++        result = {
++            "ownerId": obj.owner_id,
++            "userId": obj.user_id or "everyone",
++            "until": obj.until or "forever",
++            "dateAdded": obj.date_added,
++            "ruleId": obj.rule_id,
++            "alertRuleId": obj.alert_rule_id,
++        }
++        return result
++
++
++def can_edit_alert_rule(rule, organization, user_id, user):
++    # if the goal is to mute the rule just for the user, ensure they belong to the organization
++    if user_id:
++        if organization not in Organization.objects.get_for_user(user):
++            return False
++        return True
++    rule_owner = rule.owner
++    # if the rule is owned by a team, ensure the user belongs to the team
++    if rule_owner:
++        if rule_owner.team not in Team.objects.get_for_user(organization, user):
++            return False
++    # if the rule is unassigned, anyone can mute it
++    return True
++
++
++@region_silo_endpoint
++class RuleSnoozeEndpoint(ProjectEndpoint):
++    permission_classes = (ProjectAlertRulePermission,)
++
++    def post(self, request: Request, project, rule_id) -> Response:
++        if not features.has("organizations:mute-alerts", project.organization, actor=None):
++            return Response(
++                {"detail": "This feature is not available for this organization."},
++                status=status.HTTP_401_UNAUTHORIZED,
++            )
++
++        serializer = RuleSnoozeValidator(data=request.data)
++        if not serializer.is_valid():
++            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
++
++        data = serializer.validated_data
++
++        if data.get("rule") and data.get("alert_rule"):
++            raise serializers.ValidationError("Pass either rule or alert rule, not both.")
++
++        issue_alert_rule = None
++        metric_alert_rule = None
++
++        user_id = request.user.id if data.get("target") == "me" else None
++
++        if data.get("rule"):
++            try:
++                issue_alert_rule = Rule.objects.get(id=rule_id)
++            except Rule.DoesNotExist:
++                raise serializers.ValidationError("Rule does not exist")
++
++        if data.get("alert_rule"):
++            try:
++                metric_alert_rule = AlertRule.objects.get(id=rule_id)
++            except AlertRule.DoesNotExist:
++                raise serializers.ValidationError("Rule does not exist")
++
++        rule = issue_alert_rule or metric_alert_rule
++        if not can_edit_alert_rule(rule, project.organization, user_id, request.user):
++            return Response(
++                {"detail": "Requesting user cannot mute this rule."},
++                status=status.HTTP_401_UNAUTHORIZED,
++            )
++
++        rule_snooze, created = RuleSnooze.objects.get_or_create(
++            user_id=user_id,
++            rule=issue_alert_rule,
++            alert_rule=metric_alert_rule,
++            defaults={
++                "owner_id": request.user.id,
++                "until": data.get("until"),
++                "date_added": datetime.datetime.now(),
++            },
++        )
++        # don't allow editing of a rulesnooze object for a given rule and user (or no user)
++        if not created:
++            return Response(
++                {"detail": "RuleSnooze already exists for this rule and scope."},
++                status=status.HTTP_410_GONE,
++            )
++
++        if not user_id:
++            # create an audit log entry if the rule is snoozed for everyone
++            audit_log_event = "RULE_SNOOZE" if issue_alert_rule else "ALERT_RULE_SNOOZE"
++
++            self.create_audit_entry(
++                request=request,
++                organization=project.organization,
++                target_object=rule.id,
++                event=audit_log.get_event_id(audit_log_event),
++                data=rule.get_audit_log_data(),
++            )
++
++        return Response(
++            serialize(rule_snooze, request.user, RuleSnoozeSerializer()),
++            status=status.HTTP_201_CREATED,
++        )
+diff --git a/src/sentry/api/urls.py b/src/sentry/api/urls.py
+index bff7ef645..4ce4d9825 100644
+--- a/src/sentry/api/urls.py
++++ b/src/sentry/api/urls.py
+@@ -474,8 +474,9 @@ from .endpoints.relay import (
+     RelayRegisterChallengeEndpoint,
+     RelayRegisterResponseEndpoint,
+ )
+ from .endpoints.release_deploys import ReleaseDeploysEndpoint
++from .endpoints.rule_snooze import RuleSnoozeEndpoint
+ from .endpoints.setup_wizard import SetupWizard
+ from .endpoints.shared_group_details import SharedGroupDetailsEndpoint
+ from .endpoints.source_map_debug import SourceMapDebugEndpoint
+ from .endpoints.system_health import SystemHealthEndpoint
+@@ -2063,8 +2064,13 @@ PROJECT_URLS = [
+         r"^(?P<organization_slug>[^\/]+)/(?P<project_slug>[^\/]+)/rules/(?P<rule_id>[^\/]+)/$",
+         ProjectRuleDetailsEndpoint.as_view(),
+         name="sentry-api-0-project-rule-details",
+     ),
++    url(
++        r"^(?P<organization_slug>[^\/]+)/(?P<project_slug>[^\/]+)/rules/(?P<rule_id>[^\/]+)/snooze/$",
++        RuleSnoozeEndpoint.as_view(),
++        name="sentry-api-0-rule-snooze",
++    ),
+     url(
+         r"^(?P<organization_slug>[^\/]+)/(?P<project_slug>[^\/]+)/rules/preview$",
+         ProjectRulePreviewEndpoint.as_view(),
+         name="sentry-api-0-project-rule-preview",
+diff --git a/src/sentry/audit_log/register.py b/src/sentry/audit_log/register.py
+index a537615df..2dfacb91c 100644
+--- a/src/sentry/audit_log/register.py
++++ b/src/sentry/audit_log/register.py
+@@ -185,8 +185,13 @@ default_manager.add(
+     AuditLogEvent(
+         event_id=82, name="RULE_REMOVE", api_name="rule.remove", template='removed rule "{label}"'
+     )
+ )
++default_manager.add(
++    AuditLogEvent(
++        event_id=83, name="RULE_SNOOZE", api_name="rule.mute", template='muted rule "{label}"'
++    )
++)
+ default_manager.add(events.ServiceHookAddAuditLogEvent())
+ default_manager.add(events.ServiceHookEditAuditLogEvent())
+ default_manager.add(events.ServiceHookRemoveAuditLogEvent())
+ default_manager.add(events.IntegrationUpgradeAuditLogEvent())
+@@ -296,8 +301,16 @@ default_manager.add(
+         api_name="alertrule.remove",
+         template='removed metric alert rule "{label}"',
+     )
+ )
++default_manager.add(
++    AuditLogEvent(
++        event_id=168,
++        name="ALERT_RULE_SNOOZE",
++        api_name="alertrule.mute",
++        template='muted metric alert rule "{label}"',
++    )
++)
+ default_manager.add(
+     AuditLogEvent(
+         event_id=163,
+         name="SAMPLING_BIAS_ENABLED",
+diff --git a/src/sentry/conf/server.py b/src/sentry/conf/server.py
+index 091a40eb8..ec5b3957e 100644
+--- a/src/sentry/conf/server.py
++++ b/src/sentry/conf/server.py
+@@ -1068,8 +1068,10 @@ SENTRY_FEATURES = {
+     # Enable change alerts for an org
+     "organizations:change-alerts": True,
+     # Enable alerting based on crash free sessions/users
+     "organizations:crash-rate-alerts": True,
++    # Enable the mute alerts feature
++    "organizations:mute-alerts": False,
+     # Enable the Commit Context feature
+     "organizations:commit-context": False,
+     # Enable creating organizations within sentry (if SENTRY_SINGLE_ORGANIZATION
+     # is not enabled).
+diff --git a/src/sentry/features/__init__.py b/src/sentry/features/__init__.py
+index bae975e6b..e373591e1 100644
+--- a/src/sentry/features/__init__.py
++++ b/src/sentry/features/__init__.py
+@@ -68,8 +68,9 @@ default_manager.add("organizations:alert-crash-free-metrics", OrganizationFeatur
+ default_manager.add("organizations:alert-filters", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
+ default_manager.add("organizations:api-keys", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
+ default_manager.add("organizations:auto-enable-codecov", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
+ default_manager.add("organizations:crash-rate-alerts", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
++default_manager.add("organizations:mute-alerts", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
+ default_manager.add("organizations:custom-event-title", OrganizationFeature, FeatureHandlerStrategy.INTERNAL)
+ default_manager.add("organizations:customer-domains", OrganizationFeature, FeatureHandlerStrategy.REMOTE)
+ default_manager.add("organizations:dashboards-mep", OrganizationFeature, FeatureHandlerStrategy.REMOTE)
+ default_manager.add("organizations:dashboards-rh-widget", OrganizationFeature, FeatureHandlerStrategy.REMOTE)
+diff --git a/tests/sentry/api/endpoints/test_rule_snooze.py b/tests/sentry/api/endpoints/test_rule_snooze.py
+new file mode 100644
+index 000000000..d70a450e2
+--- /dev/null
++++ b/tests/sentry/api/endpoints/test_rule_snooze.py
+@@ -0,0 +1,435 @@
++from datetime import datetime, timedelta
++
++import pytz
++
++from sentry import audit_log
++from sentry.models import AuditLogEntry, Rule, RuleSnooze
++from sentry.models.actor import ActorTuple
++from sentry.testutils import APITestCase
++from sentry.testutils.silo import region_silo_test
++
++
++@region_silo_test
++class RuleSnoozeTest(APITestCase):
++    endpoint = "sentry-api-0-rule-snooze"
++    method = "post"
++
++    def setUp(self):
++        self.issue_alert_rule = Rule.objects.create(
++            label="test rule", project=self.project, owner=self.team.actor
++        )
++        self.metric_alert_rule = self.create_alert_rule(
++            organization=self.project.organization, projects=[self.project]
++        )
++        self.until = datetime.now(pytz.UTC) + timedelta(days=10)
++        self.login_as(user=self.user)
++
++    def test_mute_issue_alert_user_forever(self):
++        """Test that a user can mute an issue alert rule for themselves forever"""
++        data = {"target": "me", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == self.user.id
++        assert response.data["ruleId"] == self.issue_alert_rule.id
++        assert response.data["alertRuleId"] is None
++        assert response.data["until"] == "forever"
++
++    def test_mute_issue_alert_user_until(self):
++        """Test that a user can mute an issue alert rule for themselves a period of time"""
++        data = {"target": "me", "rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == self.user.id
++        assert response.data["ruleId"] == self.issue_alert_rule.id
++        assert response.data["alertRuleId"] is None
++        assert response.data["until"] == self.until
++
++    def test_mute_issue_alert_everyone_forever(self):
++        """Test that an issue alert rule can be muted for everyone forever"""
++        data = {"target": "everyone", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == "everyone"
++        assert response.data["ruleId"] == self.issue_alert_rule.id
++        assert response.data["alertRuleId"] is None
++        assert response.data["until"] == "forever"
++        assert AuditLogEntry.objects.filter(
++            event=audit_log.get_event_id("RULE_SNOOZE"),
++            organization_id=self.organization.id,
++            actor=self.user,
++            target_object=self.issue_alert_rule.id,
++        )
++
++    def test_mute_issue_alert_everyone_until(self):
++        """Test that an issue alert rule can be muted for everyone for a period of time"""
++        data = {"target": "everyone", "rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == "everyone"
++        assert response.data["ruleId"] == self.issue_alert_rule.id
++        assert response.data["alertRuleId"] is None
++        assert response.data["until"] == self.until
++        assert AuditLogEntry.objects.filter(
++            event=audit_log.get_event_id("RULE_SNOOZE"),
++            organization_id=self.organization.id,
++            actor=self.user,
++            target_object=self.issue_alert_rule.id,
++        )
++
++    def test_mute_issue_alert_user_then_everyone(self):
++        """Test that a user can mute an issue alert for themselves and then the same alert can be muted for everyone"""
++        data = {"target": "me", "rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            rule=self.issue_alert_rule.id, user_id=self.user.id, until=self.until
++        ).exists()
++        assert response.status_code == 201
++
++        everyone_until = datetime.now(pytz.UTC) + timedelta(days=1)
++        data = {"target": "everyone", "rule": True, "until": everyone_until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            rule=self.issue_alert_rule.id, user_id=None, until=everyone_until
++        ).exists()
++        assert response.status_code == 201
++
++    def test_mute_issue_alert_everyone_then_user(self):
++        """Test that an issue alert can be muted for everyone and then a user can mute the same alert for themselves"""
++        everyone_until = datetime.now(pytz.UTC) + timedelta(days=1)
++        data = {"target": "everyone", "rule": True, "until": everyone_until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            rule=self.issue_alert_rule.id, user_id=None, until=everyone_until
++        ).exists()
++        assert response.status_code == 201
++
++        data = {"target": "me", "rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            rule=self.issue_alert_rule.id, user_id=self.user.id, until=self.until
++        ).exists()
++        assert response.status_code == 201
++
++    def test_edit_issue_alert_mute(self):
++        """Test that we throw an error if an issue alert rule has already been muted by a user"""
++        data = {"target": "me", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 201
++
++        data = {"target": "me", "rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.issue_alert_rule.id, **data
++            )
++        assert len(RuleSnooze.objects.all()) == 1
++        assert response.status_code == 410
++        assert "RuleSnooze already exists for this rule and scope." in response.data["detail"]
++
++    def test_user_cant_mute_issue_alert_for_everyone(self):
++        """Test that if a user doesn't belong to the team that can edit an issue alert rule, we throw an error when they try to mute it for everyone."""
++        other_team = self.create_team()
++        other_issue_alert_rule = Rule.objects.create(
++            label="test rule", project=self.project, owner=other_team.actor
++        )
++        data = {"target": "everyone", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_issue_alert_rule.id, **data
++            )
++        assert not RuleSnooze.objects.filter(rule=other_issue_alert_rule.id).exists()
++        assert response.status_code == 401
++        assert "Requesting user cannot mute this rule" in response.data["detail"]
++
++    def test_user_can_mute_issue_alert_for_self(self):
++        """Test that if a user doesn't belong to the team that can edit an issue alert rule, they can still mute it for just themselves."""
++        other_team = self.create_team()
++        other_issue_alert_rule = Rule.objects.create(
++            label="test rule", project=self.project, owner=other_team.actor
++        )
++        data = {"target": "me", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=other_issue_alert_rule.id).exists()
++        assert response.status_code == 201
++
++    def test_user_can_mute_unassigned_issue_alert(self):
++        """Test that if an issue alert rule's owner is unassigned, the user can mute it."""
++        other_issue_alert_rule = Rule.objects.create(
++            label="test rule", project=self.project, owner=None
++        )
++        data = {"target": "me", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_issue_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(rule=other_issue_alert_rule.id).exists()
++        assert response.status_code == 201
++
++    def test_mute_metric_alert_user_forever(self):
++        """Test that a user can mute a metric alert rule for themselves forever"""
++        data = {"target": "me", "alert_rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == self.user.id
++        assert response.data["ruleId"] is None
++        assert response.data["alertRuleId"] == self.metric_alert_rule.id
++        assert response.data["until"] == "forever"
++
++    def test_mute_metric_alert_user_until(self):
++        """Test that a user can mute a metric alert rule for themselves a period of time"""
++        data = {"target": "me", "alert_rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == self.user.id
++        assert response.data["ruleId"] is None
++        assert response.data["alertRuleId"] == self.metric_alert_rule.id
++        assert response.data["until"] == self.until
++
++    def test_mute_metric_alert_everyone_forever(self):
++        """Test that a metric alert rule can be muted for everyone forever"""
++        data = {"target": "everyone", "alert_rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == "everyone"
++        assert response.data["ruleId"] is None
++        assert response.data["alertRuleId"] == self.metric_alert_rule.id
++        assert response.data["until"] == "forever"
++        assert AuditLogEntry.objects.filter(
++            event=audit_log.get_event_id("ALERT_RULE_SNOOZE"),
++            organization_id=self.organization.id,
++            actor=self.user,
++            target_object=self.metric_alert_rule.id,
++        )
++
++    def test_mute_metric_alert_everyone_until(self):
++        """Test that a metric alert rule can be muted for everyone for a period of time"""
++        data = {"target": "everyone", "alert_rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 201
++        assert len(response.data) == 6
++        assert response.data["ownerId"] == self.user.id
++        assert response.data["userId"] == "everyone"
++        assert response.data["ruleId"] is None
++        assert response.data["alertRuleId"] == self.metric_alert_rule.id
++        assert response.data["until"] == self.until
++        assert AuditLogEntry.objects.filter(
++            event=audit_log.get_event_id("ALERT_RULE_SNOOZE"),
++            organization_id=self.organization.id,
++            actor=self.user,
++            target_object=self.metric_alert_rule.id,
++        )
++
++    def test_mute_metric_alert_user_then_everyone(self):
++        """Test that a user can mute a metric alert for themselves and then the same alert can be muted for everyone"""
++        data = {"target": "me", "alert_rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            alert_rule=self.metric_alert_rule.id, user_id=self.user.id, until=self.until
++        ).exists()
++        assert response.status_code == 201
++
++        everyone_until = datetime.now(pytz.UTC) + timedelta(days=1)
++        data = {"target": "everyone", "alert_rule": True, "until": everyone_until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            alert_rule=self.metric_alert_rule.id, user_id=None, until=everyone_until
++        ).exists()
++        assert response.status_code == 201
++
++    def test_mute_metric_alert_everyone_then_user(self):
++        """Test that a metric alert can be muted for everyone and then a user can mute the same alert for themselves"""
++        everyone_until = datetime.now(pytz.UTC) + timedelta(days=1)
++        data = {"target": "everyone", "alert_rule": True, "until": everyone_until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            alert_rule=self.metric_alert_rule.id, user_id=None, until=everyone_until
++        ).exists()
++        assert response.status_code == 201
++
++        data = {"target": "me", "alert_rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(
++            alert_rule=self.metric_alert_rule.id, user_id=self.user.id, until=self.until
++        ).exists()
++        assert response.status_code == 201
++
++    def test_edit_metric_alert_mute(self):
++        """Test that we throw an error if a metric alert rule has already been muted by a user"""
++        data = {"target": "me", "alert_rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 201
++
++        data = {"target": "me", "alert_rule": True, "until": self.until}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert len(RuleSnooze.objects.all()) == 1
++        assert response.status_code == 410
++        assert "RuleSnooze already exists for this rule and scope." in response.data["detail"]
++
++    def test_user_cant_snooze_metric_alert_for_everyone(self):
++        """Test that if a user doesn't belong to the team that can edit a metric alert rule, we throw an error when they try to mute it for everyone"""
++        other_team = self.create_team()
++        other_metric_alert_rule = self.create_alert_rule(
++            organization=self.project.organization,
++            projects=[self.project],
++            owner=ActorTuple.from_actor_identifier(f"team:{other_team.id}"),
++        )
++        data = {"target": "everyone", "alertRule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_metric_alert_rule.id, **data
++            )
++        assert not RuleSnooze.objects.filter(alert_rule=other_metric_alert_rule).exists()
++        assert response.status_code == 401
++        assert "Requesting user cannot mute this rule" in response.data["detail"]
++
++    def test_user_can_snooze_metric_alert_for_self(self):
++        """Test that if a user doesn't belong to the team that can edit a metric alert rule, they are able to mute it for just themselves."""
++        other_team = self.create_team()
++        other_metric_alert_rule = self.create_alert_rule(
++            organization=self.project.organization,
++            projects=[self.project],
++            owner=ActorTuple.from_actor_identifier(f"team:{other_team.id}"),
++        )
++        data = {"target": "me", "alertRule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=other_metric_alert_rule).exists()
++        assert response.status_code == 201
++
++    def test_user_can_mute_unassigned_metric_alert(self):
++        """Test that if a metric alert rule's owner is unassigned, the user can mute it."""
++        other_metric_alert_rule = self.create_alert_rule(
++            organization=self.project.organization, projects=[self.project], owner=None
++        )
++        data = {"target": "me", "alertRule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, other_metric_alert_rule.id, **data
++            )
++        assert RuleSnooze.objects.filter(alert_rule=other_metric_alert_rule.id).exists()
++        assert response.status_code == 201
++
++    def test_no_issue_alert(self):
++        """Test that we throw an error when an issue alert rule doesn't exist"""
++        data = {"target": "me", "rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(self.organization.slug, self.project.slug, 777, **data)
++        assert not RuleSnooze.objects.filter(alert_rule=self.issue_alert_rule.id).exists()
++        assert response.status_code == 400
++        assert "Rule does not exist" in response.data
++
++    def test_no_metric_alert(self):
++        """Test that we throw an error when a metric alert rule doesn't exist"""
++        data = {"target": "me", "alert_rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(self.organization.slug, self.project.slug, 777, **data)
++        assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 400
++        assert "Rule does not exist" in response.data
++
++    def test_invalid_data_issue_alert(self):
++        """Test that we throw an error when passed invalid data"""
++        data = {"target": "me", "rule": self.issue_alert_rule.id}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 400
++        assert "Must be a valid boolean" in response.data["rule"][0]
++
++    def test_rule_and_alert_rule(self):
++        """Test that we throw an error if both rule and alert rule are passed"""
++        data = {"target": "me", "rule": True, "alert_rule": True}
++        with self.feature({"organizations:mute-alerts": True}):
++            response = self.get_response(
++                self.organization.slug, self.project.slug, self.metric_alert_rule.id, **data
++            )
++        assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
++        assert response.status_code == 400
++        assert "Pass either rule or alert rule, not both." in response.data
+diff --git a/tests/sentry/audit_log/test_register.py b/tests/sentry/audit_log/test_register.py
+index 83380cbef..dd3ce1249 100644
+--- a/tests/sentry/audit_log/test_register.py
++++ b/tests/sentry/audit_log/test_register.py
+@@ -43,8 +43,9 @@ class AuditLogEventRegisterTest(TestCase):
+             "api-key.remove",
+             "rule.create",
+             "rule.edit",
+             "rule.remove",
++            "rule.mute",
+             "servicehook.create",
+             "servicehook.edit",
+             "servicehook.remove",
+             "integration.upgrade",
+@@ -67,8 +68,9 @@ class AuditLogEventRegisterTest(TestCase):
+             "invite-request.remove",
+             "alertrule.create",
+             "alertrule.edit",
+             "alertrule.remove",
++            "alertrule.mute",
+             "notification_action.create",
+             "notification_action.edit",
+             "notification_action.remove",
+         ]

@@ -15,10 +15,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
-PROJECTS = Path(os.environ.get("LGTM_DEMO_PROJECTS", Path.home() / "projects"))
-SQLI = PROJECTS / "se201-lgtm-sqli" / "benchmark" / "results"
-REALPRS = PROJECTS / "se201-lgtm-realprs" / "benchmark" / "results"
-CACHE = Path(os.environ.get("LGTM_DEMO_CACHE", PROJECTS / "se201-lgtm-realprs" / "benchmark" / "real_prs" / ".cache"))
+# The benchmark results the dashboard shows, committed with the repository (see benchmark-results/README.md).
+# LGTM_DEMO_RESULTS points at another copy; LGTM_DEMO_CACHE at a clone cache (fetch.py), which is optional:
+# without it, each case's diff comes from benchmark-results/diffs/.
+RESULTS = Path(os.environ.get("LGTM_DEMO_RESULTS") or HERE / "benchmark-results")
+SQLI = REALPRS = RESULTS
+DIFFS = RESULTS / "diffs"
+CACHE = Path(os.environ.get("LGTM_DEMO_CACHE") or REPO_ROOT / "benchmark" / "real_prs" / ".cache")
 RUNS_DIR = HERE / ".runs"
 CASE_FILES = {
     "development": REPO_ROOT / "benchmark" / "real_prs" / "cases.json",
@@ -206,16 +209,23 @@ def build_diff(repo: str, base: str, head: str, keep: set[str], clone: Path | No
     key = (str(clone), base, head, tuple(sorted(keep)), context)
     if key in _DIFF_CACHE:
         return _DIFF_CACHE[key]
-    if not base or not head or not (clone / ".git").exists():
+    if not base or not head:
         return {"files": [], "available": False, "reason": "clone not cached"}
-    proc = subprocess.run(
-        ["git", "-C", str(clone), "diff", "--no-color", "--no-ext-diff", f"-U{context}", "--find-renames",
-         base, head, "--", "*.py"],
-        capture_output=True, encoding="utf-8", errors="replace", timeout=60,
-    )
-    if proc.returncode != 0:
-        return {"files": [], "available": False, "reason": "commits not in the cache"}
-    files = parse_diff(proc.stdout)
+    stored = DIFFS / repo.split("/")[-1] / f"{base}..{head}.patch"
+    if (clone / ".git").exists():
+        proc = subprocess.run(
+            ["git", "-C", str(clone), "diff", "--no-color", "--no-ext-diff", f"-U{context}", "--find-renames",
+             base, head, "--", "*.py"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        if proc.returncode != 0 and not stored.is_file():
+            return {"files": [], "available": False, "reason": "commits not in the cache"}
+        text = proc.stdout if proc.returncode == 0 else stored.read_text(encoding="utf-8")
+    elif stored.is_file():   # the committed copy of this case's diff (-U4, Python files)
+        text = stored.read_text(encoding="utf-8")
+    else:
+        return {"files": [], "available": False, "reason": "clone not cached"}
+    files = parse_diff(text)
     used = 0
     # Files with findings first, so the budget never hides what the review flagged.
     for fd in sorted(files, key=lambda fd: fd["path"] not in keep):

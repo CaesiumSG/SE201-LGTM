@@ -1,0 +1,251 @@
+{
+  "id": "airflow-hitl-execution-api-authz-vulnerable",
+  "repo": "apache/airflow",
+  "pr": 52868,
+  "title": "The Human-in-the-loop execution API routes were added without the per-task JWT path check used by sibling execution routes, allowing cross-task access.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "015673658c1e0f8753d02ab09b81202439b30bc9",
+  "pr_sha": "d3dbc28effaee0e02f0d419b150c11d708d53377",
+  "files_changed": 42,
+  "python_files_changed": 29,
+  "added_lines": 2622,
+  "diff_chars": 108590,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 617.7,
+  "index_seconds": 46.1,
+  "index_reused": false,
+  "index_chunks": 5581,
+  "semgrep_findings_total": 7,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 2,
+  "n_findings": 2,
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:core-api-hitl-authz.1:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py",
+      "line": 156,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The two PATCH (write) endpoints update_hitl_detail and update_mapped_ti_hitl_detail perform a mutating operation (writing chosen_options/params_input to the HITL detail) but their authorization dependency uses method=\"GET\" instead of method=\"PUT\". Per the auth-manager policy, method=\"PUT\" means 'Can the user modify the resource?' while method=\"GET\" means 'Can the user read the resource?'. A user w"
+    },
+    {
+      "finding_id": "authz:execution-api-hitl-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py",
+      "line": 34,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new HITL endpoints fetch/modify a HITLDetail by the user-controlled `task_instance_id` path parameter without verifying the requester's token is bound to that task instance. The execution API's access-control model (deps.py) requires per-TI endpoints to use JWTBearerTIPathDep, which enforces that the JWT `sub` claim equals the `task_instance_id` in the path (deps.py lines 77-83, 99-100). The a"
+    }
+  ],
+  "tool_calls_total": 7,
+  "investigator_tool_calls": 10,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 57,
+  "reviewer_units": 12,
+  "findings": [
+    {
+      "finding_id": "authz:core-api-hitl-authz.1:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The two PATCH (write) endpoints update_hitl_detail and update_mapped_ti_hitl_detail perform a mutating operation (writing chosen_options/params_input to the HITL detail) but their authorization dependency uses method=\"GET\" instead of method=\"PUT\". Per the auth-manager policy, method=\"PUT\" means 'Can the user modify the resource?' while method=\"GET\" means 'Can the user read the resource?'. A user who only has read (GET) permission on a DAG's task instances is therefore allowed to modify the HITL detail, which is an incorrect authorization check (read permission used to authorize a write).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py",
+          "lines": [
+            148,
+            156
+          ],
+          "source": null,
+          "content": "@hitl_router.patch(\n    \"/{dag_id}/{dag_run_id}/{task_id}\",\n    responses=create_openapi_http_exception_doc(\n        [\n            status.HTTP_404_NOT_FOUND,\n            status.HTTP_409_CONFLICT,\n        ]\n    ),\n    dependencies=[Depends(requires_access_dag(method=\"GET\", access_entity=DagAccessEntity.TASK_INSTANCE))],\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py",
+          "lines": [
+            178,
+            186
+          ],
+          "source": null,
+          "content": "@hitl_router.patch(\n    \"/{dag_id}/{dag_run_id}/{task_id}/{map_index}\",\n    responses=create_openapi_http_exception_doc(\n        [\n            status.HTTP_404_NOT_FOUND,\n            status.HTTP_409_CONFLICT,\n        ]\n    ),\n    dependencies=[Depends(requires_access_dag(method=\"GET\", access_entity=DagAccessEntity.TASK_INSTANCE))],\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/core_api/security.py",
+          "lines": [
+            97,
+            112
+          ],
+          "source": null,
+          "content": "def requires_access_dag(\n    method: ResourceMethod, access_entity: DagAccessEntity | None = None\n) -> Callable[[Request, BaseUser], None]:\n    def inner(\n        request: Request,\n        user: GetUserDep,\n    ) -> None:\n        dag_id: str | None = request.path_params.get(\"dag_id\")\n\n        _requires_access(\n            is_authorized_callback=lambda: get_auth_manager().is_authorized_dag(\n                method=method, access_entity=access_entity, details=DagDetails(id=dag_id), user=user\n            )\n        )\n\n    return inner",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "airflow-core/docs/core-concepts/auth-manager/index.rst",
+          "content": "* ``method``: Use HTTP method naming to determine the type of action being done on a specific resource.\n\n  * ``GET``: Can the user read the resource?\n  * ``POST``: Can the user create a resource?\n  * ``PUT``: Can the user modify the resource?\n  * ``DELETE``: Can the user delete the resource?",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Change the authorization dependency on both PATCH endpoints to use method=\"PUT\" (e.g. requires_access_dag(method=\"PUT\", access_entity=DagAccessEntity.TASK_INSTANCE)) so that only users with modify permission on the DAG's task instances can update the HITL detail.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7999,
+      "kev_verdict": "real",
+      "kev_severity": "medium",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py",
+      "line": 156,
+      "tool_calls_used": 2,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:execution-api-hitl-authz:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new HITL endpoints fetch/modify a HITLDetail by the user-controlled `task_instance_id` path parameter without verifying the requester's token is bound to that task instance. The execution API's access-control model (deps.py) requires per-TI endpoints to use JWTBearerTIPathDep, which enforces that the JWT `sub` claim equals the `task_instance_id` in the path (deps.py lines 77-83, 99-100). The analogous task_instances.py routes apply this via a dedicated ti_id_router (lines 81-86). The new hitl.py routes instead use a plain APIRouter (line 34) mounted under authenticated_router, which only applies the generic JWTBearerDep (routes/__init__.py line 40) that validates the token but does not bind it to the path param. Consequently, any authenticated task instance can read (GET), create (POST), or update (PATCH) the HITL detail of any other task instance by guessing/enumerating its UUID \u2014 a classic IDOR.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py",
+          "lines": [
+            34,
+            34
+          ],
+          "source": null,
+          "content": "router = APIRouter()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py",
+          "lines": [
+            99,
+            108
+          ],
+          "source": null,
+          "content": "def get_hitl_detail(\n    task_instance_id: UUID,\n    session: SessionDep,\n) -> HITLDetailResponse:\n    ti_id_str = str(task_instance_id)\n    hitl_detail_model = session.execute(\n        select(HITLDetail).where(HITLDetail.ti_id == ti_id_str),\n    ).scalar()\n    return HITLDetailResponse.from_hitl_detail_orm(hitl_detail_model)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/deps.py",
+          "lines": [
+            77,
+            83
+          ],
+          "source": null,
+          "content": "if self.path_param_name:\n    id = request.path_params[self.path_param_name]\n    validators: dict[str, Any] = {\n        **self.required_claims,\n        \"sub\": {\"essential\": True, \"value\": id},\n    }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/deps.py",
+          "lines": [
+            99,
+            100
+          ],
+          "source": null,
+          "content": "# This checks that the UUID in the url matches the one in the token for us.\nJWTBearerTIPathDep = Depends(JWTBearer(path_param_name=\"task_instance_id\"))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py",
+          "lines": [
+            81,
+            86
+          ],
+          "source": null,
+          "content": "ti_id_router = VersionedAPIRouter(\n    dependencies=[\n        # This checks that the UUID in the url matches the one in the token for us.\n        JWTBearerTIPathDep\n    ]\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/__init__.py",
+          "lines": [
+            39,
+            40
+          ],
+          "source": null,
+          "content": "# _Every_ single endpoint under here must be authenticated. Some do further checks on top of these\nauthenticated_router = VersionedAPIRouter(dependencies=[JWTBearerDep, JWTRefresherDep])",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Apply the per-task-instance binding dependency to the HITL routes, mirroring task_instances.py: define a router with dependencies=[JWTBearerTIPathDep] (or add JWTBearerTIPathDep to each endpoint) so the JWT `sub` claim is verified to equal the `task_instance_id` path parameter before the HITLDetail is fetched or modified.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7819,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py",
+      "line": 34,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "airflow-hitl-execution-api-authz",
+  "url": "https://github.com/apache/airflow/pull/52868",
+  "category": "authz",
+  "cwe": "CWE-862",
+  "ghsa": "GHSA-8x34-9q3v-h7g8",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "airflow-core/src/airflow/api_fastapi/execution_api/routes/hitl.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

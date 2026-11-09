@@ -1,0 +1,699 @@
+diff --git a/alerta/database/backends/mongodb/parser.py b/alerta/database/backends/mongodb/parser.py
+new file mode 100644
+index 0000000..fdc8c87
+--- /dev/null
++++ b/alerta/database/backends/mongodb/parser.py
+@@ -0,0 +1,85 @@
++
++
++from pyparsing import Optional, ParseException, infixNotation, opAssoc
++
++from alerta.database.backends.mongodb.syntax import (and_, expression, not_,
++                                                     or_, prohibit_modifier,
++                                                     required_modifier, term)
++
++
++class UnaryOperation:
++    """takes one operand,e.g. not"""
++
++    def __init__(self, tokens):
++        self.op, self.operands = tokens[0]
++
++
++class BinaryOperation:
++    """takes two or more operands, e.g. and, or"""
++
++    def __init__(self, tokens):
++        self.op = tokens[0][1]
++        self.operands = tokens[0][0::2]
++
++
++class SearchAnd(BinaryOperation):
++
++    def __repr__(self):
++        return '{{ "$and": [{0}] }}'.format(','.join(str(oper) for oper in self.operands))
++
++
++class SearchOr(BinaryOperation):
++
++    def __repr__(self):
++        return '{{ "$or": [{0}] }}'.format(','.join(str(oper) for oper in self.operands))
++
++
++class SearchNot(UnaryOperation):
++
++    def __repr__(self):
++        return '{{ "$not": {0} }}'.format(self.operands)
++
++
++class SearchTerm:
++
++    def __init__(self, tokens):
++        self.tokens = tokens
++        if 'field' in self.tokens:
++            self.term = self.tokens[2]
++        else:
++            self.term = self.tokens[0]
++
++    def __repr__(self):
++        if 'field' in self.tokens:
++            if 'word' in self.tokens:
++                if self.tokens.field == '_exists_':
++                    return '{{ "attributes.{}": {{ "$exists": true }} }}'.format(self.term)
++                else:
++                    return '{{ "{}": {{ "$regex": "{}" }} }}'.format(self.tokens.field, self.tokens.word)
++            if 'string' in self.tokens:
++                return '{{ "{}": "{}" }}'.format(self.tokens.field, self.tokens.string.strip('"'))
++            if 'wildcard' in self.tokens:
++                wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')
++                return '{{ "{}": {{ "$regex": "{}" }} }}'.format(self.tokens.field, wildcard)
++            if 'regex' in self.tokens:
++                return '{{ "{}": {{ "$regex": "{}" }} }}'.format(self.tokens.field, self.tokens.regex.strip('/'))
++        else:
++            if 'word' in self.tokens:
++                return '{{ "$text": {{ "$search": "{}" }} }}'.format(self.tokens.word)
++            if 'string' in self.tokens:
++                return '{{ "$text": {{ "$search": "{}" }} }}'.format(self.tokens.string.replace('"', '\\"'))
++            if 'regex' in self.tokens:
++                return '{{ "$text": {{ "$search": "{}" }} }}'.format(self.tokens.regex.strip('/'))
++        raise ParseException('Search term did not match query syntax: %s' % self.tokens)
++
++
++term.addParseAction(SearchTerm)
++
++
++expression << infixNotation(term,
++                            [
++                                (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT),
++                                ((not_ | '!').setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),
++                                ((and_ | '&&').setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),
++                                (Optional(or_ | '||').setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),
++                            ])
+diff --git a/alerta/database/backends/mongodb/syntax.py b/alerta/database/backends/mongodb/syntax.py
+new file mode 100644
+index 0000000..40a9523
+--- /dev/null
++++ b/alerta/database/backends/mongodb/syntax.py
+@@ -0,0 +1,43 @@
++
++from pyparsing import (CaselessKeyword, Combine, Forward, Group, Literal,
++                       OneOrMore, Optional, ParserElement, QuotedString, Regex,
++                       Suppress, White, Word, printables, pyparsing_common)
++
++ParserElement.enablePackrat()
++
++COLON, LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, ':[]{}~^')
++LPAR, RPAR = map(Suppress, '()')
++and_, or_, not_, to_ = map(CaselessKeyword, 'AND OR NOT TO'.split())
++keyword = and_ | or_ | not_ | to_
++
++expression = Forward()
++
++valid_word = Word(printables, excludeChars='?*:"').setName('word')
++valid_word.setParseAction(
++    lambda t: t[0].replace('\\\\', chr(127)).replace('\\', '').replace(chr(127), '\\')
++)
++
++string = QuotedString('"', unquoteResults=False)
++
++required_modifier = Literal('+')('required')
++prohibit_modifier = Literal('-')('prohibit')
++integer = Regex(r'\d+').setParseAction(lambda t: int(t[0]))
++proximity_modifier = Group(TILDE + integer('proximity'))
++number = pyparsing_common.fnumber()
++fuzzy_modifier = TILDE + Optional(number, default=0.5)('fuzzy')
++
++term = Forward()
++field_name = valid_word().setName('fieldname')
++incl_range_search = Group(LBRACK + term('lower') + to_ + term('upper') + RBRACK)
++excl_range_search = Group(LBRACE + term('lower') + to_ + term('upper') + RBRACE)
++range_search = incl_range_search('incl_range') | excl_range_search('excl_range')
++boost = (CARAT + number('boost'))
++
++string_expr = Group(string + proximity_modifier) | string
++word_expr = Group(valid_word + fuzzy_modifier) | valid_word
++wildcard_expr = Combine(OneOrMore(Regex('[a-z0-9]*[\?\*][a-z0-9]*') | White(' ', max=1) + ~White())).setName('wildcard')
++regular_expr = QuotedString('/', unquoteResults=False).setName('regex')
++
++term << (Optional(field_name('field') + COLON) +
++         (regular_expr('regex') | wildcard_expr('wildcard') | word_expr('word') | string_expr('string') | range_search('range') | Group(LPAR + expression + RPAR)) +
++         Optional(boost))
+diff --git a/alerta/database/backends/mongodb/utils.py b/alerta/database/backends/mongodb/utils.py
+index 5e73f0a..b519af6 100644
+--- a/alerta/database/backends/mongodb/utils.py
++++ b/alerta/database/backends/mongodb/utils.py
+@@ -5,8 +5,9 @@ from collections import namedtuple
+ import pytz
+ from flask import g
+ from werkzeug.datastructures import MultiDict
+ 
++from alerta.database.backends.mongodb.parser import expression
+ from alerta.database.base import QueryBuilder
+ from alerta.utils.format import DateTime
+ 
+ Query = namedtuple('Query', ['where', 'sort', 'group'])
+@@ -15,21 +16,21 @@ Query.__new__.__defaults__ = ({}, {}, 'lastReceiveTime', 'status')  # type: igno
+ 
+ class QueryBuilderImpl(QueryBuilder):
+ 
+     @staticmethod
+-    def from_params(params, query_time=None):
++    def from_params(params: MultiDict, query_time=None):
+ 
+         # q
+         if params.get('q', None):
+-            query = json.loads(params['q'])
++            query = json.loads(repr(expression.parseString(params.get('q'))[0]))
+         else:
+             query = dict()
+ 
+         # customers
+         if g.get('customers', None):
+             customer_query = {'customer': {'$in': g.get('customers')}}
+         else:
+-            customer_query = None
++            customer_query = None  # type: ignore
+ 
+         # from-date, to-date
+         from_date = params.get('from-date', default=None, type=DateTime.parse)
+         to_date = params.get('to-date', default=query_time, type=DateTime.parse)
+diff --git a/alerta/database/backends/postgres/parser.py b/alerta/database/backends/postgres/parser.py
+new file mode 100644
+index 0000000..939b7d8
+--- /dev/null
++++ b/alerta/database/backends/postgres/parser.py
+@@ -0,0 +1,87 @@
++
++from flask import current_app
++from pyparsing import Optional, ParseException, infixNotation, opAssoc
++
++from alerta.database.backends.postgres.syntax import (and_, expression, not_,
++                                                      or_, prohibit_modifier,
++                                                      required_modifier, term)
++
++
++class UnaryOperation:
++    """takes one operand,e.g. not"""
++
++    def __init__(self, tokens):
++        self.op, self.operands = tokens[0]
++
++
++class BinaryOperation:
++    """takes two or more operands, e.g. and, or"""
++
++    def __init__(self, tokens):
++        self.op = tokens[0][1]
++        self.lhs = tokens[0][0]
++        self.rhs = tokens[0][2]
++
++
++class SearchAnd(BinaryOperation):
++
++    def __repr__(self):
++        return '{} AND {}'.format(self.lhs, self.rhs)
++
++
++class SearchOr(BinaryOperation):
++
++    def __repr__(self):
++        return '{} OR {}'.format(self.lhs, self.rhs)
++
++
++class SearchNot(UnaryOperation):
++
++    def __repr__(self):
++        return 'NOT {}'.format(self.operands)
++
++
++class SearchTerm:
++
++    def __init__(self, tokens):
++        self.default_field = current_app.config['DEFAULT_FIELD']
++        self.tokens = tokens
++        if 'field' in self.tokens:
++            self.term = self.tokens[2]
++        else:
++            self.term = self.tokens[0]
++
++    def __repr__(self):
++        if 'field' in self.tokens:
++            if 'word' in self.tokens:
++                if self.tokens.field == '_exists_':
++                    return '"attributes"::jsonb ? \'{}\''.format(self.term)
++                else:
++                    return '"{}" ILIKE \'%%{}%%\''.format(self.tokens.field, self.tokens.word)
++            if 'string' in self.tokens:
++                return '"{}"=\'{}\''.format(self.tokens.field, self.tokens.string.strip('"'))
++            if 'wildcard' in self.tokens:
++                wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')
++                return '"{}" ~* \'{}\''.format(self.tokens.field, wildcard)
++            if 'regex' in self.tokens:
++                return '"{}" ~* \'{}\''.format(self.tokens.field, self.tokens.regex.strip('/'))
++        else:
++            if 'word' in self.tokens:
++                return '"{}" ILIKE \'%%{}%%\''.format(self.default_field, self.tokens.word)
++            if 'string' in self.tokens:
++                return '"{}" ~* \'{}\''.format(self.default_field, self.tokens.string.strip('"'))
++            if 'regex' in self.tokens:
++                return '"{}" ~* \'{}\''.format(self.default_field, self.tokens.regex.strip('/'))
++        raise ParseException('Search term did not match query syntax: %s' % self.tokens)
++
++
++term.addParseAction(SearchTerm)
++
++
++expression << infixNotation(term,
++                            [
++                                (required_modifier | prohibit_modifier, 1, opAssoc.RIGHT),
++                                ((not_ | '!').setParseAction(lambda: 'NOT'), 1, opAssoc.RIGHT, SearchNot),
++                                ((and_ | '&&').setParseAction(lambda: 'AND'), 2, opAssoc.LEFT, SearchAnd),
++                                (Optional(or_ | '||').setParseAction(lambda: 'OR'), 2, opAssoc.LEFT, SearchOr),
++                            ])
+diff --git a/alerta/database/backends/postgres/syntax.py b/alerta/database/backends/postgres/syntax.py
+new file mode 100644
+index 0000000..40a9523
+--- /dev/null
++++ b/alerta/database/backends/postgres/syntax.py
+@@ -0,0 +1,43 @@
++
++from pyparsing import (CaselessKeyword, Combine, Forward, Group, Literal,
++                       OneOrMore, Optional, ParserElement, QuotedString, Regex,
++                       Suppress, White, Word, printables, pyparsing_common)
++
++ParserElement.enablePackrat()
++
++COLON, LBRACK, RBRACK, LBRACE, RBRACE, TILDE, CARAT = map(Literal, ':[]{}~^')
++LPAR, RPAR = map(Suppress, '()')
++and_, or_, not_, to_ = map(CaselessKeyword, 'AND OR NOT TO'.split())
++keyword = and_ | or_ | not_ | to_
++
++expression = Forward()
++
++valid_word = Word(printables, excludeChars='?*:"').setName('word')
++valid_word.setParseAction(
++    lambda t: t[0].replace('\\\\', chr(127)).replace('\\', '').replace(chr(127), '\\')
++)
++
++string = QuotedString('"', unquoteResults=False)
++
++required_modifier = Literal('+')('required')
++prohibit_modifier = Literal('-')('prohibit')
++integer = Regex(r'\d+').setParseAction(lambda t: int(t[0]))
++proximity_modifier = Group(TILDE + integer('proximity'))
++number = pyparsing_common.fnumber()
++fuzzy_modifier = TILDE + Optional(number, default=0.5)('fuzzy')
++
++term = Forward()
++field_name = valid_word().setName('fieldname')
++incl_range_search = Group(LBRACK + term('lower') + to_ + term('upper') + RBRACK)
++excl_range_search = Group(LBRACE + term('lower') + to_ + term('upper') + RBRACE)
++range_search = incl_range_search('incl_range') | excl_range_search('excl_range')
++boost = (CARAT + number('boost'))
++
++string_expr = Group(string + proximity_modifier) | string
++word_expr = Group(valid_word + fuzzy_modifier) | valid_word
++wildcard_expr = Combine(OneOrMore(Regex('[a-z0-9]*[\?\*][a-z0-9]*') | White(' ', max=1) + ~White())).setName('wildcard')
++regular_expr = QuotedString('/', unquoteResults=False).setName('regex')
++
++term << (Optional(field_name('field') + COLON) +
++         (regular_expr('regex') | wildcard_expr('wildcard') | word_expr('word') | string_expr('string') | range_search('range') | Group(LPAR + expression + RPAR)) +
++         Optional(boost))
+diff --git a/alerta/database/backends/postgres/utils.py b/alerta/database/backends/postgres/utils.py
+index a8629b7..d039c23 100644
+--- a/alerta/database/backends/postgres/utils.py
++++ b/alerta/database/backends/postgres/utils.py
+@@ -3,8 +3,9 @@ from collections import namedtuple
+ import pytz
+ from flask import g
+ from werkzeug.datastructures import MultiDict
+ 
++from alerta.database.backends.postgres.parser import expression
+ from alerta.database.base import QueryBuilder
+ from alerta.utils.format import DateTime
+ 
+ Query = namedtuple('Query', ['where', 'vars', 'sort', 'group'])
+@@ -17,9 +18,10 @@ class QueryBuilderImpl(QueryBuilder):
+     def from_params(params, query_time=None):
+ 
+         # q
+         if params.get('q', None):
+-            raise NotImplementedError("'q' search parameter is not currently supported")
++            query = [repr(expression.parseString(params.get('q'))[0])]
++            qvars = dict()
+         else:
+             query = ['1=1']
+             qvars = dict()
+ 
+diff --git a/alerta/settings.py b/alerta/settings.py
+index 429acf4..1e8ee86 100644
+--- a/alerta/settings.py
++++ b/alerta/settings.py
+@@ -22,8 +22,9 @@ SECRET_KEY = 'changeme'
+ 
+ ALARM_MODEL = 'ALERTA'  # 'ALERTA' (default) or 'ISA_18_2'
+ 
+ QUERY_LIMIT = 1000
++DEFAULT_FIELD = 'text'  # default field if no search prefix specified (Postgres only)
+ DEFAULT_PAGE_SIZE = QUERY_LIMIT  # maximum number of alerts returned by a single query
+ BULK_QUERY_LIMIT = 100000  # max number of alerts for bulk endpoints
+ HISTORY_LIMIT = 100  # cap the number of alert history entries
+ HISTORY_ON_VALUE_CHANGE = True  # history entry for duplicate alerts if value changes
+diff --git a/setup.py b/setup.py
+index 95067b6..4d46552 100644
+--- a/setup.py
++++ b/setup.py
+@@ -42,8 +42,9 @@ setuptools.setup(
+         'Flask-Compress>=1.4.0',
+         'raven[flask]>=6.2.1',
+         'pymongo>=3.0',
+         'psycopg2',
++        'pyparsing',
+         'requests',
+         'python-dateutil',
+         'pytz',
+         'PyJWT',
+diff --git a/tests/test_alerts.py b/tests/test_alerts.py
+index 331751d..fe5d213 100644
+--- a/tests/test_alerts.py
++++ b/tests/test_alerts.py
+@@ -639,19 +639,15 @@ class AlertTestCase(unittest.TestCase):
+         self.assertEqual(response.status_code, 200)
+         data = json.loads(response.data.decode('utf-8'))
+         self.assertIn('services', data)
+ 
+-    def test_mongo_query(self):
++    def test_query_param(self):
+         # create alert
+         response = self.client.post('/alert', data=json.dumps(self.normal_alert), headers=self.headers)
+         self.assertEqual(response.status_code, 201)
+         data = json.loads(response.data.decode('utf-8'))
+ 
+-        if self.app.config['DATABASE_URL'].startswith('mongodb'):
+-            query_dict = {
+-                'q': '{"event": "node_up"}'
+-            }
+-            response = self.client.get('/alerts', query_string=query_dict)
+-            self.assertEqual(response.status_code, 200)
+-            data = json.loads(response.data.decode('utf-8'))
+-            self.assertEquals(data['total'], 1)
+-            self.assertEquals(data['alerts'][0]['event'], 'node_up')
++        response = self.client.get('/alerts?q=event:node_up')
++        self.assertEqual(response.status_code, 200)
++        data = json.loads(response.data.decode('utf-8'))
++        self.assertEquals(data['total'], 1)
++        self.assertEquals(data['alerts'][0]['event'], 'node_up')
+diff --git a/tests/test_mongo_query.py b/tests/test_mongo_query.py
+new file mode 100644
+index 0000000..d47a816
+--- /dev/null
++++ b/tests/test_mongo_query.py
+@@ -0,0 +1,135 @@
++import unittest
++
++from alerta.database.backends.mongodb.parser import expression as mongo_search
++
++
++class MongoQueryTestCase(unittest.TestCase):
++
++    def setUp(self):
++        pass
++
++    def test_word_and_phrase_terms(self):
++
++        # default field (ie. "text") contains word
++        string = r'''quick'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "$text": { "$search": "quick" } }')
++
++        # default field (ie. "text") contains phrase
++        string = r'''"quick brown"'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "$text": { "$search": "\\"quick brown\\"" } }')
++
++    def test_field_names(self):
++
++        # field contains word
++        string = r'''status:active'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "status": { "$regex": "active" } }')
++
++        # # field contains either words
++        # string = r'''title:(quick OR brown)'''
++        # r = mongo_search.parseString(string)
++        # self.assertEqual(repr(r[0]), '{ "title": { "$or": [ { "$regex": { "quick" } }, { "$regex": { "brown" } } ] } }', repr(r[0]))
++
++        # # field contains either words (default operator)
++        # string = r'''title:(quick brown)'''
++        # r = mongo_search.parseString(string)
++        # self.assertEqual(repr(r[0]), '{ "status": { "$regex": "active" } }')
++
++        # field exact match
++        string = r'''author:"John Smith"'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "author": "John Smith" }')
++
++        # # any attribute contains word or phrase
++        # string = r'''attributes.\*:(quick brown)'''
++        # r = mongo_search.parseString(string)
++        # self.assertEqual(repr(r[0]), '??')
++
++        # attribute field has non-null value
++        string = r'''_exists_:title'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "attributes.title": { "$exists": true } }')
++
++    def test_wildcards(self):
++
++        # ? = single character, * = one or more characters
++        string = r'''text:qu?ck bro*'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "text": { "$regex": "qu.?ck bro.*" } }')
++
++    def test_regular_expressions(self):
++
++        string = r'''name:/joh?n(ath[oa]n)/'''
++        r = mongo_search.parseString(string)
++        self.assertEqual(repr(r[0]), '{ "name": { "$regex": "joh?n(ath[oa]n)" } }')
++
++    def test_fuzziness(self):
++        pass
++
++    def test_proximity_searches(self):
++        pass
++
++    # def test_ranges(self):
++    #
++    #     string = r'''date:[2012-01-01 TO 2012-12-31]'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''count:[1 TO 5]'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''tag:{alpha TO omega}'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''count:[10 TO *]'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r''''date:{* TO 2012-01-01}'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r''''count:[1 TO 5}'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    # def test_unbounded_ranges(self):
++    #
++    #     string = r'''age:>10'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:>=10'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:<10'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:<=10'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++
++    def test_boosting(self):
++        pass
++
++    def test_boolean_operators(self):
++        pass
++
++    # def test_grouping(self):
++    #
++    #     # field exact match
++    #     string = r'''(quick OR brown) AND fox'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     # field exact match
++    #     string = r'''status:(active OR pending) title:(full text search)'''
++    #     r = mongo_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++
+diff --git a/tests/test_postgres_query.py b/tests/test_postgres_query.py
+new file mode 100644
+index 0000000..7174c25
+--- /dev/null
++++ b/tests/test_postgres_query.py
+@@ -0,0 +1,147 @@
++import unittest
++
++from alerta.app import create_app
++from alerta.database.backends.postgres.parser import expression as postgres_search
++
++
++class PostgresQueryTestCase(unittest.TestCase):
++
++    def setUp(self):
++
++        test_config = {
++            'TESTING': True
++        }
++        self.app = create_app(test_config)
++
++    def test_word_and_phrase_terms(self):
++
++        with self.app.test_request_context('/'):
++
++            # default field (ie. "text") contains word
++            string = r'''quick'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"text" ILIKE \'%%quick%%\'')
++
++            # default field (ie. "text") contains phrase
++            string = r'''"quick brown"'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"text" ~* \'quick brown\'')
++
++    def test_field_names(self):
++
++        with self.app.test_request_context('/'):
++
++            # field contains word
++            string = r'''status:active'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"status" ILIKE \'%%active%%\'')
++
++            # # field contains either words
++            # string = r'''title:(quick OR brown)'''
++            # r = postgres_search.parseString(string)
++            # self.assertEqual(repr(r[0]), '', repr(r[0]))
++
++            # # field contains either words (default operator)
++            # string = r'''title:(quick brown)'''
++            # r = postgres_search.parseString(string)
++            # self.assertEqual(repr(r[0]), '')
++
++            # field exact match
++            string = r'''author:"John Smith"'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"author"=\'John Smith\'')
++
++            # # any attribute contains word or phrase
++            # string = r'''attributes.\*:(quick brown)'''
++            # r = postgres_search.parseString(string)
++            # self.assertEqual(repr(r[0]), '??')
++
++            # attribute field has non-null value
++            string = r'''_exists_:title'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"attributes"::jsonb ? \'title\'')
++
++    def test_wildcards(self):
++
++        with self.app.test_request_context('/'):
++
++            # ? = single character, * = one or more characters
++            string = r'''text:qu?ck bro*'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"text" ~* \'qu.?ck bro.*\'')
++
++    def test_regular_expressions(self):
++
++        with self.app.test_request_context('/'):
++
++            string = r'''name:/joh?n(ath[oa]n)/'''
++            r = postgres_search.parseString(string)
++            self.assertEqual(repr(r[0]), '"name" ~* \'joh?n(ath[oa]n)\'')
++
++    def test_fuzziness(self):
++        pass
++
++    def test_proximity_searches(self):
++        pass
++
++    # def test_ranges(self):
++    #
++    #     string = r'''date:[2012-01-01 TO 2012-12-31]'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''count:[1 TO 5]'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''tag:{alpha TO omega}'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''count:[10 TO *]'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r''''date:{* TO 2012-01-01}'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r''''count:[1 TO 5}'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    # def test_unbounded_ranges(self):
++    #
++    #     string = r'''age:>10'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:>=10'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:<10'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     string = r'''age:<=10'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++
++    def test_boosting(self):
++        pass
++
++    def test_boolean_operators(self):
++        pass
++
++    # def test_grouping(self):
++    #
++    #     # field exact match
++    #     string = r'''(quick OR brown) AND fox'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
++    #
++    #     # field exact match
++    #     string = r'''status:(active OR pending) title:(full text search)'''
++    #     r = postgres_search.parseString(string)
++    #     self.assertEqual(repr(r[0]), '??')
