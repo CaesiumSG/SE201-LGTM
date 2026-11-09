@@ -232,9 +232,13 @@ class BedrockClaude:
             {"name": b.name, "args": b.input if isinstance(b.input, dict) else {}, "id": b.id or uuid.uuid4().hex, "type": "tool_call"}
             for b in response.content if b.type == "tool_use"
         ]
+        # Anthropic's input_tokens leaves out cached prompt tokens; the model still read them.
+        prompt_tokens = response.usage.input_tokens + entry["cache_write"] + entry["cache_read"]
         return AIMessage(
             content=text, tool_calls=calls,
-            usage_metadata={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens,
-                            "total_tokens": response.usage.input_tokens + response.usage.output_tokens},
+            usage_metadata={"input_tokens": prompt_tokens, "output_tokens": response.usage.output_tokens,
+                            "total_tokens": prompt_tokens + response.usage.output_tokens,
+                            "input_token_details": {"cache_creation": entry["cache_write"],
+                                                    "cache_read": entry["cache_read"]}},
             response_metadata={"model": self.model, "stop_reason": response.stop_reason, "usd": usd},
         )

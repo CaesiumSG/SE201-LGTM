@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from lgtm.agents import registry
 from lgtm.config import LGTMConfig
+from lgtm.usage import record_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -459,13 +460,14 @@ def invoke_with_retry(llm, messages, config: LGTMConfig, output_tokens: int | No
     if output_tokens is None:
         output_tokens = config.llm_max_output_tokens
     allowance = (config.llm_context_tokens - output_tokens) * CHARS_PER_TOKEN
-    if _message_chars(messages) > allowance:
+    prompt_chars = _message_chars(messages)
+    if prompt_chars > allowance:
         raise ValueError("Model request exceeds the configured context allowance")
     attempts = max(0, config.llm_retries) + 1
     delays = tuple(config.llm_backoff_seconds)
     for attempt in range(1, attempts + 1):
         try:
-            return llm.invoke(messages)
+            response = llm.invoke(messages)
         except FatalLLMError:
             raise
         except Exception as exc:
@@ -481,6 +483,9 @@ def invoke_with_retry(llm, messages, config: LGTMConfig, output_tokens: int | No
                 delay,
             )
             _sleep(delay)
+            continue
+        record_llm_response(response, prompt_chars // CHARS_PER_TOKEN)
+        return response
 
 
 def validate_tool_call(name: object, tool_map: dict, args: object) -> str | None:
