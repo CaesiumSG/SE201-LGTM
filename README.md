@@ -68,9 +68,10 @@ it, use "Replay the prepared change" instead.
 
 4. **Start LGTM:** `python demo/server.py`, then open http://127.0.0.1:8765/.
 
-5. **Create your LGTM GitHub App** from the page that opens: press **Create the GitHub App**, then **Create
-   GitHub App** on GitHub. Then **install it** on your forks only (GitHub → the app → Install → Only select
-   repositories). The app is yours; its keys stay in `demo/.secrets/` on your laptop.
+5. **Create your LGTM GitHub App** from the page that opens: **Create the GitHub App** → **Continue to GitHub**
+   (keep the suggested name: app names are unique across GitHub) → **Create GitHub App**. Then **install it** on
+   your forks only (Only select repositories). The app is yours; its keys stay in `demo/.secrets/` on your
+   laptop.
 
 6. **Sign in with GitHub.** The dots in the header should show Reviewer, Judge and Webhooks green.
 

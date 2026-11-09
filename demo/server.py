@@ -67,6 +67,7 @@ import demo_story  # noqa: E402
 from store import DEFAULT_SETTINGS, SEVERITY_RANK, Store, now  # noqa: E402
 
 REPO_ROOT = HERE.parent
+JUDGE = None   # the Claude stand-in judge, started in main()
 WEB = HERE / "web"
 OLLAMA = ("127.0.0.1", 11435)
 KEV = ("127.0.0.1", 8008)
@@ -419,7 +420,7 @@ def _check_kev(data: dict) -> dict:
 
 def _check_claude_judge(data: dict) -> dict:
     if not data.get("ready"):
-        return {"ok": False, "state": "no_key", "detail": "Claude judge needs a Bedrock key in .env."}
+        return {"ok": False, "state": "no_key", "detail": data.get("error") or "Claude judge needs a Bedrock key in .env."}
     return {"ok": True, "state": "ok", "detail": "Claude on Bedrock answering as the judge (a stand-in, not Kev)."}
 
 
@@ -442,7 +443,8 @@ def health() -> dict:
     if judge_kind == "claude":
         gpu["judge"] = _probe(("127.0.0.1", claude_judge.PORT), "/v1/models", "the LGTM server", _check_claude_judge)
     return {
-        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "judge_kind": judge_kind, "bedrock": bool(ENGINE.bedrock_key),
+        "reviewer": gpu["reviewer"]["ok"], "judge": gpu["judge"]["ok"], "judge_kind": judge_kind,
+        "bedrock": bool(ENGINE.bedrock_key) and not JUDGE.key_error, "bedrock_error": JUDGE.key_error,
         "gpu": gpu, "backend": STORE.settings().get("backend", "gpu"),
         "app": app, "relay": {**ENGINE.relay_state, "configured": bool(gh.load_relay())},
         "poll": ENGINE.poll_state, "queue": ENGINE.queue.qsize(), "current": ENGINE.current,
@@ -942,7 +944,7 @@ def choose_defaults(key: str | None) -> None:
 
 
 def main() -> int:
-    global STORE, ENGINE, BASE_URL, STORY
+    global STORE, ENGINE, BASE_URL, STORY, JUDGE
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -958,7 +960,8 @@ def main() -> int:
     budget = ledger_total() + args.bedrock_allowance
     ENGINE = reviews.Engine(STORE, sys.executable, BASE_URL, key, budget)
     ENGINE.start(args.port)
-    claude_judge.serve(key, budget)
+    JUDGE = claude_judge.serve(key, budget)
+    key_error = JUDGE.check_key()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     app = gh.public_app_info()
@@ -966,6 +969,9 @@ def main() -> int:
           f"{added} benchmark runs imported)")
     print(f"  reviewer tunnel {'up' if results_port(OLLAMA) else 'down'}, Kev judge {'up' if results_port(KEV) else 'down'}, "
           f"Bedrock key {'found' if key else 'not found'} (ledger cap ${budget:.2f})", flush=True)
+    if key_error:
+        print(f"  WARNING: {key_error}. Reviews on the API will find nothing until the key in .env is fixed.", flush=True)
+    print(f"  reviewer: {STORE.settings()['backend']}, judge: {STORE.settings()['judge']} (change in Settings)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

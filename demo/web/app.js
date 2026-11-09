@@ -151,7 +151,7 @@
       title="${esc(title)}"><span class="dot ${ok ? "ok" : "off"}" aria-hidden="true"></span>${label}</button>`;
     const engine = `<div class="engine${usable ? "" : " engine-bad"}" role="group" aria-label="Reviewer model">
       ${seg("gpu", "GPU", gpu.reviewer.ok, `Qwen 3.8 27B on our GPU job. ${gpu.reviewer.detail}`, false)}
-      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The evidence judge is chosen in Settings." : "No Bedrock key found in .env", !h.bedrock)}
+      ${seg("bedrock", "API", h.bedrock, h.bedrock ? "Claude Sonnet on Amazon Bedrock (capped spend). The evidence judge is chosen in Settings." : (h.bedrock_error || "No Bedrock key found in .env"), !h.bedrock)}
     </div>${usable ? "" : `<span class="engine-warn" title="${esc(gpu.reviewer.detail)}">GPU offline: reviews will fail</span>`}`;
     const html = [
       engine,
@@ -766,7 +766,7 @@
         </section>
         <section class="panel"><h2>Models</h2>
           <dl class="kv"><dt>GPU reviewer</dt><dd><span class="dot ${h.reviewer ? "ok" : "off"}">${esc(h.gpu ? h.gpu.reviewer.detail : h.reviewer ? "Reachable" : "Not reachable")}</span></dd>
-            <dt>API reviewer</dt><dd><span class="dot ${h.bedrock ? "ok" : "off"}">${h.bedrock ? "Bedrock key found (capped spend)" : "No Bedrock key in .env"}</span></dd>
+            <dt>API reviewer</dt><dd><span class="dot ${h.bedrock ? "ok" : "off"}">${h.bedrock ? "Bedrock key found (capped spend)" : esc(h.bedrock_error || "No Bedrock key in .env")}</span></dd>
             <dt>Judge</dt><dd><span class="dot ${h.judge ? "ok" : "off"}">${esc(h.gpu ? h.gpu.judge.detail : h.judge ? "Reachable" : "Not reachable")}</span></dd></dl>
           <label class="field"><span>Run the reviewer on</span><select data-set="backend"><option value="gpu" ${st.backend === "gpu" ? "selected" : ""}>GPU: Qwen 3.8 27B on our GPU job</option><option value="bedrock" ${st.backend === "bedrock" ? "selected" : ""} ${h.bedrock ? "" : "disabled"}>API: Claude on Amazon Bedrock (capped spend)</option></select></label>
           <p class="note">Also switchable from the GPU / API toggle in the header.</p>
