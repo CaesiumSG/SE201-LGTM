@@ -160,8 +160,13 @@ BASE_FINDING_KEYS = {
     "semgrep_rule_id", "semgrep_severity", "severity", "suggested_fix", "supported", "tool_calls_used",
     "unsupported_reason", "verdict",
 }
+# lgtm.usage.record_fields: real token counts, written by every runner.
+TOKEN_KEYS = {
+    "estimated_input_tokens", "input_tokens", "judge_calls", "judge_input_tokens", "llm_calls",
+    "llm_calls_without_usage", "output_tokens", "tokens_by_stage", "total_tokens",
+}
 BASE_TOP_KEYS = {
-    _run_synthetic: {
+    _run_synthetic: TOKEN_KEYS | {
         "alarms_outside_target", "base_sha", "case_label", "case_label_grounded", "category", "correct",
         "coverage_gap", "est_tokens", "expected", "findings", "graph_index_seconds", "graph_state", "grounded",
         "grounding_rate", "id", "infra_failure_ids", "infra_failures", "latency_seconds", "mode", "n_findings",
@@ -169,7 +174,7 @@ BASE_TOP_KEYS = {
         "run_records", "sast_error", "scope", "semgrep_findings_total", "split", "target_sections",
         "triage_errors", "verdicts",
     },
-    _run_real_world: {
+    _run_real_world: TOKEN_KEYS | {
         "alarms_outside_target", "base_sha", "case_label", "case_label_grounded", "case_scope", "case_seconds",
         "category", "correct", "coverage_gap", "diff_added", "diff_deleted", "diff_files", "diff_max_file_chars",
         "diff_py_chars", "est_tokens", "expected", "file", "findings", "graph_index_seconds", "graph_state",

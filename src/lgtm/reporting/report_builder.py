@@ -44,6 +44,7 @@ class ReviewMetadata:
     coverage: dict | None = None
     agent_errors: list[dict[str, str]] = field(default_factory=list)
     changed_endpoints: int = 0
+    token_usage: dict | None = None  # lgtm.usage summary; None when no meter ran
     # "ok", "missing" or "stale:<commit the index was built from>"; None when unused
     policy_index: str | None = None
     # Doc files the PR changes; the reviewer reads the base versions only
@@ -88,6 +89,7 @@ class ReportBuilder:
                 "pr_sha": self.meta.pr_sha,
                 "coverage": self.meta.coverage,
                 "agent_errors": self.meta.agent_errors,
+                "token_usage": self.meta.token_usage,
                 "policy_index": self.meta.policy_index,
                 "policy_docs_changed": self.meta.policy_docs_changed,
             },
@@ -121,6 +123,12 @@ class ReportBuilder:
         add(f"- **PR:** `{self.meta.base}` → `{self.meta.pr}`")
         add(f"- **Mode:** {self.meta.mode} | **Model:** {self.meta.model}")
         add(f"- **Duration:** {self.meta.duration_seconds:.1f}s")
+        reviewer = (self.meta.token_usage or {}).get("reviewer") or {}
+        if reviewer.get("calls"):
+            add(
+                f"- **Tokens (reviewer model):** {reviewer['input_tokens']:,} in, "
+                f"{reviewer['output_tokens']:,} out over {reviewer['calls']} call(s)"
+            )
         add("")
 
         # Summary
