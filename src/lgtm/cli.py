@@ -1,7 +1,7 @@
 """LGTM command-line interface.
 
 Usage:
-    lgtm index  --repo <path>
+    lgtm index  --repo <path> [--ref <commit>]
     lgtm review --repo <path> --base <branch> --pr <branch> \
                 [--model <ollama_model>] [--gpu-model qwen3.8-27b] [--output <dir>]
                 [--mode lgtm|sast-only|llm-only|lgtm-no-sast]
@@ -37,16 +37,17 @@ def _load_config(config_file: str | None, **overrides) -> LGTMConfig:
 
 @main.command()
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository to index.")
+@click.option("--ref", default="HEAD", show_default=True, help="Commit to read the docs from. Use the PR's base branch: a review uses the index only when it was built from the base commit.")
 @click.option("--config-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Optional JSON config file.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
-def index(repo: str, config_file: str | None, verbose: bool) -> None:
-    """Index project documentation into ChromaDB for policy retrieval."""
+def index(repo: str, ref: str, config_file: str | None, verbose: bool) -> None:
+    """Index the documentation committed at a commit for policy retrieval."""
     setup_logging(verbose)
     from lgtm.rag.indexer import index_repo_docs
 
     config = _load_config(config_file)
-    count = index_repo_docs(repo, config)
-    click.echo(f"Indexed {count} documentation chunks from {repo}")
+    count = index_repo_docs(repo, config, ref=ref)
+    click.echo(f"Indexed {count} documentation chunks from {repo} at {ref}")
 
 
 @main.command()
@@ -97,7 +98,8 @@ def review(
     \b
     Exit codes:
       1  at least one candidate is supported and not ruled not_real by the judge, or a baseline mode reports a vulnerable finding
-      2  no candidate is supported, but a candidate is not judged or an agent errored
+      2  no candidate is supported, but a candidate is not judged, an agent errored,
+         or the PR changes policy documents and fail_on_policy_change is on
       0  otherwise
     """
     setup_logging(verbose)
@@ -153,12 +155,16 @@ def review(
         f"  Findings: {len(result.findings)} "
         f"(supported: {supported}, not judged: {not_judged})"
     )
+    policy_docs = result.meta.policy_docs_changed
+    if policy_docs:
+        click.echo(f"  Policy documents changed (needs human review): {', '.join(policy_docs)}")
     if result.json_path:
         click.echo(f"  JSON report:     {result.json_path}")
         click.echo(f"  Markdown report: {result.md_path}")
     if supported:
         sys.exit(1)
-    sys.exit(2 if not_judged or result.meta.agent_errors else 0)
+    policy_gate = bool(policy_docs) and config.fail_on_policy_change
+    sys.exit(2 if not_judged or result.meta.agent_errors or policy_gate else 0)
 
 
 if __name__ == "__main__":

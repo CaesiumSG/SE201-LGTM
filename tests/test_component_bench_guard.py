@@ -47,14 +47,12 @@ def test_toolbox_is_bound_to_the_case_clone_at_the_pinned_revisions(bench_env, c
 
 
 @components
-def test_retriever_indexes_the_tree_at_the_unit_pr_ref_not_the_clone_checkout(bench_env, component):
+def test_retriever_indexes_the_docs_at_the_unit_pr_ref_not_the_clone_checkout(bench_env, component):
     result = bench_env.run(component)
     toolbox = result.agents.toolboxes[0]
-    index_dir = toolbox.retriever.repo
-    assert index_dir != bench_env.repo.resolve()
-    assert bench_env.repo.resolve() not in index_dir.parents
-    assert bench_env.indexed[index_dir].keys() >= {"docs/pr_only.md"}
-    assert bench_env.index_calls == [index_dir]
+    clone = bench_env.repo.resolve()
+    assert bench_env.index_calls == [(clone, bench_env.pr)]
+    assert bench_env.indexed[clone].keys() >= {"docs/pr_only.md"}
     assert toolbox.retriever.indexed_ref == bench_env.pr
     assert not toolbox.index_dir.exists()
 

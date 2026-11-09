@@ -37,6 +37,7 @@ def test_review_model_connection(tmp_path, monkeypatch, options, model, url):
     pipeline = MagicMock()
     pipeline.return_value.run.return_value.findings = []
     pipeline.return_value.run.return_value.meta.agent_errors = []
+    pipeline.return_value.run.return_value.meta.policy_docs_changed = []
     pipeline.return_value.run.return_value.meta.duration_seconds = 0.0
     pipeline.return_value.run.return_value.json_path = None
     monkeypatch.setattr("lgtm.pipeline.ReviewPipeline", pipeline)
@@ -61,6 +62,7 @@ def test_gpu_cluster_overrides_config_file_connection(tmp_path, monkeypatch):
     pipeline = MagicMock()
     pipeline.return_value.run.return_value.findings = []
     pipeline.return_value.run.return_value.meta.agent_errors = []
+    pipeline.return_value.run.return_value.meta.policy_docs_changed = []
     pipeline.return_value.run.return_value.meta.duration_seconds = 0.0
     pipeline.return_value.run.return_value.json_path = None
     monkeypatch.setattr("lgtm.pipeline.ReviewPipeline", pipeline)
@@ -81,6 +83,7 @@ def _mock_pipeline(monkeypatch):
     pipeline = MagicMock()
     pipeline.return_value.run.return_value.findings = []
     pipeline.return_value.run.return_value.meta.agent_errors = []
+    pipeline.return_value.run.return_value.meta.policy_docs_changed = []
     pipeline.return_value.run.return_value.meta.duration_seconds = 0.0
     pipeline.return_value.run.return_value.json_path = None
     monkeypatch.setattr("lgtm.pipeline.ReviewPipeline", pipeline)
@@ -318,16 +321,21 @@ def _finding(kind: str) -> AgentFinding:
     return AgentFinding(finding_id=kind, file="a.py", line=1, **fields)
 
 
-def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=(), mode="lgtm"):
+def _exit_code(tmp_path, monkeypatch, kinds, agent_errors=(), mode="lgtm", policy_docs=(), config=None):
     pipeline = _mock_pipeline(monkeypatch)
     run_result = pipeline.return_value.run.return_value
     run_result.findings = [_finding(kind) for kind in kinds]
     run_result.meta.agent_errors = [{"source": s, "message": "failed"} for s in agent_errors]
-    result = CliRunner().invoke(main, [
+    run_result.meta.policy_docs_changed = list(policy_docs)
+    args = [
         "review", "--repo", str(tmp_path), "--base", "main", "--pr", "feature",
         "--mode", mode,
-    ])
-    return result.exit_code
+    ]
+    if config is not None:
+        config_path = tmp_path / "lgtm-config.json"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        args += ["--config-file", str(config_path)]
+    return CliRunner().invoke(main, args).exit_code
 
 
 @pytest.mark.parametrize("kinds,agent_errors,expected", [
@@ -355,6 +363,31 @@ def test_exit_code_is_1_if_any_supported_else_2_if_not_judged_or_agent_error_els
     tmp_path, monkeypatch, kinds, agent_errors, expected
 ):
     assert _exit_code(tmp_path, monkeypatch, kinds, agent_errors) == expected
+
+
+@pytest.mark.parametrize("kinds,expected", [
+    ([], 0),
+    (["unsupported"], 0),
+    (["supported"], 1),
+])
+def test_changed_policy_docs_do_not_change_the_exit_code_by_default(
+    tmp_path, monkeypatch, kinds, expected
+):
+    assert _exit_code(tmp_path, monkeypatch, kinds, policy_docs=["security-policy.md"]) == expected
+
+
+@pytest.mark.parametrize("kinds,expected", [
+    ([], 2),
+    (["unsupported"], 2),
+    (["supported"], 1),
+])
+def test_fail_on_policy_change_exits_2_unless_a_finding_is_supported(
+    tmp_path, monkeypatch, kinds, expected
+):
+    assert _exit_code(
+        tmp_path, monkeypatch, kinds,
+        policy_docs=["security-policy.md"], config={"fail_on_policy_change": True},
+    ) == expected
 
 
 @pytest.mark.parametrize("mode", ["sast-only", "llm-only"])

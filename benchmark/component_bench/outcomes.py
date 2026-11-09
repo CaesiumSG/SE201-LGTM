@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import io
 import subprocess
-import tarfile
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -29,15 +27,6 @@ def remove_index(index_dir: Path, retriever=None) -> None:
     remove_tree(index_dir)
 
 
-def _export(clone: Path, ref: str, dest: Path) -> None:
-    """Regular files of `ref` extracted into `dest`; symlinks are skipped."""
-    tar = subprocess.run(
-        ["git", "-C", str(clone), "archive", "--format=tar", ref], capture_output=True, check=True
-    ).stdout
-    with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
-        archive.extractall(dest, members=[m for m in archive if m.isfile()], filter="data")
-
-
 def production_toolbox(clone: Path, case: dict, config, results_dir) -> AgentToolbox:
     """Production toolbox over the case clone: live GraphSession and PolicyRetriever, or InfraError.
 
@@ -56,13 +45,11 @@ def production_toolbox(clone: Path, case: dict, config, results_dir) -> AgentToo
     index_dir = Path(tempfile.mkdtemp(prefix=f"{case['id']}-", dir=index_root))
     retriever = None
     try:
-        tree = index_dir / "tree"
         unit_config = replace(config, chroma_persist_dir=str(index_dir / "chroma"))
-        _export(clone, case["pr_ref"], tree)
-        index_repo_docs(tree, unit_config)
-        retriever = PolicyRetriever(tree, unit_config)
+        index_repo_docs(clone, unit_config, ref=case["pr_ref"])
+        retriever = PolicyRetriever(clone, unit_config)
         if not retriever.is_available():
-            raise InfraError(f"rag index unavailable for {case['pr_ref']} export of {clone}")
+            raise InfraError(f"rag index unavailable for {clone} at {case['pr_ref']}")
     except Exception as exc:
         remove_index(index_dir, retriever)
         if isinstance(exc, InfraError):

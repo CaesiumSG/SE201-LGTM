@@ -171,7 +171,7 @@ class BenchEnv:
         self.hunk_id = _hunk_ref(get_pr_diff(self.repo, self.base, self.pr)[0], 0).hunk_id
         self.agents = BenchAgents()
         self.indexed: dict[Path, dict[str, str]] = {}
-        self.index_calls: list[Path] = []
+        self.index_calls: list[tuple[Path, str]] = []
         self.graph_binary = str(make_fake_executable(tmp_path / "fake-cg").path)
 
     def case_for(self, case_id: str) -> dict:
@@ -203,14 +203,15 @@ class BenchEnv:
 
         env, mp = self, self.mp
 
-        def fake_index(repo, config=None):
+        def fake_index(repo, config=None, ref="HEAD"):
             repo = Path(repo).resolve()
-            env.index_calls.append(repo)
+            env.index_calls.append((repo, ref))
             if not rag:
                 raise RuntimeError("embedder unavailable")
             env.indexed[repo] = {
-                str(f.relative_to(repo)).replace(os.sep, "/"): f.read_text(encoding="utf-8")
-                for f in indexer_mod.find_doc_files(repo)
+                path: git(repo, "show", f"{ref}:{path}")
+                for path in git(repo, "ls-tree", "-r", "--name-only", ref).splitlines()
+                if indexer_mod.is_doc_path(path)
             }
             return len(env.indexed[repo])
 

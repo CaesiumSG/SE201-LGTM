@@ -165,6 +165,17 @@ def read_file_at_ref(
     return _run_git(["show", f"{ref}:{path}"], repo, timeout)
 
 
+def resolve_commit(repo: str | Path, ref: str, timeout: int = 60) -> str:
+    """The full commit SHA that ``ref`` names."""
+    return _run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], repo, timeout).strip()
+
+
+def list_files_at_ref(repo: str | Path, ref: str, timeout: int = 60) -> list[str]:
+    """Every file path committed at ``ref``."""
+    out = _run_git(["ls-tree", "-r", "-z", "--name-only", ref], repo, timeout)
+    return [p for p in out.split("\0") if p]
+
+
 def _unquote_path(path: str) -> str:
     """Turn a path git has quoted back into the real path.
 

@@ -31,6 +31,9 @@ class _Retriever:
     def is_available(self):
         return True
 
+    def indexed_commit(self):
+        return "base"  # the base_rev _run_review passes
+
 
 class _Toolbox:
     def __init__(self, *args, **kwargs):
