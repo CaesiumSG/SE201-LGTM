@@ -1,0 +1,902 @@
+diff --git a/airflow-core/src/airflow/api_fastapi/common/parameters.py b/airflow-core/src/airflow/api_fastapi/common/parameters.py
+index b6b1d255..e963cdbf 100644
+--- a/airflow-core/src/airflow/api_fastapi/common/parameters.py
++++ b/airflow-core/src/airflow/api_fastapi/common/parameters.py
+@@ -46,8 +46,9 @@ from airflow.configuration import conf
+ from airflow.models import Base
+ from airflow.models.asset import (
+     AssetAliasModel,
+     AssetModel,
++    AssetPartitionDagRun,
+     DagScheduleAssetReference,
+     TaskInletAssetReference,
+     TaskOutletAssetReference,
+ )
+@@ -1039,8 +1040,30 @@ QueryAssetAliasNamePatternSearch = Annotated[
+ ]
+ QueryAssetDagIdPatternSearch = Annotated[
+     _DagIdAssetReferenceFilter, Depends(_DagIdAssetReferenceFilter.depends)
+ ]
++QueryPartitionedDagRunHasCreatedDagRunIdFilter = Annotated[
++    FilterParam[bool | None],
++    Depends(
++        filter_param_factory(
++            AssetPartitionDagRun.created_dag_run_id,
++            bool | None,
++            FilterOptionEnum.IS_NONE,
++            filter_name="has_created_dag_run_id",
++            transform_callable=lambda v: not v if v is not None else None,
++        )
++    ),
++]
++QueryPartitionedDagRunDagIdFilter = Annotated[
++    FilterParam[str | None],
++    Depends(
++        filter_param_factory(
++            AssetPartitionDagRun.target_dag_id,
++            str | None,
++            filter_name="dag_id",
++        )
++    ),
++]
+ 
+ # Variables
+ QueryVariableKeyPatternSearch = Annotated[
+     _SearchParam, Depends(search_param_factory(Variable.key, "variable_key_pattern"))
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/datamodels/ui/partitioned_dag_runs.py b/airflow-core/src/airflow/api_fastapi/core_api/datamodels/ui/partitioned_dag_runs.py
+new file mode 100644
+index 00000000..628f8560
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/core_api/datamodels/ui/partitioned_dag_runs.py
+@@ -0,0 +1,64 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from airflow.api_fastapi.core_api.base import BaseModel
++
++
++class PartitionedDagRunResponse(BaseModel):
++    """Single partitioned Dag run item."""
++
++    id: int
++    partition_key: str
++    created_at: str | None = None
++    total_received: int
++    total_required: int
++    dag_id: str | None = None
++    state: str | None = None
++    created_dag_run_id: str | None = None
++
++
++class PartitionedDagRunCollectionResponse(BaseModel):
++    """Collection of partitioned Dag runs."""
++
++    partitioned_dag_runs: list[PartitionedDagRunResponse]
++    total: int
++    asset_expressions: dict[str, dict | None] | None = None
++
++
++class PartitionedDagRunAssetResponse(BaseModel):
++    """Asset info within a partitioned Dag run detail."""
++
++    asset_id: int
++    asset_name: str
++    asset_uri: str
++    received: bool
++
++
++class PartitionedDagRunDetailResponse(BaseModel):
++    """Detail of a single partitioned Dag run."""
++
++    id: int
++    dag_id: str
++    partition_key: str
++    created_at: str | None = None
++    updated_at: str | None = None
++    created_dag_run_id: str | None = None
++    assets: list[PartitionedDagRunAssetResponse]
++    total_required: int
++    total_received: int
++    asset_expression: dict | None = None
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/__init__.py b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/__init__.py
+index ce874478..6bce499e 100644
+--- a/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/__init__.py
++++ b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/__init__.py
+@@ -28,15 +28,17 @@ from airflow.api_fastapi.core_api.routes.ui.dashboard import dashboard_router
+ from airflow.api_fastapi.core_api.routes.ui.deadlines import deadlines_router
+ from airflow.api_fastapi.core_api.routes.ui.dependencies import dependencies_router
+ from airflow.api_fastapi.core_api.routes.ui.gantt import gantt_router
+ from airflow.api_fastapi.core_api.routes.ui.grid import grid_router
++from airflow.api_fastapi.core_api.routes.ui.partitioned_dag_runs import partitioned_dag_runs_router
+ from airflow.api_fastapi.core_api.routes.ui.structure import structure_router
+ from airflow.api_fastapi.core_api.routes.ui.teams import teams_router
+ 
+ ui_router = AirflowRouter(prefix="/ui", include_in_schema=False)
+ 
+ ui_router.include_router(auth_router)
+ ui_router.include_router(assets_router)
++ui_router.include_router(partitioned_dag_runs_router)
+ ui_router.include_router(config_router)
+ ui_router.include_router(connections_router)
+ ui_router.include_router(dags_router)
+ ui_router.include_router(dependencies_router)
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/assets.py b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/assets.py
+index ce3639e1..155b4972 100644
+--- a/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/assets.py
++++ b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/assets.py
+@@ -13,20 +13,25 @@
+ # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ # KIND, either express or implied.  See the License for the
+ # specific language governing permissions and limitations
+ # under the License.
+-
+ from __future__ import annotations
+ 
+ from fastapi import Depends, HTTPException, status
+-from sqlalchemy import and_, case, func, select, true
++from sqlalchemy import ColumnElement, and_, case, exists, func, select, true
+ 
+-from airflow.api_fastapi.common.dagbag import DagBagDep
+ from airflow.api_fastapi.common.db.common import SessionDep
+ from airflow.api_fastapi.common.router import AirflowRouter
+ from airflow.api_fastapi.core_api.security import requires_access_asset, requires_access_dag
+ from airflow.models import DagModel
+-from airflow.models.asset import AssetDagRunQueue, AssetEvent, AssetModel, DagScheduleAssetReference
++from airflow.models.asset import (
++    AssetDagRunQueue,
++    AssetEvent,
++    AssetModel,
++    AssetPartitionDagRun,
++    DagScheduleAssetReference,
++    PartitionedAssetKeyLog,
++)
+ 
+ assets_router = AirflowRouter(tags=["Asset"])
+ 
+ 
+@@ -35,60 +40,82 @@ assets_router = AirflowRouter(tags=["Asset"])
+     dependencies=[Depends(requires_access_asset(method="GET")), Depends(requires_access_dag(method="GET"))],
+ )
+ def next_run_assets(
+     dag_id: str,
+-    dag_bag: DagBagDep,
+     session: SessionDep,
+ ) -> dict:
+     dag_model = DagModel.get_dagmodel(dag_id, session=session)
+     if dag_model is None:
+-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"can't find associated dag_model {dag_id}")
++        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Dag with id {dag_id} was not found")
+ 
+     latest_run = dag_model.get_last_dagrun(session=session)
++    event_filter = (
++        AssetEvent.timestamp >= latest_run.logical_date if latest_run and latest_run.logical_date else true()
++    )
+ 
+-    if latest_run and latest_run.logical_date:
+-        on_clause = AssetEvent.timestamp >= latest_run.logical_date
++    pending_partition_count: int | None = None
++
++    queued_expr: ColumnElement[int]
++    if is_partitioned := dag_model.timetable_summary == "Partitioned Asset":
++        pending_partition_count = session.scalar(
++            select(func.count())
++            .select_from(AssetPartitionDagRun)
++            .where(
++                AssetPartitionDagRun.target_dag_id == dag_id,
++                AssetPartitionDagRun.created_dag_run_id.is_(None),
++            )
++        )
++        queued_expr = case(
++            (
++                exists(
++                    select(PartitionedAssetKeyLog.id)
++                    .join(
++                        AssetPartitionDagRun,
++                        PartitionedAssetKeyLog.asset_partition_dag_run_id == AssetPartitionDagRun.id,
++                    )
++                    .where(
++                        PartitionedAssetKeyLog.asset_id == AssetModel.id,
++                        PartitionedAssetKeyLog.target_dag_id == dag_id,
++                        AssetPartitionDagRun.created_dag_run_id.is_(None),
++                    )
++                ),
++                1,
++            ),
++            else_=0,
++        )
+     else:
+-        on_clause = true()
++        queued_expr = func.max(case((AssetDagRunQueue.asset_id.is_not(None), 1), else_=0))
+ 
+-    query_result = session.execute(
++    query = (
+         select(
+             AssetModel.id,
+             AssetModel.uri,
+             AssetModel.name,
+             func.max(AssetEvent.timestamp).label("lastUpdate"),
+-            func.max(
+-                case(
+-                    (AssetDagRunQueue.asset_id.is_not(None), 1),
+-                    else_=0,
+-                )
+-            ).label("queued"),
++            queued_expr.label("queued"),
+         )
+         .join(DagScheduleAssetReference, DagScheduleAssetReference.asset_id == AssetModel.id)
+-        .join(
++        .join(AssetEvent, and_(AssetEvent.asset_id == AssetModel.id, event_filter), isouter=True)
++        .where(DagScheduleAssetReference.dag_id == dag_id, AssetModel.active.has())
++        .group_by(AssetModel.id, AssetModel.uri, AssetModel.name)
++        .order_by(AssetModel.uri)
++    )
++
++    if not is_partitioned:
++        query = query.join(
+             AssetDagRunQueue,
+             and_(
+                 AssetDagRunQueue.asset_id == AssetModel.id,
+                 AssetDagRunQueue.target_dag_id == DagScheduleAssetReference.dag_id,
+             ),
+             isouter=True,
+         )
+-        .join(
+-            AssetEvent,
+-            and_(
+-                AssetEvent.asset_id == AssetModel.id,
+-                on_clause,
+-            ),
+-            isouter=True,
+-        )
+-        .where(DagScheduleAssetReference.dag_id == dag_id, AssetModel.active.has())
+-        .group_by(AssetModel.id, AssetModel.uri, AssetModel.name)
+-        .order_by(AssetModel.uri)
+-    )
+-    events = [dict(info._mapping) for info in query_result]
+ 
++    events = [dict(info._mapping) for info in session.execute(query)]
+     for event in events:
+         if not event.pop("queued", None):
+             event["lastUpdate"] = None
+ 
+-    data = {"asset_expression": dag_model.asset_expression, "events": events}
++    data: dict = {"asset_expression": dag_model.asset_expression, "events": events}
++    if pending_partition_count is not None:
++        data["pending_partition_count"] = pending_partition_count
+     return data
+diff --git a/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py
+new file mode 100644
+index 00000000..fd67b0e4
+--- /dev/null
++++ b/airflow-core/src/airflow/api_fastapi/core_api/routes/ui/partitioned_dag_runs.py
+@@ -0,0 +1,239 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++from fastapi import Depends, HTTPException, status
++from sqlalchemy import exists, func, select
++
++from airflow.api_fastapi.common.db.common import SessionDep, apply_filters_to_select
++from airflow.api_fastapi.common.parameters import (
++    QueryPartitionedDagRunDagIdFilter,
++    QueryPartitionedDagRunHasCreatedDagRunIdFilter,
++)
++from airflow.api_fastapi.common.router import AirflowRouter
++from airflow.api_fastapi.core_api.datamodels.ui.partitioned_dag_runs import (
++    PartitionedDagRunAssetResponse,
++    PartitionedDagRunCollectionResponse,
++    PartitionedDagRunDetailResponse,
++    PartitionedDagRunResponse,
++)
++from airflow.api_fastapi.core_api.security import requires_access_asset
++from airflow.models import DagModel
++from airflow.models.asset import (
++    AssetModel,
++    AssetPartitionDagRun,
++    DagScheduleAssetReference,
++    PartitionedAssetKeyLog,
++)
++from airflow.models.dagrun import DagRun
++
++partitioned_dag_runs_router = AirflowRouter(tags=["PartitionedDagRun"])
++
++
++def _build_response(row, required_count: int) -> PartitionedDagRunResponse:
++    return PartitionedDagRunResponse(
++        id=row.id,
++        dag_id=row.target_dag_id,
++        partition_key=row.partition_key,
++        created_at=row.created_at.isoformat() if row.created_at else None,
++        total_received=row.total_received or 0,
++        total_required=required_count,
++        state=row.dag_run_state if row.created_dag_run_id else "pending",
++        created_dag_run_id=row.dag_run_id,
++    )
++
++
++@partitioned_dag_runs_router.get(
++    "/partitioned_dag_runs",
++    dependencies=[Depends(requires_access_asset(method="GET"))],
++)
++def get_partitioned_dag_runs(
++    session: SessionDep,
++    dag_id: QueryPartitionedDagRunDagIdFilter,
++    has_created_dag_run_id: QueryPartitionedDagRunHasCreatedDagRunIdFilter,
++) -> PartitionedDagRunCollectionResponse:
++    """Return PartitionedDagRuns. Filter by dag_id and/or has_created_dag_run_id."""
++    if dag_id.value is not None:
++        # Single query: validate Dag + get required count
++        dag_info = session.execute(
++            select(
++                DagModel.timetable_summary,
++                func.count(DagScheduleAssetReference.asset_id).label("required_count"),
++            )
++            .outerjoin(
++                DagScheduleAssetReference,
++                (DagScheduleAssetReference.dag_id == DagModel.dag_id)
++                & DagScheduleAssetReference.asset_id.in_(
++                    select(AssetModel.id).where(AssetModel.active.has())
++                ),
++            )
++            .where(DagModel.dag_id == dag_id.value)
++            .group_by(DagModel.dag_id)
++        ).one_or_none()
++
++        if dag_info is None:
++            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Dag with id {dag_id.value} was not found")
++        if dag_info.timetable_summary != "Partitioned Asset":
++            return PartitionedDagRunCollectionResponse(partitioned_dag_runs=[], total=0)
++
++        required_count = dag_info.required_count
++
++    # Subquery for received count per partition (only count required assets)
++    required_assets_subq = (
++        select(DagScheduleAssetReference.asset_id)
++        .join(AssetModel, AssetModel.id == DagScheduleAssetReference.asset_id)
++        .where(
++            DagScheduleAssetReference.dag_id == AssetPartitionDagRun.target_dag_id,
++            AssetModel.active.has(),
++        )
++    )
++    received_subq = (
++        select(func.count(func.distinct(PartitionedAssetKeyLog.asset_id)))
++        .where(
++            PartitionedAssetKeyLog.asset_partition_dag_run_id == AssetPartitionDagRun.id,
++            PartitionedAssetKeyLog.asset_id.in_(required_assets_subq),
++        )
++        .correlate(AssetPartitionDagRun)
++        .scalar_subquery()
++    )
++
++    query = select(
++        AssetPartitionDagRun.id,
++        AssetPartitionDagRun.target_dag_id,
++        AssetPartitionDagRun.partition_key,
++        AssetPartitionDagRun.created_at,
++        AssetPartitionDagRun.created_dag_run_id,
++        DagRun.run_id.label("dag_run_id"),
++        DagRun.state.label("dag_run_state"),
++        received_subq.label("total_received"),
++    ).outerjoin(DagRun, AssetPartitionDagRun.created_dag_run_id == DagRun.id)
++    query = apply_filters_to_select(statement=query, filters=[dag_id, has_created_dag_run_id])
++    query = query.order_by(AssetPartitionDagRun.created_at.desc())
++
++    if not (rows := session.execute(query).all()):
++        return PartitionedDagRunCollectionResponse(partitioned_dag_runs=[], total=0)
++
++    if dag_id.value is not None:
++        results = [_build_response(row, required_count) for row in rows]
++        return PartitionedDagRunCollectionResponse(partitioned_dag_runs=results, total=len(results))
++
++    # No dag_id: need to get required counts and expressions per dag
++    dag_ids = list({row.target_dag_id for row in rows})
++    dag_rows = session.execute(
++        select(
++            DagModel.dag_id,
++            DagModel.asset_expression,
++            func.count(DagScheduleAssetReference.asset_id).label("required_count"),
++        )
++        .outerjoin(
++            DagScheduleAssetReference,
++            (DagScheduleAssetReference.dag_id == DagModel.dag_id)
++            & DagScheduleAssetReference.asset_id.in_(select(AssetModel.id).where(AssetModel.active.has())),
++        )
++        .where(DagModel.dag_id.in_(dag_ids))
++        .group_by(DagModel.dag_id)
++    ).all()
++
++    required_counts = {r.dag_id: r.required_count for r in dag_rows}
++    asset_expressions = {r.dag_id: r.asset_expression for r in dag_rows}
++    results = [_build_response(row, required_counts.get(row.target_dag_id, 0)) for row in rows]
++
++    return PartitionedDagRunCollectionResponse(
++        partitioned_dag_runs=results,
++        total=len(results),
++        asset_expressions=asset_expressions,
++    )
++
++
++@partitioned_dag_runs_router.get(
++    "/pending_partitioned_dag_run/{dag_id}/{partition_key}",
++    dependencies=[Depends(requires_access_asset(method="GET"))],
++)
++def get_pending_partitioned_dag_run(
++    dag_id: str,
++    partition_key: str,
++    session: SessionDep,
++) -> PartitionedDagRunDetailResponse:
++    """Return full details for pending PartitionedDagRun."""
++    partitioned_dag_run = session.execute(
++        select(
++            AssetPartitionDagRun.id,
++            AssetPartitionDagRun.target_dag_id,
++            AssetPartitionDagRun.partition_key,
++            AssetPartitionDagRun.created_at,
++            AssetPartitionDagRun.updated_at,
++            DagRun.run_id.label("created_dag_run_id"),
++        )
++        .outerjoin(DagRun, AssetPartitionDagRun.created_dag_run_id == DagRun.id)
++        .where(
++            AssetPartitionDagRun.target_dag_id == dag_id,
++            AssetPartitionDagRun.partition_key == partition_key,
++            AssetPartitionDagRun.created_dag_run_id.is_(None),
++        )
++    ).one_or_none()
++
++    if partitioned_dag_run is None:
++        raise HTTPException(
++            status.HTTP_404_NOT_FOUND,
++            f"No PartitionedDagRun for dag={dag_id} partition={partition_key}",
++        )
++
++    received_subq = (
++        select(PartitionedAssetKeyLog.asset_id).where(
++            PartitionedAssetKeyLog.asset_partition_dag_run_id == partitioned_dag_run.id
++        )
++    ).correlate(AssetModel)
++
++    received_expr = exists(received_subq.where(PartitionedAssetKeyLog.asset_id == AssetModel.id))
++
++    asset_expression_subq = (
++        select(DagModel.asset_expression).where(DagModel.dag_id == dag_id).scalar_subquery()
++    )
++    asset_rows = session.execute(
++        select(
++            AssetModel.id,
++            AssetModel.uri,
++            AssetModel.name,
++            received_expr.label("received"),
++            asset_expression_subq.label("asset_expression"),
++        )
++        .join(DagScheduleAssetReference, DagScheduleAssetReference.asset_id == AssetModel.id)
++        .where(DagScheduleAssetReference.dag_id == dag_id, AssetModel.active.has())
++        .order_by(received_expr.asc(), AssetModel.uri)
++    ).all()
++
++    assets = [
++        PartitionedDagRunAssetResponse(
++            asset_id=row.id, asset_name=row.name, asset_uri=row.uri, received=row.received
++        )
++        for row in asset_rows
++    ]
++    total_received = sum(1 for a in assets if a.received)
++    asset_expression = asset_rows[0].asset_expression if asset_rows else None
++
++    return PartitionedDagRunDetailResponse(
++        id=partitioned_dag_run.id,
++        dag_id=dag_id,
++        partition_key=partition_key,
++        created_at=partitioned_dag_run.created_at.isoformat() if partitioned_dag_run.created_at else None,
++        updated_at=partitioned_dag_run.updated_at.isoformat() if partitioned_dag_run.updated_at else None,
++        created_dag_run_id=partitioned_dag_run.created_dag_run_id,
++        assets=assets,
++        total_required=len(assets),
++        total_received=total_received,
++        asset_expression=asset_expression,
++    )
+diff --git a/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_assets.py b/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_assets.py
+index 3e9dd95b..eaf3e503 100644
+--- a/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_assets.py
++++ b/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_assets.py
+@@ -21,22 +21,31 @@ from unittest import mock
+ import pendulum
+ import pytest
+ from sqlalchemy import select
+ 
+-from airflow.models.asset import AssetDagRunQueue, AssetEvent, AssetModel
++from airflow.models.asset import (
++    AssetDagRunQueue,
++    AssetEvent,
++    AssetModel,
++    AssetPartitionDagRun,
++    PartitionedAssetKeyLog,
++)
+ from airflow.providers.standard.operators.empty import EmptyOperator
+ from airflow.sdk.definitions.asset import Asset
++from airflow.sdk.definitions.timetables.assets import PartitionedAssetTimetable
+ 
+ from tests_common.test_utils.asserts import assert_queries_count
+-from tests_common.test_utils.db import clear_db_dags, clear_db_serialized_dags
++from tests_common.test_utils.db import clear_db_apdr, clear_db_dags, clear_db_pakl, clear_db_serialized_dags
+ 
+ pytestmark = pytest.mark.db_test
+ 
+ 
+ @pytest.fixture(autouse=True)
+ def cleanup():
+     clear_db_dags()
+     clear_db_serialized_dags()
++    clear_db_apdr()
++    clear_db_pakl()
+ 
+ 
+ class TestNextRunAssets:
+     def test_should_response_200(self, test_client, dag_maker):
+@@ -161,4 +170,55 @@ class TestNextRunAssets:
+         assert resp.status_code == 200
+         ev = resp.json()["events"][0]
+         assert ev["lastUpdate"] is not None
+         assert "queued" not in ev
++
++    @pytest.mark.parametrize(
++        ("fulfilled", "expect_last_update"),
++        [(False, True), (True, False)],
++        ids=["pending", "fulfilled"],
++    )
++    def test_partitioned_dag_last_update(
++        self, test_client, dag_maker, session, fulfilled, expect_last_update
++    ):
++        asset = Asset(uri="s3://bucket/part", name="part")
++        with dag_maker(
++            dag_id="part_dag",
++            schedule=PartitionedAssetTimetable(assets=asset),
++            serialized=True,
++        ):
++            EmptyOperator(task_id="t")
++
++        dr = dag_maker.create_dagrun()
++        dag_maker.sync_dagbag_to_db()
++
++        asset_model = session.scalars(select(AssetModel).where(AssetModel.uri == "s3://bucket/part")).one()
++        event = AssetEvent(
++            asset_id=asset_model.id, timestamp=(dr.logical_date or pendulum.now()).add(minutes=5)
++        )
++        session.add(event)
++        session.flush()
++
++        pdr = AssetPartitionDagRun(
++            target_dag_id="part_dag",
++            partition_key="2024-01-01",
++            created_dag_run_id=dr.id if fulfilled else None,
++        )
++        session.add(pdr)
++        session.flush()
++
++        session.add(
++            PartitionedAssetKeyLog(
++                asset_id=asset_model.id,
++                asset_event_id=event.id,
++                asset_partition_dag_run_id=pdr.id,
++                source_partition_key="2024-01-01",
++                target_dag_id="part_dag",
++                target_partition_key="2024-01-01",
++            )
++        )
++        session.commit()
++
++        resp = test_client.get("/next_run_assets/part_dag")
++        assert resp.status_code == 200
++        ev = resp.json()["events"][0]
++        assert (ev["lastUpdate"] is not None) == expect_last_update
+diff --git a/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_partitioned_dag_runs.py b/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_partitioned_dag_runs.py
+new file mode 100644
+index 00000000..52f0ec1e
+--- /dev/null
++++ b/airflow-core/tests/unit/api_fastapi/core_api/routes/ui/test_partitioned_dag_runs.py
+@@ -0,0 +1,276 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++from __future__ import annotations
++
++import pendulum
++import pytest
++from sqlalchemy import select
++
++from airflow.models.asset import AssetEvent, AssetModel, AssetPartitionDagRun, PartitionedAssetKeyLog
++from airflow.providers.standard.operators.empty import EmptyOperator
++from airflow.sdk.definitions.asset import Asset
++from airflow.sdk.definitions.timetables.assets import PartitionedAssetTimetable
++
++from tests_common.test_utils.asserts import assert_queries_count
++from tests_common.test_utils.db import clear_db_apdr, clear_db_dags, clear_db_pakl, clear_db_serialized_dags
++
++pytestmark = pytest.mark.db_test
++
++
++@pytest.fixture(autouse=True)
++def cleanup():
++    clear_db_dags()
++    clear_db_serialized_dags()
++    clear_db_apdr()
++    clear_db_pakl()
++
++
++class TestGetPartitionedDagRuns:
++    def test_should_response_401(self, unauthenticated_test_client):
++        response = unauthenticated_test_client.get("/partitioned_dag_runs?dag_id=any")
++        assert response.status_code == 401
++
++    def test_should_response_403(self, unauthorized_test_client):
++        response = unauthorized_test_client.get("/partitioned_dag_runs?dag_id=any")
++        assert response.status_code == 403
++
++    def test_should_response_404(self, test_client):
++        assert test_client.get("/partitioned_dag_runs?dag_id=no_such_dag").status_code == 404
++
++    def test_should_response_200_non_partitioned_dag_returns_empty(self, test_client, dag_maker):
++        with dag_maker(dag_id="normal", schedule=[Asset(uri="s3://bucket/a", name="a")], serialized=True):
++            EmptyOperator(task_id="t")
++        dag_maker.create_dagrun()
++        dag_maker.sync_dagbag_to_db()
++
++        with assert_queries_count(2):
++            resp = test_client.get("/partitioned_dag_runs?dag_id=normal&has_created_dag_run_id=false")
++        assert resp.status_code == 200
++        assert resp.json() == {"partitioned_dag_runs": [], "total": 0, "asset_expressions": None}
++
++    @pytest.mark.parametrize(
++        (
++            "num_assets",
++            "received_count",
++            "fulfilled",
++            "has_created_dag_run_id",
++            "expected_total",
++            "expected_state",
++        ),
++        [
++            (1, 1, False, False, 1, "pending"),
++            (1, 1, True, False, 0, None),
++            (1, 1, True, True, 1, "running"),
++            (3, 0, False, False, 1, "pending"),
++            (3, 1, False, False, 1, "pending"),
++            (3, 2, False, False, 1, "pending"),
++            (3, 3, False, False, 1, "pending"),
++        ],
++        ids=[
++            "filter-pending-included",
++            "filter-fulfilled-excluded",
++            "filter-fulfilled-included",
++            "received-0/3",
++            "received-1/3",
++            "received-2/3",
++            "received-3/3",
++        ],
++    )
++    def test_should_response_200(
++        self,
++        test_client,
++        dag_maker,
++        session,
++        num_assets,
++        received_count,
++        fulfilled,
++        has_created_dag_run_id,
++        expected_total,
++        expected_state,
++    ):
++        uris = [f"s3://bucket/lr{i}" for i in range(num_assets)]
++        asset_defs = [Asset(uri=uri, name=f"lr{i}") for i, uri in enumerate(uris)]
++        schedule = asset_defs[0]
++        for a in asset_defs[1:]:
++            schedule = schedule & a
++
++        with dag_maker(
++            dag_id="list_dag",
++            schedule=PartitionedAssetTimetable(assets=schedule),
++            serialized=True,
++        ):
++            EmptyOperator(task_id="t")
++
++        dr = dag_maker.create_dagrun()
++        dag_maker.sync_dagbag_to_db()
++
++        assets = {a.uri: a for a in session.scalars(select(AssetModel).where(AssetModel.uri.in_(uris)))}
++
++        pdr = AssetPartitionDagRun(
++            target_dag_id="list_dag",
++            partition_key="2024-06-01",
++            created_dag_run_id=dr.id if fulfilled else None,
++        )
++        session.add(pdr)
++        session.flush()
++
++        for uri in uris[:received_count]:
++            event = AssetEvent(asset_id=assets[uri].id, timestamp=pendulum.now())
++            session.add(event)
++            session.flush()
++            session.add(
++                PartitionedAssetKeyLog(
++                    asset_id=assets[uri].id,
++                    asset_event_id=event.id,
++                    asset_partition_dag_run_id=pdr.id,
++                    source_partition_key="2024-06-01",
++                    target_dag_id="list_dag",
++                    target_partition_key="2024-06-01",
++                )
++            )
++        session.commit()
++
++        with assert_queries_count(2):
++            resp = test_client.get(
++                f"/partitioned_dag_runs?dag_id=list_dag"
++                f"&has_created_dag_run_id={str(has_created_dag_run_id).lower()}"
++            )
++        assert resp.status_code == 200
++        body = resp.json()
++        assert body["total"] == expected_total
++        if expected_total > 0:
++            pdr_resp = body["partitioned_dag_runs"][0]
++            assert pdr_resp["state"] == expected_state
++            assert pdr_resp["total_received"] == received_count
++            assert pdr_resp["total_required"] == num_assets
++
++
++class TestGetPendingPartitionedDagRun:
++    def test_should_response_401(self, unauthenticated_test_client):
++        response = unauthenticated_test_client.get("/pending_partitioned_dag_run/any_dag/any_key")
++        assert response.status_code == 401
++
++    def test_should_response_403(self, unauthorized_test_client):
++        response = unauthorized_test_client.get("/pending_partitioned_dag_run/any_dag/any_key")
++        assert response.status_code == 403
++
++    @pytest.mark.parametrize(
++        ("dag_id", "partition_key", "fulfilled"),
++        [
++            ("no_dag", "no_key", False),
++            ("fulfilled_dag", "2024-07-01", True),
++        ],
++        ids=[
++            "not-found",
++            "fulfilled-excluded",
++        ],
++    )
++    def test_should_response_404(self, test_client, dag_maker, session, dag_id, partition_key, fulfilled):
++        if fulfilled:
++            with dag_maker(
++                dag_id="fulfilled_dag",
++                schedule=PartitionedAssetTimetable(assets=Asset(uri="s3://bucket/ful0", name="ful0")),
++                serialized=True,
++            ):
++                EmptyOperator(task_id="t")
++
++            dr = dag_maker.create_dagrun()
++            dag_maker.sync_dagbag_to_db()
++
++            session.add(
++                AssetPartitionDagRun(
++                    target_dag_id="fulfilled_dag",
++                    partition_key="2024-07-01",
++                    created_dag_run_id=dr.id,
++                )
++            )
++            session.commit()
++
++        resp = test_client.get(f"/pending_partitioned_dag_run/{dag_id}/{partition_key}")
++        assert resp.status_code == 404
++
++    @pytest.mark.parametrize(
++        ("num_assets", "received_count"),
++        [
++            (1, 1),
++            (1, 0),
++            (2, 1),
++            (2, 2),
++            (2, 0),
++        ],
++        ids=[
++            "1-asset-received-pending",
++            "1-asset-none-received-pending",
++            "2-assets-partial-pending",
++            "2-assets-all-received-pending",
++            "2-assets-none-received-pending",
++        ],
++    )
++    def test_should_response_200(self, test_client, dag_maker, session, num_assets, received_count):
++        uris = [f"s3://bucket/dt{i}" for i in range(num_assets)]
++        asset_defs = [Asset(uri=uri, name=f"dt{i}") for i, uri in enumerate(uris)]
++        schedule = asset_defs[0] if num_assets == 1 else asset_defs[0] & asset_defs[1]
++
++        with dag_maker(
++            dag_id="detail_dag",
++            schedule=PartitionedAssetTimetable(assets=schedule),
++            serialized=True,
++        ):
++            EmptyOperator(task_id="t")
++
++        dag_maker.create_dagrun()
++        dag_maker.sync_dagbag_to_db()
++
++        assets = {a.uri: a for a in session.scalars(select(AssetModel).where(AssetModel.uri.in_(uris)))}
++
++        pdr = AssetPartitionDagRun(
++            target_dag_id="detail_dag",
++            partition_key="2024-07-01",
++            created_dag_run_id=None,
++        )
++        session.add(pdr)
++        session.flush()
++
++        for uri in uris[:received_count]:
++            event = AssetEvent(asset_id=assets[uri].id, timestamp=pendulum.now())
++            session.add(event)
++            session.flush()
++            session.add(
++                PartitionedAssetKeyLog(
++                    asset_id=assets[uri].id,
++                    asset_event_id=event.id,
++                    asset_partition_dag_run_id=pdr.id,
++                    source_partition_key="2024-07-01",
++                    target_dag_id="detail_dag",
++                    target_partition_key="2024-07-01",
++                )
++            )
++        session.commit()
++
++        resp = test_client.get("/pending_partitioned_dag_run/detail_dag/2024-07-01")
++        assert resp.status_code == 200
++        body = resp.json()
++        assert body["dag_id"] == "detail_dag"
++        assert body["partition_key"] == "2024-07-01"
++        assert body["total_required"] == num_assets
++        assert body["total_received"] == received_count
++        assert len(body["assets"]) == num_assets
++        assert body["asset_expression"] is not None
++        assert body["created_dag_run_id"] is None
++
++        received_uris = {a["asset_uri"] for a in body["assets"] if a["received"]}
++        assert received_uris == set(uris[:received_count])

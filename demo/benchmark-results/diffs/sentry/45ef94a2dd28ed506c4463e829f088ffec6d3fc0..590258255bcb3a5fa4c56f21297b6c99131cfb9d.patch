@@ -1,0 +1,97 @@
+diff --git a/src/sentry/api/endpoints/user_notification_settings_options_detail.py b/src/sentry/api/endpoints/user_notification_settings_options_detail.py
+index a35285814..d74476ff4 100644
+--- a/src/sentry/api/endpoints/user_notification_settings_options_detail.py
++++ b/src/sentry/api/endpoints/user_notification_settings_options_detail.py
+@@ -1,5 +1,6 @@
+ from rest_framework import status
++from rest_framework.exceptions import NotFound
+ from rest_framework.request import Request
+ from rest_framework.response import Response
+ 
+ from sentry.api.api_owners import ApiOwner
+@@ -18,14 +19,27 @@ class UserNotificationSettingsOptionsDetailEndpoint(UserEndpoint):
+     owner = ApiOwner.ALERTS_NOTIFICATIONS
+     # TODO(Steve): Make not private when we launch new system
+     private = True
+ 
+-    def delete(self, request: Request, user: User, notification_option_id: str) -> Response:
++    def convert_args(
++        self,
++        request: Request,
++        user_id: int | str | None = None,
++        *args,
++        notification_option_id: int,
++        **kwargs,
++    ):
++        args, kwargs = super().convert_args(request, user_id, *args, **kwargs)
++        user = kwargs["user"]
+         try:
+-            option = NotificationSettingOption.objects.get(
+-                id=notification_option_id,
+-            )
++            option = NotificationSettingOption.objects.get(id=notification_option_id, user=user)
+         except NotificationSettingOption.DoesNotExist:
+-            return Response(status=status.HTTP_404_NOT_FOUND)
++            raise NotFound(detail="User notification setting does not exist")
+ 
+-        option.delete()
++        kwargs["notification_setting_option"] = option
++        return args, kwargs
++
++    def delete(
++        self, request: Request, user: User, notification_setting_option: NotificationSettingOption
++    ) -> Response:
++        notification_setting_option.delete()
+         return Response(status=status.HTTP_204_NO_CONTENT)
+diff --git a/tests/sentry/api/endpoints/test_user_notification_settings_options_details.py b/tests/sentry/api/endpoints/test_user_notification_settings_options_details.py
+index 785336f16..ff9dc1015 100644
+--- a/tests/sentry/api/endpoints/test_user_notification_settings_options_details.py
++++ b/tests/sentry/api/endpoints/test_user_notification_settings_options_details.py
+@@ -23,23 +23,44 @@ class UserNotificationSettingsOptionsDetailsDeleteTest(
+     def setUp(self):
+         super().setUp()
+         self.login_as(self.user)
+ 
+-        option = NotificationSettingOption.objects.create(
++        self.option = NotificationSettingOption.objects.create(
+             user_id=self.user.id,
+             scope_type=NotificationScopeEnum.ORGANIZATION.value,
+             scope_identifier=self.organization.id,
+             type=NotificationSettingEnum.ISSUE_ALERTS.value,
+             value=NotificationSettingsOptionEnum.ALWAYS.value,
+         )
++
++    def test_simple(self):
+         self.get_success_response(
+             "me",
+-            option.id,
++            self.option.id,
+         )
+-        assert not NotificationSettingOption.objects.filter(id=option.id).exists()
++        assert not NotificationSettingOption.objects.filter(id=self.option.id).exists()
+ 
+     def test_invalid_option(self):
+         self.get_error_response(
+             "me",
+             "123",
+             status_code=status.HTTP_404_NOT_FOUND,
+         )
++
++    def test_cannot_delete_other_users_setting(self):
++        victim_user = self.create_user()
++        victim_org = self.create_organization(owner=victim_user)
++        victim_option = NotificationSettingOption.objects.create(
++            user_id=victim_user.id,
++            scope_type=NotificationScopeEnum.ORGANIZATION.value,
++            scope_identifier=victim_org.id,
++            type=NotificationSettingEnum.ISSUE_ALERTS.value,
++            value=NotificationSettingsOptionEnum.ALWAYS.value,
++        )
++
++        response = self.get_error_response(
++            "me",
++            victim_option.id,
++            status_code=status.HTTP_404_NOT_FOUND,
++        )
++        assert response.data["detail"] == "User notification setting does not exist"
++        assert NotificationSettingOption.objects.filter(id=victim_option.id).exists()

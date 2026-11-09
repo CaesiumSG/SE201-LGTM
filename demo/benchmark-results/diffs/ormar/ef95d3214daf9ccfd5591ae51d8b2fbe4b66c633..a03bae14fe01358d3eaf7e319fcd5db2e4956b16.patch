@@ -1,0 +1,99 @@
+diff --git a/ormar/queryset/queryset.py b/ormar/queryset/queryset.py
+index 36274c9..0fbd552 100644
+--- a/ormar/queryset/queryset.py
++++ b/ormar/queryset/queryset.py
+@@ -703,10 +703,15 @@ class QuerySet(Generic[T]):
+         ]
+         if func_name in ["sum", "avg"]:
+             if any(not x.is_numeric for x in select_actions):
+                 raise QueryDefinitionError(
+-                    "You can use sum and svg only with" "numeric types of columns"
++                    "You can use sum and svg only with numeric types of columns"
+                 )
++        if any(x.field_name not in x.target_model.model_fields for x in select_actions):
++            raise QueryDefinitionError(
++                "You can use aggregate functions only on "
++                "existing columns of the target model"
++            )
+         select_columns = [x.apply_func(func, use_label=True) for x in select_actions]
+         expr = self.build_select_expression().alias(f"subquery_for_{func_name}")
+         expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore
+         # print("\n", expr.compile(compile_kwargs={"literal_binds": True}))
+diff --git a/tests/test_vulnerabilities/__init__.py b/tests/test_vulnerabilities/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/test_vulnerabilities/test_aggregated_functions.py b/tests/test_vulnerabilities/test_aggregated_functions.py
+new file mode 100644
+index 0000000..5c0f67d
+--- /dev/null
++++ b/tests/test_vulnerabilities/test_aggregated_functions.py
+@@ -0,0 +1,69 @@
++from typing import Optional
++
++import ormar
++import pytest
++
++from tests.lifespan import init_tests
++from tests.settings import create_config
++
++base_ormar_config = create_config()
++
++
++class Category(ormar.Model):
++    ormar_config = base_ormar_config.copy(tablename="categories")
++
++    id: int = ormar.Integer(primary_key=True)
++    name: str = ormar.String(max_length=100)
++
++
++class Item(ormar.Model):
++    ormar_config = base_ormar_config.copy(tablename="items")
++
++    id: int = ormar.Integer(primary_key=True)
++    name: str = ormar.String(max_length=100)
++    price: float = ormar.Float(default=0)
++    category: Optional[Category] = ormar.ForeignKey(Category, nullable=True)
++
++
++create_test_database = init_tests(base_ormar_config)
++
++
++@pytest.mark.asyncio
++async def test_arbitrary_sql_execution():
++    async with base_ormar_config.database:
++        async with base_ormar_config.database.transaction(force_rollback=True):
++            if not await Item.objects.count():
++                cat = await Category.objects.create(name="Electronics")
++                await Item.objects.create(name="Tablet", price=449.99, category=cat)
++                await Item.objects.create(name="Monitor", price=329.99, category=cat)
++
++            column = "1 + 1"
++            with pytest.raises(ormar.exceptions.QueryDefinitionError):
++                await Item.objects.min(column)
++
++
++@pytest.mark.asyncio
++async def test_arbitrary_sql_execution_on_related_model():
++    async with base_ormar_config.database:
++        async with base_ormar_config.database.transaction(force_rollback=True):
++            if not await Item.objects.count():
++                cat = await Category.objects.create(name="Electronics")
++                await Item.objects.create(name="Tablet", price=449.99, category=cat)
++                await Item.objects.create(name="Monitor", price=329.99, category=cat)
++
++            column = "category__1 + 1"
++            with pytest.raises(ormar.exceptions.QueryDefinitionError):
++                await Item.objects.min(column)
++
++
++@pytest.mark.asyncio
++async def test_schema_extraction():
++    async with base_ormar_config.database:
++        async with base_ormar_config.database.transaction(force_rollback=True):
++            if not await Item.objects.count():
++                cat = await Category.objects.create(name="Electronics")
++                await Item.objects.create(name="Laptop", price=999.99, category=cat)
++
++            column = "(SELECT GROUP_CONCAT(name) FROM sqlite_master WHERE type='table')"
++            with pytest.raises(ormar.exceptions.QueryDefinitionError):
++                await Item.objects.min(column)

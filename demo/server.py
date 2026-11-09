@@ -19,6 +19,7 @@ relay run beside it. Usage, from the repository root:
 from __future__ import annotations
 
 import argparse
+import os
 import datetime
 import json
 import re
@@ -38,6 +39,22 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from bedrock_env import ledger_total, load_env_files, read_bedrock_key  # noqa: E402
+
+
+def _main_checkout(root: Path) -> Path:
+    """The main checkout when this runs from a git worktree (its .env is shared), else ``root``."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return Path(out).parent if out else root
+
+
+# Settings in .env (see .env.example) must be in the environment before the modules below read them.
+ENV_FILES = load_env_files([HERE.parent / ".env", _main_checkout(HERE.parent) / ".env"])
+
 import github_app as gh  # noqa: E402
 import results  # noqa: E402
 import report  # noqa: E402
@@ -47,8 +64,7 @@ import claude_judge  # noqa: E402
 import liveapp  # noqa: E402
 import workspace  # noqa: E402
 import demo_story  # noqa: E402
-from bedrock_env import ledger_total, read_bedrock_key  # noqa: E402
-from store import SEVERITY_RANK, Store, now  # noqa: E402
+from store import DEFAULT_SETTINGS, SEVERITY_RANK, Store, now  # noqa: E402
 
 REPO_ROOT = HERE.parent
 WEB = HERE / "web"
@@ -911,6 +927,20 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
 
+def choose_defaults(key: str | None) -> None:
+    """Reviewer and judge for a fresh install (Settings can change them later, and saved choices win).
+
+    LGTM_REVIEWER (gpu | bedrock) and LGTM_JUDGE (kev | claude) in .env decide. Unset, a machine with a Bedrock key
+    and no GPU tunnel or Kev server reviews on the API, so a fresh clone works with nothing but the key.
+    """
+    reviewer, judge = os.environ.get("LGTM_REVIEWER", "").lower(), os.environ.get("LGTM_JUDGE", "").lower()
+    if reviewer not in ("gpu", "bedrock"):
+        reviewer = "bedrock" if key and not results_port(OLLAMA) else "gpu"
+    if judge not in ("kev", "claude"):
+        judge = "claude" if key and not results_port(KEV) else "kev"
+    DEFAULT_SETTINGS["backend"], DEFAULT_SETTINGS["judge"] = reviewer, judge
+
+
 def main() -> int:
     global STORE, ENGINE, BASE_URL, STORY
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -920,13 +950,11 @@ def main() -> int:
                         help="USD this server may add to the shared Bedrock ledger (default 10)")
     args = parser.parse_args()
     BASE_URL = f"http://127.0.0.1:{args.port}"
+    key = read_bedrock_key(ENV_FILES)
+    choose_defaults(key)
     STORE = Store()
     STORY = demo_story.Story(WS, STORE)
     added = reviews.import_history(STORE)
-    main_checkout = Path(subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True, text=True).stdout.strip() or REPO_ROOT / ".git").parent
-    key = read_bedrock_key([REPO_ROOT / ".env", main_checkout / ".env"])
     budget = ledger_total() + args.bedrock_allowance
     ENGINE = reviews.Engine(STORE, sys.executable, BASE_URL, key, budget)
     ENGINE.start(args.port)

@@ -1,0 +1,778 @@
+{
+  "id": "django-explain-options-sqli-fixed",
+  "repo": "django/django",
+  "pr": null,
+  "title": "QuerySet.explain(**options) interpolated option keys directly into the EXPLAIN prefix on PostgreSQL, so an app passing a user-controlled dict could inject SQL.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "93cae5cb2f9a4ef1514cf1a41f714fef08005200",
+  "pr_sha": "6723a26e59b0b5429a0c5873941e01a2e1bdbb81",
+  "files_changed": 7,
+  "python_files_changed": 4,
+  "added_lines": 64,
+  "diff_chars": 5371,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 175.5,
+  "index_seconds": 75.7,
+  "index_reused": false,
+  "index_chunks": 3584,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 0,
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 28,
+  "reviewer_units": 6,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "explain_query_prefix base implementation and validates_explain_options feature flag"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 status=ok truncated=true incomplete=true query=\"explain_query_prefix base implementation and validates_explain_options feature f\"]\n**Exploration: explain_query_prefix base implementation and validates_explain_options feature flag**\n\nFound 154 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `Options` (django/db/models/options.py:83) \u2014 5 callers in `django/db/models/base.py`; tests: `django/test/utils.py`\n\n**Relationships**\n\n**extends:**\n- Query \u2192 BaseExpression\n- DatabaseOperations \u2192 BaseDatabaseOperations\n- DatabaseOperations \u2192 BaseDatabaseOperations\n\n**instantiates:**\n- explain_query_prefix \u2192 NotSupportedError\n\n**calls:**\n- query \u2192 _filter_or_exclude_inplace\n- explain \u2192 explain\n- chain \u2192 clone\n- union \u2192 _combinator_query\n- get_or_create \u2192 _extract_model_params\n- _combinator_query \u2192 clear_ordering\n- _combinator_query \u2192 clear_limits\n- aggregate \u2192 _validate_values_are_expressions\n- aggregate \u2192 chain\n- update \u2192 _not_support_combined_queries\n- ... and 27 more\n\n**references:**\n- query \u2192 ValuesIterable\n- check_related_objects \u2192 Query\n- sequence_reset_sql \u2192 quote_name\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/backends/mysql/operations.py`** \u2014 BaseDatabaseOperations(extends), date_extract_sql(method), date_trunc_sql(method), calls(calls), _prepare_tzname_delta(method), datetime_cast_time_sql(method), datetime_trunc_sql(method), fetch_returned_insert_rows(method), format_for_duration_arithmetic(method), force_no_ordering(method), +16 more\n\n```python\n332\t            value = timezone.make_aware(value, self.connection.timezone)\n333\t        return value\n334\t\n335\t    def convert_uuidfield_value(self, value, expression, connection):\n336\t        if value is not None:\n337\t            value = uuid.UUID(value)\n338\t        return value\n339\t\n340\t    def binary_placeholder_sql(self, value):\n341\t        return (\n\n... (gap: subtract_temporals (django/db/backends/mysql/operations.py:345)) ...\n\n368\t        params = (*rhs_params, *lhs_params)\n369\t        return \"TIMESTAMPDIFF(MICROSECOND, %s, %s)\" % (rhs_sql, lhs_sql), params\n370\t\n371\t    def explain_query_prefix(self, format=None, **options):\n372\t        # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.\n373\t        if format and format.upper() == \"TEXT\":\n374\t            format = \"TRADITIONAL\"\n375\t        elif (\n376\t            not format and \"TREE\" in self.connection.features.supported_explain_formats\n377\t        ):\n378\t            # Use TREE by default (if supported) as it's more informative.\n379\t            format = \"TREE\"\n380\t        analyze = options.pop(\"analyze\", False)\n381\t        prefix = super().explain_query_prefix(format, **options)\n382\t        if analyze and self.connection.features.supports_explain_analyze:\n383\t            # MariaDB uses ANALYZE instead of EXPLAIN ANALYZE.\n384\t            prefix = (\n385\t                \"ANALYZE\" if self.connection.mysql_is_mariadb else prefix + \" ANALYZE\"\n386\t            )\n387\t        if format and not (analyze and not self.connection.mysql_is_mariadb):\n388\t            # Only MariaDB supports the analyze option with formats.\n389\t            prefix += \" FORMAT=%s\" % format\n390\t        return prefix\n391\t\n392\t    def regex_lookup(self, lookup_type):\n393\t        # REGEXP BINARY doesn't work correctly in MySQL 8+ and REGEXP_LIKE\n394\t        # doesn't exist in MySQL 5.x or in MariaDB.\n395\t        if (\n396\t            self.connection.mysql_version < (8, 0, 0)\n397\t            or self.connection.mysql_is_mariadb\n398\t        ):\n399\t            if lookup_type == \"regex\":\n400\t                return \"%s REGEXP BINARY %s\"\n401\t            return \"%s REGEXP %s\"\n402\t\n403\t        match_option = \"c\" if lookup_type == \"regex\" else \"i\"\n404\t        return \"REGEXP_LIKE(%%s, %%s, '%s')\" % match_option\n405\t\n406\t    def insert_statement(self, on_conflict=None):\n407\t        if on_conflict == OnConflict.IGNORE:\n408\t            return \"INSERT IGNORE INTO\"\n409\t        return super().insert_statement(on_conflict=on_conflict)\n410\t\n411\t    def lookup_cast(self, lookup_type, internal_type=None):\n412\t        lookup = \"%s\"\n413\t        if internal_type == \"JSONField\":\n414\t            if self.connection.mysql_is_mariadb or lookup_type in (\n415\t                \"iexact\",\n416\t                \"contains\",\n417\t                \"icontains\",\n418\t                \"startswith\",\n419\t                \"istartswith\",\n420\t                \"endswith\",\n421\t                \"iendswith\",\n422\t                \"regex\",\n423\t                \"iregex\",\n424\t            ):\n425\t                lookup = \"JSON_UNQUOTE(%s)\"\n426\t        return lookup\n427\t\n428\t    def conditional_expression_supported_in_where_clause(self, expression):\n429\t        # MySQL ignores indexes with boolean fields unless they're compared\n```\n\n**`django/db/backends/postgresql/operations.py`** \u2014 calls(calls), quote_name(calls), BaseDatabaseOperations(extends), unification_cast_sql(method), datetime_extract_sql(method), datetime_trunc_sql(method), deferrable_sql(method), fetch_returned_insert_rows(method), lookup_cast(method), no_limit_value(method), +19 more\n\n```python\n53\t        return \"DATE_TRUNC('%s', %s)\" % (lookup_type, field_name)\n54\t\n55\t    def _prepare_tzname_delta(self, tzname):\n56\t        tzname, sign, offset = split_tzname_delta(tzname)\n57\t        if offset:\n58\t            sign = \"-\" if sign == \"+\" else \"+\"\n59\t            return f\"{tzname}{sign}{offset}\"\n60\t        return tzname\n61\t\n62\t    def _co\n[TRUNCATED omitted_chars=19286]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "Query.explain method and ExplainInfo class definition"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 status=ok truncated=true incomplete=true query=\"Query.explain method and ExplainInfo class definition\"]\n**Exploration: Query.explain method and ExplainInfo class definition**\n\nFound 153 symbols across 7 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `explain` (django/db/models/sql/query.py:590) \u2014 1 caller in `django/db/models/query.py`; no tests found within 3 caller hops\n- `ExplainInfo` (django/db/models/sql/query.py:150) \u2014 1 caller in `django/db/models/sql/query.py`; no tests found within 3 caller hops\n- `explain_query` (django/db/models/sql/compiler.py:1428) \u2014 1 caller in `django/db/models/sql/query.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- Info \u2192 CheckMessage\n- Warning \u2192 CheckMessage\n- Error \u2192 CheckMessage\n- Debug \u2192 CheckMessage\n- Critical \u2192 CheckMessage\n- ProxyModelWarning \u2192 Warning\n- DeleteViewCustomDeleteWarning \u2192 Warning\n- DatabaseOperations \u2192 BaseDatabaseOperations\n\n**calls:**\n- explain \u2192 ExplainInfo\n- explain \u2192 explain_query\n- explain \u2192 get_compiler\n- explain \u2192 clone\n- explain \u2192 explain\n- explain_query \u2192 execute_sql\n- info \u2192 add_message\n- auth_processor_messages \u2192 info\n- error \u2192 add_message\n- warning \u2192 add_message\n- ... and 78 more\n\n**references:**\n- explain \u2192 ExplainInfo\n- check_related_objects \u2192 Query\n- auth_processor_messages/ \u2192 auth_processor_messages\n- urlpatterns \u2192 auth_processor_messages\n- _perform_invalid_key_test \u2192 warning\n- test_makemigrations_inconsistent_history_db_failure \u2192 warning\n- test02_bad_query \u2192 GeoIP2\n- __init__ \u2192 INFO\n- is_serious \u2192 ERROR\n\n**instantiates:**\n- explain_query_prefix \u2192 NotSupportedError\n- add_message \u2192 MessageFailure\n- test_repr \u2192 GeoIP2\n- test04_city \u2192 GeoIP2\n- test_check_query \u2192 GeoIP2\n- test_no_database_file \u2192 GeoIP2\n- test01_init \u2192 GeoIP2\n- test03_country \u2192 GeoIP2\n- test06_ipv6_query \u2192 GeoIP2\n- test02_bad_query \u2192 GeoIP2\n- ... and 9 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/sql/query.py`** \u2014 table_alias(method), promote_joins(method), count_active_tables(method), resolve_lookup_value(method), try_transform(method), add_q(method), clear_where(method), _gen_cols(method), add_distinct_fields(method), clear_ordering(method), +20 more\n\n```python\n92\t    def chain(self, using):\n93\t        return self.clone(using)\n94\t\n95\t    def clone(self, using):\n96\t        return RawQuery(self.sql, using, params=self.params)\n97\t\n98\t    def get_columns(self):\n99\t        if self.cursor is None:\n\n... (gap: __iter__ (django/db/models/sql/query.py:104), __repr__ (django/db/models/sql/query.py:116), params_type (django/db/models/sql/query.py:120), __str__ (django/db/models/sql/query.py:125), _execute_query (django/db/models/sql/query.py:130)) ...\n\n147\t        self.cursor.execute(self.sql, params)\n148\t\n149\t\n150\tExplainInfo = namedtuple(\"ExplainInfo\", (\"format\", \"options\"))\n151\t\n152\t\n153\tclass Query(BaseExpression):\n154\t    \"\"\"A single SQL query.\"\"\"\n155\t\n156\t    alias_prefix = \"T\"\n157\t    empty_result_set_value = None\n158\t    subq_aliases = frozenset([alias_prefix])\n159\t\n160\t    compiler = \"SQLCompiler\"\n161\t\n162\t    base_table_class = BaseTable\n163\t    join_class = Join\n164\t\n165\t    default_cols = True\n166\t    default_ordering = True\n\n... (gap: __init__ (django/db/models/sql/query.py:225), output_field (django/db/models/sql/query.py:254), has_select_fields (django/db/models/sql/query.py:262), base_table (django/db/models/sql/query.py:268), __str__ (django/db/models/sql/query.py:272)) ...\n\n280\t        sql, params = self.sql_with_params()\n281\t        return sql % params\n282\t\n283\t    def sql_with_params(self):\n284\t        \"\"\"\n285\t        Return the query as an SQL string and the parameters that will be\n286\t        substituted into the query.\n287\t        \"\"\"\n288\t        return self.get_compiler(DEFAULT_DB_ALIAS).as_sql()\n289\t\n290\t    def __deepcopy__(self, memo):\n291\t        \"\"\"Limit the amount of work when a Query is deepcopied.\"\"\"\n292\t        result = self.clone()\n293\t        memo[id(self)] = result\n294\t        return result\n295\t\n296\t    def get_compiler(self, using=None, connection=None, elide_empty=True):\n297\t        if using is None and connection is None:\n298\t            raise ValueError(\"Need either using or connection\")\n299\t        if using:\n300\t            connection = connections[using]\n301\t        return connection.ops.compiler(self.compiler)(\n302\t            self, connection, using, elide_empty\n303\t        )\n304\t\n305\t    def get_meta(self):\n306\t        \"\"\"\n307\t        Return the Options instance (the model._meta) from which to start\n308\t        processing. Normally, this is self.model._meta, but it can be changed\n309\t        by subclasses.\n310\t        \"\"\"\n311\t        if self.model:\n312\t            return self.model._meta\n313\t\n314\t    def clone(self):\n315\t        \"\"\"\n316\t        Return a copy of the current Query. A lightweight alternative to\n317\t        to deepcopy().\n318\t        \"\"\"\n319\t        obj = Empty()\n320\t        obj.__class__ = self.__class__\n321\t        # Copy references to everything.\n322\t        obj.__dict__ = self.__dict__.copy()\n323\t        # Clone attributes that can't use shallow copy.\n324\t        obj.alias_refcount = self.alias_refcount.copy()\n325\t        obj.alias_map = self.alias_map.copy()\n326\t        obj.external_aliases = self.external_aliases.copy()\n327\t        obj.table_map = self.table_map.copy()\n328\t        obj.where = self.where.clone()\n329\t        obj.annotations = self.annotations.copy()\n330\t        if self.annotati\n[TRUNCATED omitted_chars=19342]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1420,
+                  "end_line": 1460
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/models/sql/compiler.py lines=1420-1460]\n1420:         for index, select_col in enumerate(self.query.select):\n1421:             lhs_sql, lhs_params = self.compile(select_col)\n1422:             rhs = \"%s.%s\" % (qn(alias), qn2(columns[index]))\n1423:             self.query.where.add(RawSQL(\"%s = %s\" % (lhs_sql, rhs), lhs_params), \"AND\")\n1424: \n1425:         sql, params = self.as_sql()\n1426:         return \"EXISTS (%s)\" % sql, params\n1427: \n1428:     def explain_query(self):\n1429:         result = list(self.execute_sql())\n1430:         # Some backends return 1 item tuples with strings, and others return\n1431:         # tuples with integers and strings. Flatten them out into strings.\n1432:         output_formatter = (\n1433:             json.dumps if self.query.explain_info.format == \"json\" else str\n1434:         )\n1435:         for row in result[0]:\n1436:             if not isinstance(row, str):\n1437:                 yield \" \".join(output_formatter(c) for c in row)\n1438:             else:\n1439:                 yield row\n1440: \n1441: \n1442: class SQLInsertCompiler(SQLCompiler):\n1443:     returning_fields = None\n1444:     returning_params = tuple()\n1445: \n1446:     def field_as_sql(self, field, val):\n1447:         \"\"\"\n1448:         Take a field and a value intended to be saved on that field, and\n1449:         return placeholder SQL and accompanying params. Check for raw values,\n1450:         expressions, and fields with get_placeholder() defined in that order.\n1451: \n1452:         When field is None, consider the value raw and use it as the\n1453:         placeholder, with no corresponding parameters returned.\n1454:         \"\"\"\n1455:         if field is None:\n1456:             # A field value of None means the value is raw.\n1457:             sql, params = val, []\n1458:         elif hasattr(val, \"as_sql\"):\n1459:             # This is an expression, let's compile it.\n1460:             sql, params = self.compile(val)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 1,
+                  "end_line": 60
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/base/operations.py lines=1-60]\n1: import datetime\n2: import decimal\n3: from importlib import import_module\n4: \n5: import sqlparse\n6: \n7: from django.conf import settings\n8: from django.db import NotSupportedError, transaction\n9: from django.db.backends import utils\n10: from django.utils import timezone\n11: from django.utils.encoding import force_str\n12: \n13: \n14: class BaseDatabaseOperations:\n15:     \"\"\"\n16:     Encapsulate backend-specific differences, such as the way a backend\n17:     performs ordering or calculates the ID of a recently-inserted row.\n18:     \"\"\"\n19: \n20:     compiler_module = \"django.db.models.sql.compiler\"\n21: \n22:     # Integer field safe ranges by `internal_type` as documented\n23:     # in docs/ref/models/fields.txt.\n24:     integer_field_ranges = {\n25:         \"SmallIntegerField\": (-32768, 32767),\n26:         \"IntegerField\": (-2147483648, 2147483647),\n27:         \"BigIntegerField\": (-9223372036854775808, 9223372036854775807),\n28:         \"PositiveBigIntegerField\": (0, 9223372036854775807),\n29:         \"PositiveSmallIntegerField\": (0, 32767),\n30:         \"PositiveIntegerField\": (0, 2147483647),\n31:         \"SmallAutoField\": (-32768, 32767),\n32:         \"AutoField\": (-2147483648, 2147483647),\n33:         \"BigAutoField\": (-9223372036854775808, 9223372036854775807),\n34:     }\n35:     set_operators = {\n36:         \"union\": \"UNION\",\n37:         \"intersection\": \"INTERSECT\",\n38:         \"difference\": \"EXCEPT\",\n39:     }\n40:     # Mapping of Field.get_internal_type() (typically the model field's class\n41:     # name) to the data type to use for the Cast() function, if different from\n42:     # DatabaseWrapper.data_types.\n43:     cast_data_types = {}\n44:     # CharField data type if the max_length argument isn't provided.\n45:     cast_char_field_without_max_length = None\n46: \n47:     # Start and end points for window expressions.\n48:     PRECEDING = \"PRECEDING\"\n49:     FOLLOWING = \"FOLLOWING\"\n50:     UNBOUNDED_PRECEDING = \"UNBOUNDED \" + PRECEDING\n51:     UNBOUNDED_FOLLOWING = \"UNBOUNDED \" + FOLLOWING\n52:     CURRENT_ROW = \"CURRENT ROW\"\n53: \n54:     # Prefix for EXPLAIN queries, or None EXPLAIN isn't supported.\n55:     explain_prefix = None\n56: \n57:     def __init__(self, connection):\n58:         self.connection = connection\n59:         self._cache = None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain_query_prefix",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 pattern=\"def explain_query_prefix\"]\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:300:    def explain_query_prefix(self, format=None, **options):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "validates_explain_options",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 pattern=\"validates_explain_options\"]\ndjango/db/backends/base/features.py:268:    validates_explain_options = True\ndjango/db/backends/postgresql/features.py:57:    validates_explain_options = False  # A query will error on invalid options.\ntests/queries/test_explain.py:60:    @skipUnlessDBFeature(\"validates_explain_options\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 740,
+                  "end_line": 775
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/base/operations.py lines=740-766]\n740:                 \"%s only supports UNBOUNDED together with PRECEDING and \"\n741:                 \"FOLLOWING.\" % self.connection.display_name\n742:             )\n743:         return start_, end_\n744: \n745:     def explain_query_prefix(self, format=None, **options):\n746:         if not self.connection.features.supports_explaining_query_execution:\n747:             raise NotSupportedError(\n748:                 \"This backend does not support explaining query execution.\"\n749:             )\n750:         if format:\n751:             supported_formats = self.connection.features.supported_explain_formats\n752:             normalized_format = format.upper()\n753:             if normalized_format not in supported_formats:\n754:                 msg = \"%s is not a recognized format.\" % normalized_format\n755:                 if supported_formats:\n756:                     msg += \" Allowed formats: %s\" % \", \".join(sorted(supported_formats))\n757:                 raise ValueError(msg)\n758:         if options:\n759:             raise ValueError(\"Unknown options: %s\" % \", \".join(sorted(options.keys())))\n760:         return self.explain_prefix\n761: \n762:     def insert_statement(self, on_conflict=None):\n763:         return \"INSERT INTO\"\n764: \n765:     def on_conflict_suffix_sql(self, fields, on_conflict, update_fields, unique_fields):\n766:         return \"\"\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 295,
+                  "end_line": 325
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/postgresql/operations.py lines=295-325]\n295:             rhs_sql, rhs_params = rhs\n296:             params = (*lhs_params, *rhs_params)\n297:             return \"(interval '1 day' * (%s - %s))\" % (lhs_sql, rhs_sql), params\n298:         return super().subtract_temporals(internal_type, lhs, rhs)\n299: \n300:     def explain_query_prefix(self, format=None, **options):\n301:         prefix = super().explain_query_prefix(format)\n302:         extra = {}\n303:         if format:\n304:             extra[\"FORMAT\"] = format\n305:         if options:\n306:             extra.update(\n307:                 {\n308:                     name.upper(): \"true\" if value else \"false\"\n309:                     for name, value in options.items()\n310:                 }\n311:             )\n312:         if extra:\n313:             prefix += \" (%s)\" % \", \".join(\"%s %s\" % i for i in extra.items())\n314:         return prefix\n315: \n316:     def on_conflict_suffix_sql(self, fields, on_conflict, update_fields, unique_fields):\n317:         if on_conflict == OnConflict.IGNORE:\n318:             return \"ON CONFLICT DO NOTHING\"\n319:         if on_conflict == OnConflict.UPDATE:\n320:             return \"ON CONFLICT(%s) DO UPDATE SET %s\" % (\n321:                 \", \".join(map(self.quote_name, unique_fields)),\n322:                 \", \".join(\n323:                     [\n324:                         f\"{field} = EXCLUDED.{field}\"\n325:                         for field in map(self.quote_name, update_fields)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 45,
+                  "end_line": 60
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/models/sql/query.py lines=45-60]\n45: \n46: __all__ = [\"Query\", \"RawQuery\"]\n47: \n48: # Quotation marks ('\"`[]), whitespace characters, semicolons, or inline\n49: # SQL comments are forbidden in column aliases.\n50: FORBIDDEN_ALIAS_PATTERN = _lazy_re_compile(r\"['`\\\"\\]\\[;\\s]|--|/\\*|\\*/\")\n51: \n52: \n53: def get_field_names_from_opts(opts):\n54:     if opts is None:\n55:         return set()\n56:     return set(\n57:         chain.from_iterable(\n58:             (f.name, f.attname) if f.concrete else (f.name,) for f in opts.get_fields()\n59:         )\n60:     )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 585,
+                  "end_line": 605
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/models/sql/query.py lines=585-605]\n585:     def has_results(self, using):\n586:         q = self.exists(using)\n587:         compiler = q.get_compiler(using=using)\n588:         return compiler.has_results()\n589: \n590:     def explain(self, using, format=None, **options):\n591:         q = self.clone()\n592:         q.explain_info = ExplainInfo(format, options)\n593:         compiler = q.get_compiler(using=using)\n594:         return \"\\n\".join(compiler.explain_query())\n595: \n596:     def combine(self, rhs, connector):\n597:         \"\"\"\n598:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n599:         being applied *after* (that is, \"to the right of\") anything in the\n600:         current query. 'rhs' is not modified during a call to this function.\n601: \n602:         The 'connector' parameter describes how to connect filters from the\n603:         'rhs' query.\n604:         \"\"\"\n605:         if self.model != rhs.model:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "start_line": 50,
+                  "end_line": 100
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=tests/queries/test_explain.py lines=50-100]\n50:                                     f\"QuerySet.explain() result is not valid XML: {e}\"\n51:                                 )\n52:                         elif format == \"json\":\n53:                             try:\n54:                                 json.loads(result)\n55:                             except json.JSONDecodeError as e:\n56:                                 self.fail(\n57:                                     f\"QuerySet.explain() result is not valid JSON: {e}\"\n58:                                 )\n59: \n60:     @skipUnlessDBFeature(\"validates_explain_options\")\n61:     def test_unknown_options(self):\n62:         with self.assertRaisesMessage(ValueError, \"Unknown options: test, test2\"):\n63:             Tag.objects.explain(test=1, test2=1)\n64: \n65:     def test_unknown_format(self):\n66:         msg = \"DOES NOT EXIST is not a recognized format.\"\n67:         if connection.features.supported_explain_formats:\n68:             msg += \" Allowed formats: %s\" % \", \".join(\n69:                 sorted(connection.features.supported_explain_formats)\n70:             )\n71:         with self.assertRaisesMessage(ValueError, msg):\n72:             Tag.objects.explain(format=\"does not exist\")\n73: \n74:     @unittest.skipUnless(connection.vendor == \"postgresql\", \"PostgreSQL specific\")\n75:     def test_postgres_options(self):\n76:         qs = Tag.objects.filter(name=\"test\")\n77:         test_options = [\n78:             {\"COSTS\": False, \"BUFFERS\": True, \"ANALYZE\": True},\n79:             {\"costs\": False, \"buffers\": True, \"analyze\": True},\n80:             {\"verbose\": True, \"timing\": True, \"analyze\": True},\n81:             {\"verbose\": False, \"timing\": False, \"analyze\": True},\n82:             {\"summary\": True},\n83:         ]\n84:         if connection.features.is_postgresql_12:\n85:             test_options.append({\"settings\": True})\n86:         if connection.features.is_postgresql_13:\n87:             test_options.append({\"analyze\": True, \"wal\": True})\n88:         for options in test_options:\n89:             with self.subTest(**options), transaction.atomic():\n90:                 with CaptureQueriesContext(connection) as captured_queries:\n91:                     qs.explain(format=\"text\", **options)\n92:                 self.assertEqual(len(captured_queries), 1)\n93:                 for name, value in options.items():\n94:                     option = \"{} {}\".format(name.upper(), \"true\" if value else \"false\")\n95:                     self.assertIn(option, captured_queries[0][\"sql\"])\n96: \n97:     @unittest.skipUnless(connection.vendor == \"mysql\", \"MySQL specific\")\n98:     def test_mysql_text_to_traditional(self):\n99:         # Ensure these cached properties are initialized to prevent queries for\n100:         # the MariaDB or MySQL version during the QuerySet evaluation.\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "django/db/models/query.py"
+                },
+                "result": "[GREP snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 pattern=\"def explain\"]\ndjango/db/models/query.py:1048:    def explain(self, *, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1040,
+                  "end_line": 1065
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/models/query.py lines=1040-1065]\n1040:             return obj in self._result_cache\n1041:         return self.filter(pk=obj.pk).exists()\n1042: \n1043:     def _prefetch_related_objects(self):\n1044:         # This method can only be called once the result cache has been filled.\n1045:         prefetch_related_objects(self._result_cache, *self._prefetch_related_lookups)\n1046:         self._prefetch_done = True\n1047: \n1048:     def explain(self, *, format=None, **options):\n1049:         return self.query.explain(using=self.db, format=format, **options)\n1050: \n1051:     ##################################################\n1052:     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n1053:     ##################################################\n1054: \n1055:     def raw(self, raw_query, params=(), translations=None, using=None):\n1056:         if using is None:\n1057:             using = self.db\n1058:         qs = RawQuerySet(\n1059:             raw_query,\n1060:             model=self.model,\n1061:             params=params,\n1062:             translations=translations,\n1063:             using=using,\n1064:         )\n1065:         qs._prefetch_related_lookups = self._prefetch_related_lookups[:]\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 1,
+                  "end_line": 30,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/backends/postgresql/operations.py lines=1-30]\n1: from psycopg2.extras import Inet\n2: \n3: from django.conf import settings\n4: from django.db.backends.base.operations import BaseDatabaseOperations\n5: from django.db.backends.utils import split_tzname_delta\n6: from django.db.models.constants import OnConflict\n7: \n8: \n9: class DatabaseOperations(BaseDatabaseOperations):\n10:     cast_char_field_without_max_length = \"varchar\"\n11:     explain_prefix = \"EXPLAIN\"\n12:     explain_options = frozenset(\n13:         [\n14:             \"ANALYZE\",\n15:             \"BUFFERS\",\n16:             \"COSTS\",\n17:             \"SETTINGS\",\n18:             \"SUMMARY\",\n19:             \"TIMING\",\n20:             \"VERBOSE\",\n21:             \"WAL\",\n22:         ]\n23:     )\n24:     cast_data_types = {\n25:         \"AutoField\": \"integer\",\n26:         \"BigAutoField\": \"bigint\",\n27:         \"SmallAutoField\": \"smallint\",\n28:     }\n29: \n30:     def unification_cast_sql(self, output_field):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 308,
+                  "end_line": 335,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/backends/postgresql/operations.py lines=308-335]\n308:             params = (*lhs_params, *rhs_params)\n309:             return \"(interval '1 day' * (%s - %s))\" % (lhs_sql, rhs_sql), params\n310:         return super().subtract_temporals(internal_type, lhs, rhs)\n311: \n312:     def explain_query_prefix(self, format=None, **options):\n313:         extra = {}\n314:         # Normalize options.\n315:         if options:\n316:             options = {\n317:                 name.upper(): \"true\" if value else \"false\"\n318:                 for name, value in options.items()\n319:             }\n320:             for valid_option in self.explain_options:\n321:                 value = options.pop(valid_option, None)\n322:                 if value is not None:\n323:                     extra[valid_option.upper()] = value\n324:         prefix = super().explain_query_prefix(format, **options)\n325:         if format:\n326:             extra[\"FORMAT\"] = format\n327:         if extra:\n328:             prefix += \" (%s)\" % \", \".join(\"%s %s\" % i for i in extra.items())\n329:         return prefix\n330: \n331:     def on_conflict_suffix_sql(self, fields, on_conflict, update_fields, unique_fields):\n332:         if on_conflict == OnConflict.IGNORE:\n333:             return \"ON CONFLICT DO NOTHING\"\n334:         if on_conflict == OnConflict.UPDATE:\n335:             return \"ON CONFLICT(%s) DO UPDATE SET %s\" % (\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 45,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=45-60]\n45: \n46: __all__ = [\"Query\", \"RawQuery\"]\n47: \n48: # Quotation marks ('\"`[]), whitespace characters, semicolons, or inline\n49: # SQL comments are forbidden in column aliases.\n50: FORBIDDEN_ALIAS_PATTERN = _lazy_re_compile(r\"['`\\\"\\]\\[;\\s]|--|/\\*|\\*/\")\n51: \n52: # Inspired from\n53: # https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS\n54: EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\n55: \n56: \n57: def get_field_names_from_opts(opts):\n58:     if opts is None:\n59:         return set()\n60:     return set(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 590,
+                  "end_line": 610,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=590-610]\n590:         q = self.exists(using)\n591:         compiler = q.get_compiler(using=using)\n592:         return compiler.has_results()\n593: \n594:     def explain(self, using, format=None, **options):\n595:         q = self.clone()\n596:         for option_name in options:\n597:             if (\n598:                 not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\n599:                 or \"--\" in option_name\n600:             ):\n601:                 raise ValueError(f\"Invalid option name: {option_name!r}.\")\n602:         q.explain_info = ExplainInfo(format, options)\n603:         compiler = q.get_compiler(using=using)\n604:         return \"\\n\".join(compiler.explain_query())\n605: \n606:     def combine(self, rhs, connector):\n607:         \"\"\"\n608:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n609:         being applied *after* (that is, \"to the right of\") anything in the\n610:         current query. 'rhs' is not modified during a call to this function.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/features.py",
+                  "start_line": 50,
+                  "end_line": 62,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/backends/postgresql/features.py lines=50-62]\n50:         END;\n51:     $$ LANGUAGE plpgsql;\"\"\"\n52:     requires_casted_case_in_updates = True\n53:     supports_over_clause = True\n54:     only_supports_unbounded_with_preceding_and_following = True\n55:     supports_aggregate_filter_clause = True\n56:     supported_explain_formats = {\"JSON\", \"TEXT\", \"XML\", \"YAML\"}\n57:     supports_deferrable_unique_constraints = True\n58:     has_json_operators = True\n59:     json_key_contains_list_matching_requires_list = True\n60:     supports_update_conflicts = True\n61:     supports_update_conflicts_with_target = True\n62:     test_collations = {\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "start_line": 55,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=tests/queries/test_explain.py lines=55-130]\n55:                             except json.JSONDecodeError as e:\n56:                                 self.fail(\n57:                                     f\"QuerySet.explain() result is not valid JSON: {e}\"\n58:                                 )\n59: \n60:     @skipUnlessDBFeature(\"validates_explain_options\")\n61:     def test_unknown_options(self):\n62:         with self.assertRaisesMessage(ValueError, \"Unknown options: TEST, TEST2\"):\n63:             Tag.objects.explain(**{\"TEST\": 1, \"TEST2\": 1})\n64: \n65:     def test_unknown_format(self):\n66:         msg = \"DOES NOT EXIST is not a recognized format.\"\n67:         if connection.features.supported_explain_formats:\n68:             msg += \" Allowed formats: %s\" % \", \".join(\n69:                 sorted(connection.features.supported_explain_formats)\n70:             )\n71:         with self.assertRaisesMessage(ValueError, msg):\n72:             Tag.objects.explain(format=\"does not exist\")\n73: \n74:     @unittest.skipUnless(connection.vendor == \"postgresql\", \"PostgreSQL specific\")\n75:     def test_postgres_options(self):\n76:         qs = Tag.objects.filter(name=\"test\")\n77:         test_options = [\n78:             {\"COSTS\": False, \"BUFFERS\": True, \"ANALYZE\": True},\n79:             {\"costs\": False, \"buffers\": True, \"analyze\": True},\n80:             {\"verbose\": True, \"timing\": True, \"analyze\": True},\n81:             {\"verbose\": False, \"timing\": False, \"analyze\": True},\n82:             {\"summary\": True},\n83:         ]\n84:         if connection.features.is_postgresql_12:\n85:             test_options.append({\"settings\": True})\n86:         if connection.features.is_postgresql_13:\n87:             test_options.append({\"analyze\": True, \"wal\": True})\n88:         for options in test_options:\n89:             with self.subTest(**options), transaction.atomic():\n90:                 with CaptureQueriesContext(connection) as captured_queries:\n91:                     qs.explain(format=\"text\", **options)\n92:                 self.assertEqual(len(captured_queries), 1)\n93:                 for name, value in options.items():\n94:                     option = \"{} {}\".format(name.upper(), \"true\" if value else \"false\")\n95:                     self.assertIn(option, captured_queries[0][\"sql\"])\n96: \n97:     def test_option_sql_injection(self):\n98:         qs = Tag.objects.filter(name=\"test\")\n99:         options = {\"SUMMARY true) SELECT 1; --\": True}\n100:         msg = \"Invalid option name: 'SUMMARY true) SELECT 1; --'\"\n101:         with self.assertRaisesMessage(ValueError, msg):\n102:             qs.explain(**options)\n103: \n104:     def test_invalid_option_names(self):\n105:         qs = Tag.objects.filter(name=\"test\")\n106:         tests = [\n107:             'opt\"ion',\n108:             \"o'ption\",\n109:             \"op`tion\",\n110:             \"opti on\",\n111:             \"option--\",\n112:             \"optio\\tn\",\n113:             \"o\\nption\",\n114:             \"option;\",\n115:             \"\u4f60 \u597d\",\n116:             # [] are used by MSSQL.\n117:             \"option[\",\n118:             \"option]\",\n119:         ]\n120:         for invalid_option in tests:\n121:             with self.subTest(invalid_option):\n122:                 msg = f\"Invalid option name: {invalid_option!r}\"\n123:                 with self.assertRaisesMessage(ValueError, msg):\n124:                     qs.explain(**{invalid_option: True})\n125: \n126:     @unittest.skipUnless(connection.vendor == \"mysql\", \"MySQL specific\")\n127:     def test_mysql_text_to_traditional(self):\n128:         # Ensure these cached properties are initialized to prevent queries for\n129:         # the MariaDB or MySQL version during the QuerySet evaluation.\n130:         connection.features.supported_explain_formats\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_options",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_options\"]\ndjango/db/backends/base/features.py:268:    validates_explain_options = True\ndjango/db/backends/postgresql/operations.py:12:    explain_options = frozenset(\ndjango/db/backends/postgresql/operations.py:320:            for valid_option in self.explain_options:\ntests/queries/test_explain.py:60:    @skipUnlessDBFeature(\"validates_explain_options\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/features.py",
+                  "start_line": 260,
+                  "end_line": 275
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/base/features.py lines=260-275]\n260:     # Does the backend support keyword parameters for cursor.callproc()?\n261:     supports_callproc_kwargs = False\n262: \n263:     # What formats does the backend EXPLAIN syntax support?\n264:     supported_explain_formats = set()\n265: \n266:     # Does DatabaseOperations.explain_query_prefix() raise ValueError if\n267:     # unknown kwargs are passed to QuerySet.explain()?\n268:     validates_explain_options = True\n269: \n270:     # Does the backend support the default parameter in lead() and lag()?\n271:     supports_default_in_lead_lag = True\n272: \n273:     # Does the backend support ignoring constraint or uniqueness errors during\n274:     # INSERT?\n275:     supports_ignore_conflicts = True\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "EXPLAIN_OPTIONS_PATTERN",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"EXPLAIN_OPTIONS_PATTERN\"]\ndjango/db/models/sql/query.py:54:EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\ndjango/db/models/sql/query.py:598:                not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "django/db/backends/sqlite3/operations.py"
+                },
+                "result": "[GREP snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 pattern=\"def explain\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_query_prefix",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 pattern=\"explain_query_prefix\"]\ndjango/db/backends/base/features.py:266:    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:381:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/backends/postgresql/operations.py:300:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:301:        prefix = super().explain_query_prefix(format)\ndjango/db/models/sql/compiler.py:727:                    self.connection.ops.explain_query_prefix(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\": [{\"id\": \"explain-option-validation\", \"title\": \"Validate EXPLAIN option names to prevent SQL injection\", \"rationale\": \"The new EXPLAIN_OPTIONS_PATTERN regex and the per-option check in Query.explain() together reject option names containing whitespace, quotes, semicolons, or comment markers before they reach SQL generation.\", \"hunks\": [\"django/db/models/sql/query.py#0\", \"django/db/models/sql/query.py#1\"], \"context\": [{\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"FORBIDDEN_ALIAS_PATTERN\", \"start_line\": 50, \"end_line\": 50, \"snapshot\": \"base\", \"why\": \"Existing forbidden-alias regex the new EXPLAIN_OPTIONS_PATTERN is modeled after\"}, {\"path\": \"django/db/models/query.py\", \"symbol\": \"QuerySet.explain\", \"start_line\": 1048, \"end_line\": 1049, \"snapshot\": \"base\", \"why\": \"Public entry point that forwards **options to Query.explain\"}, {\"path\": \"django/db/models/sql/compiler.py\", \"symbol\": \"SQLCompiler.explain_query\", \"start_line\": 1428, \"end_line\": 1439, \"snapshot\": \"base\", \"why\": \"Consumes query.explain_info to build the EXPLAIN statement\"}]}, {\"id\": \"postgres-explain-whitelist\", \"title\": \"Whitelist PostgreSQL EXPLAIN options and re-enable validation\", \"rationale\": \"The new explain_options frozenset, the rewritten explain_query_prefix that filters options against it, and the removal of validates_explain_options=False together make PostgreSQL reject unknown options via the base class instead of passing them to the database.\", \"hunks\": [\"django/db/backends/postgresql/operations.py#0\", \"django/db/backends/postgresql/operations.py#1\", \"django/db/backends/postgresql/features.py#0\"], \"context\": [{\"path\": \"django/db/backends/base/operations.py\", \"symbol\": \"BaseDatabaseOperations.explain_query_prefix\", \"start_line\": 745, \"end_line\": 760, \"snapshot\": \"base\", \"why\": \"Base implementation that raises ValueError for unknown options, now reached by PostgreSQL\"}, {\"path\": \"django/db/backends/base/features.py\", \"symbol\": \"validates_explain_options\", \"start_line\": 268, \"end_line\": 268, \"snapshot\": \"base\", \"why\": \"Default feature flag (True) that PostgreSQL previously overrode to False\"}]}, {\"id\": \"explain-option-tests\", \"title\": \"Tests for EXPLAIN option validation and SQL-injection rejection\", \"rationale\": \"The updated test_unknown_options and the new test_option_sql_injection / test_invalid_option_names exercise the option-name validation added in Query.explain and the PostgreSQL whitelist.\", \"hunks\": [\"tests/queries/test_explain.py#0\", \"tests/queries/test_explain.py#1\"], \"context\": [{\"path\": \"tests/queries/test_explain.py\", \"symbol\": \"test_postgres_options\", \"start_line\": 74, \"end_line\": 95, \"snapshot\": \"base\", \"why\": \"Existing PostgreSQL option test that the new whitelist must keep passing\"}]}]}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "explain-option-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 40,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=40-60]\n40: from django.db.models.sql.datastructures import BaseTable, Empty, Join, MultiJoin\n41: from django.db.models.sql.where import AND, OR, ExtraWhere, NothingNode, WhereNode\n42: from django.utils.functional import cached_property\n43: from django.utils.regex_helper import _lazy_re_compile\n44: from django.utils.tree import Node\n45: \n46: __all__ = [\"Query\", \"RawQuery\"]\n47: \n48: # Quotation marks ('\"`[]), whitespace characters, semicolons, or inline\n49: # SQL comments are forbidden in column aliases.\n50: FORBIDDEN_ALIAS_PATTERN = _lazy_re_compile(r\"['`\\\"\\]\\[;\\s]|--|/\\*|\\*/\")\n51: \n52: # Inspired from\n53: # https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS\n54: EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\n55: \n56: \n57: def get_field_names_from_opts(opts):\n58:     if opts is None:\n59:         return set()\n60:     return set(\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1420,
+                  "end_line": 1445,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/compiler.py lines=1420-1445]\n1420:         for index, select_col in enumerate(self.query.select):\n1421:             lhs_sql, lhs_params = self.compile(select_col)\n1422:             rhs = \"%s.%s\" % (qn(alias), qn2(columns[index]))\n1423:             self.query.where.add(RawSQL(\"%s = %s\" % (lhs_sql, rhs), lhs_params), \"AND\")\n1424: \n1425:         sql, params = self.as_sql()\n1426:         return \"EXISTS (%s)\" % sql, params\n1427: \n1428:     def explain_query(self):\n1429:         result = list(self.execute_sql())\n1430:         # Some backends return 1 item tuples with strings, and others return\n1431:         # tuples with integers and strings. Flatten them out into strings.\n1432:         output_formatter = (\n1433:             json.dumps if self.query.explain_info.format == \"json\" else str\n1434:         )\n1435:         for row in result[0]:\n1436:             if not isinstance(row, str):\n1437:                 yield \" \".join(output_formatter(c) for c in row)\n1438:             else:\n1439:                 yield row\n1440: \n1441: \n1442: class SQLInsertCompiler(SQLCompiler):\n1443:     returning_fields = None\n1444:     returning_params = tuple()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_info|EXPLAIN_OPTIONS_PATTERN",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_info|EXPLAIN_OPTIONS_PATTERN\"]\ndjango/db/models/sql/compiler.py:724:            if self.query.explain_info:\ndjango/db/models/sql/compiler.py:728:                        self.query.explain_info.format,\ndjango/db/models/sql/compiler.py:729:                        **self.query.explain_info.options,\ndjango/db/models/sql/compiler.py:1433:            json.dumps if self.query.explain_info.format == \"json\" else str\ndjango/db/models/sql/query.py:54:EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\ndjango/db/models/sql/query.py:227:    explain_info = None\ndjango/db/models/sql/query.py:598:                not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\ndjango/db/models/sql/query.py:602:        q.explain_info = ExplainInfo(format, options)\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"def explain\"]\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:312:    def explain_query_prefix(self, format=None, **options):\ndjango/db/models/query.py:1048:    def explain(self, *, format=None, **options):\ndjango/db/models/sql/compiler.py:1428:    def explain_query(self):\ndjango/db/models/sql/query.py:594:    def explain(self, using, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/postgresql/operations.py",
+                  "start_line": 305,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/backends/postgresql/operations.py lines=305-330]\n305:         if internal_type == \"DateField\":\n306:             lhs_sql, lhs_params = lhs\n307:             rhs_sql, rhs_params = rhs\n308:             params = (*lhs_params, *rhs_params)\n309:             return \"(interval '1 day' * (%s - %s))\" % (lhs_sql, rhs_sql), params\n310:         return super().subtract_temporals(internal_type, lhs, rhs)\n311: \n312:     def explain_query_prefix(self, format=None, **options):\n313:         extra = {}\n314:         # Normalize options.\n315:         if options:\n316:             options = {\n317:                 name.upper(): \"true\" if value else \"false\"\n318:                 for name, value in options.items()\n319:             }\n320:             for valid_option in self.explain_options:\n321:                 value = options.pop(valid_option, None)\n322:                 if value is not None:\n323:                     extra[valid_option.upper()] = value\n324:         prefix = super().explain_query_prefix(format, **options)\n325:         if format:\n326:             extra[\"FORMAT\"] = format\n327:         if extra:\n328:             prefix += \" (%s)\" % \", \".join(\"%s %s\" % i for i in extra.items())\n329:         return prefix\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/mysql/operations.py",
+                  "start_line": 365,
+                  "end_line": 385,
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "postgres-explain-whitelist",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 735,
+                  "end_line": 775,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/base/operations.py lines=735-766]\n735:         features = self.connection.features\n736:         if features.only_supports_unbounded_with_preceding_and_following and (\n737:             (start and start < 0) or (end and end > 0)\n738:         ):\n739:             raise NotSupportedError(\n740:                 \"%s only supports UNBOUNDED together with PRECEDING and \"\n741:                 \"FOLLOWING.\" % self.connection.display_name\n742:             )\n743:         return start_, end_\n744: \n745:     def explain_query_prefix(self, format=None, **options):\n746:         if not self.connection.features.supports_explaining_query_execution:\n747:             raise NotSupportedError(\n748:                 \"This backend does not support explaining query execution.\"\n749:             )\n750:         if format:\n751:             supported_formats = self.connection.features.supported_explain_formats\n752:             normalized_format = format.upper()\n753:             if normalized_format not in supported_formats:\n754:                 msg = \"%s is not a recognized format.\" % normalized_format\n755:                 if supported_formats:\n756:                     msg += \" Allowed formats: %s\" % \", \".join(sorted(supported_formats))\n757:                 raise ValueError(msg)\n758:         if options:\n759:             raise ValueError(\"Unknown options: %s\" % \", \".join(sorted(options.keys())))\n760:         return self.explain_prefix\n761: \n762:     def insert_statement(self, on_conflict=None):\n763:         return \"INSERT INTO\"\n764: \n765:     def on_conflict_suffix_sql(self, fields, on_conflict, update_fields, unique_fields):\n766:         return \"\"\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_query_prefix|validates_explain_options",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_query_prefix|validates_explain_options\"]\ndjango/db/backends/base/features.py:266:    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\ndjango/db/backends/base/features.py:268:    validates_explain_options = True\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:381:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/backends/postgresql/operations.py:312:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:324:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/models/sql/compiler.py:727:                    self.connection.ops.explain_query_prefix(\ntests/queries/test_explain.py:60:    @skipUnlessDBFeature(\"validates_explain_options\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 700,
+                  "end_line": 745,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/compiler.py lines=700-745]\n700:                 if for_update_part and features.for_update_after_from:\n701:                     result.append(for_update_part)\n702: \n703:                 if where:\n704:                     result.append(\"WHERE %s\" % where)\n705:                     params.extend(w_params)\n706: \n707:                 grouping = []\n708:                 for g_sql, g_params in group_by:\n709:                     grouping.append(g_sql)\n710:                     params.extend(g_params)\n711:                 if grouping:\n712:                     if distinct_fields:\n713:                         raise NotImplementedError(\n714:                             \"annotate() + distinct(fields) is not implemented.\"\n715:                         )\n716:                     order_by = order_by or self.connection.ops.force_no_ordering()\n717:                     result.append(\"GROUP BY %s\" % \", \".join(grouping))\n718:                     if self._meta_ordering:\n719:                         order_by = None\n720:                 if having:\n721:                     result.append(\"HAVING %s\" % having)\n722:                     params.extend(h_params)\n723: \n724:             if self.query.explain_info:\n725:                 result.insert(\n726:                     0,\n727:                     self.connection.ops.explain_query_prefix(\n728:                         self.query.explain_info.format,\n729:                         **self.query.explain_info.options,\n730:                     ),\n731:                 )\n732: \n733:             if order_by:\n734:                 ordering = []\n735:                 for _, (o_sql, o_params, _) in order_by:\n736:                     ordering.append(o_sql)\n737:                     params.extend(o_params)\n738:                 result.append(\"ORDER BY %s\" % \", \".join(ordering))\n739: \n740:             if with_limit_offset:\n741:                 result.append(\n742:                     self.connection.ops.limit_offset_sql(\n743:                         self.query.low_mark, self.query.high_mark\n744:                     )\n745:                 )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_info|def explain",
+                  "file_glob": "django/db/models/query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_info|def explain\"]\ndjango/db/models/query.py:1048:    def explain(self, *, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1048,
+                  "end_line": 1075,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/query.py lines=1048-1075]\n1048:     def explain(self, *, format=None, **options):\n1049:         return self.query.explain(using=self.db, format=format, **options)\n1050: \n1051:     ##################################################\n1052:     # PUBLIC METHODS THAT RETURN A QUERYSET SUBCLASS #\n1053:     ##################################################\n1054: \n1055:     def raw(self, raw_query, params=(), translations=None, using=None):\n1056:         if using is None:\n1057:             using = self.db\n1058:         qs = RawQuerySet(\n1059:             raw_query,\n1060:             model=self.model,\n1061:             params=params,\n1062:             translations=translations,\n1063:             using=using,\n1064:         )\n1065:         qs._prefetch_related_lookups = self._prefetch_related_lookups[:]\n1066:         return qs\n1067: \n1068:     def _values(self, *fields, **expressions):\n1069:         clone = self._chain()\n1070:         if expressions:\n1071:             clone = clone.annotate(**expressions)\n1072:         clone._fields = fields\n1073:         clone.query.set_values(fields)\n1074:         return clone\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review concerns the PostgreSQL `EXPLAIN` option whitelist and the removal of the `validates_explain_options` feature flag. This is a database query-construction feature, not an authorization boundary. The `explain()` API is a developer-facing ORM method (not a user-facing HTTP endpoint), and the change only narrows which EXPLAIN options are accepted (whitelist) and defers validation to the database. There is no user-controlled object identifier, no missing/incorrect role check, and no authorization decision involved. The retrieved policy excerpts (isolation levels, admin permissions) are unrelated to this code. No CWE-639/862/863 candidate applies.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "explain-option-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "start_line": 55,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=tests/queries/test_explain.py lines=55-130]\n55:                             except json.JSONDecodeError as e:\n56:                                 self.fail(\n57:                                     f\"QuerySet.explain() result is not valid JSON: {e}\"\n58:                                 )\n59: \n60:     @skipUnlessDBFeature(\"validates_explain_options\")\n61:     def test_unknown_options(self):\n62:         with self.assertRaisesMessage(ValueError, \"Unknown options: TEST, TEST2\"):\n63:             Tag.objects.explain(**{\"TEST\": 1, \"TEST2\": 1})\n64: \n65:     def test_unknown_format(self):\n66:         msg = \"DOES NOT EXIST is not a recognized format.\"\n67:         if connection.features.supported_explain_formats:\n68:             msg += \" Allowed formats: %s\" % \", \".join(\n69:                 sorted(connection.features.supported_explain_formats)\n70:             )\n71:         with self.assertRaisesMessage(ValueError, msg):\n72:             Tag.objects.explain(format=\"does not exist\")\n73: \n74:     @unittest.skipUnless(connection.vendor == \"postgresql\", \"PostgreSQL specific\")\n75:     def test_postgres_options(self):\n76:         qs = Tag.objects.filter(name=\"test\")\n77:         test_options = [\n78:             {\"COSTS\": False, \"BUFFERS\": True, \"ANALYZE\": True},\n79:             {\"costs\": False, \"buffers\": True, \"analyze\": True},\n80:             {\"verbose\": True, \"timing\": True, \"analyze\": True},\n81:             {\"verbose\": False, \"timing\": False, \"analyze\": True},\n82:             {\"summary\": True},\n83:         ]\n84:         if connection.features.is_postgresql_12:\n85:             test_options.append({\"settings\": True})\n86:         if connection.features.is_postgresql_13:\n87:             test_options.append({\"analyze\": True, \"wal\": True})\n88:         for options in test_options:\n89:             with self.subTest(**options), transaction.atomic():\n90:                 with CaptureQueriesContext(connection) as captured_queries:\n91:                     qs.explain(format=\"text\", **options)\n92:                 self.assertEqual(len(captured_queries), 1)\n93:                 for name, value in options.items():\n94:                     option = \"{} {}\".format(name.upper(), \"true\" if value else \"false\")\n95:                     self.assertIn(option, captured_queries[0][\"sql\"])\n96: \n97:     def test_option_sql_injection(self):\n98:         qs = Tag.objects.filter(name=\"test\")\n99:         options = {\"SUMMARY true) SELECT 1; --\": True}\n100:         msg = \"Invalid option name: 'SUMMARY true) SELECT 1; --'\"\n101:         with self.assertRaisesMessage(ValueError, msg):\n102:             qs.explain(**options)\n103: \n104:     def test_invalid_option_names(self):\n105:         qs = Tag.objects.filter(name=\"test\")\n106:         tests = [\n107:             'opt\"ion',\n108:             \"o'ption\",\n109:             \"op`tion\",\n110:             \"opti on\",\n111:             \"option--\",\n112:             \"optio\\tn\",\n113:             \"o\\nption\",\n114:             \"option;\",\n115:             \"\u4f60 \u597d\",\n116:             # [] are used by MSSQL.\n117:             \"option[\",\n118:             \"option]\",\n119:         ]\n120:         for invalid_option in tests:\n121:             with self.subTest(invalid_option):\n122:                 msg = f\"Invalid option name: {invalid_option!r}\"\n123:                 with self.assertRaisesMessage(ValueError, msg):\n124:                     qs.explain(**{invalid_option: True})\n125: \n126:     @unittest.skipUnless(connection.vendor == \"mysql\", \"MySQL specific\")\n127:     def test_mysql_text_to_traditional(self):\n128:         # Ensure these cached properties are initialized to prevent queries for\n129:         # the MariaDB or MySQL version during the QuerySet evaluation.\n130:         connection.features.supported_explain_formats\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "explain options validation authorization access control"
+                },
+                "result": "[docs/topics/auth/index.txt:1-58] (relevance 0.42)\n=============================\nUser authentication in Django\n=============================\n\n.. toctree::\n   :hidden:\n\n   default\n   passwords\n   customizing\n\n.. module:: django.contrib.auth\n   :synopsis: Django's authentication framework.\n\nDjango comes with a user authentication system. It handles user accounts,\ngroups, permissions and cookie-based user sessions. This section of the\ndocumentation explains how the default implementation works out of the box, as\nwell as how to :doc:`extend and customize </topics/auth/customizing>` it to\nsuit your project's needs.\n\nOverview\n========\n\nThe Django authentication system handles both authentication and authorization.\nBriefly, authentication verifies a user is who they claim to be, and\nauthorization determines what an authenticated user is allowed to do. Here the\nterm authentication is used to refer to both tasks.\n\nThe auth system consists of:\n\n* Users\n* Permissions: Binary (yes/no) flags designating whether a user may perform\n  a certain task.\n* Groups: A generic way of applying labels and permissions to more than one\n  user.\n* A configurable password hashing system\n* Forms and view tools for logging in users, or restricting content\n* A pluggable backend system\n\nThe authentication system in Django aims to be very generic and doesn't provide\nsome features commonly found in web authentication systems. Solutions for some\nof these common problems have been implemented in third-party packages:\n\n* Password strength checking\n* Throttling of login attempts\n* Authentication against third-parties (OAuth, for example)\n* Object-level permissions\n\nInstallation\n============\n\nAuthentication support is bundled as a Django contrib module in\n``django.contrib.auth``. By default, the required configuration is already\nincluded in the :file:`settings.py` generated by :djadmin:`django-admin\nstartproject <startproject>`, these consist of two items listed in your\n:setting:`INSTALLED_APPS` setting:\n\n1. ``'django.contrib.auth'`` contains the core of the authentication framework,\n\n---\n\n[docs/topics/auth/customizing.txt:206-247] (relevance 0.40)\nreturn user_obj.username == settings.ADMIN_LOGIN\n\nThis gives full permissions to the user granted access in the above example.\nNotice that in addition to the same arguments given to the associated\n:class:`django.contrib.auth.models.User` functions, the backend auth functions\nall take the user object, which may be an anonymous user, as an argument.\n\nA full authorization implementation can be found in the ``ModelBackend`` class\nin :source:`django/contrib/auth/backends.py`, which is the default backend and\nqueries the ``auth_permission`` table most of the time.\n\n.. _anonymous_auth:\n\nAuthorization for anonymous users\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn anonymous user is one that is not authenticated i.e. they have provided no\nvalid authentication details. However, that does not necessarily mean they are\nnot authorized to do anything. At the most basic level, most websites\nauthorize anonymous users to browse most of the site, and many allow anonymous\nposting of comments etc.\n\nDjango's permission framework does not have a place to store permissions for\nanonymous users. However, the user object passed to an authentication backend\nmay be an :class:`django.contrib.auth.models.AnonymousUser` object, allowing\nthe backend to specify custom authorization behavior for anonymous users. This\nis especially useful for the authors of re-usable apps, who can delegate all\nquestions of authorization to the auth backend, rather than needing settings,\nfor example, to control anonymous access.\n\n.. _inactive_auth:\n\nAuthorization for inactive users\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn inactive user is one that has its\n:attr:`~django.contrib.auth.models.User.is_active` field set to ``False``. The\n:class:`~django.contrib.auth.backends.ModelBackend` and\n:class:`~django.contrib.auth.backends.RemoteUserBackend` authentication\nbackends prohibits these users from authenticating. If a custom user model\ndoesn't have an :attr:`~django.contrib.auth.models.CustomUser.is_active` field,\nall users will be allowed to authenticate.\n\n---\n\n[docs/releases/1.9.txt:54-98] (relevance 0.40)\nFour validators are included in Django, which can enforce a minimum length,\ncompare the password to the user's attributes like their name, ensure\npasswords aren't entirely numeric, or check against an included list of common\npasswords. You can combine multiple validators, and some validators have\ncustom configuration options. For example, you can choose to provide a custom\nlist of common passwords. Each validator provides a help text to explain its\nrequirements to the user.\n\nBy default, no validation is performed and all passwords are accepted, so if\nyou don't set :setting:`AUTH_PASSWORD_VALIDATORS`, you will not see any\nchange. In new projects created with the default :djadmin:`startproject`\ntemplate, a simple set of validators is enabled. To enable basic validation in\nthe included auth forms for your project, you could set, for example::\n\n    AUTH_PASSWORD_VALIDATORS = [\n        {\n            'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',\n        },\n        {\n            'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',\n        },\n        {\n            'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',\n        },\n        {\n            'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',\n        },\n    ]\n\nSee :ref:`password-validation` for more details.\n\nPermission mixins for class-based views\n---------------------------------------\n\nDjango now ships with the mixins\n:class:`~django.contrib.auth.mixins.AccessMixin`,\n:class:`~django.contrib.auth.mixins.LoginRequiredMixin`,\n:class:`~django.contrib.auth.mixins.PermissionRequiredMixin`, and\n:class:`~django.contrib.auth.mixins.UserPassesTestMixin` to provide the\nfunctionality of the ``django.contrib.auth.decorators`` for class-based views.\nThese mixins have been taken from, or are at least inspired by, the\n`django-braces`_ project.\n\nThere are a few differences between Django's and ``django-braces``\\'\nimplementation, though:\n\n---\n\n[docs/ref/contrib/admin/index.txt:2934-2986] (relevance 0.39)\nReturns ``True`` if the user for the given ``HttpRequest`` has permission\n    to view at least one page in the admin site. Defaults to requiring both\n    :attr:`User.is_active <django.contrib.auth.models.User.is_active>` and\n    :attr:`User.is_staff <django.contrib.auth.models.User.is_staff>` to be\n    ``True``.\n\n.. method:: AdminSite.register(model_or_iterable, admin_class=None, **options)\n\n    Registers the given model class (or iterable of classes) with the given\n    ``admin_class``. ``admin_class`` defaults to\n    :class:`~django.contrib.admin.ModelAdmin` (the default admin options). If\n    keyword arguments are given -- e.g. ``list_display`` -- they'll be applied\n    as options to the admin class.\n\n    Raises :class:`~django.core.exceptions.ImproperlyConfigured` if a model is\n    abstract. and ``django.contrib.admin.sites.AlreadyRegistered`` if a model\n    is already registered.\n\n.. method:: AdminSite.unregister(model_or_iterable)\n\n    Unregisters the given model class (or iterable of classes).\n\n    Raises ``django.contrib.admin.sites.NotRegistered`` if a model isn't\n    already registered.\n\n.. _hooking-adminsite-to-urlconf:\n\nHooking ``AdminSite`` instances into your URLconf\n-------------------------------------------------\n\nThe last step in setting up the Django admin is to hook your ``AdminSite``\ninstance into your URLconf. Do this by pointing a given URL at the\n``AdminSite.urls`` method. It is not necessary to use\n:func:`~django.urls.include()`.\n\nIn this example, we register the default ``AdminSite`` instance\n``django.contrib.admin.site`` at the URL ``/admin/`` ::\n\n    # urls.py\n    from django.contrib import admin\n    from django.urls import path\n\n    urlpatte"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review is entirely test code in `tests/queries/test_explain.py`. The changes add tests that verify `QuerySet.explain()` rejects invalid option names (SQL injection attempts and malformed option names) and update an existing test to use uppercase option names.\n\nThis is a test file \u2014 it does not contain any application code, views, decorators, middleware, or authorization logic. The tests are verifying that the `explain()` method properly validates option names to prevent SQL injection, which is a security *improvement* (adding validation), not a security flaw.\n\nThere is no authorization logic (CWE-639, CWE-862, CWE-863) in this section. The code:\n- Does not fetch objects by user-controlled identifiers\n- Does not perform protected operations without authentication/role checks\n- Does not contain authorization checks that could be wrong\n\nThe policy excerpts retrieved are about Django's authentication framework and are not relevant to this test file.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:explain-option-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 1420,
+                  "end_line": 1460,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/compiler.py lines=1420-1460]\n1420:         for index, select_col in enumerate(self.query.select):\n1421:             lhs_sql, lhs_params = self.compile(select_col)\n1422:             rhs = \"%s.%s\" % (qn(alias), qn2(columns[index]))\n1423:             self.query.where.add(RawSQL(\"%s = %s\" % (lhs_sql, rhs), lhs_params), \"AND\")\n1424: \n1425:         sql, params = self.as_sql()\n1426:         return \"EXISTS (%s)\" % sql, params\n1427: \n1428:     def explain_query(self):\n1429:         result = list(self.execute_sql())\n1430:         # Some backends return 1 item tuples with strings, and others return\n1431:         # tuples with integers and strings. Flatten them out into strings.\n1432:         output_formatter = (\n1433:             json.dumps if self.query.explain_info.format == \"json\" else str\n1434:         )\n1435:         for row in result[0]:\n1436:             if not isinstance(row, str):\n1437:                 yield \" \".join(output_formatter(c) for c in row)\n1438:             else:\n1439:                 yield row\n1440: \n1441: \n1442: class SQLInsertCompiler(SQLCompiler):\n1443:     returning_fields = None\n1444:     returning_params = tuple()\n1445: \n1446:     def field_as_sql(self, field, val):\n1447:         \"\"\"\n1448:         Take a field and a value intended to be saved on that field, and\n1449:         return placeholder SQL and accompanying params. Check for raw values,\n1450:         expressions, and fields with get_placeholder() defined in that order.\n1451: \n1452:         When field is None, consider the value raw and use it as the\n1453:         placeholder, with no corresponding parameters returned.\n1454:         \"\"\"\n1455:         if field is None:\n1456:             # A field value of None means the value is raw.\n1457:             sql, params = val, []\n1458:         elif hasattr(val, \"as_sql\"):\n1459:             # This is an expression, let's compile it.\n1460:             sql, params = self.compile(val)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 45,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=45-60]\n45: \n46: __all__ = [\"Query\", \"RawQuery\"]\n47: \n48: # Quotation marks ('\"`[]), whitespace characters, semicolons, or inline\n49: # SQL comments are forbidden in column aliases.\n50: FORBIDDEN_ALIAS_PATTERN = _lazy_re_compile(r\"['`\\\"\\]\\[;\\s]|--|/\\*|\\*/\")\n51: \n52: # Inspired from\n53: # https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS\n54: EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\n55: \n56: \n57: def get_field_names_from_opts(opts):\n58:     if opts is None:\n59:         return set()\n60:     return set(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_info",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_info\"]\ndjango/db/models/sql/compiler.py:724:            if self.query.explain_info:\ndjango/db/models/sql/compiler.py:728:                        self.query.explain_info.format,\ndjango/db/models/sql/compiler.py:729:                        **self.query.explain_info.options,\ndjango/db/models/sql/compiler.py:1433:            json.dumps if self.query.explain_info.format == \"json\" else str\ndjango/db/models/sql/query.py:227:    explain_info = None\ndjango/db/models/sql/query.py:602:        q.explain_info = ExplainInfo(format, options)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 715,
+                  "end_line": 745,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/compiler.py lines=715-745]\n715:                         )\n716:                     order_by = order_by or self.connection.ops.force_no_ordering()\n717:                     result.append(\"GROUP BY %s\" % \", \".join(grouping))\n718:                     if self._meta_ordering:\n719:                         order_by = None\n720:                 if having:\n721:                     result.append(\"HAVING %s\" % having)\n722:                     params.extend(h_params)\n723: \n724:             if self.query.explain_info:\n725:                 result.insert(\n726:                     0,\n727:                     self.connection.ops.explain_query_prefix(\n728:                         self.query.explain_info.format,\n729:                         **self.query.explain_info.options,\n730:                     ),\n731:                 )\n732: \n733:             if order_by:\n734:                 ordering = []\n735:                 for _, (o_sql, o_params, _) in order_by:\n736:                     ordering.append(o_sql)\n737:                     params.extend(o_params)\n738:                 result.append(\"ORDER BY %s\" % \", \".join(ordering))\n739: \n740:             if with_limit_offset:\n741:                 result.append(\n742:                     self.connection.ops.limit_offset_sql(\n743:                         self.query.low_mark, self.query.high_mark\n744:                     )\n745:                 )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def explain_query_prefix",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"def explain_query_prefix\"]\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:312:    def explain_query_prefix(self, format=None, **options):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:postgres-explain-whitelist",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/backends/base/operations.py",
+                  "start_line": 735,
+                  "end_line": 775,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=93cae5cb2f9a4ef1514cf1a41f714fef08005200 path=django/db/backends/base/operations.py lines=735-766]\n735:         features = self.connection.features\n736:         if features.only_supports_unbounded_with_preceding_and_following and (\n737:             (start and start < 0) or (end and end > 0)\n738:         ):\n739:             raise NotSupportedError(\n740:                 \"%s only supports UNBOUNDED together with PRECEDING and \"\n741:                 \"FOLLOWING.\" % self.connection.display_name\n742:             )\n743:         return start_, end_\n744: \n745:     def explain_query_prefix(self, format=None, **options):\n746:         if not self.connection.features.supports_explaining_query_execution:\n747:             raise NotSupportedError(\n748:                 \"This backend does not support explaining query execution.\"\n749:             )\n750:         if format:\n751:             supported_formats = self.connection.features.supported_explain_formats\n752:             normalized_format = format.upper()\n753:             if normalized_format not in supported_formats:\n754:                 msg = \"%s is not a recognized format.\" % normalized_format\n755:                 if supported_formats:\n756:                     msg += \" Allowed formats: %s\" % \", \".join(sorted(supported_formats))\n757:                 raise ValueError(msg)\n758:         if options:\n759:             raise ValueError(\"Unknown options: %s\" % \", \".join(sorted(options.keys())))\n760:         return self.explain_prefix\n761: \n762:     def insert_statement(self, on_conflict=None):\n763:         return \"INSERT INTO\"\n764: \n765:     def on_conflict_suffix_sql(self, fields, on_conflict, update_fields, unique_fields):\n766:         return \"\"\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_query_prefix",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_query_prefix\"]\ndjango/db/backends/base/features.py:266:    # Does DatabaseOperations.explain_query_prefix() raise ValueError if\ndjango/db/backends/base/operations.py:745:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:371:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/mysql/operations.py:381:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/backends/postgresql/operations.py:312:    def explain_query_prefix(self, format=None, **options):\ndjango/db/backends/postgresql/operations.py:324:        prefix = super().explain_query_prefix(format, **options)\ndjango/db/models/sql/compiler.py:727:                    self.connection.ops.explain_query_prefix(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/compiler.py",
+                  "start_line": 700,
+                  "end_line": 745,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/compiler.py lines=700-745]\n700:                 if for_update_part and features.for_update_after_from:\n701:                     result.append(for_update_part)\n702: \n703:                 if where:\n704:                     result.append(\"WHERE %s\" % where)\n705:                     params.extend(w_params)\n706: \n707:                 grouping = []\n708:                 for g_sql, g_params in group_by:\n709:                     grouping.append(g_sql)\n710:                     params.extend(g_params)\n711:                 if grouping:\n712:                     if distinct_fields:\n713:                         raise NotImplementedError(\n714:                             \"annotate() + distinct(fields) is not implemented.\"\n715:                         )\n716:                     order_by = order_by or self.connection.ops.force_no_ordering()\n717:                     result.append(\"GROUP BY %s\" % \", \".join(grouping))\n718:                     if self._meta_ordering:\n719:                         order_by = None\n720:                 if having:\n721:                     result.append(\"HAVING %s\" % having)\n722:                     params.extend(h_params)\n723: \n724:             if self.query.explain_info:\n725:                 result.insert(\n726:                     0,\n727:                     self.connection.ops.explain_query_prefix(\n728:                         self.query.explain_info.format,\n729:                         **self.query.explain_info.options,\n730:                     ),\n731:                 )\n732: \n733:             if order_by:\n734:                 ordering = []\n735:                 for _, (o_sql, o_params, _) in order_by:\n736:                     ordering.append(o_sql)\n737:                     params.extend(o_params)\n738:                 result.append(\"ORDER BY %s\" % \", \".join(ordering))\n739: \n740:             if with_limit_offset:\n741:                 result.append(\n742:                     self.connection.ops.limit_offset_sql(\n743:                         self.query.low_mark, self.query.high_mark\n744:                     )\n745:                 )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_info|ExplainInfo",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_info|ExplainInfo\"]\ndjango/db/models/sql/compiler.py:724:            if self.query.explain_info:\ndjango/db/models/sql/compiler.py:728:                        self.query.explain_info.format,\ndjango/db/models/sql/compiler.py:729:                        **self.query.explain_info.options,\ndjango/db/models/sql/compiler.py:1433:            json.dumps if self.query.explain_info.format == \"json\" else str\ndjango/db/models/sql/query.py:154:ExplainInfo = namedtuple(\"ExplainInfo\", (\"format\", \"options\"))\ndjango/db/models/sql/query.py:227:    explain_info = None\ndjango/db/models/sql/query.py:602:        q.explain_info = ExplainInfo(format, options)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 585,
+                  "end_line": 610,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=585-610]\n585:         q.add_extra({\"a\": 1}, None, None, None, None, None)\n586:         q.set_extra_mask([\"a\"])\n587:         return q\n588: \n589:     def has_results(self, using):\n590:         q = self.exists(using)\n591:         compiler = q.get_compiler(using=using)\n592:         return compiler.has_results()\n593: \n594:     def explain(self, using, format=None, **options):\n595:         q = self.clone()\n596:         for option_name in options:\n597:             if (\n598:                 not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\n599:                 or \"--\" in option_name\n600:             ):\n601:                 raise ValueError(f\"Invalid option name: {option_name!r}.\")\n602:         q.explain_info = ExplainInfo(format, options)\n603:         compiler = q.get_compiler(using=using)\n604:         return \"\\n\".join(compiler.explain_query())\n605: \n606:     def combine(self, rhs, connector):\n607:         \"\"\"\n608:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n609:         being applied *after* (that is, \"to the right of\") anything in the\n610:         current query. 'rhs' is not modified during a call to this function.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:explain-option-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/test_explain.py",
+                  "start_line": 55,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=tests/queries/test_explain.py lines=55-130]\n55:                             except json.JSONDecodeError as e:\n56:                                 self.fail(\n57:                                     f\"QuerySet.explain() result is not valid JSON: {e}\"\n58:                                 )\n59: \n60:     @skipUnlessDBFeature(\"validates_explain_options\")\n61:     def test_unknown_options(self):\n62:         with self.assertRaisesMessage(ValueError, \"Unknown options: TEST, TEST2\"):\n63:             Tag.objects.explain(**{\"TEST\": 1, \"TEST2\": 1})\n64: \n65:     def test_unknown_format(self):\n66:         msg = \"DOES NOT EXIST is not a recognized format.\"\n67:         if connection.features.supported_explain_formats:\n68:             msg += \" Allowed formats: %s\" % \", \".join(\n69:                 sorted(connection.features.supported_explain_formats)\n70:             )\n71:         with self.assertRaisesMessage(ValueError, msg):\n72:             Tag.objects.explain(format=\"does not exist\")\n73: \n74:     @unittest.skipUnless(connection.vendor == \"postgresql\", \"PostgreSQL specific\")\n75:     def test_postgres_options(self):\n76:         qs = Tag.objects.filter(name=\"test\")\n77:         test_options = [\n78:             {\"COSTS\": False, \"BUFFERS\": True, \"ANALYZE\": True},\n79:             {\"costs\": False, \"buffers\": True, \"analyze\": True},\n80:             {\"verbose\": True, \"timing\": True, \"analyze\": True},\n81:             {\"verbose\": False, \"timing\": False, \"analyze\": True},\n82:             {\"summary\": True},\n83:         ]\n84:         if connection.features.is_postgresql_12:\n85:             test_options.append({\"settings\": True})\n86:         if connection.features.is_postgresql_13:\n87:             test_options.append({\"analyze\": True, \"wal\": True})\n88:         for options in test_options:\n89:             with self.subTest(**options), transaction.atomic():\n90:                 with CaptureQueriesContext(connection) as captured_queries:\n91:                     qs.explain(format=\"text\", **options)\n92:                 self.assertEqual(len(captured_queries), 1)\n93:                 for name, value in options.items():\n94:                     option = \"{} {}\".format(name.upper(), \"true\" if value else \"false\")\n95:                     self.assertIn(option, captured_queries[0][\"sql\"])\n96: \n97:     def test_option_sql_injection(self):\n98:         qs = Tag.objects.filter(name=\"test\")\n99:         options = {\"SUMMARY true) SELECT 1; --\": True}\n100:         msg = \"Invalid option name: 'SUMMARY true) SELECT 1; --'\"\n101:         with self.assertRaisesMessage(ValueError, msg):\n102:             qs.explain(**options)\n103: \n104:     def test_invalid_option_names(self):\n105:         qs = Tag.objects.filter(name=\"test\")\n106:         tests = [\n107:             'opt\"ion',\n108:             \"o'ption\",\n109:             \"op`tion\",\n110:             \"opti on\",\n111:             \"option--\",\n112:             \"optio\\tn\",\n113:             \"o\\nption\",\n114:             \"option;\",\n115:             \"\u4f60 \u597d\",\n116:             # [] are used by MSSQL.\n117:             \"option[\",\n118:             \"option]\",\n119:         ]\n120:         for invalid_option in tests:\n121:             with self.subTest(invalid_option):\n122:                 msg = f\"Invalid option name: {invalid_option!r}\"\n123:                 with self.assertRaisesMessage(ValueError, msg):\n124:                     qs.explain(**{invalid_option: True})\n125: \n126:     @unittest.skipUnless(connection.vendor == \"mysql\", \"MySQL specific\")\n127:     def test_mysql_text_to_traditional(self):\n128:         # Ensure these cached properties are initialized to prevent queries for\n129:         # the MariaDB or MySQL version during the QuerySet evaluation.\n130:         connection.features.supported_explain_formats\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Invalid option name",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"Invalid option name\"]\ndjango/db/models/sql/query.py:601:                raise ValueError(f\"Invalid option name: {option_name!r}.\")\ntests/queries/test_explain.py:100:        msg = \"Invalid option name: 'SUMMARY true) SELECT 1; --'\"\ntests/queries/test_explain.py:122:                msg = f\"Invalid option name: {invalid_option!r}\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 575,
+                  "end_line": 625,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 path=django/db/models/sql/query.py lines=575-625]\n575:             limit_combined = connections[\n576:                 using\n577:             ].features.supports_slicing_ordering_in_compound\n578:             q.combined_queries = tuple(\n579:                 combined_query.exists(using, limit=limit_combined)\n580:                 for combined_query in q.combined_queries\n581:             )\n582:         q.clear_ordering(force=True)\n583:         if limit:\n584:             q.set_limits(high=1)\n585:         q.add_extra({\"a\": 1}, None, None, None, None, None)\n586:         q.set_extra_mask([\"a\"])\n587:         return q\n588: \n589:     def has_results(self, using):\n590:         q = self.exists(using)\n591:         compiler = q.get_compiler(using=using)\n592:         return compiler.has_results()\n593: \n594:     def explain(self, using, format=None, **options):\n595:         q = self.clone()\n596:         for option_name in options:\n597:             if (\n598:                 not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\n599:                 or \"--\" in option_name\n600:             ):\n601:                 raise ValueError(f\"Invalid option name: {option_name!r}.\")\n602:         q.explain_info = ExplainInfo(format, options)\n603:         compiler = q.get_compiler(using=using)\n604:         return \"\\n\".join(compiler.explain_query())\n605: \n606:     def combine(self, rhs, connector):\n607:         \"\"\"\n608:         Merge the 'rhs' query into the current one (with any 'rhs' effects\n609:         being applied *after* (that is, \"to the right of\") anything in the\n610:         current query. 'rhs' is not modified during a call to this function.\n611: \n612:         The 'connector' parameter describes how to connect filters from the\n613:         'rhs' query.\n614:         \"\"\"\n615:         if self.model != rhs.model:\n616:             raise TypeError(\"Cannot combine queries on two different base models.\")\n617:         if self.is_sliced:\n618:             raise TypeError(\"Cannot combine queries once a slice has been taken.\")\n619:         if self.distinct != rhs.distinct:\n620:             raise TypeError(\"Cannot combine a unique query with a non-unique query.\")\n621:         if self.distinct_fields != rhs.distinct_fields:\n622:             raise TypeError(\"Cannot combine queries with different distinct fields.\")\n623: \n624:         # If lhs and rhs shares the same alias prefix, it is possible to have\n625:         # conflicting alias changes like T4 -> T5, T5 -> T6, which might end up\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "EXPLAIN_OPTIONS_PATTERN",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"EXPLAIN_OPTIONS_PATTERN\"]\ndjango/db/models/sql/query.py:54:EXPLAIN_OPTIONS_PATTERN = _lazy_re_compile(r\"[\\w\\-]+\")\ndjango/db/models/sql/query.py:598:                not EXPLAIN_OPTIONS_PATTERN.fullmatch(option_name)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "explain_info|EXPLAIN_OPTIONS_PATTERN",
+                  "file_glob": "django/db/backends/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=6723a26e59b0b5429a0c5873941e01a2e1bdbb81 pattern=\"explain_info|EXPLAIN_OPTIONS_PATTERN\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "django-explain-options-sqli",
+  "url": "https://github.com/django/django/commit/6723a26e59b0b5429a0c5873941e01a2e1bdbb81",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-w24h-v9qh-8gxj",
+  "expected": "safe",
+  "vulnerable_files": [
+    "django/db/backends/postgresql/operations.py",
+    "django/db/models/sql/query.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

@@ -223,6 +223,15 @@ def case_diff(bench: dict, case_id: str, records: list[dict], labels: dict) -> t
         path = REPO_ROOT / bench.get("patch_root", "benchmark") / patch
         if path.is_file():
             return cap_diff(parse_diff(path.read_text(encoding="utf-8", errors="replace")))
+    diff_dir = bench.get("diff_dir")   # committed patches: <diff_dir>/<project>/<base>..<pr>.patch
+    if diff_dir:
+        for r in records:
+            base = r.get("base_sha") or r.get("base")
+            pr = r.get("pr_sha")
+            project = r.get("project") or (r.get("repo") or "").split("/")[-1]
+            path = REPO_ROOT / diff_dir / project / f"{base}..{pr}.patch"
+            if base and pr and project and path.is_file():
+                return cap_diff(parse_diff(path.read_text(encoding="utf-8", errors="replace")))
     cache = bench.get("clone_cache")
     if cache:
         for r in records:

@@ -1,0 +1,77 @@
+diff --git a/superset/jinja_context.py b/superset/jinja_context.py
+index ab3aa507..e365b9a7 100644
+--- a/superset/jinja_context.py
++++ b/superset/jinja_context.py
+@@ -400,8 +400,27 @@ def validate_template_context(
+ 
+     return validate_context_types(context)
+ 
+ 
++def where_in(values: List[Any], mark: str = "'") -> str:
++    """
++    Given a list of values, build a parenthesis list suitable for an IN expression.
++
++        >>> where_in([1, "b", 3])
++        (1, 'b', 3)
++
++    """
++
++    def quote(value: Any) -> str:
++        if isinstance(value, str):
++            value = value.replace(mark, mark * 2)
++            return f"{mark}{value}{mark}"
++        return str(value)
++
++    joined_values = ", ".join(quote(value) for value in values)
++    return f"({joined_values})"
++
++
+ class BaseTemplateProcessor:
+     """
+     Base class for database-specific jinja context
+     """
+@@ -432,8 +451,11 @@ class BaseTemplateProcessor:
+         self._context: Dict[str, Any] = {}
+         self._env = SandboxedEnvironment(undefined=DebugUndefined)
+         self.set_context(**kwargs)
+ 
++        # custom filters
++        self._env.filters["where_in"] = where_in
++
+     def set_context(self, **kwargs: Any) -> None:
+         self._context.update(kwargs)
+         self._context.update(context_addons())
+ 
+diff --git a/tests/unit_tests/jinja_context_test.py b/tests/unit_tests/jinja_context_test.py
+new file mode 100644
+index 00000000..1f88f4f1
+--- /dev/null
++++ b/tests/unit_tests/jinja_context_test.py
+@@ -0,0 +1,27 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++from superset.jinja_context import where_in
++
++
++def test_where_in() -> None:
++    """
++    Test the ``where_in`` Jinja2 filter.
++    """
++    assert where_in([1, "b", 3]) == "(1, 'b', 3)"
++    assert where_in([1, "b", 3], '"') == '(1, "b", 3)'
++    assert where_in(["O'Malley's"]) == "('O''Malley''s')"

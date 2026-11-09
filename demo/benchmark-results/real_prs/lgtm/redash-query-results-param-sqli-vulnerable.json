@@ -1,0 +1,126 @@
+{
+  "id": "redash-query-results-param-sqli-vulnerable",
+  "repo": "getredash/redash",
+  "pr": 5723,
+  "title": "Query Results runner added param_query_N_{k=v} syntax that substitutes user-supplied values verbatim into another data source's SQL, bypassing Redash's parameter validation and view-only safety check.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "2d6f5b091cd4072f433f02ea2cd8f2b691017f30",
+  "pr_sha": "0258dca82a2fe9cbd222a4bea60c12ca42356c4a",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 79,
+  "diff_chars": 6478,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 169.3,
+  "index_seconds": 0.8,
+  "index_reused": false,
+  "index_chunks": 82,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 1,
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:leftover:redash/query_runner/query_results.py:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "redash/query_runner/query_results.py",
+      "line": 51,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR adds a new parameterized-query path (extract_query_params, replace_query_parameters, and the new query_params loop in create_tables_from_query_ids) that executes a referenced query with user-supplied parameters. The authorization check in _load_query (lines 43-54) only verifies the requester's access to the query's data_source (has_access(query.data_source, user, view_only)) and org members"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 14,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 19,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:leftover:redash/query_runner/query_results.py:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The PR adds a new parameterized-query path (extract_query_params, replace_query_parameters, and the new query_params loop in create_tables_from_query_ids) that executes a referenced query with user-supplied parameters. The authorization check in _load_query (lines 43-54) only verifies the requester's access to the query's data_source (has_access(query.data_source, user, view_only)) and org membership. It does NOT verify that the requester is allowed to access the referenced query object itself (e.g. via require_permission_or_owner / has_permission_or_owner on query.user_id, or a query-level group check). This is inconsistent with the rest of the codebase, where query access is gated by ownership or group permissions (see redash/permissions.py require_permission_or_owner, is_admin_or_owner). As a result, a user who has view access to the data source can read the results of any query in the same org by referencing its id (query_<id> / param_query_<id>), even if they are not the owner and not in a group granted access to that specific query \u2014 an IDOR / incorrect-authorization exposure of query results.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            43,
+            54
+          ],
+          "source": null,
+          "content": "def _load_query(user, query_id):\n    query = models.Query.get_by_id(query_id)\n\n    if user.org_id != query.org_id:\n        raise PermissionError(\"Query id {} not found.\".format(query.id))\n\n    # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n    # We should merge it so it's consistent.\n    if not has_access(query.data_source, user, view_only):\n        raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n\n    return query",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            85,
+            100
+          ],
+          "source": null,
+          "content": "def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n    for query_id in set(cached_query_ids):\n        results = get_query_results(user, query_id, True)\n        table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n        create_table(connection, table_name, results)\n\n    for query in set(query_params):\n        results = get_query_results(user, query[0], False, query[1])\n        table_hash = hashlib.md5(\"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode()).hexdigest()\n        table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n        create_table(connection, table_name, results)\n\n    for query_id in set(query_ids):\n        results = get_query_results(user, query_id, False)\n        table_name = \"query_{query_id}\".format(query_id=query_id)\n        create_table(connection, table_name, results)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/permissions.py",
+          "lines": [
+            94,
+            104
+          ],
+          "source": null,
+          "content": "def has_permission_or_owner(permission, object_owner_id):\n    return int(object_owner_id) == current_user.id or current_user.has_permission(permission)\n\n\ndef is_admin_or_owner(object_owner_id):\n    return has_permission_or_owner(\"admin\", object_owner_id)\n\n\ndef require_permission_or_owner(permission, object_owner_id):\n    if not has_permission_or_owner(permission, object_owner_id):\n        abort(403)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "In _load_query, in addition to the data_source check, verify the requester is allowed to access the specific query object: check ownership (query.user_id == user.id) or admin permission, or a query-level group permission (e.g. user.has_access(query, ACCESS_TYPE_VIEW)), and raise PermissionError otherwise. This matches the require_permission_or_owner / is_admin_or_owner pattern used elsewhere in redash/permissions.py.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8094,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "redash/query_runner/query_results.py",
+      "line": 51,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "redash-query-results-param-sqli",
+  "url": "https://github.com/getredash/redash/pull/5723",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-v43x-rgcc-wh77",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "redash/query_runner/query_results.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

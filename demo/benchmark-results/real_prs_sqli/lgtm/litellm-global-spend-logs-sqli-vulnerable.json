@@ -1,0 +1,968 @@
+{
+  "id": "litellm-global-spend-logs-sqli-vulnerable",
+  "repo": "BerriAI/litellm",
+  "pr": 2271,
+  "title": "The /global/spend/logs endpoint gained an api_key filter that was concatenated straight into a raw SQL string.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "aac2f4d41595755af282f959dbf957ef684e7846",
+  "pr_sha": "65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b",
+  "files_changed": 26,
+  "python_files_changed": 2,
+  "added_lines": 54,
+  "diff_chars": 2741,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 203.9,
+  "index_seconds": 11.9,
+  "index_reused": false,
+  "index_chunks": 1370,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 3,
+  "verdicts": {
+    "vulnerable": 3
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:global-spend-logs-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4099,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR adds a new per-key branch to /global/spend/logs that returns spend data for an arbitrary api_key supplied by the caller. The endpoint's only authorization is dependencies=[Depends(user_api_key_auth)], which authenticates any valid key but does not enforce an admin role. The endpoint's own description and docstring label it 'Admin-only endpoint', yet the function never receives or checks the"
+    },
+    {
+      "finding_id": "sqli:global-spend-logs-authz:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4104,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new `api_key` query parameter (attacker-controlled, any authenticated key) is concatenated directly into a raw SQL string and executed via `prisma_client.db.query_raw(query=sql_query)` with no binding, escaping, or allowlist. A value like `x' OR '1'='1` (or `'; DROP TABLE ...; --`) breaks out of the quoted literal and injects arbitrary SQL. The endpoint only requires `user_api_key_auth` (any v"
+    },
+    {
+      "finding_id": "authz:monthly-global-spend-perkey-view:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4100,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new else-branch in global_spend_logs (proxy_server.py:4099-4112) SELECTs from the MonthlyGlobalSpendPerKey view created by this hunk, filtering by a user-supplied api_key query parameter. The endpoint is documented as 'Admin-only endpoint' (proxy_server.py:4075, 4081) but is protected only by `dependencies=[Depends(user_api_key_auth)]` (proxy_server.py:4070), which authenticates any valid key "
+    }
+  ],
+  "tool_calls_total": 15,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 21,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:global-spend-logs-authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The PR adds a new per-key branch to /global/spend/logs that returns spend data for an arbitrary api_key supplied by the caller. The endpoint's only authorization is dependencies=[Depends(user_api_key_auth)], which authenticates any valid key but does not enforce an admin role. The endpoint's own description and docstring label it 'Admin-only endpoint', yet the function never receives or checks the UserAPIKeyAuth object (e.g. user_role == 'proxy_admin'), so a non-admin key can query spend for any other key's api_key. This is a newly introduced authorization gap: the per-key branch did not exist in the base snapshot.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4067,
+            4112
+          ],
+          "source": null,
+          "content": "@router.get(\n    \"/global/spend/logs\",\n    tags=[\"Budget & Spend Tracking\"],\n    dependencies=[Depends(user_api_key_auth)],\n)\nasync def global_spend_logs(\n    api_key: str = fastapi.Query(\n        default=None,\n        description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n    )\n):\n    ...\n    else:\n        sql_query = (\n            \"\"\"\n            SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n            WHERE \"api_key\" = '\"\"\"\n            + api_key\n            + \"\"\"'\n            ORDER BY \"date\";\n        \"\"\"\n        )\n\n        response = await prisma_client.db.query_raw(query=sql_query)\n\n        return response",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            334,
+            338
+          ],
+          "source": null,
+          "content": "### CHECK IF ADMIN ###\n        # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\n        is_master_key_valid = secrets.compare_digest(api_key, master_key)\n        if is_master_key_valid:\n            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/my-website/docs/proxy/ui.md",
+          "content": "You can restrict UI Access to just admins - includes you (proxy_admin) and people you give view only access to (proxy_admin_viewer) for seeing global spend.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Inject the UserAPIKeyAuth object into global_spend_logs (e.g. user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)) and, in the per-key branch, verify user_api_key_dict.user_role == 'proxy_admin' (or an equivalent admin role) before querying MonthlyGlobalSpendPerKey for a caller-supplied api_key; otherwise raise a 403.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.6087,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4099,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:global-spend-logs-authz:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The new `api_key` query parameter (attacker-controlled, any authenticated key) is concatenated directly into a raw SQL string and executed via `prisma_client.db.query_raw(query=sql_query)` with no binding, escaping, or allowlist. A value like `x' OR '1'='1` (or `'; DROP TABLE ...; --`) breaks out of the quoted literal and injects arbitrary SQL. The endpoint only requires `user_api_key_auth` (any valid key), so non-admin callers can reach this branch.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4099,
+            4112
+          ],
+          "source": null,
+          "content": "    else:\n        sql_query = (\n            \"\"\"\n            SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n            WHERE \"api_key\" = '\"\"\"\n            + api_key\n            + \"\"\"'\n            ORDER BY \"date\";\n        \"\"\"\n        )\n\n        response = await prisma_client.db.query_raw(query=sql_query)\n\n        return response",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4072,
+            4077
+          ],
+          "source": null,
+          "content": "async def global_spend_logs(\n    api_key: str = fastapi.Query(\n        default=None,\n        description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n    )\n):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4067,
+            4071
+          ],
+          "source": null,
+          "content": "@router.get(\n    \"/global/spend/logs\",\n    tags=[\"Budget & Spend Tracking\"],\n    dependencies=[Depends(user_api_key_auth)],\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/utils.py",
+          "lines": [
+            601,
+            615
+          ],
+          "source": null,
+          "content": "            sql_query = \"\"\"\n                CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n                SELECT\n                DATE(\"startTime\") AS date, \n                SUM(\"spend\") AS spend,\n                api_key as api_key\n                FROM \n                \"LiteLLM_SpendLogs\" \n                WHERE \n                \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n                GROUP BY \n                DATE(\"startTime\"),\n                api_key;\n            \"\"\"\n            await self.db.execute_raw(query=sql_query)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use a parameterized/bound query instead of string concatenation, e.g. `prisma_client.db.query_raw(query='SELECT * FROM \"MonthlyGlobalSpendPerKey\" WHERE \"api_key\" = $1 ORDER BY \"date\";', parameters=[api_key])` (or the Prisma/DB driver's bound-parameter form), and additionally enforce an admin role check before executing.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.6665,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4104,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "authz:monthly-global-spend-perkey-view:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The new else-branch in global_spend_logs (proxy_server.py:4099-4112) SELECTs from the MonthlyGlobalSpendPerKey view created by this hunk, filtering by a user-supplied api_key query parameter. The endpoint is documented as 'Admin-only endpoint' (proxy_server.py:4075, 4081) but is protected only by `dependencies=[Depends(user_api_key_auth)]` (proxy_server.py:4070), which authenticates any valid key without an admin/role check. There is no verification that the requester is an admin or that they own the api_key they are querying, so any authenticated non-admin key can read the spend of any other key (IDOR/missing authorization). The view creation in utils.py:595-617 is what newly exposes this per-key spend data to the endpoint.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4067,
+            4076
+          ],
+          "source": null,
+          "content": "@router.get(\n    \"/global/spend/logs\",\n    tags=[\"Budget & Spend Tracking\"],\n    dependencies=[Depends(user_api_key_auth)],\n)\nasync def global_spend_logs(\n    api_key: str = fastapi.Query(\n        default=None,\n        description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n    )\n):",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/proxy_server.py",
+          "lines": [
+            4099,
+            4112
+          ],
+          "source": null,
+          "content": "    else:\n        sql_query = (\n            \"\"\"\n            SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n            WHERE \"api_key\" = '\"\"\"\n            + api_key\n            + \"\"\"'\n            ORDER BY \"date\";\n        \"\"\"\n        )\n\n        response = await prisma_client.db.query_raw(query=sql_query)\n\n        return response",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/utils.py",
+          "lines": [
+            595,
+            617
+          ],
+          "source": null,
+          "content": "        try:\n            await self.db.query_raw(\n                \"\"\"SELECT 1 FROM \"MonthlyGlobalSpendPerKey\" LIMIT 1\"\"\"\n            )\n            print(\"MonthlyGlobalSpendPerKey Exists!\")  # noqa\n        except Exception as e:\n            sql_query = \"\"\"\n                CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n                SELECT\n                DATE(\"startTime\") AS date, \n                SUM(\"spend\") AS spend,\n                api_key as api_key\n                FROM \n                \"LiteLLM_SpendLogs\" \n                WHERE \n                \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n                GROUP BY \n                DATE(\"startTime\"),\n                api_key;\n            \"\"\"\n            await self.db.execute_raw(query=sql_query)\n\n            print(\"MonthlyGlobalSpendPerKey Created!\")  # noqa",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Add an admin/role check to the /global/spend/logs endpoint (e.g. require the authenticated user to have the admin role, or verify the requester owns the queried api_key) before returning per-key spend data, consistent with the 'Admin-only endpoint' documentation.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8624,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "litellm/proxy/proxy_server.py",
+      "line": 4100,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4055,
+                  "end_line": 4130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4055-4130]\n4055:                 code=getattr(e, \"status_code\", status.HTTP_500_INTERNAL_SERVER_ERROR),\n4056:             )\n4057:         elif isinstance(e, ProxyException):\n4058:             raise e\n4059:         raise ProxyException(\n4060:             message=\"/spend/logs Error\" + str(e),\n4061:             type=\"internal_error\",\n4062:             param=getattr(e, \"param\", \"None\"),\n4063:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4064:         )\n4065: \n4066: \n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs(\n4073:     api_key: str = fastapi.Query(\n4074:         default=None,\n4075:         description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n4076:     )\n4077: ):\n4078:     \"\"\"\n4079:     [BETA] This is a beta endpoint. It will change.\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n4086:     if prisma_client is None:\n4087:         raise ProxyException(\n4088:             message=\"Prisma Client is not initialized\",\n4089:             type=\"internal_error\",\n4090:             param=\"None\",\n4091:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4092:         )\n4093:     if api_key is None:\n4094:         sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4095: \n4096:         response = await prisma_client.db.query_raw(query=sql_query)\n4097: \n4098:         return response\n4099:     else:\n4100:         sql_query = (\n4101:             \"\"\"\n4102:             SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n4103:             WHERE \"api_key\" = '\"\"\"\n4104:             + api_key\n4105:             + \"\"\"'\n4106:             ORDER BY \"date\";\n4107:         \"\"\"\n4108:         )\n4109: \n4110:         response = await prisma_client.db.query_raw(query=sql_query)\n4111: \n4112:         return response\n4113:     return\n4114: \n4115: \n4116: @router.get(\n4117:     \"/global/spend/keys\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_keys(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of keys to get. Will return Top 'n' keys.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 560,
+                  "end_line": 625,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/utils.py lines=560-625]\n560:             ON\n561:             L.\"api_key\" = V.\"token\"\n562:             WHERE\n563:             L.\"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n564:             GROUP BY\n565:             L.\"api_key\", V.\"key_alias\", V.\"key_name\"\n566:             ORDER BY\n567:             total_spend DESC;\n568:             \"\"\"\n569:             await self.db.execute_raw(query=sql_query)\n570: \n571:             print(\"Last30dKeysBySpend Created!\")  # noqa\n572: \n573:         try:\n574:             await self.db.query_raw(\"\"\"SELECT 1 FROM \"Last30dModelsBySpend\" LIMIT 1\"\"\")\n575:             print(\"Last30dModelsBySpend Exists!\")  # noqa\n576:         except Exception as e:\n577:             sql_query = \"\"\"\n578:             CREATE OR REPLACE VIEW \"Last30dModelsBySpend\" AS\n579:             SELECT\n580:             \"model\",\n581:             SUM(\"spend\") AS total_spend\n582:             FROM\n583:             \"LiteLLM_SpendLogs\"\n584:             WHERE\n585:             \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n586:             AND \"model\" != ''\n587:             GROUP BY\n588:             \"model\"\n589:             ORDER BY\n590:             total_spend DESC;\n591:             \"\"\"\n592:             await self.db.execute_raw(query=sql_query)\n593: \n594:             print(\"Last30dModelsBySpend Created!\")  # noqa\n595:         try:\n596:             await self.db.query_raw(\n597:                 \"\"\"SELECT 1 FROM \"MonthlyGlobalSpendPerKey\" LIMIT 1\"\"\"\n598:             )\n599:             print(\"MonthlyGlobalSpendPerKey Exists!\")  # noqa\n600:         except Exception as e:\n601:             sql_query = \"\"\"\n602:                 CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n603:                 SELECT\n604:                 DATE(\"startTime\") AS date, \n605:                 SUM(\"spend\") AS spend,\n606:                 api_key as api_key\n607:                 FROM \n608:                 \"LiteLLM_SpendLogs\" \n609:                 WHERE \n610:                 \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n611:                 GROUP BY \n612:                 DATE(\"startTime\"),\n613:                 api_key;\n614:             \"\"\"\n615:             await self.db.execute_raw(query=sql_query)\n616: \n617:             print(\"MonthlyGlobalSpendPerKey Created!\")  # noqa\n618: \n619:         return\n620: \n621:     @backoff.on_exception(\n622:         backoff.expo,\n623:         Exception,  # base exception to catch for the backoff\n624:         max_tries=3,  # maximum number of retries\n625:         max_time=10,  # maximum total time to retry for\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "user_api_key_auth dependency and how admin-only endpoints check permissions (proxy admin check)"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 status=ok truncated=true incomplete=true query=\"user_api_key_auth dependency and how admin-only endpoints check permissions prox\"]\n**Exploration: user_api_key_auth dependency and how admin-only endpoints check permissions proxy admin check**\n\nFound 57 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `user_api_key_auth` (litellm/proxy/proxy_server.py:282) \u2014 22 callers in `litellm/proxy/proxy_server.py`; tests: `litellm/tests/test_key_generate_prisma.py`\n- `user_auth` (litellm/proxy/proxy_server.py:4258) \u2014 1 caller in `litellm/proxy/proxy_server.py`; no tests found within 3 caller hops\n- `user_custom_auth` (litellm/proxy/proxy_server.py:234) \u2014 5 callers in `litellm/proxy/proxy_server.py`; tested via callers: `litellm/tests/test_key_generate_prisma.py`, `litellm/tests/test_proxy_custom_auth.py` +6\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`litellm/proxy/proxy_server.py`** \u2014 get_data(calls), budget_alerts(calls), ProxyException(instantiates), generate_key_helper_fn(calls), _cache_user_row(calls), hash_token(calls), +55 more\n\n```python\n231\tprisma_client: Optional[PrismaClient] = None\n232\tcustom_db_client: Optional[DBClient] = None\n233\tuser_api_key_cache = DualCache()\n234\tuser_custom_auth = None\n235\tuser_custom_key_generate = None\n236\tuse_background_health_checks = None\n237\tuse_queue = False\n\n... (gap) ...\n\n279\t        return pydantic_obj.dict()\n280\t\n281\t\n282\tasync def user_api_key_auth(\n283\t    request: Request, api_key: str = fastapi.Security(api_key_header)\n284\t) -> UserAPIKeyAuth:\n285\t    global master_key, prisma_client, llm_model_list, user_custom_auth, custom_db_client\n286\t    try:\n287\t        if isinstance(api_key, str):\n288\t            passed_in_key = api_key\n289\t            api_key = _get_bearer_token(api_key=api_key)\n290\t\n291\t        ### USER-DEFINED AUTH FUNCTION ###\n292\t        if user_custom_auth is not None:\n293\t            response = await user_custom_auth(request=request, api_key=api_key)\n294\t            return UserAPIKeyAuth.model_validate(response)\n295\t\n296\t        ### LITELLM-DEFINED AUTH FUNCTION ###\n297\t        if master_key is None:\n298\t            if isinstance(api_key, str):\n299\t                return UserAPIKeyAuth(api_key=api_key)\n300\t            else:\n301\t                return UserAPIKeyAuth()\n302\t\n303\t        route: str = request.url.path\n304\t        if route == \"/user/auth\":\n305\t            if general_settings.get(\"allow_user_auth\", False) == True:\n306\t                return UserAPIKeyAuth()\n307\t            else:\n308\t                raise HTTPException(\n309\t                    status_code=status.HTTP_403_FORBIDDEN,\n310\t                    detail=\"'allow_user_auth' not set or set to False\",\n311\t                )\n312\t        elif (\n313\t            route == \"/routes\"\n314\t            or route == \"/\"\n315\t            or route == \"/health/liveliness\"\n316\t            or route == \"/health/readiness\"\n317\t            or route == \"/test\"\n318\t            or route == \"/config/yaml\"\n319\t        ):\n320\t            \"\"\"\n321\t            Unprotected endpoints\n322\t            \"\"\"\n323\t            return UserAPIKeyAuth()\n324\t\n325\t        if api_key is None:  # only require api key if master key is set\n326\t            raise Exception(f\"No api key passed in.\")\n327\t\n328\t        if secrets.compare_digest(api_key, \"\"):\n329\t            # missing 'Bearer ' prefix\n330\t            raise Exception(\n331\t                f\"Malformed API Key passed in. Ensure Key has `Bearer ` prefix. Passed in: {passed_in_key}\"\n332\t            )\n333\t\n334\t        ### CHECK IF ADMIN ###\n335\t        # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\n336\t        is_master_key_valid = secrets.compare_digest(api_key, master_key)\n337\t        if is_master_key_valid:\n338\t            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\n339\t        if isinstance(\n340\t            api_key, str\n341\t        ):  # if generated token, make sure it starts with sk-.\n342\t            assert api_key.startswith(\"sk-\")  # prevent token hashes from being used\n343\t        if route.startswith(\"/config/\") and not is_master_key_valid:\n344\t            raise Exception(f\"Only admin can modify config\")\n345\t\n346\t        if (\n347\t            prisma_client is None and custom_db_client is None\n348\t        ):  # if both master key + user key submitted, and user key != master key, and no db connected, raise an error\n349\t            raise Exception(\"No connected db.\")\n350\t\n351\t        ## check for cache hit (In-Memory Cache)\n352\t        original_api_key = api_key  # (Patch: For DynamoDB Backwards Compatibility)\n353\t        if api_key.startswith(\"sk-\"):\n\n... (gap) ...\n\n4252\t    )\n4253\t\n4254\t\n4255\t@router.post(\n4256\t    \"/user/auth\", tags=[\"user management\"], dependencies=[Depends(user_api_key_auth)]\n4257\t)\n4258\tasync def user_auth(request: Request):\n4259\t    \"\"\"\n4260\t    Allows UI (\"https://dashboard.litellm.ai/\", or self-hosted - os.getenv(\"LITELLM_HOSTED_UI\")) to request a magic link to be sent to user email, for auth to proxy.\n4261\t\n4262\t    Only allows emails from accepted email subdomains.\n4263\t\n4264\t    Rate limit: 1 request every 60s.\n4265\t\n4266\t    Only works, if you enable 'allow_user_auth' in general settings:\n4267\t    e.g.:\n4268\t    ```yaml\n4269\t    general_settings:\n4270\t        allow_user_auth: true\n4271\t    ```\n4272\t\n4273\t    Requirements:\n4274\t    SMTP server details saved in .env:\n4275\t   \n[TRUNCATED omitted_chars=13292]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def user_api_key_auth",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"def user_api_key_auth\"]\nlitellm/proxy/example_config_yaml/custom_auth.py:9:async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:\nlitellm/proxy/proxy_server.py:282:async def user_api_key_auth(\nlitellm/tests/test_configs/custom_auth.py:9:async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_role == \"proxy_admin\"|user_role != \"proxy_admin\"",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"user_role == 'proxy_admin'|user_role != 'proxy_admin'\"]\nlitellm/proxy/proxy_server.py:4816:        or user_api_key_dict.user_role != \"proxy_admin\"\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4116,
+                  "end_line": 4175,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4116-4175]\n4116: @router.get(\n4117:     \"/global/spend/models\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_models(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of models to get. Will return Top 'n' models.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n4131:     \"\"\"\n4132:     global prisma_client\n4133: \n4134:     if prisma_client is None:\n4135:         raise HTTPException(status_code=500, detail={\"error\": \"No db connected\"})\n4136: \n4137:     sql_query = f\"\"\"SELECT * FROM \"Last30dModelsBySpend\" LIMIT {limit};\"\"\"\n4138: \n4139:     response = await prisma_client.db.query_raw(query=sql_query)\n4140: \n4141:     return response\n4142: \n4143: \n4144: @router.get(\n4145:     \"/daily_metrics\",\n4146:     summary=\"Get daily spend metrics\",\n4147:     tags=[\"budget & spend Tracking\"],\n4148:     dependencies=[Depends(user_api_key_auth)],\n4149: )\n4150: async def view_daily_metrics(\n4151:     start_date: Optional[str] = fastapi.Query(\n4152:         default=None,\n4153:         description=\"Time from which to start viewing key spend\",\n4154:     ),\n4155:     end_date: Optional[str] = fastapi.Query(\n4156:         default=None,\n4157:         description=\"Time till which to view key spend\",\n4158:     ),\n4159: ):\n4160:     \"\"\"\n4161:     [BETA] This is a beta endpoint. It might change without notice.\n4162: \n4163:     Please give feedback - https://github.com/BerriAI/litellm/issues\n4164:     \"\"\"\n4165:     try:\n4166:         if os.getenv(\"CLICKHOUSE_HOST\") is not None:\n4167:             # gettting spend logs from clickhouse\n4168:             from litellm.integrations import clickhouse\n4169: \n4170:             return clickhouse.build_daily_metrics()\n4171: \n4172:             # create a response object\n4173:             \"\"\"\n4174:             {\n4175:                 \"date\": \"2022-01-01\",\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4800,
+                  "end_line": 4830,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4800-4830]\n4800:       \"members_with_roles\": [{\"role\": \"admin\", \"user_id\": \"user-1234\"}, \n4801:         {\"role\": \"user\", \"user_id\": \"user-2434\"}]\n4802:     }'\n4803: \n4804:     ```\n4805:     \"\"\"\n4806:     global prisma_client\n4807: \n4808:     if prisma_client is None:\n4809:         raise HTTPException(status_code=500, detail={\"error\": \"No db connected\"})\n4810: \n4811:     if data.team_id is None:\n4812:         data.team_id = str(uuid.uuid4())\n4813: \n4814:     if (\n4815:         user_api_key_dict.user_role is None\n4816:         or user_api_key_dict.user_role != \"proxy_admin\"\n4817:     ):  # don't restrict proxy admin\n4818:         if (\n4819:             data.tpm_limit is not None\n4820:             and user_api_key_dict.tpm_limit is not None\n4821:             and data.tpm_limit > user_api_key_dict.tpm_limit\n4822:         ):\n4823:             raise HTTPException(\n4824:                 status_code=400,\n4825:                 detail={\n4826:                     \"error\": f\"tpm limit higher than user max. User tpm limit={user_api_key_dict.tpm_limit}\"\n4827:                 },\n4828:             )\n4829: \n4830:         if (\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_role",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"user_role\"]\nlitellm/proxy/proxy_server.py:338:            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\nlitellm/proxy/proxy_server.py:803:                        api_key=api_key, user_role=\"proxy_admin\", **valid_token_dict\nlitellm/proxy/proxy_server.py:1818:    user_role: Optional[str] = None,\nlitellm/proxy/proxy_server.py:1866:    user_role = user_role or \"app_user\"\nlitellm/proxy/proxy_server.py:1878:            \"user_role\": user_role,\nlitellm/proxy/proxy_server.py:2275:                user_role=\"proxy_admin\",\nlitellm/proxy/proxy_server.py:2278:                    \"user_role\": \"proxy_admin\",\nlitellm/proxy/proxy_server.py:4219:    - user_role: Optional[str] - Specify a user role - \"proxy_admin\", \"app_owner\", \"app_user\"\nlitellm/proxy/proxy_server.py:4236:    if \"user_role\" in data_json:\nlitellm/proxy/proxy_server.py:4237:        user_role = data_json[\"user_role\"]\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4067,
+                  "end_line": 4095,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4067-4095]\n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs():\n4073:     \"\"\"\n4074:     [BETA] This is a beta endpoint. It will change.\n4075: \n4076:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4077: \n4078:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4079:     \"\"\"\n4080:     global prisma_client\n4081: \n4082:     sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4083: \n4084:     response = await prisma_client.db.query_raw(query=sql_query)\n4085: \n4086:     return response\n4087: \n4088: \n4089: @router.get(\n4090:     \"/global/spend/keys\",\n4091:     tags=[\"Budget & Spend Tracking\"],\n4092:     dependencies=[Depends(user_api_key_auth)],\n4093: )\n4094: async def global_spend_keys(\n4095:     limit: int = fastapi.Query(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def create_views|def create_view",
+                  "file_glob": "litellm/proxy/utils.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"def create_views|def create_view\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 500,
+                  "end_line": 560,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/utils.py lines=500-560]\n500:         try:\n501:             # Try to select one row from the view\n502:             await self.db.query_raw(\n503:                 \"\"\"SELECT 1 FROM \"LiteLLM_VerificationTokenView\" LIMIT 1\"\"\"\n504:             )\n505:             print(\"LiteLLM_VerificationTokenView Exists!\")  # noqa\n506:         except Exception as e:\n507:             # If an error occurs, the view does not exist, so create it\n508:             value = await self.health_check()\n509:             await self.db.execute_raw(\n510:                 \"\"\"\n511:                     CREATE VIEW \"LiteLLM_VerificationTokenView\" AS\n512:                     SELECT \n513:                     v.*, \n514:                     t.spend AS team_spend, \n515:                     t.max_budget AS team_max_budget, \n516:                     t.tpm_limit AS team_tpm_limit, \n517:                     t.rpm_limit AS team_rpm_limit\n518:                     FROM \"LiteLLM_VerificationToken\" v\n519:                     LEFT JOIN \"LiteLLM_TeamTable\" t ON v.team_id = t.team_id;\n520:                 \"\"\"\n521:             )\n522: \n523:             print(\"LiteLLM_VerificationTokenView Created!\")  # noqa\n524: \n525:         try:\n526:             await self.db.query_raw(\"\"\"SELECT 1 FROM \"MonthlyGlobalSpend\" LIMIT 1\"\"\")\n527:             print(\"MonthlyGlobalSpend Exists!\")  # noqa\n528:         except Exception as e:\n529:             sql_query = \"\"\"\n530:             CREATE OR REPLACE VIEW \"MonthlyGlobalSpend\" AS \n531:             SELECT\n532:             DATE(\"startTime\") AS date, \n533:             SUM(\"spend\") AS spend \n534:             FROM \n535:             \"LiteLLM_SpendLogs\" \n536:             WHERE \n537:             \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n538:             GROUP BY \n539:             DATE(\"startTime\");\n540:             \"\"\"\n541:             await self.db.execute_raw(query=sql_query)\n542: \n543:             print(\"MonthlyGlobalSpend Created!\")  # noqa\n544: \n545:         try:\n546:             await self.db.query_raw(\"\"\"SELECT 1 FROM \"Last30dKeysBySpend\" LIMIT 1\"\"\")\n547:             print(\"Last30dKeysBySpend Exists!\")  # noqa\n548:         except Exception as e:\n549:             sql_query = \"\"\"\n550:             CREATE OR REPLACE VIEW \"Last30dKeysBySpend\" AS\n551:             SELECT \n552:             L.\"api_key\", \n553:             V.\"key_alias\",\n554:             V.\"key_name\",\n555:             SUM(L.\"spend\") AS total_spend\n556:             FROM\n557:             \"LiteLLM_SpendLogs\" L\n558:             LEFT JOIN \n559:             \"LiteLLM_VerificationToken\" V\n560:             ON\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 470,
+                  "end_line": 500,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/utils.py lines=470-500]\n470:         # Hash the string using SHA-256\n471:         hashed_token = hashlib.sha256(token.encode()).hexdigest()\n472: \n473:         return hashed_token\n474: \n475:     def jsonify_object(self, data: dict) -> dict:\n476:         db_data = copy.deepcopy(data)\n477: \n478:         for k, v in db_data.items():\n479:             if isinstance(v, dict):\n480:                 db_data[k] = json.dumps(v)\n481:         return db_data\n482: \n483:     @backoff.on_exception(\n484:         backoff.expo,\n485:         Exception,  # base exception to catch for the backoff\n486:         max_tries=3,  # maximum number of retries\n487:         max_time=10,  # maximum total time to retry for\n488:         on_backoff=on_backoff,  # specifying the function to call on backoff\n489:     )\n490:     async def check_view_exists(self):\n491:         \"\"\"\n492:         Checks if the LiteLLM_VerificationTokenView and MonthlyGlobalSpend exists in the user's db.\n493: \n494:         LiteLLM_VerificationTokenView: This view is used for getting the token + team data in user_api_key_auth\n495: \n496:         MonthlyGlobalSpend: This view is used for the admin view to see global spend for this month\n497: \n498:         If the view doesn't exist, one will be created.\n499:         \"\"\"\n500:         try:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "check_view_exists",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"check_view_exists\"]\nlitellm/proxy/proxy_server.py:2319:        create_view_response = await prisma_client.check_view_exists()\nlitellm/proxy/utils.py:490:    async def check_view_exists(self):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 2300,
+                  "end_line": 2330,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=2300-2330]\n2300:                 query_type=\"update_data\",\n2301:                 update_key_values={\n2302:                     \"max_budget\": litellm.max_budget,\n2303:                     \"budget_duration\": litellm.budget_duration,\n2304:                 },\n2305:             )\n2306:         )\n2307: \n2308:     verbose_proxy_logger.debug(\n2309:         f\"custom_db_client client {custom_db_client}. Master_key: {master_key}\"\n2310:     )\n2311:     if custom_db_client is not None and master_key is not None:\n2312:         # add master key to db\n2313:         await generate_key_helper_fn(\n2314:             duration=None, models=[], aliases={}, config={}, spend=0, token=master_key\n2315:         )\n2316: \n2317:     ### CHECK IF VIEW EXISTS ###\n2318:     if prisma_client is not None:\n2319:         create_view_response = await prisma_client.check_view_exists()\n2320: \n2321:     ### START BUDGET SCHEDULER ###\n2322:     if prisma_client is not None:\n2323:         scheduler = AsyncIOScheduler()\n2324:         interval = random.randint(\n2325:             proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time\n2326:         )  # random interval, so multiple workers avoid resetting budget at the same time\n2327:         scheduler.add_job(\n2328:             reset_budget, \"interval\", seconds=interval, args=[prisma_client]\n2329:         )\n2330:         scheduler.start()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_api_key_dict: UserAPIKeyAuth",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"user_api_key_dict: UserAPIKeyAuth\"]\nlitellm/proxy/proxy_server.py:2341:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:2387:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:2541:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:2785:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:2962:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:3113:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:3517:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:3525:        user_api_key_dict: UserAPIKeyAuth = Dependency representing the user's API key\nlitellm/proxy/proxy_server.py:3586:    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\nlitellm/proxy/proxy_server.py:3592:        user_api_key_dict: UserAPIKeyAuth = Dependency representing the user's API key\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 2335,
+                  "end_line": 2360,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=2335-2360]\n2335:     \"/v1/models\", dependencies=[Depends(user_api_key_auth)], tags=[\"model management\"]\n2336: )\n2337: @router.get(\n2338:     \"/models\", dependencies=[Depends(user_api_key_auth)], tags=[\"model management\"]\n2339: )  # if project requires model list\n2340: def model_list(\n2341:     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\n2342: ):\n2343:     global llm_model_list, general_settings\n2344:     all_models = []\n2345:     if len(user_api_key_dict.models) > 0:\n2346:         all_models = user_api_key_dict.models\n2347:     else:\n2348:         ## if no specific model access\n2349:         if general_settings.get(\"infer_model_from_keys\", False):\n2350:             all_models = litellm.utils.get_valid_models()\n2351:         if llm_model_list:\n2352:             all_models = list(\n2353:                 set(all_models + [m[\"model_name\"] for m in llm_model_list])\n2354:             )\n2355:         if user_model is not None:\n2356:             all_models += [user_model]\n2357:     verbose_proxy_logger.debug(f\"all_models: {all_models}\")\n2358:     return dict(\n2359:         data=[\n2360:             {\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class UserAPIKeyAuth",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"class UserAPIKeyAuth\"]\nlitellm/proxy/_types.py:482:class UserAPIKeyAuth(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/_types.py",
+                  "start_line": 482,
+                  "end_line": 520,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/_types.py lines=482-520]\n482: class UserAPIKeyAuth(\n483:     LiteLLM_VerificationTokenView\n484: ):  # the expected response object for user api key auth\n485:     \"\"\"\n486:     Return the row in the db\n487:     \"\"\"\n488: \n489:     api_key: Optional[str] = None\n490:     user_role: Optional[Literal[\"proxy_admin\", \"app_owner\", \"app_user\"]] = None\n491: \n492:     @root_validator(pre=True)\n493:     def check_api_key(cls, values):\n494:         if values.get(\"api_key\") is not None:\n495:             values.update({\"token\": hash_token(values.get(\"api_key\"))})\n496:         return values\n497: \n498: \n499: class LiteLLM_Config(LiteLLMBase):\n500:     param_name: str\n501:     param_value: Dict\n502: \n503: \n504: class LiteLLM_UserTable(LiteLLMBase):\n505:     user_id: str\n506:     max_budget: Optional[float]\n507:     spend: float = 0.0\n508:     model_max_budget: Optional[Dict] = {}\n509:     model_spend: Optional[Dict] = {}\n510:     user_email: Optional[str]\n511:     models: list = []\n512: \n513:     @root_validator(pre=True)\n514:     def set_model_info(cls, values):\n515:         if values.get(\"spend\") is None:\n516:             values.update({\"spend\": 0.0})\n517:         if values.get(\"models\") is None:\n518:             values.update({\"models\": []})\n519:         return values\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "proxy_admin",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"proxy_admin\"]\nlitellm/proxy/proxy_server.py:96:    _is_user_proxy_admin,\nlitellm/proxy/proxy_server.py:338:            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\nlitellm/proxy/proxy_server.py:693:                and (not _is_user_proxy_admin(user_id_information))\nlitellm/proxy/proxy_server.py:801:                if _is_user_proxy_admin(user_id_information):\nlitellm/proxy/proxy_server.py:803:                        api_key=api_key, user_role=\"proxy_admin\", **valid_token_dict\nlitellm/proxy/proxy_server.py:2275:                user_role=\"proxy_admin\",\nlitellm/proxy/proxy_server.py:2278:                    \"user_role\": \"proxy_admin\",\nlitellm/proxy/proxy_server.py:4219:    - user_role: Optional[str] - Specify a user role - \"proxy_admin\", \"app_owner\", \"app_user\"\nlitellm/proxy/proxy_server.py:4735:        description=\"Either 'proxy_admin', 'proxy_viewer', 'app_owner', 'app_user'\",\nlitellm/proxy/proxy_server.py:4816:        or user_api_key_dict.user_role != \"proxy_admin\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def _is_user_proxy_admin",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"def _is_user_proxy_admin\"]\nlitellm/proxy/utils.py:1680:def _is_user_proxy_admin(user_id_information=None):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 1680,
+                  "end_line": 1710,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/utils.py lines=1680-1710]\n1680: def _is_user_proxy_admin(user_id_information=None):\n1681:     if (\n1682:         user_id_information == None\n1683:         or len(user_id_information) == 0\n1684:         or user_id_information[0] == None\n1685:     ):\n1686:         return False\n1687:     _user = user_id_information[0]\n1688:     if (\n1689:         _user.get(\"user_role\", None) is not None\n1690:         and _user.get(\"user_role\") == \"proxy_admin\"\n1691:     ):\n1692:         return True\n1693: \n1694:     # if user_id_information contains litellm-proxy-budget\n1695:     # get first user_id that is not litellm-proxy-budget\n1696:     for user in user_id_information:\n1697:         if user.get(\"user_id\") != \"litellm-proxy-budget\":\n1698:             _user = user\n1699:             break\n1700: \n1701:     if (\n1702:         _user.get(\"user_role\", None) is not None\n1703:         and _user.get(\"user_role\") == \"proxy_admin\"\n1704:     ):\n1705:         return True\n1706: \n1707:     return False\n1708: \n1709: \n1710: # LiteLLM Admin UI - Non SSO Login\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_role == \"proxy_admin\"|user_role != \"proxy_admin\"|user_role in \\[",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"user_role == 'proxy_admin'|user_role != 'proxy_admin'|user_role in \\[\"]\nlitellm/proxy/proxy_server.py:4816:        or user_api_key_dict.user_role != \"proxy_admin\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "proxy_admin",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b pattern=\"proxy_admin\"]\nlitellm/proxy/proxy_server.py:96:    _is_user_proxy_admin,\nlitellm/proxy/proxy_server.py:338:            return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\nlitellm/proxy/proxy_server.py:693:                and (not _is_user_proxy_admin(user_id_information))\nlitellm/proxy/proxy_server.py:801:                if _is_user_proxy_admin(user_id_information):\nlitellm/proxy/proxy_server.py:803:                        api_key=api_key, user_role=\"proxy_admin\", **valid_token_dict\nlitellm/proxy/proxy_server.py:2275:                user_role=\"proxy_admin\",\nlitellm/proxy/proxy_server.py:2278:                    \"user_role\": \"proxy_admin\",\nlitellm/proxy/proxy_server.py:4246:    - user_role: Optional[str] - Specify a user role - \"proxy_admin\", \"app_owner\", \"app_user\"\nlitellm/proxy/proxy_server.py:4762:        description=\"Either 'proxy_admin', 'proxy_viewer', 'app_owner', 'app_user'\",\nlitellm/proxy/proxy_server.py:4843:        or user_api_key_dict.user_role != \"proxy_admin\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4144,
+                  "end_line": 4200,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4144-4200]\n4144: @router.get(\n4145:     \"/daily_metrics\",\n4146:     summary=\"Get daily spend metrics\",\n4147:     tags=[\"budget & spend Tracking\"],\n4148:     dependencies=[Depends(user_api_key_auth)],\n4149: )\n4150: async def view_daily_metrics(\n4151:     start_date: Optional[str] = fastapi.Query(\n4152:         default=None,\n4153:         description=\"Time from which to start viewing key spend\",\n4154:     ),\n4155:     end_date: Optional[str] = fastapi.Query(\n4156:         default=None,\n4157:         description=\"Time till which to view key spend\",\n4158:     ),\n4159: ):\n4160:     \"\"\"\n4161:     [BETA] This is a beta endpoint. It might change without notice.\n4162: \n4163:     Please give feedback - https://github.com/BerriAI/litellm/issues\n4164:     \"\"\"\n4165:     try:\n4166:         if os.getenv(\"CLICKHOUSE_HOST\") is not None:\n4167:             # gettting spend logs from clickhouse\n4168:             from litellm.integrations import clickhouse\n4169: \n4170:             return clickhouse.build_daily_metrics()\n4171: \n4172:             # create a response object\n4173:             \"\"\"\n4174:             {\n4175:                 \"date\": \"2022-01-01\",\n4176:                 \"spend\": 0.0,\n4177:                 \"users\": {},\n4178:                 \"models\": {},\n4179:             }\n4180:             \"\"\"\n4181:         else:\n4182:             raise Exception(\n4183:                 \"Clickhouse: Clickhouse host not set. Required for viewing /daily/metrics\"\n4184:             )\n4185:     except Exception as e:\n4186:         if isinstance(e, HTTPException):\n4187:             raise ProxyException(\n4188:                 message=getattr(e, \"detail\", f\"/spend/logs Error({str(e)})\"),\n4189:                 type=\"internal_error\",\n4190:                 param=getattr(e, \"param\", \"None\"),\n4191:                 code=getattr(e, \"status_code\", status.HTTP_500_INTERNAL_SERVER_ERROR),\n4192:             )\n4193:         elif isinstance(e, ProxyException):\n4194:             raise e\n4195:         raise ProxyException(\n4196:             message=\"/spend/logs Error\" + str(e),\n4197:             type=\"internal_error\",\n4198:             param=getattr(e, \"param\", \"None\"),\n4199:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4200:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"global-spend-logs-authz\",\n      \"title\": \"global_spend_logs: per-key spend query with missing admin check and SQL injection\",\n      \"rationale\": \"Both hunks modify the same /global/spend/logs endpoint, which is documented as admin-only but only enforces user_api_key_auth (any valid key) and builds a raw SQL query by string-concatenating the user-supplied api_key, so the authorization gap and injection risk are one concern.\",\n      \"hunks\": [\n        \"litellm/proxy/proxy_server.py#0\",\n        \"litellm/proxy/proxy_server.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/proxy_server.py\", \"symbol\": \"user_api_key_auth\", \"start_line\": 282, \"end_line\": 344, \"snapshot\": \"base\", \"why\": \"The only dependency on the endpoint; it authenticates any valid key and sets user_role='proxy_admin' only for the master key, but the endpoint never checks user_role, so non-admin keys can reach the per-key branch.\"},\n        {\"path\": \"litellm/proxy/_types.py\", \"symbol\": \"UserAPIKeyAuth\", \"start_line\": 482, \"end_line\": 496, \"snapshot\": \"base\", \"why\": \"Defines user_role field that an admin check would need to inspect; the changed endpoint does not receive or use this object.\"},\n        {\"path\": \"litellm/proxy/proxy_server.py\", \"symbol\": \"global_spend_models\", \"start_line\": 4121, \"end_line\": 4141, \"snapshot\": \"base\", \"why\": \"Sibling 'admin-only' spend endpoint that also relies solely on user_api_key_auth, showing the pattern the new per-key branch follows without an explicit admin gate.\"}\n      ]\n    },\n    {\n      \"id\": \"monthly-global-spend-perkey-view\",\n      \"title\": \"check_view_exists: create MonthlyGlobalSpendPerKey view exposing per-key spend\",\n      \"rationale\": \"This hunk adds the DB view that the new per-key branch of global_spend_logs queries, so it is the data-exposure counterpart of the same authorization concern.\",\n      \"hunks\": [\n        \"litellm/proxy/utils.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/utils.py\", \"symbol\": \"check_view_exists\", \"start_line\": 490, \"end_line\": 543, \"snapshot\": \"base\", \"why\": \"The method being extended; it already creates the MonthlyGlobalSpend view and is the place the new per-key view is added.\"},\n        {\"path\": \"litellm/proxy/proxy_server.py\", \"symbol\": \"global_spend_logs\", \"start_line\": 4099, \"end_line\": 4112, \"snapshot\": \"pr\", \"why\": \"The new else-branch that SELECTs from the MonthlyGlobalSpendPerKey view this hunk creates, tying the view to the authorization-sensitive endpoint.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "global-spend-logs-authz",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4060,
+                  "end_line": 4120,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4060-4120]\n4060:             message=\"/spend/logs Error\" + str(e),\n4061:             type=\"internal_error\",\n4062:             param=getattr(e, \"param\", \"None\"),\n4063:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4064:         )\n4065: \n4066: \n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs(\n4073:     api_key: str = fastapi.Query(\n4074:         default=None,\n4075:         description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n4076:     )\n4077: ):\n4078:     \"\"\"\n4079:     [BETA] This is a beta endpoint. It will change.\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n4086:     if prisma_client is None:\n4087:         raise ProxyException(\n4088:             message=\"Prisma Client is not initialized\",\n4089:             type=\"internal_error\",\n4090:             param=\"None\",\n4091:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4092:         )\n4093:     if api_key is None:\n4094:         sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4095: \n4096:         response = await prisma_client.db.query_raw(query=sql_query)\n4097: \n4098:         return response\n4099:     else:\n4100:         sql_query = (\n4101:             \"\"\"\n4102:             SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n4103:             WHERE \"api_key\" = '\"\"\"\n4104:             + api_key\n4105:             + \"\"\"'\n4106:             ORDER BY \"date\";\n4107:         \"\"\"\n4108:         )\n4109: \n4110:         response = await prisma_client.db.query_raw(query=sql_query)\n4111: \n4112:         return response\n4113:     return\n4114: \n4115: \n4116: @router.get(\n4117:     \"/global/spend/keys\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 282,
+                  "end_line": 344,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=282-344]\n282: async def user_api_key_auth(\n283:     request: Request, api_key: str = fastapi.Security(api_key_header)\n284: ) -> UserAPIKeyAuth:\n285:     global master_key, prisma_client, llm_model_list, user_custom_auth, custom_db_client\n286:     try:\n287:         if isinstance(api_key, str):\n288:             passed_in_key = api_key\n289:             api_key = _get_bearer_token(api_key=api_key)\n290: \n291:         ### USER-DEFINED AUTH FUNCTION ###\n292:         if user_custom_auth is not None:\n293:             response = await user_custom_auth(request=request, api_key=api_key)\n294:             return UserAPIKeyAuth.model_validate(response)\n295: \n296:         ### LITELLM-DEFINED AUTH FUNCTION ###\n297:         if master_key is None:\n298:             if isinstance(api_key, str):\n299:                 return UserAPIKeyAuth(api_key=api_key)\n300:             else:\n301:                 return UserAPIKeyAuth()\n302: \n303:         route: str = request.url.path\n304:         if route == \"/user/auth\":\n305:             if general_settings.get(\"allow_user_auth\", False) == True:\n306:                 return UserAPIKeyAuth()\n307:             else:\n308:                 raise HTTPException(\n309:                     status_code=status.HTTP_403_FORBIDDEN,\n310:                     detail=\"'allow_user_auth' not set or set to False\",\n311:                 )\n312:         elif (\n313:             route == \"/routes\"\n314:             or route == \"/\"\n315:             or route == \"/health/liveliness\"\n316:             or route == \"/health/readiness\"\n317:             or route == \"/test\"\n318:             or route == \"/config/yaml\"\n319:         ):\n320:             \"\"\"\n321:             Unprotected endpoints\n322:             \"\"\"\n323:             return UserAPIKeyAuth()\n324: \n325:         if api_key is None:  # only require api key if master key is set\n326:             raise Exception(f\"No api key passed in.\")\n327: \n328:         if secrets.compare_digest(api_key, \"\"):\n329:             # missing 'Bearer ' prefix\n330:             raise Exception(\n331:                 f\"Malformed API Key passed in. Ensure Key has `Bearer ` prefix. Passed in: {passed_in_key}\"\n332:             )\n333: \n334:         ### CHECK IF ADMIN ###\n335:         # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\n336:         is_master_key_valid = secrets.compare_digest(api_key, master_key)\n337:         if is_master_key_valid:\n338:             return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\n339:         if isinstance(\n340:             api_key, str\n341:         ):  # if generated token, make sure it starts with sk-.\n342:             assert api_key.startswith(\"sk-\")  # prevent token hashes from being used\n343:         if route.startswith(\"/config/\") and not is_master_key_valid:\n344:             raise Exception(f\"Only admin can modify config\")\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "admin-only endpoint user_role proxy_admin authorization check"
+                },
+                "result": "[docs/my-website/docs/proxy/ui.md:137-209] (relevance 0.48)\nGENERIC_USER_FIRST_NAME_ATTRIBUTE = \"first_name\"\nGENERIC_USER_LAST_NAME_ATTRIBUTE = \"last_name\"\nGENERIC_USER_ROLE_ATTRIBUTE = \"given_role\"\nGENERIC_CLIENT_STATE = \"some-state\" # if the provider needs a state parameter\nGENERIC_INCLUDE_CLIENT_ID = \"false\" # some providers enforce that the client_id is not in the body\nGENERIC_SCOPE = \"openid profile email\" # default scope openid is sometimes not enough to retrieve basic user info like first_name and last_name located in profile scope\n```\n\n- Set Redirect URI, if your provider requires it\n    - Set a redirect url = `<your proxy base url>/sso/callback`\n    ```shell\n    http://localhost:4000/sso/callback\n    ```\n\n</TabItem>\n\n</Tabs>\n\n#### Step 3. Set `PROXY_BASE_URL` in your .env\n\nSet this in your .env (so the proxy can set the correct redirect url)\n```shell\nPROXY_BASE_URL=https://litellm-api.up.railway.app/\n```\n\n#### Step 4. Test flow\n<Image img={require('../../img/litellm_ui_3.gif')} />\n\n### Set Admin view w/ SSO \n\nYou just need to set Proxy Admin ID\n\n#### Step 1: Copy your ID from the UI \n\n<Image img={require('../../img/litellm_ui_copy_id.png')} />\n\n#### Step 2: Set it in your .env as the PROXY_ADMIN_ID \n\n```env\nexport PROXY_ADMIN_ID=\"116544810872468347480\"\n```\n\n#### Step 3: See all proxy keys\n\n<Image img={require('../../img/litellm_ui_admin.png')} />\n\n:::info\n\nIf you don't see all your keys this could be due to a cached token. So just re-login and it should work.\n\n:::\n\n### Restrict UI Access\n\nYou can restrict UI Access to just admins - includes you (proxy_admin) and people you give view only access to (proxy_admin_viewer) for seeing global spend.\n\n**Step 1. Set 'admin_only' access**\n```yaml\ngeneral_settings:\n    ui_access_mode: \"admin_only\"\n```\n\n**Step 2. Invite view-only users**\n\n<Image img={require('../../img/admin_ui_viewer.png')} />\n\n### Custom Branding Admin UI\n\nUse your companies custom branding on the LiteLLM Admin UI\nWe allow you to \n- Customize the UI Logo\n- Customize the UI color scheme\n<Image img={require('../../img/litellm_custom_ai.png')} />\n\n---\n\n[docs/my-website/docs/proxy/virtual_keys.md:594-669] (relevance 0.42)\n\"mistral-7b\": \"gpt-3.5-turbo\"\n        },\n        \"config\": {}\n    }\n}\n```\n\n\n### Custom Auth \n\nYou can now override the default api key auth. \n\nHere's how: \n\n#### 1. Create a custom auth file. \n\nMake sure the response type follows the `UserAPIKeyAuth` pydantic object. This is used by for logging usage specific to that user key.\n\n```python\nfrom litellm.proxy._types import UserAPIKeyAuth\n\nasync def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth: \n    try: \n        modified_master_key = \"sk-my-master-key\"\n        if api_key == modified_master_key:\n            return UserAPIKeyAuth(api_key=api_key)\n        raise Exception\n    except: \n        raise Exception\n```\n\n#### 2. Pass the filepath (relative to the config.yaml)\n\nPass the filepath to the config.yaml \n\ne.g. if they're both in the same dir - `./config.yaml` and `./custom_auth.py`, this is what it looks like:\n```yaml \nmodel_list: \n  - model_name: \"openai-model\"\n    litellm_params: \n      model: \"gpt-3.5-turbo\"\n\nlitellm_settings:\n  drop_params: True\n  set_verbose: True\n\ngeneral_settings:\n  custom_auth: custom_auth.user_api_key_auth\n```\n\n[**Implementation Code**](https://github.com/BerriAI/litellm/blob/caf2a6b279ddbe89ebd1d8f4499f65715d684851/litellm/proxy/utils.py#L122)\n\n#### 3. Start the proxy\n```shell\n$ litellm --config /path/to/config.yaml \n```\n\n### Custom /key/generate\n\nIf you need to add custom logic before generating a Proxy API Key (Example Validating `team_id`)\n\n#### 1. Write a custom `custom_generate_key_fn`\n\n\nThe input to the custom_generate_key_fn function is a single parameter: `data` [(Type: GenerateKeyRequest)](https://github.com/BerriAI/litellm/blob/main/litellm/proxy/_types.py#L125)\n\nThe output of your `custom_generate_key_fn` should be a dictionary with the following structure\n```python\n{\n    \"decision\": False,\n    \"message\": \"This violates LiteLLM Proxy Rules. No team id provided.\",\n}\n\n```\n\n- decision (Type: bool): A boolean value indicating whether the key generation is allowed (True) or not (False).\n\n---\n\n[docs/my-website/docs/proxy/virtual_keys.md:292-357] (relevance 0.42)\ncurl 'http://0.0.0.0:4000/user/new' \\\n--header 'Authorization: Bearer sk-1234' \\\n--header 'Content-Type: application/json' \\\n--data-raw '{\n  \"user_id\": \"ishaan1\",\n  \"user_email\": \"ishaan@litellm.ai\",\n  \"user_role\": \"admin\",\n  \"team_id\": \"cto-team\",\n  \"max_budget\": 20,\n  \"budget_duration\": \"1h\"\n\n}'\n```\n\nRequest Params:\n\n- user_id: str (optional - defaults to uuid)  - The unique identifier for the user.\n- user_email: str (optional - defaults to \"\")  - The email address associated with the user.\n- user_role: str (optional - defaults to \"app_user\") - The role assigned to the user. Can be \"admin\", \"app_owner\", \"app_user\"\n\n**Possible `user_role` values**\n```\n\"admin\" - Maintaining the proxy and owning the overall budget\n\"app_owner\" - employees maintaining the apps, each owner may own more than one app\n\"app_user\" - users who know nothing about the proxy. These users get created when you pass `user` to /chat/completions\n```\n- team_id: str (optional - defaults to \"\") - The identifier for the team to which the user belongs.\n- max_budget: float (optional - defaults to `null`) - The maximum budget allocated for the user. No budget checks done if `max_budget==null`\n- budget_duration: str (optional - defaults to `null`) - The duration for which the budget is valid, e.g., \"1h\", \"1d\"\n\n### Response\nA key will be generated for the new user created\n\n```shell\n{\n  \"models\": [],\n  \"spend\": 0.0,\n  \"max_budget\": null,\n  \"user_id\": \"ishaan1\",\n  \"team_id\": null,\n  \"max_parallel_requests\": null,\n  \"metadata\": {},\n  \"tpm_limit\": null,\n  \"rpm_limit\": null,\n  \"budget_duration\": null,\n  \"allowed_cache_controls\": [],\n  \"key_alias\": null,\n  \"duration\": null,\n  \"aliases\": {},\n  \"config\": {},\n  \"key\": \"sk-JflB33ucTqc2NYvNAgiBCA\",\n  \"key_name\": null,\n  \"expires\": null\n}\n```\n\n\n## /user/info\n\n### Request\n\n#### View all Users\nIf you're trying to view all users, we recommend using pagination with the following args\n- `view_all=true`\n- `page=0` Optional(int) min = 0, default=0\n- `page_size=25` Optional(int) min = 1, default = 25\n\n---\n\n[docs/my-website/docs/proxy/health.md:137-164] (relevance 0.37)\n*If proxy not connected to a database*  \n\n```json\n{\n    \"status\": \"healthy\",\n    \"db\": \"Not connected\",\n    \"litellm_version\":\"1.19.2\",\n}\n```\n\n## `/health/liveliness`\n\nUnprotected endpoint for checking if proxy is alive\n\n\nExample Request: \n\n```\ncurl -X 'GET' \\\n  'http://0.0.0.0:8000/health/liveliness' \\\n  -H 'accept: application/json'\n```\n\nExample Response: \n\n```json\n\"I'm alive!\"\n```\n\n---\n\n[docs/my-website/docs/proxy/health.md:1-75] (relevance 0.36)\n# Health Checks\nUse this to health check all LLMs defined in your config.yaml\n\n## Summary \n\nThe proxy exposes: \n* a /health endpoint which returns the health of the LLM APIs  \n* a /health/readiness endpoint for returning if the proxy is ready to accept requests \n* a /health/liveliness endpoint for returning if the proxy is alive \n\n## `/health`\n#### Request\nMake a GET Request to `/health` on the proxy\n```shell\ncurl --location 'http://0.0.0.0:8000/health' -H \"Authorization: Bearer sk-1234\"\n```\n\nYou can also run `litellm -health` it makes a `get` request to `http://0.0.0.0:8000/health` for you\n```\nlitellm --health\n```\n#### Response\n```shell\n{\n    \"healthy_endpoints\": [\n        {\n            \"model\": \"azure/gpt-35-turbo\",\n            \"api_base\": \"https://my-endpoint-canada-berri992.openai.azure.com/\"\n        },\n        {\n            \"model\": \"azure/gpt-35-turbo\",\n            \"api_base\": \"https://my-endpoint-europe-berri-992.openai.azure.com/\"\n        }\n    ],\n    \"unhealthy_endpoints\": [\n        {\n            \"model\": \"azure/gpt-35-turbo\",\n            \"api_base\": \"https://openai-france-1234.openai.azure.com/\"\n        }\n    ]\n}\n```\n\n### Background Health Checks \n\nYou ca"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4116,
+                  "end_line": 4160,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4116-4160]\n4116: @router.get(\n4117:     \"/global/spend/models\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_models(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of models to get. Will return Top 'n' models.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n4131:     \"\"\"\n4132:     global prisma_client\n4133: \n4134:     if prisma_client is None:\n4135:         raise HTTPException(status_code=500, detail={\"error\": \"No db connected\"})\n4136: \n4137:     sql_query = f\"\"\"SELECT * FROM \"Last30dModelsBySpend\" LIMIT {limit};\"\"\"\n4138: \n4139:     response = await prisma_client.db.query_raw(query=sql_query)\n4140: \n4141:     return response\n4142: \n4143: \n4144: @router.get(\n4145:     \"/daily_metrics\",\n4146:     summary=\"Get daily spend metrics\",\n4147:     tags=[\"budget & spend Tracking\"],\n4148:     dependencies=[Depends(user_api_key_auth)],\n4149: )\n4150: async def view_daily_metrics(\n4151:     start_date: Optional[str] = fastapi.Query(\n4152:         default=None,\n4153:         description=\"Time from which to start viewing key spend\",\n4154:     ),\n4155:     end_date: Optional[str] = fastapi.Query(\n4156:         default=None,\n4157:         description=\"Time till which to view key spend\",\n4158:     ),\n4159: ):\n4160:     \"\"\"\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_role == \"proxy_admin\"",
+                  "file_glob": "litellm/proxy/proxy_server.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"user_role == 'proxy_admin'\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The PR adds a new per-key branch to /global/spend/logs that returns spend data for an arbitrary api_key supplied by the caller. The endpoint's only authorization is dependencies=[Depends(user_api_key_auth)], which authenticates any valid key but does not enforce an admin role. The endpoint's own description and docstring label it 'Admin-only endpoint', yet the function never receives or checks the UserAPIKeyAuth object (e.g. user_role == 'proxy_admin'), so a non-admin key can query spend for any other key's api_key. This is a newly introduced authorization gap: the per-key branch did not exist in the base snapshot.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4067, 4112], \"content\": \"@router.get(\\n    \\\"/global/spend/logs\\\",\\n    tags=[\\\"Budget & Spend Tracking\\\"],\\n    dependencies=[Depends(user_api_key_auth)],\\n)\\nasync def global_spend_logs(\\n    api_key: str = fastapi.Query(\\n        default=None,\\n        description=\\\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\\\",\\n    )\\n):\\n    ...\\n    else:\\n        sql_query = (\\n            \\\"\\\"\\\"\\n            SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\"\\n            WHERE \\\"api_key\\\" = '\\\"\\\"\\\"\\n            + api_key\\n            + \\\"\\\"\\\"'\\n            ORDER BY \\\"date\\\";\\n        \\\"\\\"\\\"\\n        )\\n\\n        response = await prisma_client.db.query_raw(query=sql_query)\\n\\n        return response\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [334, 338], \"content\": \"### CHECK IF ADMIN ###\\n        # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\\n        is_master_key_valid = secrets.compare_digest(api_key, master_key)\\n        if is_master_key_valid:\\n            return UserAPIKeyAuth(api_key=master_key, user_role=\\\"proxy_admin\\\")\"},\n        {\"type\": \"policy\", \"source\": \"docs/my-website/docs/proxy/ui.md\", \"content\": \"You can restrict UI Access to just admins - includes you (proxy_admin) and people you give view only access to (proxy_admin_viewer) for seeing global spend.\"}\n      ],\n      \"suggested_fix\": \"Inject the UserAPIKeyAuth object into global_spend_logs (e.g. user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)) and, in the per-key branch, verify user_api_key_dict.user_role == 'proxy_admin' (or an equivalent admin role) before querying MonthlyGlobalSpendPerKey for a caller-supplied api_key; otherwise raise a 403.\",\n      \"file\": \"litellm/proxy/proxy_server.py\",\n      \"line\": 4099\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "monthly-global-spend-perkey-view",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 580,
+                  "end_line": 625,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/utils.py lines=580-625]\n580:             \"model\",\n581:             SUM(\"spend\") AS total_spend\n582:             FROM\n583:             \"LiteLLM_SpendLogs\"\n584:             WHERE\n585:             \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n586:             AND \"model\" != ''\n587:             GROUP BY\n588:             \"model\"\n589:             ORDER BY\n590:             total_spend DESC;\n591:             \"\"\"\n592:             await self.db.execute_raw(query=sql_query)\n593: \n594:             print(\"Last30dModelsBySpend Created!\")  # noqa\n595:         try:\n596:             await self.db.query_raw(\n597:                 \"\"\"SELECT 1 FROM \"MonthlyGlobalSpendPerKey\" LIMIT 1\"\"\"\n598:             )\n599:             print(\"MonthlyGlobalSpendPerKey Exists!\")  # noqa\n600:         except Exception as e:\n601:             sql_query = \"\"\"\n602:                 CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n603:                 SELECT\n604:                 DATE(\"startTime\") AS date, \n605:                 SUM(\"spend\") AS spend,\n606:                 api_key as api_key\n607:                 FROM \n608:                 \"LiteLLM_SpendLogs\" \n609:                 WHERE \n610:                 \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n611:                 GROUP BY \n612:                 DATE(\"startTime\"),\n613:                 api_key;\n614:             \"\"\"\n615:             await self.db.execute_raw(query=sql_query)\n616: \n617:             print(\"MonthlyGlobalSpendPerKey Created!\")  # noqa\n618: \n619:         return\n620: \n621:     @backoff.on_exception(\n622:         backoff.expo,\n623:         Exception,  # base exception to catch for the backoff\n624:         max_tries=3,  # maximum number of retries\n625:         max_time=10,  # maximum total time to retry for\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4080,
+                  "end_line": 4130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4080-4130]\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n4086:     if prisma_client is None:\n4087:         raise ProxyException(\n4088:             message=\"Prisma Client is not initialized\",\n4089:             type=\"internal_error\",\n4090:             param=\"None\",\n4091:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4092:         )\n4093:     if api_key is None:\n4094:         sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4095: \n4096:         response = await prisma_client.db.query_raw(query=sql_query)\n4097: \n4098:         return response\n4099:     else:\n4100:         sql_query = (\n4101:             \"\"\"\n4102:             SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n4103:             WHERE \"api_key\" = '\"\"\"\n4104:             + api_key\n4105:             + \"\"\"'\n4106:             ORDER BY \"date\";\n4107:         \"\"\"\n4108:         )\n4109: \n4110:         response = await prisma_client.db.query_raw(query=sql_query)\n4111: \n4112:         return response\n4113:     return\n4114: \n4115: \n4116: @router.get(\n4117:     \"/global/spend/keys\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_keys(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of keys to get. Will return Top 'n' keys.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4050,
+                  "end_line": 4080,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4050-4080]\n4050:         if isinstance(e, HTTPException):\n4051:             raise ProxyException(\n4052:                 message=getattr(e, \"detail\", f\"/spend/logs Error({str(e)})\"),\n4053:                 type=\"internal_error\",\n4054:                 param=getattr(e, \"param\", \"None\"),\n4055:                 code=getattr(e, \"status_code\", status.HTTP_500_INTERNAL_SERVER_ERROR),\n4056:             )\n4057:         elif isinstance(e, ProxyException):\n4058:             raise e\n4059:         raise ProxyException(\n4060:             message=\"/spend/logs Error\" + str(e),\n4061:             type=\"internal_error\",\n4062:             param=getattr(e, \"param\", \"None\"),\n4063:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4064:         )\n4065: \n4066: \n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs(\n4073:     api_key: str = fastapi.Query(\n4074:         default=None,\n4075:         description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n4076:     )\n4077: ):\n4078:     \"\"\"\n4079:     [BETA] This is a beta endpoint. It will change.\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "global spend endpoint admin only authorization user_api_key_auth admin"
+                },
+                "result": "[docs/my-website/docs/proxy/virtual_keys.md:594-669] (relevance 0.49)\n\"mistral-7b\": \"gpt-3.5-turbo\"\n        },\n        \"config\": {}\n    }\n}\n```\n\n\n### Custom Auth \n\nYou can now override the default api key auth. \n\nHere's how: \n\n#### 1. Create a custom auth file. \n\nMake sure the response type follows the `UserAPIKeyAuth` pydantic object. This is used by for logging usage specific to that user key.\n\n```python\nfrom litellm.proxy._types import UserAPIKeyAuth\n\nasync def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth: \n    try: \n        modified_master_key = \"sk-my-master-key\"\n        if api_key == modified_master_key:\n            return UserAPIKeyAuth(api_key=api_key)\n        raise Exception\n    except: \n        raise Exception\n```\n\n#### 2. Pass the filepath (relative to the config.yaml)\n\nPass the filepath to the config.yaml \n\ne.g. if they're both in the same dir - `./config.yaml` and `./custom_auth.py`, this is what it looks like:\n```yaml \nmodel_list: \n  - model_name: \"openai-model\"\n    litellm_params: \n      model: \"gpt-3.5-turbo\"\n\nlitellm_settings:\n  drop_params: True\n  set_verbose: True\n\ngeneral_settings:\n  custom_auth: custom_auth.user_api_key_auth\n```\n\n[**Implementation Code**](https://github.com/BerriAI/litellm/blob/caf2a6b279ddbe89ebd1d8f4499f65715d684851/litellm/proxy/utils.py#L122)\n\n#### 3. Start the proxy\n```shell\n$ litellm --config /path/to/config.yaml \n```\n\n### Custom /key/generate\n\nIf you need to add custom logic before generating a Proxy API Key (Example Validating `team_id`)\n\n#### 1. Write a custom `custom_generate_key_fn`\n\n\nThe input to the custom_generate_key_fn function is a single parameter: `data` [(Type: GenerateKeyRequest)](https://github.com/BerriAI/litellm/blob/main/litellm/proxy/_types.py#L125)\n\nThe output of your `custom_generate_key_fn` should be a dictionary with the following structure\n```python\n{\n    \"decision\": False,\n    \"message\": \"This violates LiteLLM Proxy Rules. No team id provided.\",\n}\n\n```\n\n- decision (Type: bool): A boolean value indicating whether the key generation is allowed (True) or not (False).\n\n---\n\n[docs/my-website/docs/proxy/virtual_keys.md:534-608] (relevance 0.48)\nExpected Response from `/chat/completions` when key has crossed budget\n```shell\n{\n  \"detail\":\"Authentication Error, ExceededTokenBudget: Current spend for token: 7.2e-05; Max Budget for Token: 2e-07\"\n}   \n```\n\n\n### Set Budgets - Per User\n\nLiteLLM exposes a `/user/new` endpoint to create budgets for users, that persist across multiple keys. \n\nThis is documented in the swagger (live on your server root endpoint - e.g. `http://0.0.0.0:8000/`). Here's an example request. \n\n```shell \ncurl --location 'http://localhost:8000/user/new' \\\n--header 'Authorization: Bearer <your-master-key>' \\\n--header 'Content-Type: application/json' \\\n--data-raw '{\"models\": [\"azure-models\"], \"max_budget\": 0, \"user_id\": \"krrish3@berri.ai\"}' \n```\nThe request is a normal `/key/generate` request body + a `max_budget` field. \n\n**Sample Response**\n\n```shell\n{\n    \"key\": \"sk-YF2OxDbrgd1y2KgwxmEA2w\",\n    \"expires\": \"2023-12-22T09:53:13.861000Z\",\n    \"user_id\": \"krrish3@berri.ai\",\n    \"max_budget\": 0.0\n}\n```\n\n### Tracking Spend \n\nYou can get spend for a key by using the `/key/info` endpoint. \n\n```bash\ncurl 'http://0.0.0.0:8000/key/info?key=<user-key>' \\\n     -X GET \\\n     -H 'Authorization: Bearer <your-master-key>'\n```\n\nThis is automatically updated (in USD) when calls are made to /completions, /chat/completions, /embeddings using litellm's completion_cost() function. [**See Code**](https://github.com/BerriAI/litellm/blob/1a6ea20a0bb66491968907c2bfaabb7fe45fc064/litellm/utils.py#L1654). \n\n**Sample response**\n\n```python\n{\n    \"key\": \"sk-tXL0wt5-lOOVK9sfY2UacA\",\n    \"info\": {\n        \"token\": \"sk-tXL0wt5-lOOVK9sfY2UacA\",\n        \"spend\": 0.0001065,\n        \"expires\": \"2023-11-24T23:19:11.131000Z\",\n        \"models\": [\n            \"gpt-3.5-turbo\",\n            \"gpt-4\",\n            \"claude-2\"\n        ],\n        \"aliases\": {\n            \"mistral-7b\": \"gpt-3.5-turbo\"\n        },\n        \"config\": {}\n    }\n}\n```\n\n\n### Custom Auth \n\nYou can now override the default api key auth. \n\nHere's how: \n\n#### 1. Create a custom auth file.\n\n---\n\n[docs/my-website/docs/tutorials/installation.md:1-17] (relevance 0.45)\n---\ndisplayed_sidebar: tutorialSidebar\n---\n\n# Set up environment\n\nLet's get the necessary keys to set up our demo environment.\n\nEvery LLM provider needs API keys (e.g. `OPENAI_API_KEY`). You can get API keys from OpenAI, Cohere and AI21 **without a waitlist**.\n\nLet's get them for our demo!\n\n**OpenAI**: https://platform.openai.com/account/api-keys  \n**Cohere**: https://dashboard.cohere.com/welcome/login?redirect_uri=%2Fapi-keys  (no credit card required)  \n**AI21**: https://studio.ai21.com/account/api-key (no credit card required)\n\n---\n\n[docs/my-website/docs/proxy/virtual_keys.md:292-357] (relevance 0.41)\ncurl 'http://0.0.0.0:4000/user/new' \\\n--header 'Authorization: Bearer sk-1234' \\\n--header 'Content-Type: application/json' \\\n--data-raw '{\n  \"user_id\": \"ishaan1\",\n  \"user_email\": \"ishaan@litellm.ai\",\n  \"user_role\": \"admin\",\n  \"team_id\": \"cto-team\",\n  \"max_budget\": 20,\n  \"budget_duration\": \"1h\"\n\n}'\n```\n\nRequest Params:\n\n- user_id: str (optional - defaults to uuid)  - The unique identifier for the user.\n- user_email: str (optional - defaults to \"\")  - The email address associated with the user.\n- user_role: str (optional - defaults to \"app_user\") - The role assigned to the user. Can be \"admin\", \"app_owner\", \"app_user\"\n\n**Possible `user_role` values**\n```\n\"admin\" - Maintaining the proxy and owning the overall budget\n\"app_owner\" - employees maintaining the apps, each owner may own more than one app\n\"app_user\" - users who know nothing about the proxy. These users get created when you pass `user` to /chat/completions\n```\n- team_id: str (optional - defaults to \"\") - The identifier for the team to which the user belongs.\n- max_budget: float (optional - defaults to `null`) - The maximum budget allocated for the user. No budget checks done if `max_budget==null`\n- budget_duration: str (optional - defaults to `null`) - The duration for which the budget is valid, e.g., \"1h\", \"1d\"\n\n### Response\nA key will be generated for the new user created\n\n```shell\n{\n  \"models\": [],\n  \"spend\": 0.0,\n  \"max_budget\": null,\n  \"user_id\": \"ishaan1\",\n  \"team_id\": null,\n  \"max_parallel_requests\": null,\n  \"metadata\": {},\n  \"tpm_limit\": null,\n  \"rpm_limit\": null,\n  \"budget_duration\": null,\n  \"allowed_cache_controls\": [],\n  \"key_alias\": null,\n  \"duration\": null,\n  \"aliases\": {},\n  \"config\": {},\n  \"key\": \"sk-JflB33ucTqc2NYvNAgiBCA\",\n  \"key_name\": null,\n  \"expires\": null\n}\n```\n\n\n## /user/info\n\n### Request\n\n#### View all Users\nIf you're trying to view all users, we recommend using pagination with the following args\n- `view_all=true`\n- `page=0` Optional(int) min = 0, default=0\n- `page_size=25` Optional(int) min = 1, default = 25\n\n---\n\n[docs/my-website/docs/proxy/users.md:407-421] (relevance 0.40)\n-d '{\"models\": [\"beta-models\"], # \ud83d\udc48 Model Access Group\n\t\t\t\"max_budget\": 0}'\n```\n\n\n## Create new keys for existing user\n\nJust include user_id in the `/key/generate` request.\n\n```bash\ncurl --location 'http://0.0.0.0:8000/key/generate' \\\n--header 'Authorization: Bearer <your-master-key>' \\\n--header 'Content-Type: application/json' \\\n--data '{\"models\": [\"azure-models\"], \"user_id\": \"krrish@berri.ai\"}'\n```"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "global/spend/logs",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"global/spend/logs\"]\nlitellm/proxy/_experimental/out/_next/static/chunks/app/page-d45e6da1a4600c67.js:1:(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[931],{79615:function(e,t,s){Promise.resolve().then(s.bind(s,30280))},30280:function(e,t,s){\"use strict\";s.r(t),s.d(t,{default:function(){return eT}});var l=s(3827),n=s(64090),r=s(47907),a=s(8792),o=s(2179),i=e=>{let{userID:t,userRole:s,userEmail:n,showSSOBanner:r}=e;return console.log(\"User ID:\",t),console.log(\"userEmail:\",n),(0,l.jsxs)(\"nav\",{className:\"left-0 right-0 top-0 flex justify-between items-center h-12 mb-4\",children:[(0,l.jsx)(\"div\",{className:\"text-left my-2 absolute top-0 left-0\",children:(0,l.jsx)(\"div\",{className:\"flex flex-col items-center\",children:(0,l.jsx)(a.default,{href:\"/\",children:(0,l.jsx)(\"button\",{className:\"text-gray-800 text-2xl py-1 rounded text-center\",children:(0,l.jsx)(\"img\",{src:\"/get_image\",width:200,height:200,alt:\"LiteLLM Brand\",className:\"mr-2\"})})})})}),(0,l.jsxs)(\"div\",{className:\"text-right mx-4 my-2 absolute top-0 right-0 flex items-center justify-end space-x-2\",children:[r?(0,l.jsx)(\"a\",{href:\"https://docs.litellm.ai/docs/proxy/ui#setup-ssoauth-for-ui\",target:\"_blank\",className:\"mr-2\",children:(0,l.jsx)(o.Z,{variant:\"primary\",size:\"lg\",children:\"Enable SSO\"})}):null,(0,l.jsxs)(o.Z,{variant:\"secondary\",size:\"lg\",children:[n,(0,l.jsxs)(\"p\",{children:[\"Role: \",s]}),(0,l.jsxs)(\"p\",{children:[\"ID: \",t]})]})]})]})},c=s(80588);let d=async(e,t,s)=>{try{if(console.log(\"Form Values in keyCreateCall:\",s),s.description&&(s.metadata||(s.metadata={}),s.metadata.description=s.description,delete s.description,s.metadata=JSON.stringify(s.metadata)),s.metadata){console.log(\"formValues.metadata:\",s.metadata);try{s.metadata=JSON.parse(s.metadata)}catch(e){throw c.ZP.error(\"Failed to parse metadata: \"+e),Error(\"Failed to parse metadata: \"+e)}}console.log(\"Form Values after check:\",s);let l=await fetch(\"/key/generate\",{method:\"POST\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"},body:JSON.stringify({user_id:t,...s})});if(!l.ok){let e=await l.text();throw c.ZP.error(\"Failed to create key: \"+e),console.error(\"Error response from the server:\",e),Error(\"Network response was not ok\")}let n=await l.json();return console.log(\"API Response:\",n),n}catch(e){throw console.error(\"Failed to create key:\",e),e}},h=async(e,t,s)=>{try{if(console.log(\"Form Values in keyCreateCall:\",s),s.description&&(s.metadata||(s.metadata={}),s.metadata.description=s.description,delete s.description,s.metadata=JSON.stringify(s.metadata)),s.metadata){console.log(\"formValues.metadata:\",s.metadata);try{s.metadata=JSON.parse(s.metadata)}catch(e){throw c.ZP.error(\"Failed to parse metadata: \"+e),Error(\"Failed to parse metadata: \"+e)}}console.log(\"Form Values after check:\",s);let l=await fetch(\"/user/new\",{method:\"POST\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"},body:JSON.stringify({user_id:t,...s})});if(!l.ok){let e=await l.text();throw c.ZP.error(\"Failed to create key: \"+e),console.error(\"Error response from the server:\",e),Error(\"Network response was not ok\")}let n=await l.json();return console.log(\"API Response:\",n),n}catch(e){throw console.error(\"Failed to create key:\",e),e}},m=async(e,t)=>{try{console.log(\"in keyDeleteCall:\",t),c.ZP.info(\"Making key delete request\");let s=await fetch(\"/key/delete\",{method:\"POST\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"},body:JSON.stringify({keys:[t]})});if(!s.ok){let e=await s.text();throw c.ZP.error(\"Failed to delete key: \"+e),Error(\"Network response was not ok\")}let l=await s.json();return console.log(l),c.ZP.success(\"API Key Deleted\"),l}catch(e){throw console.error(\"Failed to create key:\",e),e}},u=async function(e,t,s){let l=arguments.length>3&&void 0!==arguments[3]&&arguments[3];try{let n=\"/user/info\";\"App Owner\"==s&&t&&(n=\"\".concat(n,\"/?user_id=\").concat(t)),console.log(\"in userInfoCall viewAll=\",l),l&&(n=\"\".concat(n,\"/?view_all=true\")),c.ZP.info(\"Requesting user data\");let r=await fetch(n,{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!r.ok){let e=await r.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let a=await r.json();return console.log(\"API Response:\",a),c.ZP.info(\"Received user data\"),a}catch(e){throw console.error(\"Failed to create key:\",e),e}},x=async(e,t,s)=>{try{c.ZP.info(\"Requesting model data\");let t=await fetch(\"/v2/model/info\",{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!t.ok){let e=await t.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let s=await t.json();return c.ZP.info(\"Received model data\"),s}catch(e){throw console.error(\"Failed to create key:\",e),e}},p=async(e,t,s)=>{try{c.ZP.info(\"Requesting model data\");let t=await fetch(\"/models\",{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!t.ok){let e=await t.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let s=await t.json();return c.ZP.info(\"Received model data\"),s}catch(e){throw console.error(\"Failed to create key:\",e),e}},j=async(e,t)=>{try{let s=\"/spend/logs\";console.log(\"in keySpendLogsCall:\",s);let l=await fetch(\"\".concat(s,\"/?api_key=\").concat(t),{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!l.ok){let e=await l.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let n=await l.json();return console.log(n),n}catch(e){throw console.error(\"Failed to create key:\",e),e}},g=async(e,t,s,l,n,r)=>{try{console.log(\"user role in spend logs call: \".concat(s));let t=\"/spend/logs\";t=\"App Owner\"==s?\"\".concat(t,\"/?user_id=\").concat(l,\"&start_date=\").concat(n,\"&end_date=\").concat(r):\"\".concat(t,\"/?start_date=\").concat(n,\"&end_date=\").concat(r),c.ZP.info(\"Making spend logs request\");let a=await fetch(t,{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!a.ok){let e=await a.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let o=await a.json();return console.log(o),c.ZP.success(\"Spend Logs received\"),o}catch(e){throw console.error(\"Failed to create key:\",e),e}},Z=async e=>{try{c.ZP.info(\"Making spend logs request\");let t=await fetch(\"/global/spend/logs\",{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!t.ok){let e=await t.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let s=await t.json();return console.log(s),c.ZP.success(\"Spend Logs received\"),s}catch(e){throw console.error(\"Failed to create key:\",e),e}},y=async e=>{try{c.ZP.info(\"Making spend keys request\");let t=await fetch(\"/global/spend/keys?limit=5\",{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!t.ok){let e=await t.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let s=await t.json();return console.log(s),c.ZP.success(\"Spend Logs received\"),s}catch(e){throw console.error(\"Failed to create key:\",e),e}},f=async e=>{try{c.ZP.info(\"Making spend models request\");let t=await fetch(\"/global/spend/models?limit=5\",{method:\"GET\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"}});if(!t.ok){let e=await t.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let s=await t.json();return console.log(s),c.ZP.success(\"Spend Logs received\"),s}catch(e){throw console.error(\"Failed to create key:\",e),e}},w=async(e,t)=>{try{let s=await fetch(\"/v2/key/info\",{method:\"POST\",headers:{Authorization:\"Bearer \".concat(e),\"Content-Type\":\"application/json\"},body:JSON.stringify({keys:t})});if(!s.ok){let e=await s.text();throw c.ZP.error(e),Error(\"Network response was not ok\")}let l=await s.json();return console.log(l),l}catch(e){throw console.error(\"Failed to create key:\",e),e}},k=async(e,t)=>{try{let s=\"/sp\n[TRUNCATED]\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "global/spend/logs",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The new else-branch in global_spend_logs (proxy_server.py:4099-4112) SELECTs from the MonthlyGlobalSpendPerKey view created by this hunk, filtering by a user-supplied api_key query parameter. The endpoint is documented as 'Admin-only endpoint' (proxy_server.py:4075, 4081) but is protected only by `dependencies=[Depends(user_api_key_auth)]` (proxy_server.py:4070), which authenticates any valid key without an admin/role check. There is no verification that the requester is an admin or that they own the api_key they are querying, so any authenticated non-admin key can read the spend of any other key (IDOR/missing authorization). The view creation in utils.py:595-617 is what newly exposes this per-key spend data to the endpoint.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4067, 4076], \"content\": \"@router.get(\\n    \\\"/global/spend/logs\\\",\\n    tags=[\\\"Budget & Spend Tracking\\\"],\\n    dependencies=[Depends(user_api_key_auth)],\\n)\\nasync def global_spend_logs(\\n    api_key: str = fastapi.Query(\\n        default=None,\\n        description=\\\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\\\",\\n    )\\n):\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4099, 4112], \"content\": \"    else:\\n        sql_query = (\\n            \\\"\\\"\\\"\\n            SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\"\\n            WHERE \\\"api_key\\\" = '\\\"\\\"\\\"\\n            + api_key\\n            + \\\"\\\"\\\"'\\n            ORDER BY \\\"date\\\";\\n        \\\"\\\"\\\"\\n        )\\n\\n        response = await prisma_client.db.query_raw(query=sql_query)\\n\\n        return response\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/utils.py\", \"lines\": [595, 617], \"content\": \"        try:\\n            await self.db.query_raw(\\n                \\\"\\\"\\\"SELECT 1 FROM \\\"MonthlyGlobalSpendPerKey\\\" LIMIT 1\\\"\\\"\\\"\\n            )\\n            print(\\\"MonthlyGlobalSpendPerKey Exists!\\\")  # noqa\\n        except Exception as e:\\n            sql_query = \\\"\\\"\\\"\\n                CREATE OR REPLACE VIEW \\\"MonthlyGlobalSpendPerKey\\\" AS \\n                SELECT\\n                DATE(\\\"startTime\\\") AS date, \\n                SUM(\\\"spend\\\") AS spend,\\n                api_key as api_key\\n                FROM \\n                \\\"LiteLLM_SpendLogs\\\" \\n                WHERE \\n                \\\"startTime\\\" >= (CURRENT_DATE - INTERVAL '30 days')\\n                GROUP BY \\n                DATE(\\\"startTime\\\"),\\n                api_key;\\n            \\\"\\\"\\\"\\n            await self.db.execute_raw(query=sql_query)\\n\\n            print(\\\"MonthlyGlobalSpendPerKey Created!\\\")  # noqa\"}\n      ],\n      \"suggested_fix\": \"Add an admin/role check to the /global/spend/logs endpoint (e.g. require the authenticated user to have the admin role, or verify the requester owns the queried api_key) before returning per-key spend data, consistent with the 'Admin-only endpoint' documentation.\",\n      \"file\": \"litellm/proxy/proxy_server.py\",\n      \"line\": 4100\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:global-spend-logs-authz",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4060,
+                  "end_line": 4130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4060-4130]\n4060:             message=\"/spend/logs Error\" + str(e),\n4061:             type=\"internal_error\",\n4062:             param=getattr(e, \"param\", \"None\"),\n4063:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4064:         )\n4065: \n4066: \n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs(\n4073:     api_key: str = fastapi.Query(\n4074:         default=None,\n4075:         description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n4076:     )\n4077: ):\n4078:     \"\"\"\n4079:     [BETA] This is a beta endpoint. It will change.\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n4086:     if prisma_client is None:\n4087:         raise ProxyException(\n4088:             message=\"Prisma Client is not initialized\",\n4089:             type=\"internal_error\",\n4090:             param=\"None\",\n4091:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4092:         )\n4093:     if api_key is None:\n4094:         sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4095: \n4096:         response = await prisma_client.db.query_raw(query=sql_query)\n4097: \n4098:         return response\n4099:     else:\n4100:         sql_query = (\n4101:             \"\"\"\n4102:             SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n4103:             WHERE \"api_key\" = '\"\"\"\n4104:             + api_key\n4105:             + \"\"\"'\n4106:             ORDER BY \"date\";\n4107:         \"\"\"\n4108:         )\n4109: \n4110:         response = await prisma_client.db.query_raw(query=sql_query)\n4111: \n4112:         return response\n4113:     return\n4114: \n4115: \n4116: @router.get(\n4117:     \"/global/spend/keys\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_keys(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of keys to get. Will return Top 'n' keys.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 282,
+                  "end_line": 344,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=282-344]\n282: async def user_api_key_auth(\n283:     request: Request, api_key: str = fastapi.Security(api_key_header)\n284: ) -> UserAPIKeyAuth:\n285:     global master_key, prisma_client, llm_model_list, user_custom_auth, custom_db_client\n286:     try:\n287:         if isinstance(api_key, str):\n288:             passed_in_key = api_key\n289:             api_key = _get_bearer_token(api_key=api_key)\n290: \n291:         ### USER-DEFINED AUTH FUNCTION ###\n292:         if user_custom_auth is not None:\n293:             response = await user_custom_auth(request=request, api_key=api_key)\n294:             return UserAPIKeyAuth.model_validate(response)\n295: \n296:         ### LITELLM-DEFINED AUTH FUNCTION ###\n297:         if master_key is None:\n298:             if isinstance(api_key, str):\n299:                 return UserAPIKeyAuth(api_key=api_key)\n300:             else:\n301:                 return UserAPIKeyAuth()\n302: \n303:         route: str = request.url.path\n304:         if route == \"/user/auth\":\n305:             if general_settings.get(\"allow_user_auth\", False) == True:\n306:                 return UserAPIKeyAuth()\n307:             else:\n308:                 raise HTTPException(\n309:                     status_code=status.HTTP_403_FORBIDDEN,\n310:                     detail=\"'allow_user_auth' not set or set to False\",\n311:                 )\n312:         elif (\n313:             route == \"/routes\"\n314:             or route == \"/\"\n315:             or route == \"/health/liveliness\"\n316:             or route == \"/health/readiness\"\n317:             or route == \"/test\"\n318:             or route == \"/config/yaml\"\n319:         ):\n320:             \"\"\"\n321:             Unprotected endpoints\n322:             \"\"\"\n323:             return UserAPIKeyAuth()\n324: \n325:         if api_key is None:  # only require api key if master key is set\n326:             raise Exception(f\"No api key passed in.\")\n327: \n328:         if secrets.compare_digest(api_key, \"\"):\n329:             # missing 'Bearer ' prefix\n330:             raise Exception(\n331:                 f\"Malformed API Key passed in. Ensure Key has `Bearer ` prefix. Passed in: {passed_in_key}\"\n332:             )\n333: \n334:         ### CHECK IF ADMIN ###\n335:         # note: never string compare api keys, this is vulenerable to a time attack. Use secrets.compare_digest instead\n336:         is_master_key_valid = secrets.compare_digest(api_key, master_key)\n337:         if is_master_key_valid:\n338:             return UserAPIKeyAuth(api_key=master_key, user_role=\"proxy_admin\")\n339:         if isinstance(\n340:             api_key, str\n341:         ):  # if generated token, make sure it starts with sk-.\n342:             assert api_key.startswith(\"sk-\")  # prevent token hashes from being used\n343:         if route.startswith(\"/config/\") and not is_master_key_valid:\n344:             raise Exception(f\"Only admin can modify config\")\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "query_raw",
+                  "file_glob": "litellm/proxy/client.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"query_raw\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def query_raw",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"def query_raw\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "query_raw",
+                  "file_glob": "litellm/proxy/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"query_raw\"]\nlitellm/proxy/proxy_server.py:4084:    response = await prisma_client.db.query_raw(query=sql_query)\nlitellm/proxy/proxy_server.py:4111:    response = await prisma_client.db.query_raw(query=sql_query)\nlitellm/proxy/proxy_server.py:4139:    response = await prisma_client.db.query_raw(query=sql_query)\nlitellm/proxy/utils.py:502:            await self.db.query_raw(\nlitellm/proxy/utils.py:526:            await self.db.query_raw(\"\"\"SELECT 1 FROM \"MonthlyGlobalSpend\" LIMIT 1\"\"\")\nlitellm/proxy/utils.py:546:            await self.db.query_raw(\"\"\"SELECT 1 FROM \"Last30dKeysBySpend\" LIMIT 1\"\"\")\nlitellm/proxy/utils.py:574:            await self.db.query_raw(\"\"\"SELECT 1 FROM \"Last30dModelsBySpend\" LIMIT 1\"\"\")\nlitellm/proxy/utils.py:792:                    response = await self.db.query_raw(sql_query)\nlitellm/proxy/utils.py:1303:        response = await self.db.query_raw(sql_query)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The new `api_key` query parameter (attacker-controlled, any authenticated key) is concatenated directly into a raw SQL string and executed via `prisma_client.db.query_raw(query=sql_query)` with no binding, escaping, or allowlist. A value like `x' OR '1'='1` (or `'; DROP TABLE ...; --`) breaks out of the quoted literal and injects arbitrary SQL. The endpoint only requires `user_api_key_auth` (any valid key), so non-admin callers can reach this branch.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4099, 4112], \"content\": \"    else:\\n        sql_query = (\\n            \\\"\\\"\\\"\\n            SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\"\\n            WHERE \\\"api_key\\\" = '\\\"\\\"\\\"\\n            + api_key\\n            + \\\"\\\"\\\"'\\n            ORDER BY \\\"date\\\";\\n        \\\"\\\"\\\"\\n        )\\n\\n        response = await prisma_client.db.query_raw(query=sql_query)\\n\\n        return response\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4072, 4077], \"content\": \"async def global_spend_logs(\\n    api_key: str = fastapi.Query(\\n        default=None,\\n        description=\\\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\\\",\\n    )\\n):\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4067, 4071], \"content\": \"@router.get(\\n    \\\"/global/spend/logs\\\",\\n    tags=[\\\"Budget & Spend Tracking\\\"],\\n    dependencies=[Depends(user_api_key_auth)],\\n)\"}\n      ],\n      \"suggested_fix\": \"Use a parameterized/bound query instead of string concatenation, e.g. `prisma_client.db.query_raw(query='SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\" WHERE \\\"api_key\\\" = $1 ORDER BY \\\"date\\\";', parameters=[api_key])` (or the Prisma/DB driver's bound-parameter form), and additionally enforce an admin role check before executing.\",\n      \"file\": \"litellm/proxy/proxy_server.py\",\n      \"line\": 4104\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:monthly-global-spend-perkey-view",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 560,
+                  "end_line": 625,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/utils.py lines=560-625]\n560:             ON\n561:             L.\"api_key\" = V.\"token\"\n562:             WHERE\n563:             L.\"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n564:             GROUP BY\n565:             L.\"api_key\", V.\"key_alias\", V.\"key_name\"\n566:             ORDER BY\n567:             total_spend DESC;\n568:             \"\"\"\n569:             await self.db.execute_raw(query=sql_query)\n570: \n571:             print(\"Last30dKeysBySpend Created!\")  # noqa\n572: \n573:         try:\n574:             await self.db.query_raw(\"\"\"SELECT 1 FROM \"Last30dModelsBySpend\" LIMIT 1\"\"\")\n575:             print(\"Last30dModelsBySpend Exists!\")  # noqa\n576:         except Exception as e:\n577:             sql_query = \"\"\"\n578:             CREATE OR REPLACE VIEW \"Last30dModelsBySpend\" AS\n579:             SELECT\n580:             \"model\",\n581:             SUM(\"spend\") AS total_spend\n582:             FROM\n583:             \"LiteLLM_SpendLogs\"\n584:             WHERE\n585:             \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n586:             AND \"model\" != ''\n587:             GROUP BY\n588:             \"model\"\n589:             ORDER BY\n590:             total_spend DESC;\n591:             \"\"\"\n592:             await self.db.execute_raw(query=sql_query)\n593: \n594:             print(\"Last30dModelsBySpend Created!\")  # noqa\n595:         try:\n596:             await self.db.query_raw(\n597:                 \"\"\"SELECT 1 FROM \"MonthlyGlobalSpendPerKey\" LIMIT 1\"\"\"\n598:             )\n599:             print(\"MonthlyGlobalSpendPerKey Exists!\")  # noqa\n600:         except Exception as e:\n601:             sql_query = \"\"\"\n602:                 CREATE OR REPLACE VIEW \"MonthlyGlobalSpendPerKey\" AS \n603:                 SELECT\n604:                 DATE(\"startTime\") AS date, \n605:                 SUM(\"spend\") AS spend,\n606:                 api_key as api_key\n607:                 FROM \n608:                 \"LiteLLM_SpendLogs\" \n609:                 WHERE \n610:                 \"startTime\" >= (CURRENT_DATE - INTERVAL '30 days')\n611:                 GROUP BY \n612:                 DATE(\"startTime\"),\n613:                 api_key;\n614:             \"\"\"\n615:             await self.db.execute_raw(query=sql_query)\n616: \n617:             print(\"MonthlyGlobalSpendPerKey Created!\")  # noqa\n618: \n619:         return\n620: \n621:     @backoff.on_exception(\n622:         backoff.expo,\n623:         Exception,  # base exception to catch for the backoff\n624:         max_tries=3,  # maximum number of retries\n625:         max_time=10,  # maximum total time to retry for\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4080,
+                  "end_line": 4130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4080-4130]\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n4086:     if prisma_client is None:\n4087:         raise ProxyException(\n4088:             message=\"Prisma Client is not initialized\",\n4089:             type=\"internal_error\",\n4090:             param=\"None\",\n4091:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4092:         )\n4093:     if api_key is None:\n4094:         sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4095: \n4096:         response = await prisma_client.db.query_raw(query=sql_query)\n4097: \n4098:         return response\n4099:     else:\n4100:         sql_query = (\n4101:             \"\"\"\n4102:             SELECT * FROM \"MonthlyGlobalSpendPerKey\"\n4103:             WHERE \"api_key\" = '\"\"\"\n4104:             + api_key\n4105:             + \"\"\"'\n4106:             ORDER BY \"date\";\n4107:         \"\"\"\n4108:         )\n4109: \n4110:         response = await prisma_client.db.query_raw(query=sql_query)\n4111: \n4112:         return response\n4113:     return\n4114: \n4115: \n4116: @router.get(\n4117:     \"/global/spend/keys\",\n4118:     tags=[\"Budget & Spend Tracking\"],\n4119:     dependencies=[Depends(user_api_key_auth)],\n4120: )\n4121: async def global_spend_keys(\n4122:     limit: int = fastapi.Query(\n4123:         default=None,\n4124:         description=\"Number of keys to get. Will return Top 'n' keys.\",\n4125:     )\n4126: ):\n4127:     \"\"\"\n4128:     [BETA] This is a beta endpoint. It will change.\n4129: \n4130:     Use this to get the top 'n' keys with the highest spend, ordered by spend.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4050,
+                  "end_line": 4085,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=65689e74a1ba6acda8dbfdd0dec8f7451ceb3c7b path=litellm/proxy/proxy_server.py lines=4050-4085]\n4050:         if isinstance(e, HTTPException):\n4051:             raise ProxyException(\n4052:                 message=getattr(e, \"detail\", f\"/spend/logs Error({str(e)})\"),\n4053:                 type=\"internal_error\",\n4054:                 param=getattr(e, \"param\", \"None\"),\n4055:                 code=getattr(e, \"status_code\", status.HTTP_500_INTERNAL_SERVER_ERROR),\n4056:             )\n4057:         elif isinstance(e, ProxyException):\n4058:             raise e\n4059:         raise ProxyException(\n4060:             message=\"/spend/logs Error\" + str(e),\n4061:             type=\"internal_error\",\n4062:             param=getattr(e, \"param\", \"None\"),\n4063:             code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n4064:         )\n4065: \n4066: \n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs(\n4073:     api_key: str = fastapi.Query(\n4074:         default=None,\n4075:         description=\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\",\n4076:     )\n4077: ):\n4078:     \"\"\"\n4079:     [BETA] This is a beta endpoint. It will change.\n4080: \n4081:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4082: \n4083:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4084:     \"\"\"\n4085:     global prisma_client\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "global_spend_logs",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 pattern=\"global_spend_logs\"]\nlitellm/proxy/proxy_server.py:4072:async def global_spend_logs():\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/proxy_server.py",
+                  "start_line": 4067,
+                  "end_line": 4100,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=aac2f4d41595755af282f959dbf957ef684e7846 path=litellm/proxy/proxy_server.py lines=4067-4100]\n4067: @router.get(\n4068:     \"/global/spend/logs\",\n4069:     tags=[\"Budget & Spend Tracking\"],\n4070:     dependencies=[Depends(user_api_key_auth)],\n4071: )\n4072: async def global_spend_logs():\n4073:     \"\"\"\n4074:     [BETA] This is a beta endpoint. It will change.\n4075: \n4076:     Use this to get global spend (spend per day for last 30d). Admin-only endpoint\n4077: \n4078:     More efficient implementation of /spend/logs, by creating a view over the spend logs table.\n4079:     \"\"\"\n4080:     global prisma_client\n4081: \n4082:     sql_query = \"\"\"SELECT * FROM \"MonthlyGlobalSpend\";\"\"\"\n4083: \n4084:     response = await prisma_client.db.query_raw(query=sql_query)\n4085: \n4086:     return response\n4087: \n4088: \n4089: @router.get(\n4090:     \"/global/spend/keys\",\n4091:     tags=[\"Budget & Spend Tracking\"],\n4092:     dependencies=[Depends(user_api_key_auth)],\n4093: )\n4094: async def global_spend_keys(\n4095:     limit: int = fastapi.Query(\n4096:         default=None,\n4097:         description=\"Number of keys to get. Will return Top 'n' keys.\",\n4098:     )\n4099: ):\n4100:     \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"The PR newly adds an else-branch to the /global/spend/logs endpoint (global_spend_logs) that builds a raw SQL query by string-concatenating the attacker-controlled `api_key` query parameter directly into the WHERE clause, then executes it via prisma_client.db.query_raw. The value is not bound as a parameter and not allowlisted, so an attacker can inject arbitrary SQL (e.g. api_key=' OR '1'='1). This branch is new in the PR (base version had no api_key parameter and no concatenation), so the injection is newly introduced.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4099, 4112], \"content\": \"    else:\\n        sql_query = (\\n            \\\"\\\"\\\"\\n            SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\"\\n            WHERE \\\"api_key\\\" = '\\\"\\\"\\\"\\n            + api_key\\n            + \\\"\\\"\\\"'\\n            ORDER BY \\\"date\\\";\\n        \\\"\\\"\\\"\\n        )\\n\\n        response = await prisma_client.db.query_raw(query=sql_query)\\n\\n        return response\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/proxy_server.py\", \"lines\": [4072, 4077], \"content\": \"async def global_spend_logs(\\n    api_key: str = fastapi.Query(\\n        default=None,\\n        description=\\\"API Key to get global spend (spend per day for last 30d). Admin-only endpoint\\\",\\n    )\\n):\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/utils.py\", \"lines\": [601, 615], \"content\": \"            sql_query = \\\"\\\"\\\"\\n                CREATE OR REPLACE VIEW \\\"MonthlyGlobalSpendPerKey\\\" AS \\n                SELECT\\n                DATE(\\\"startTime\\\") AS date, \\n                SUM(\\\"spend\\\") AS spend,\\n                api_key as api_key\\n                FROM \\n                \\\"LiteLLM_SpendLogs\\\" \\n                WHERE \\n                \\\"startTime\\\" >= (CURRENT_DATE - INTERVAL '30 days')\\n                GROUP BY \\n                DATE(\\\"startTime\\\"),\\n                api_key;\\n            \\\"\\\"\\\"\\n            await self.db.execute_raw(query=sql_query)\"}\n      ],\n      \"suggested_fix\": \"Use a bound parameter instead of string concatenation, e.g. prisma_client.db.query_raw('SELECT * FROM \\\"MonthlyGlobalSpendPerKey\\\" WHERE \\\"api_key\\\" = $1 ORDER BY \\\"date\\\";', api_key), or validate api_key against a strict allowlist/format before use.\",\n      \"file\": \"litellm/proxy/proxy_server.py\",\n      \"line\": 4104\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:global-spend-logs-authz:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.6087,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "sqli:global-spend-logs-authz:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "critical",
+        "supported": true,
+        "provenance_confidence": 0.6665,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "authz:monthly-global-spend-perkey-view:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8624,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "litellm-global-spend-logs-sqli",
+  "url": "https://github.com/BerriAI/litellm/pull/2271",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-h6m6-jj8v-94jj",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "litellm/proxy/proxy_server.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

@@ -1,0 +1,878 @@
+{
+  "id": "redash-query-results-param-sqli-fixed",
+  "repo": "getredash/redash",
+  "pr": null,
+  "title": "Query Results runner added param_query_N_{k=v} syntax that substitutes user-supplied values verbatim into another data source's SQL, bypassing Redash's parameter validation and view-only safety check.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd",
+  "pr_sha": "048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 71,
+  "diff_chars": 5682,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 192.5,
+  "index_seconds": 0.8,
+  "index_reused": false,
+  "index_chunks": 92,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 2,
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:param-authz:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "redash/query_runner/query_results.py",
+      "line": 72,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new authorization gate (query_results.py:72-76) only blocks view-only users when `parameterized.is_safe` is False. `is_safe` (parameterized_query.py:184-187) is computed solely from the query's declared parameter schema (`self.schema`, i.e. `query.parameters`), not from the mustache placeholders actually present in `query_text`. A query whose text contains a `{{...}}` placeholder that is not d"
+    },
+    {
+      "finding_id": "sqli:param-authz:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "redash/query_runner/query_results.py",
+      "line": 81,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "In get_query_results, attacker-controlled parameter values (from the `params` query string, parsed via parse_qs) are substituted into the query template by ParameterizedQuery.apply -> mustache_render, which renders with escape=lambda u: u (no escaping). For 'text'-type parameters the value is inserted verbatim into the SQL text, which is then executed via query.data_source.query_runner.run_query(q"
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 20,
+  "reviewer_units": 4,
+  "findings": [
+    {
+      "finding_id": "authz:param-authz:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new authorization gate (query_results.py:72-76) only blocks view-only users when `parameterized.is_safe` is False. `is_safe` (parameterized_query.py:184-187) is computed solely from the query's declared parameter schema (`self.schema`, i.e. `query.parameters`), not from the mustache placeholders actually present in `query_text`. A query whose text contains a `{{...}}` placeholder that is not declared in its parameter schema yields an empty schema, so `is_safe` is True and the `not_view_only` check is skipped. `apply()` then renders the user-supplied value into the query text (parameterized_query.py:131) and it is executed at query_results.py:83. This lets a view-only user inject arbitrary SQL, bypassing the authorization the PR intends to enforce. The policy states only 'safe' (validated, non-text) parameters may be refreshed by View Only users; an undeclared placeholder is neither validated nor restricted, so the gate is bypassable.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            70,
+            83
+          ],
+          "source": null,
+          "content": "parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n\n            if not parameterized.is_safe:\n                if not has_access(query.data_source, user, not_view_only):\n                    raise PermissionError(...)\n\n            qs = parse_qs(params)\n            parameters = {key: value[0] for key, value in qs.items()}\n            parameterized.apply(parameters)\n            query_text = parameterized.query\n\n        results, error = query.data_source.query_runner.run_query(query_text, user)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            184,
+            187
+          ],
+          "source": null,
+          "content": "@property\n    def is_safe(self):\n        text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n        return not any(text_parameters)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            125,
+            133
+          ],
+          "source": null,
+          "content": "def apply(self, parameters):\n        invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n        if invalid_parameter_names:\n            raise InvalidParameterError(invalid_parameter_names)\n        else:\n            self.parameters.update(parameters)\n            self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n\n        return self",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            135,
+            137
+          ],
+          "source": null,
+          "content": "def _valid(self, name, value):\n        if not self.schema:\n            return True",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "CHANGELOG.md:756-780",
+          "content": "We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Base the safety/authorization decision on the placeholders actually present in the query text, not only the declared schema. For example, collect the mustache keys in the template (e.g. via `_collect_query_parameters`) and require that every placeholder be declared in the schema and of a safe (non-text) type before allowing a view-only user to refresh; otherwise enforce the `not_view_only` gate. This closes the bypass where an undeclared `{{...}}` placeholder is rendered with user input for a view-only user.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8201,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "redash/query_runner/query_results.py",
+      "line": 72,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:param-authz:1",
+      "cwe_id": "CWE-89",
+      "explanation": "In get_query_results, attacker-controlled parameter values (from the `params` query string, parsed via parse_qs) are substituted into the query template by ParameterizedQuery.apply -> mustache_render, which renders with escape=lambda u: u (no escaping). For 'text'-type parameters the value is inserted verbatim into the SQL text, which is then executed via query.data_source.query_runner.run_query(query_text, user). The PR's added `not_view_only` gate is only an authorization check (full-access users still pass it), so a full-access user can inject arbitrary SQL (e.g. 'val=1 UNION SELECT version()') through a text parameter. The value is neither bound as a parameter nor escaped/allowlisted.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            78,
+            83
+          ],
+          "source": null,
+          "content": "qs = parse_qs(params)\n            parameters = {key: value[0] for key, value in qs.items()}\n            parameterized.apply(parameters)\n            query_text = parameterized.query\n\n        results, error = query.data_source.query_runner.run_query(query_text, user)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            125,
+            131
+          ],
+          "source": null,
+          "content": "def apply(self, parameters):\n        invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n        if invalid_parameter_names:\n            raise InvalidParameterError(invalid_parameter_names)\n        else:\n            self.parameters.update(parameters)\n            self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/models/parameterized_query.py",
+          "lines": [
+            155,
+            156
+          ],
+          "source": null,
+          "content": "validators = {\n            \"text\": lambda value: isinstance(value, str),",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/utils/__init__.py",
+          "lines": [
+            146,
+            148
+          ],
+          "source": null,
+          "content": "def mustache_render(template, context=None, **kwargs):\n    renderer = pystache.Renderer(escape=lambda u: u)\n    return renderer.render(template, context, **kwargs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "redash/query_runner/query_results.py",
+          "lines": [
+            72,
+            76
+          ],
+          "source": null,
+          "content": "if not parameterized.is_safe:\n                if not has_access(query.data_source, user, not_view_only):\n                    raise PermissionError(\n                        \"You do not have full access to the data source of query id {}.\".format(query.id)\n                    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "CHANGELOG.md",
+          "content": "We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Do not interpolate parameter values into the SQL text. Use the data source's native bound-parameter mechanism (placeholders with a separate params argument) for all parameter types, or at minimum escape/quote text values per the target dialect and validate them against a strict allowlist. The `not_view_only` authorization gate does not prevent injection and should not be relied upon as the control.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8543,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "redash/query_runner/query_results.py",
+      "line": 81,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "get_query_results _load_query replace_query_parameters in query_results.py"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd status=ok truncated=true query=\"get_query_results _load_query replace_query_parameters in query_results.py\"]\n**Exploration: get_query_results _load_query replace_query_parameters in query_results.py**\n\nFound 95 symbols across 5 files. 1 file pinned from the query. Not pinned: `redash/handlers/query_results.py`, which defines none of the named symbols.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_query_results` (redash/query_runner/query_results.py:66) \u2014 4 callers in `redash/query_runner/query_results.py`; tests: `tests/query_runner/test_query_results.py`\n- `get_query_result` (redash/query_runner/python.py:261) \u2014 6 callers in `redash/query_runner/python.py`; tests: `tests/query_runner/test_python.py`\n- `replace_query_parameters` (redash/query_runner/query_results.py:59) \u2014 3 callers in `redash/query_runner/query_results.py`; tests: `tests/query_runner/test_query_results.py`\n- `_load_query` (redash/query_runner/query_results.py:45) \u2014 6 callers in `redash/query_runner/query_results.py`; tests: `tests/query_runner/test_query_results.py`\n- `Results` (redash/query_runner/query_results.py:156) \u2014 1 caller in `redash/query_runner/query_results.py`; tested via callers: `tests/query_runner/test_query_results.py`\n\n**Relationships**\n\n**extends:**\n- Results \u2192 BaseQueryRunner\n- DateRangeParameter \u2192 Parameter\n- TextParameter \u2192 Parameter\n- TextPatternParameter \u2192 Parameter\n- QueryBasedDropdownParameter \u2192 Parameter\n- EnumParameter \u2192 Parameter\n- NumberParameter \u2192 Parameter\n- Python \u2192 BaseQueryRunner\n\n**calls:**\n- get_query_results \u2192 replace_query_parameters\n- get_query_results \u2192 _load_query\n- create_tables_from_query_ids \u2192 get_query_results\n- test_cached_query_result \u2192 get_query_results\n- test_non_cached_query_result \u2192 get_query_results\n- test_replace_query_params \u2192 replace_query_parameters\n- _load_query \u2192 has_access\n- _load_query \u2192 get_by_id\n- test_raises_exception_for_query_from_different_account \u2192 _load_query\n- test_returns_query_when_user_has_view_only_access \u2192 _load_query\n- ... and 113 more\n\n**instantiates:**\n- _load_query \u2192 PermissionError\n- getById \u2192 QueryResult\n- getByQueryId \u2192 QueryResult\n- get \u2192 QueryResult\n\n**references:**\n- run_query \u2192 get_query_result\n- __init__ \u2192 Python\n- render \u2192 applyChanges\n- render \u2192 moveParameter\n- QueryView \u2192 doExecuteQuery\n- loadResult \u2192 ExecutionStatus\n- loadResult \u2192 QueryResultResource\n- test_raises_exception_for_query_from_different_account \u2192 PermissionError\n- test_raises_exception_for_query_with_different_groups \u2192 PermissionError\n- update \u2192 ExecutionStatus\n- ... and 14 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`redash/query_runner/query_results.py`** \u2014 get_query_results(function), replace_query_parameters(function), _load_query(function), Results(class), create_tables_from_query_ids(function), PermissionError(class), create_table(function), run_query(method), configuration_schema(method), name(method), +9 more\n\n```python\n1\timport datetime\n2\timport decimal\n3\timport hashlib\n4\timport logging\n5\timport re\n6\timport sqlite3\n7\tfrom urllib.parse import parse_qs\n8\t\n9\tfrom redash import models\n10\tfrom redash.permissions import has_access, view_only\n11\tfrom redash.query_runner import (\n12\t    TYPE_STRING,\n13\t    BaseQueryRunner,\n14\t    JobTimeoutException,\n15\t    guess_type,\n16\t    register,\n17\t)\n18\tfrom redash.utils import json_dumps\n19\t\n20\tlogger = logging.getLogger(__name__)\n21\t\n22\t\n23\tclass PermissionError(Exception):\n24\t    pass\n25\t\n26\t\n27\tclass CreateTableError(Exception):\n28\t    pass\n29\t\n30\t\n31\tdef extract_query_params(query):\n32\t    return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n33\t\n34\t\n35\tdef extract_query_ids(query):\n36\t    queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n37\t    return [int(q) for q in queries]\n38\t\n39\t\n40\tdef extract_cached_query_ids(query):\n41\t    queries = re.findall(r\"(?:join|from)\\s+cached_query_(\\d+)\", query, re.IGNORECASE)\n42\t    return [int(q) for q in queries]\n43\t\n44\t\n45\tdef _load_query(user, query_id):\n46\t    query = models.Query.get_by_id(query_id)\n47\t\n48\t    if user.org_id != query.org_id:\n49\t        raise PermissionError(\"Query id {} not found.\".format(query.id))\n50\t\n51\t    # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n52\t    # We should merge it so it's consistent.\n53\t    if not has_access(query.data_source, user, view_only):\n54\t        raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n55\t\n56\t    return query\n57\t\n58\t\n59\tdef replace_query_parameters(query_text, params):\n60\t    qs = parse_qs(params)\n61\t    for key, value in qs.items():\n62\t        query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])\n63\t    return query_text\n64\t\n65\t\n66\tdef get_query_results(user, query_id, bring_from_cache, params=None):\n67\t    query = _load_query(user, query_id)\n68\t    if bring_from_cache:\n69\t        if query.latest_query_data_id is not None:\n70\t            results = query.latest_query_data.data\n71\t        else:\n72\t            raise Exception(\"No cached result available for query {}.\".format(query.id))\n73\t    else:\n74\t        query_text = query.query_text\n75\t        if params is not None:\n76\t            query_text = replace_query_parameters(query_text, params)\n77\t\n78\t        results, error = query.data_source.query_runner.run_query(query_text, user)\n79\t        if error:\n80\t            raise Exception(\"Failed loading results for query id {}.\".format(query.id)\n[TRUNCATED omitted_chars=19273]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "ParameterizedQuery is_safe apply in redash/models/parameterized_query.py"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 status=ok truncated=true query=\"ParameterizedQuery is_safe apply in redash/models/parameterized_query.py\"]\n**Exploration: ParameterizedQuery is_safe apply in redash/models/parameterized_query.py**\n\nFound 86 symbols across 7 files. 1 file pinned from the query.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `ParameterizedQuery` (redash/models/parameterized_query.py:117) \u2014 43 callers in `redash/handlers/queries.py`, `redash/handlers/query_results.py`, `redash/models/__init__.py`, `redash/query_runner/query_results.py` +1 more; tests: `tests/models/test_parameterized_query.py`\n- `query` (client/app/services/query-snippet.js:27) \u2014 1 caller in `client/app/components/queries/QueryEditor/index.jsx`; no tests found within 3 caller hops\n- `Query` (client/app/services/query.js:47) \u2014 33 callers in `client/app/pages/alert/AlertView.jsx`, `client/app/pages/alert/AlertNew.jsx`, `client/app/pages/alert/AlertEdit.jsx`, `client/app/components/EditParameterSettingsDialog.jsx` +14 more; tests: `client/app/lib/queryFormat.test.js`\n\n**Relationships**\n\n**instantiates:**\n- get_query_results \u2192 ParameterizedQuery\n- test_raises_on_invalid_text_pattern_parameters \u2192 ParameterizedQuery\n- test_is_not_safe_if_expecting_text_parameter \u2192 ParameterizedQuery\n- test_validates_query_parameters \u2192 ParameterizedQuery\n- test_raises_on_unexpected_validation_error \u2192 ParameterizedQuery\n- test_validation_accepts_integer_values_for_dropdowns \u2192 ParameterizedQuery\n- test_raises_on_invalid_number_parameters \u2192 ParameterizedQuery\n- test_validates_date_parameters \u2192 ParameterizedQuery\n- test_raises_on_parameters_not_in_schema \u2192 ParameterizedQuery\n- test_raises_on_invalid_enum_parameters \u2192 ParameterizedQuery\n- ... and 13 more\n\n**calls:**\n- query \u2192 axios\n- initEditor \u2192 query\n- OutdatedQueriesPage \u2192 axios\n- QueryResultResource \u2192 axios\n- QueryService \u2192 axios\n- post \u2192 axios\n- DashboardService \u2192 axios\n- regenerateQueryApiKey \u2192 axios\n- updateDataSource \u2192 axios\n- get \u2192 axios\n- ... and 75 more\n\n**references:**\n- query \u2192 getQuerySnippet\n- get \u2192 getQuerySnippet\n- create \u2192 getQuerySnippet\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`redash/models/parameterized_query.py`** \u2014 is_safe(method), ParameterizedQuery(class), __init__(method), apply(method), text(method), missing_params(method), _valid(method), _pluck_name_and_value(function), _load_result(function), dropdown_values(function), +11 more\n\n```python\n1\timport re\n2\tfrom functools import partial\n3\tfrom numbers import Number\n4\t\n5\timport pystache\n6\tfrom dateutil.parser import parse\n7\tfrom funcy import distinct\n8\t\n9\tfrom redash.utils import mustache_render\n10\t\n11\t\n12\tdef _pluck_name_and_value(default_column, row):\n13\t    row = {k.lower(): v for k, v in row.items()}\n14\t    name_column = \"name\" if \"name\" in row.keys() else default_column.lower()\n15\t    value_column = \"value\" if \"value\" in row.keys() else default_column.lower()\n16\t\n17\t    return {\"name\": row[name_column], \"value\": str(row[value_column])}\n18\t\n19\t\n20\tdef _load_result(query_id, org):\n21\t    from redash import models\n22\t\n23\t    query = models.Query.get_by_id_and_org(query_id, org)\n24\t\n25\t    if query.data_source:\n26\t        query_result = models.QueryResult.get_by_id_and_org(query.latest_query_data_id, org)\n27\t        return query_result.data\n28\t    else:\n29\t        raise QueryDetachedFromDataSourceError(query_id)\n30\t\n31\t\n32\tdef dropdown_values(query_id, org):\n33\t    data = _load_result(query_id, org)\n34\t    first_column = data[\"columns\"][0][\"name\"]\n35\t    pluck = partial(_pluck_name_and_value, first_column)\n36\t    return list(map(pluck, data[\"rows\"]))\n37\t\n38\t\n39\tdef join_parameter_list_values(parameters, schema):\n40\t    updated_parameters = {}\n41\t    for key, value in parameters.items():\n42\t        if isinstance(value, list):\n43\t            definition = next((definition for definition in schema if definition[\"name\"] == key), {})\n44\t            multi_values_options = definition.get(\"multiValuesOptions\", {})\n45\t            separator = str(multi_values_options.get(\"separator\", \",\"))\n46\t            prefix = str(multi_values_options.get(\"prefix\", \"\"))\n47\t            suffix = str(multi_values_options.get(\"suffix\", \"\"))\n48\t            updated_parameters[key] = separator.join([prefix + v + suffix for v in value])\n49\t        else:\n50\t            updated_parameters[key] = value\n51\t    return updated_parameters\n52\t\n53\t\n54\tdef _collect_key_names(nodes):\n55\t    keys = []\n56\t    for node in nodes._parse_tree:\n57\t        if isinstance(node, pystache.parser._EscapeNode):\n58\t            keys.append(node.key)\n59\t        elif isinstance(node, pystache.parser._SectionNode):\n60\t            keys.append(node.key)\n61\t            keys.extend(_collect_key_names(node.parsed))\n62\t\n63\t    return distinct(keys)\n64\t\n65\t\n66\tdef _collect_query_parameters(query):\n67\t    nodes = pystache.parse(query)\n68\t    keys = _collect_key_names(nodes)\n69\t    return keys\n70\t\n71\t\n72\tdef _parameter_names(parameter_values):\n73\t    names = []\n74\t    for key, value in parameter_values.items():\n75\t        if isinstance(value, dict):\n76\t            for inner_key in value.keys():\n77\t                names.append(\"{}.{}\".format(key, inner_key))\n78\t        else:\n79\t            names.append(key)\n80\t\n81\t    return names\n82\t\n83\t\n84\tdef _is_number(string):\n85\t    if isinstance(string, Number):\n86\t        return True\n87\t    else:\n88\t        float(string)\n89\t        return True\n90\t\n91\t\n92\tdef _is_regex_pattern(value, regex):\n93\t    try:\n94\t        if re.compile(regex).fullmatch(value):\n95\t   \n[TRUNCATED omitted_chars=19259]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/parameterized_query.py",
+                  "start_line": 100,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/parameterized_query.py lines=100-200]\n100: \n101: \n102: def _is_date(string):\n103:     parse(string)\n104:     return True\n105: \n106: \n107: def _is_date_range(obj):\n108:     return _is_date(obj[\"start\"]) and _is_date(obj[\"end\"])\n109: \n110: \n111: def _is_value_within_options(value, dropdown_options, allow_list=False):\n112:     if isinstance(value, list):\n113:         return allow_list and set(map(str, value)).issubset(set(dropdown_options))\n114:     return str(value) in dropdown_options\n115: \n116: \n117: class ParameterizedQuery:\n118:     def __init__(self, template, schema=None, org=None):\n119:         self.schema = schema or []\n120:         self.org = org\n121:         self.template = template\n122:         self.query = template\n123:         self.parameters = {}\n124: \n125:     def apply(self, parameters):\n126:         invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n127:         if invalid_parameter_names:\n128:             raise InvalidParameterError(invalid_parameter_names)\n129:         else:\n130:             self.parameters.update(parameters)\n131:             self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n132: \n133:         return self\n134: \n135:     def _valid(self, name, value):\n136:         if not self.schema:\n137:             return True\n138: \n139:         definition = next(\n140:             (definition for definition in self.schema if definition[\"name\"] == name),\n141:             None,\n142:         )\n143: \n144:         if not definition:\n145:             return False\n146: \n147:         enum_options = definition.get(\"enumOptions\")\n148:         query_id = definition.get(\"queryId\")\n149:         regex = definition.get(\"regex\")\n150:         allow_multiple_values = isinstance(definition.get(\"multiValuesOptions\"), dict)\n151: \n152:         if isinstance(enum_options, str):\n153:             enum_options = enum_options.split(\"\\n\")\n154: \n155:         validators = {\n156:             \"text\": lambda value: isinstance(value, str),\n157:             \"text-pattern\": lambda value: _is_regex_pattern(value, regex),\n158:             \"number\": _is_number,\n159:             \"enum\": lambda value: _is_value_within_options(value, enum_options, allow_multiple_values),\n160:             \"query\": lambda value: _is_value_within_options(\n161:                 value,\n162:                 [v[\"value\"] for v in dropdown_values(query_id, self.org)],\n163:                 allow_multiple_values,\n164:             ),\n165:             \"date\": _is_date,\n166:             \"datetime-local\": _is_date,\n167:             \"datetime-with-seconds\": _is_date,\n168:             \"date-range\": _is_date_range,\n169:             \"datetime-range\": _is_date_range,\n170:             \"datetime-range-with-seconds\": _is_date_range,\n171:         }\n172: \n173:         validate = validators.get(definition[\"type\"], lambda x: False)\n174: \n175:         try:\n176:             # multiple error types can be raised here; but we want to convert\n177:             # all except QueryDetached to InvalidParameterError in `apply`\n178:             return validate(value)\n179:         except QueryDetachedFromDataSourceError:\n180:             raise\n181:         except Exception:\n182:             return False\n183: \n184:     @property\n185:     def is_safe(self):\n186:         text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n187:         return not any(text_parameters)\n188: \n189:     @property\n190:     def missing_params(self):\n191:         query_parameters = set(_collect_query_parameters(self.template))\n192:         return set(query_parameters) - set(_parameter_names(self.parameters))\n193: \n194:     @property\n195:     def text(self):\n196:         return self.query\n197: \n198: \n199: class InvalidParameterError(Exception):\n200:     def __init__(self, parameters):\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 55,
+                  "end_line": 95,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=55-95]\n55:         raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n56: \n57:     return query\n58: \n59: \n60: def get_query_results(user, query_id, bring_from_cache, params=None):\n61:     query = _load_query(user, query_id)\n62:     if bring_from_cache:\n63:         if query.latest_query_data_id is not None:\n64:             results = query.latest_query_data.data\n65:         else:\n66:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n67:     else:\n68:         query_text = query.query_text\n69:         if params is not None:\n70:             parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n71: \n72:             if not parameterized.is_safe:\n73:                 if not has_access(query.data_source, user, not_view_only):\n74:                     raise PermissionError(\n75:                         \"You do not have full access to the data source of query id {}.\".format(query.id)\n76:                     )\n77: \n78:             qs = parse_qs(params)\n79:             parameters = {key: value[0] for key, value in qs.items()}\n80:             parameterized.apply(parameters)\n81:             query_text = parameterized.query\n82: \n83:         results, error = query.data_source.query_runner.run_query(query_text, user)\n84:         if error:\n85:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n86: \n87:     return results\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/permissions.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/permissions.py lines=1-118]\n1: import functools\n2: \n3: from flask_login import current_user\n4: from flask_restful import abort\n5: from funcy import flatten\n6: \n7: view_only = True\n8: not_view_only = False\n9: \n10: ACCESS_TYPE_VIEW = \"view\"\n11: ACCESS_TYPE_MODIFY = \"modify\"\n12: ACCESS_TYPE_DELETE = \"delete\"\n13: \n14: ACCESS_TYPES = (ACCESS_TYPE_VIEW, ACCESS_TYPE_MODIFY, ACCESS_TYPE_DELETE)\n15: \n16: \n17: def has_access(obj, user, need_view_only):\n18:     if hasattr(obj, \"api_key\") and user.is_api_user():\n19:         return has_access_to_object(obj, user.id, need_view_only)\n20:     else:\n21:         return has_access_to_groups(obj, user, need_view_only)\n22: \n23: \n24: def has_access_to_object(obj, api_key, need_view_only):\n25:     if obj.api_key == api_key:\n26:         return need_view_only\n27:     elif hasattr(obj, \"dashboard_api_keys\"):\n28:         # check if api_key belongs to a dashboard containing this query\n29:         return api_key in obj.dashboard_api_keys and need_view_only\n30:     else:\n31:         return False\n32: \n33: \n34: def has_access_to_groups(obj, user, need_view_only):\n35:     groups = obj.groups if hasattr(obj, \"groups\") else obj\n36: \n37:     if \"admin\" in user.permissions:\n38:         return True\n39: \n40:     matching_groups = set(groups.keys()).intersection(user.group_ids)\n41: \n42:     if not matching_groups:\n43:         return False\n44: \n45:     required_level = 1 if need_view_only else 2\n46: \n47:     group_level = 1 if all(flatten([groups[group] for group in matching_groups])) else 2\n48: \n49:     return required_level <= group_level\n50: \n51: \n52: def require_access(obj, user, need_view_only):\n53:     if not has_access(obj, user, need_view_only):\n54:         abort(403)\n55: \n56: \n57: class require_permissions:\n58:     def __init__(self, permissions, allow_one=False):\n59:         self.permissions = permissions\n60:         self.allow_one = allow_one\n61: \n62:     def __call__(self, fn):\n63:         @functools.wraps(fn)\n64:         def decorated(*args, **kwargs):\n65:             if self.allow_one:\n66:                 has_permissions = any([current_user.has_permission(permission) for permission in self.permissions])\n67:             else:\n68:                 has_permissions = current_user.has_permissions(self.permissions)\n69: \n70:             if has_permissions:\n71:                 return fn(*args, **kwargs)\n72:             else:\n73:                 abort(403)\n74: \n75:         return decorated\n76: \n77: \n78: def require_permission(permission):\n79:     return require_permissions((permission,))\n80: \n81: \n82: def require_any_of_permission(permissions):\n83:     return require_permissions(permissions, True)\n84: \n85: \n86: def require_admin(fn):\n87:     return require_permission(\"admin\")(fn)\n88: \n89: \n90: def require_super_admin(fn):\n91:     return require_permission(\"super_admin\")(fn)\n92: \n93: \n94: def has_permission_or_owner(permission, object_owner_id):\n95:     return int(object_owner_id) == current_user.id or current_user.has_permission(permission)\n96: \n97: \n98: def is_admin_or_owner(object_owner_id):\n99:     return has_permission_or_owner(\"admin\", object_owner_id)\n100: \n101: \n102: def require_permission_or_owner(permission, object_owner_id):\n103:     if not has_permission_or_owner(permission, object_owner_id):\n104:         abort(403)\n105: \n106: \n107: def require_admin_or_owner(object_owner_id):\n108:     if not is_admin_or_owner(object_owner_id):\n109:         abort(403, message=\"You don't have permission to edit this resource.\")\n110: \n111: \n112: def can_modify(obj, user):\n113:     return is_admin_or_owner(obj.user_id) or user.has_access(obj, ACCESS_TYPE_MODIFY)\n114: \n115: \n116: def require_object_modify_permission(obj, user):\n117:     if not can_modify(obj, user):\n118:         abort(403)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/query_runner/test_query_results.py",
+                  "start_line": 230,
+                  "end_line": 300,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=tests/query_runner/test_query_results.py lines=230-300]\n230:         query = self.factory.create_query(latest_query_data=query_result)\n231: \n232:         self.assertEqual(query_result.data, get_query_results(self.factory.user, query.id, True))\n233: \n234:     def test_non_cached_query_result(self):\n235:         query_result = self.factory.create_query_result()\n236:         query = self.factory.create_query(latest_query_data=query_result)\n237: \n238:         from redash.query_runner.pg import PostgreSQL\n239: \n240:         with mock.patch.object(PostgreSQL, \"run_query\") as qr:\n241:             query_result_data = {\"columns\": [], \"rows\": []}\n242:             qr.return_value = (query_result_data, None)\n243:             self.assertEqual(query_result_data, get_query_results(self.factory.user, query.id, False))\n244: \n245:     def test_parameterized_query_applies_via_parameterized_query(self):\n246:         \"\"\"Parameters are applied using ParameterizedQuery which validates against schema.\"\"\"\n247:         query = self.factory.create_query(\n248:             query_text=\"SELECT {{val}}\",\n249:             options={\"parameters\": [{\"name\": \"val\", \"type\": \"number\", \"title\": \"val\"}]},\n250:         )\n251: \n252:         from redash.query_runner.pg import PostgreSQL\n253: \n254:         with mock.patch.object(PostgreSQL, \"run_query\") as qr:\n255:             query_result_data = {\"columns\": [], \"rows\": []}\n256:             qr.return_value = (query_result_data, None)\n257:             get_query_results(self.factory.user, query.id, False, \"val=42\")\n258:             qr.assert_called_once()\n259:             executed_query = qr.call_args[0][0]\n260:             self.assertEqual(\"SELECT 42\", executed_query)\n261: \n262:     def test_parameterized_query_rejects_invalid_params(self):\n263:         \"\"\"Parameters that don't match the schema are rejected.\"\"\"\n264:         from redash.models.parameterized_query import InvalidParameterError\n265: \n266:         query = self.factory.create_query(\n267:             query_text=\"SELECT {{val}}\",\n268:             options={\"parameters\": [{\"name\": \"val\", \"type\": \"number\", \"title\": \"val\"}]},\n269:         )\n270: \n271:         with self.assertRaises(InvalidParameterError):\n272:             get_query_results(self.factory.user, query.id, False, \"val=1 UNION SELECT version()\")\n273: \n274:     def test_parameterized_query_blocks_view_only_user_with_text_params(self):\n275:         \"\"\"View-only users cannot use queries with text parameters.\"\"\"\n276:         ds = self.factory.create_data_source(group=self.factory.org.default_group, view_only=True)\n277:         query = self.factory.create_query(\n278:             data_source=ds,\n279:             query_text=\"SELECT {{val}}\",\n280:             options={\"parameters\": [{\"name\": \"val\", \"type\": \"text\", \"title\": \"val\"}]},\n281:         )\n282:         user = self.factory.create_user()\n283: \n284:         with self.assertRaises(PermissionError):\n285:             get_query_results(user, query.id, False, \"val=test\")\n286: \n287:     def test_parameterized_query_allows_full_access_user_with_text_params(self):\n288:         \"\"\"Users with full access can use queries with text parameters.\"\"\"\n289:         query = self.factory.create_query(\n290:             query_text=\"SELECT {{val}}\",\n291:             options={\"parameters\": [{\"name\": \"val\", \"type\": \"text\", \"title\": \"val\"}]},\n292:         )\n293: \n294:         from redash.query_runner.pg import PostgreSQL\n295: \n296:         with mock.patch.object(PostgreSQL, \"run_query\") as qr:\n297:             query_result_data = {\"columns\": [], \"rows\": []}\n298:             qr.return_value = (query_result_data, None)\n299:             get_query_results(self.factory.user, query.id, False, \"val=test\")\n300:             qr.assert_called_once()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "replace_query_parameters",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"replace_query_parameters\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def parameters",
+                  "file_glob": "redash/models/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"def parameters\"]\nredash/models/__init__.py:848:    def parameters(self):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/__init__.py",
+                  "start_line": 840,
+                  "end_line": 860,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/__init__.py lines=840-860]\n840:         return self.name.lower()\n841: \n842:     @lowercase_name.expression\n843:     def lowercase_name(cls):\n844:         \"The SQLAlchemy expression for the property above.\"\n845:         return func.lower(cls.name)\n846: \n847:     @property\n848:     def parameters(self):\n849:         return self.options.get(\"parameters\", [])\n850: \n851:     @property\n852:     def parameterized(self):\n853:         return ParameterizedQuery(self.query_text, self.parameters, self.org)\n854: \n855:     @property\n856:     def dashboard_api_keys(self):\n857:         query = \"\"\"SELECT api_keys.api_key\n858:                    FROM api_keys\n859:                    JOIN dashboards ON object_id = dashboards.id\n860:                    JOIN widgets ON dashboards.id = widgets.dashboard_id\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "get_query_results",
+                  "file_glob": "redash/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"get_query_results\"]\nredash/query_runner/big_query.py:83:def _get_query_results(jobs, project_id, location, job_id, start_index):\nredash/query_runner/big_query.py:90:        return _get_query_results(jobs, project_id, location, job_id, start_index)\nredash/query_runner/big_query.py:225:        query_reply = _get_query_results(\nredash/query_runner/cloudwatch_insights.py:137:            result = logs.get_query_results(queryId=query_id)\nredash/query_runner/query_results.py:60:def get_query_results(user, query_id, bring_from_cache, params=None):\nredash/query_runner/query_results.py:92:        results = get_query_results(user, query_id, True)\nredash/query_runner/query_results.py:97:        results = get_query_results(user, query[0], False, query[1])\nredash/query_runner/query_results.py:105:        results = get_query_results(user, query_id, False)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 88,
+                  "end_line": 110,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=88-110]\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n95: \n96:     for query in set(query_params):\n97:         results = get_query_results(user, query[0], False, query[1])\n98:         table_hash = hashlib.md5(\n99:             \"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode(), usedforsecurity=False\n100:         ).hexdigest()\n101:         table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n102:         create_table(connection, table_name, results)\n103: \n104:     for query_id in set(query_ids):\n105:         results = get_query_results(user, query_id, False)\n106:         table_name = \"query_{query_id}\".format(query_id=query_id)\n107:         create_table(connection, table_name, results)\n108: \n109: \n110: def fix_column_name(name):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "create_tables_from_query_ids",
+                  "file_glob": "redash/**/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"create_tables_from_query_ids\"]\nredash/query_runner/query_results.py:90:def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\nredash/query_runner/query_results.py:181:        create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 150,
+                  "end_line": 200,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=150-200]\n150: def prepare_parameterized_query(query, query_params):\n151:     for params in query_params:\n152:         table_hash = hashlib.md5(\n153:             \"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode(), usedforsecurity=False\n154:         ).hexdigest()\n155:         key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])\n156:         value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)\n157:         query = query.replace(key, value)\n158:     return query\n159: \n160: \n161: class Results(BaseQueryRunner):\n162:     should_annotate_query = False\n163:     noop_query = \"SELECT 1\"\n164: \n165:     @classmethod\n166:     def configuration_schema(cls):\n167:         return {\"type\": \"object\", \"properties\": {}}\n168: \n169:     @classmethod\n170:     def name(cls):\n171:         return \"Query Results\"\n172: \n173:     def run_query(self, query, user):\n174:         connection = sqlite3.connect(\":memory:\")\n175: \n176:         query_ids = extract_query_ids(query)\n177: \n178:         query_params = extract_query_params(query)\n179: \n180:         cached_query_ids = extract_cached_query_ids(query)\n181:         create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n182: \n183:         cursor = connection.cursor()\n184: \n185:         if query_params is not None:\n186:             query = prepare_parameterized_query(query, query_params)\n187: \n188:         try:\n189:             cursor.execute(query)\n190: \n191:             if cursor.description is not None:\n192:                 columns = self.fetch_columns([(i[0], None) for i in cursor.description])\n193: \n194:                 rows = []\n195:                 column_names = [c[\"name\"] for c in columns]\n196: \n197:                 for i, row in enumerate(cursor):\n198:                     for j, col in enumerate(row):\n199:                         guess = guess_type(col)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class Results|register\\(Results\\)|\"results\"",
+                  "file_glob": "redash/query_runner/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"class Results|register\\(Results\\)|'results'\"]\nredash/query_runner/query_results.py:161:class Results(BaseQueryRunner):\nredash/query_runner/query_results.py:221:register(Results)\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source.*results|results.*data_source",
+                  "file_glob": "redash/handlers/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"data_source.*results|results.*data_source\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id.*results|results.*data_source_id",
+                  "file_glob": "redash/handlers/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"data_source_id.*results|results.*data_source_id\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"data_source_id\"]\nredash/handlers/query_results.py:155:        :qparam number data_source_id: ID of data source to query\nredash/handlers/query_results.py:172:        data_source_id = params.get(\"data_source_id\")\nredash/handlers/query_results.py:173:        if data_source_id:\nredash/handlers/query_results.py:174:            data_source = models.DataSource.get_by_id_and_org(params.get(\"data_source_id\"), self.current_org)\nredash/handlers/query_results.py:300:        :<json number data_source_id: ID of data source that produced this result\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/handlers/query_results.py",
+                  "start_line": 150,
+                  "end_line": 210,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/handlers/query_results.py lines=150-210]\n150:         :qparam number query_id: The query object to update with the result (optional)\n151:         :qparam number max_age: If query results less than `max_age` seconds old are available,\n152:                                 return them, otherwise execute the query; if omitted or -1, returns\n153:                                 any cached result, or executes if not available. Set to zero to\n154:                                 always execute.\n155:         :qparam number data_source_id: ID of data source to query\n156:         :qparam object parameters: A set of parameter values to apply to the query.\n157:         \"\"\"\n158:         params = request.get_json(force=True)\n159: \n160:         query = params[\"query\"]\n161:         max_age = params.get(\"max_age\", -1)\n162:         # max_age might have the value of None, in which case calling int(None) will fail\n163:         if max_age is None:\n164:             max_age = -1\n165:         max_age = int(max_age)\n166:         query_id = params.get(\"query_id\", \"adhoc\")\n167:         parameters = params.get(\"parameters\", collect_parameters_from_request(request.args))\n168: \n169:         parameterized_query = ParameterizedQuery(query, org=self.current_org)\n170:         should_apply_auto_limit = params.get(\"apply_auto_limit\", False)\n171: \n172:         data_source_id = params.get(\"data_source_id\")\n173:         if data_source_id:\n174:             data_source = models.DataSource.get_by_id_and_org(params.get(\"data_source_id\"), self.current_org)\n175:         else:\n176:             return error_messages[\"select_data_source\"]\n177: \n178:         if not has_access(data_source, self.current_user, not_view_only):\n179:             return error_messages[\"no_permission\"]\n180: \n181:         return run_query(\n182:             parameterized_query,\n183:             parameters,\n184:             data_source,\n185:             query_id,\n186:             should_apply_auto_limit,\n187:             max_age,\n188:         )\n189: \n190: \n191: ONE_YEAR = 60 * 60 * 24 * 365.25\n192: \n193: \n194: class QueryResultDropdownResource(BaseResource):\n195:     def get(self, query_id):\n196:         query = get_object_or_404(models.Query.get_by_id_and_org, query_id, self.current_org)\n197:         require_access(query.data_source, current_user, view_only)\n198:         try:\n199:             return dropdown_values(query_id, self.current_org)\n200:         except QueryDetachedFromDataSourceError as e:\n201:             abort(400, message=str(e))\n202: \n203: \n204: class QueryDropdownsResource(BaseResource):\n205:     def get(self, query_id, dropdown_query_id):\n206:         query = get_object_or_404(models.Query.get_by_id_and_org, query_id, self.current_org)\n207:         require_access(query, current_user, view_only)\n208: \n209:         related_queries_ids = [p[\"queryId\"] for p in query.parameters if p[\"type\"] == \"query\"]\n210:         if int(dropdown_query_id) not in related_queries_ids:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id.*results|results.*data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"data_source_id.*results|results.*data_source_id\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"data_source_id\", \"file_glob\": \"redash/handlers/query_results.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"data_source_id\", \"file_glob\": \"redash/handlers/query_results.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"data_source_id\", \"file_glob\": \"redash/handlers/query_results.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"data_source_id\", \"file_glob\": \"redash/handlers/query_results.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "data_source_id",
+                  "file_glob": "redash/handlers/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: identical to an earlier grep_repo call with arguments {\"pattern\": \"data_source_id\", \"file_glob\": \"redash/handlers/query_results.py\", \"snapshot\": \"pr\"}; its result is already above and is not served again."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"param-authz\",\n      \"title\": \"Enforce full (non-view-only) data-source access before applying text parameters\",\n      \"rationale\": \"The new is_safe/not_view_only gate in get_query_results and its import are the core authorization change, and the two text-parameter tests verify the allow/deny behavior.\",\n      \"hunks\": [\n        \"redash/query_runner/query_results.py#0\",\n        \"redash/query_runner/query_results.py#2\",\n        \"tests/query_runner/test_query_results.py#2\"\n      ],\n      \"context\": [\n        {\"path\": \"redash/models/parameterized_query.py\", \"symbol\": \"ParameterizedQuery.is_safe\", \"start_line\": 184, \"end_line\": 187, \"snapshot\": \"pr\", \"why\": \"is_safe is False when any parameter is type 'text', driving the new access check\"},\n        {\"path\": \"redash/permissions.py\", \"symbol\": \"has_access / not_view_only\", \"start_line\": 7, \"end_line\": 49, \"snapshot\": \"pr\", \"why\": \"not_view_only (False) requires group level 2 (full access) vs view_only level 1\"},\n        {\"path\": \"redash/query_runner/query_results.py\", \"symbol\": \"_load_query\", \"start_line\": 45, \"end_line\": 57, \"snapshot\": \"pr\", \"why\": \"baseline check only grants view_only access, so the new not_view_only gate is the added authorization\"},\n        {\"path\": \"redash/models/__init__.py\", \"symbol\": \"Query.parameters\", \"start_line\": 847, \"end_line\": 849, \"snapshot\": \"pr\", \"why\": \"supplies the parameter schema passed to ParameterizedQuery\"}\n      ]\n    },\n    {\n      \"id\": \"param-validation\",\n      \"title\": \"Replace naive string substitution with schema-validated ParameterizedQuery\",\n      \"rationale\": \"Removing replace_query_parameters and its test, and adding the apply/invalid-param tests, all cover the same switch from unvalidated substitution to validated parameter application.\",\n      \"hunks\": [\n        \"redash/query_runner/query_results.py#1\",\n        \"tests/query_runner/test_query_results.py#0\",\n        \"tests/query_runner/test_query_results.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"redash/models/parameterized_query.py\", \"symbol\": \"ParameterizedQuery.apply\", \"start_line\": 125, \"end_line\": 133, \"snapshot\": \"pr\", \"why\": \"validates each param against the schema and raises InvalidParameterError, replacing the old replace_query_parameters\"},\n        {\"path\": \"redash/models/parameterized_query.py\", \"symbol\": \"InvalidParameterError\", \"start_line\": 199, \"end_line\": 200, \"snapshot\": \"pr\", \"why\": \"exception raised on invalid params, asserted by the new test\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "param-authz",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=1-221]\n1: import datetime\n2: import decimal\n3: import hashlib\n4: import logging\n5: import re\n6: import sqlite3\n7: from urllib.parse import parse_qs\n8: \n9: from redash import models\n10: from redash.models.parameterized_query import ParameterizedQuery\n11: from redash.permissions import has_access, not_view_only, view_only\n12: from redash.query_runner import (\n13:     TYPE_STRING,\n14:     BaseQueryRunner,\n15:     JobTimeoutException,\n16:     guess_type,\n17:     register,\n18: )\n19: from redash.utils import json_dumps\n20: \n21: logger = logging.getLogger(__name__)\n22: \n23: \n24: class PermissionError(Exception):\n25:     pass\n26: \n27: \n28: class CreateTableError(Exception):\n29:     pass\n30: \n31: \n32: def extract_query_params(query):\n33:     return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n34: \n35: \n36: def extract_query_ids(query):\n37:     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n38:     return [int(q) for q in queries]\n39: \n40: \n41: def extract_cached_query_ids(query):\n42:     queries = re.findall(r\"(?:join|from)\\s+cached_query_(\\d+)\", query, re.IGNORECASE)\n43:     return [int(q) for q in queries]\n44: \n45: \n46: def _load_query(user, query_id):\n47:     query = models.Query.get_by_id(query_id)\n48: \n49:     if user.org_id != query.org_id:\n50:         raise PermissionError(\"Query id {} not found.\".format(query.id))\n51: \n52:     # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n53:     # We should merge it so it's consistent.\n54:     if not has_access(query.data_source, user, view_only):\n55:         raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n56: \n57:     return query\n58: \n59: \n60: def get_query_results(user, query_id, bring_from_cache, params=None):\n61:     query = _load_query(user, query_id)\n62:     if bring_from_cache:\n63:         if query.latest_query_data_id is not None:\n64:             results = query.latest_query_data.data\n65:         else:\n66:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n67:     else:\n68:         query_text = query.query_text\n69:         if params is not None:\n70:             parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n71: \n72:             if not parameterized.is_safe:\n73:                 if not has_access(query.data_source, user, not_view_only):\n74:                     raise PermissionError(\n75:                         \"You do not have full access to the data source of query id {}.\".format(query.id)\n76:                     )\n77: \n78:             qs = parse_qs(params)\n79:             parameters = {key: value[0] for key, value in qs.items()}\n80:             parameterized.apply(parameters)\n81:             query_text = parameterized.query\n82: \n83:         results, error = query.data_source.query_runner.run_query(query_text, user)\n84:         if error:\n85:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n86: \n87:     return results\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n95: \n96:     for query in set(query_params):\n97:         results = get_query_results(user, query[0], False, query[1])\n98:         table_hash = hashlib.md5(\n99:             \"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode(), usedforsecurity=False\n100:         ).hexdigest()\n101:         table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n102:         create_table(connection, table_name, results)\n103: \n104:     for query_id in set(query_ids):\n105:         results = get_query_results(user, query_id, False)\n106:         table_name = \"query_{query_id}\".format(query_id=query_id)\n107:         create_table(connection, table_name, results)\n108: \n109: \n110: def fix_column_name(name):\n111:     return '\"{}\"'.format(re.sub(r'[:.\"\\s]', \"_\", name, flags=re.UNICODE))\n112: \n113: \n114: def flatten(value):\n115:     if isinstance(value, (list, dict)):\n116:         return json_dumps(value)\n117:     elif isinstance(value, decimal.Decimal):\n118:         return float(value)\n119:     elif isinstance(value, datetime.timedelta):\n120:         return str(value)\n121:     else:\n122:         return value\n123: \n124: \n125: def create_table(connection, table_name, query_results):\n126:     try:\n127:         columns = [column[\"name\"] for column in query_results[\"columns\"]]\n128:         safe_columns = [fix_column_name(column) for column in columns]\n129: \n130:         column_list = \", \".join(safe_columns)\n131:         create_table = \"CREATE TABLE {table_name} ({column_list})\".format(\n132:             table_name=table_name, column_list=column_list\n133:         )\n134:         logger.debug(\"CREATE TABLE query: %s\", create_table)\n135:         connection.execute(create_table)\n136:     except sqlite3.OperationalError as exc:\n137:         raise CreateTableError(\"Error creating table {}: {}\".format(table_name, str(exc)))\n138: \n139:     insert_template = \"insert into {table_name} ({column_list}) values ({place_holders})\".format(\n140:         table_name=table_name,\n141:         column_list=column_list,\n142:         place_holders=\",\".join([\"?\"] * len(columns)),\n143:     )\n144: \n145:     for row in query_results[\"rows\"]:\n146:         values = [flatten(row.get(column)) for column in columns]\n147:         connection.execute(insert_template, values)\n148: \n149: \n150: def prepare_parameterized_query(query, query_params):\n151:     for params in query_params:\n152:         table_hash = hashlib.md5(\n153:             \"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode(), usedforsecurity=False\n154:         ).hexdigest()\n155:         key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])\n156:         value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)\n157:         query = query.replace(key, value)\n158:     return query\n159: \n160: \n161: class Results(BaseQueryRunner):\n162:     should_annotate_query = False\n163:     noop_query = \"SELECT 1\"\n164: \n165:     @classmethod\n166:     def configuration_schema(cls):\n167:         return {\"type\": \"object\", \"properties\": {}}\n168: \n169:     @classmethod\n170:     def name(cls):\n171:         return \"Query Results\"\n172: \n173:     def run_query(self, query, user):\n174:         connection = sqlite3.connect(\":memory:\")\n175: \n176:         query_ids = extract_query_ids(query)\n177: \n178:         query_params = extract_query_params(query)\n179: \n180:         cached_query_ids = extract_cached_query_ids(query)\n181:         create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n182: \n183:         cursor = connection.cursor()\n184: \n185:         if query_params is not None:\n186:             query = prepare_parameterized_query(query, query_params)\n187: \n188:         try:\n189:             cursor.execute(query)\n190: \n191:             if cursor.description is not None:\n192:                 columns = self.fetch_columns([(i[0], None) for i in cursor.description])\n193: \n194:                 rows = []\n195:                 column_names = [c[\"name\"] for c in columns]\n196: \n197:                 for i, row in enumerate(cursor):\n198:                     for j, col in enumerate(row):\n199:                         guess = guess_type(col)\n200: \n201:                         if columns[j][\"type\"] is None:\n202:                             columns[j][\"type\"] = guess\n203:                         elif columns[j][\"type\"] != guess:\n204:                             columns[j][\"type\"] = TYPE_STRING\n205: \n206:                     rows.append(dict(zip(column_names, row)))\n207: \n208:                 data = {\"columns\": columns, \"rows\": rows}\n209:                 error = None\n210:             else:\n211:                 error = \"Query completed but it returned no data.\"\n212:                 data = None\n213:         except (KeyboardInterrupt, JobTimeoutException):\n214:             connection.cancel()\n215:             raise\n216:         finally:\n217:             connection.close()\n218:         return data, error\n219: \n220: \n221: register(Results)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/permissions.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/permissions.py lines=1-118]\n1: import functools\n2: \n3: from flask_login import current_user\n4: from flask_restful import abort\n5: from funcy import flatten\n6: \n7: view_only = True\n8: not_view_only = False\n9: \n10: ACCESS_TYPE_VIEW = \"view\"\n11: ACCESS_TYPE_MODIFY = \"modify\"\n12: ACCESS_TYPE_DELETE = \"delete\"\n13: \n14: ACCESS_TYPES = (ACCESS_TYPE_VIEW, ACCESS_TYPE_MODIFY, ACCESS_TYPE_DELETE)\n15: \n16: \n17: def has_access(obj, user, need_view_only):\n18:     if hasattr(obj, \"api_key\") and user.is_api_user():\n19:         return has_access_to_object(obj, user.id, need_view_only)\n20:     else:\n21:         return has_access_to_groups(obj, user, need_view_only)\n22: \n23: \n24: def has_access_to_object(obj, api_key, need_view_only):\n25:     if obj.api_key == api_key:\n26:         return need_view_only\n27:     elif hasattr(obj, \"dashboard_api_keys\"):\n28:         # check if api_key belongs to a dashboard containing this query\n29:         return api_key in obj.dashboard_api_keys and need_view_only\n30:     else:\n31:         return False\n32: \n33: \n34: def has_access_to_groups(obj, user, need_view_only):\n35:     groups = obj.groups if hasattr(obj, \"groups\") else obj\n36: \n37:     if \"admin\" in user.permissions:\n38:         return True\n39: \n40:     matching_groups = set(groups.keys()).intersection(user.group_ids)\n41: \n42:     if not matching_groups:\n43:         return False\n44: \n45:     required_level = 1 if need_view_only else 2\n46: \n47:     group_level = 1 if all(flatten([groups[group] for group in matching_groups])) else 2\n48: \n49:     return required_level <= group_level\n50: \n51: \n52: def require_access(obj, user, need_view_only):\n53:     if not has_access(obj, user, need_view_only):\n54:         abort(403)\n55: \n56: \n57: class require_permissions:\n58:     def __init__(self, permissions, allow_one=False):\n59:         self.permissions = permissions\n60:         self.allow_one = allow_one\n61: \n62:     def __call__(self, fn):\n63:         @functools.wraps(fn)\n64:         def decorated(*args, **kwargs):\n65:             if self.allow_one:\n66:                 has_permissions = any([current_user.has_permission(permission) for permission in self.permissions])\n67:             else:\n68:                 has_permissions = current_user.has_permissions(self.permissions)\n69: \n70:             if has_permissions:\n71:                 return fn(*args, **kwargs)\n72:             else:\n73:                 abort(403)\n74: \n75:         return decorated\n76: \n77: \n78: def require_permission(permission):\n79:     return require_permissions((permission,))\n80: \n81: \n82: def require_any_of_permission(permissions):\n83:     return require_permissions(permissions, True)\n84: \n85: \n86: def require_admin(fn):\n87:     return require_permission(\"admin\")(fn)\n88: \n89: \n90: def require_super_admin(fn):\n91:     return require_permission(\"super_admin\")(fn)\n92: \n93: \n94: def has_permission_or_owner(permission, object_owner_id):\n95:     return int(object_owner_id) == current_user.id or current_user.has_permission(permission)\n96: \n97: \n98: def is_admin_or_owner(object_owner_id):\n99:     return has_permission_or_owner(\"admin\", object_owner_id)\n100: \n101: \n102: def require_permission_or_owner(permission, object_owner_id):\n103:     if not has_permission_or_owner(permission, object_owner_id):\n104:         abort(403)\n105: \n106: \n107: def require_admin_or_owner(object_owner_id):\n108:     if not is_admin_or_owner(object_owner_id):\n109:         abort(403, message=\"You don't have permission to edit this resource.\")\n110: \n111: \n112: def can_modify(obj, user):\n113:     return is_admin_or_owner(obj.user_id) or user.has_access(obj, ACCESS_TYPE_MODIFY)\n114: \n115: \n116: def require_object_modify_permission(obj, user):\n117:     if not can_modify(obj, user):\n118:         abort(403)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/parameterized_query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/parameterized_query.py lines=1-211]\n1: import re\n2: from functools import partial\n3: from numbers import Number\n4: \n5: import pystache\n6: from dateutil.parser import parse\n7: from funcy import distinct\n8: \n9: from redash.utils import mustache_render\n10: \n11: \n12: def _pluck_name_and_value(default_column, row):\n13:     row = {k.lower(): v for k, v in row.items()}\n14:     name_column = \"name\" if \"name\" in row.keys() else default_column.lower()\n15:     value_column = \"value\" if \"value\" in row.keys() else default_column.lower()\n16: \n17:     return {\"name\": row[name_column], \"value\": str(row[value_column])}\n18: \n19: \n20: def _load_result(query_id, org):\n21:     from redash import models\n22: \n23:     query = models.Query.get_by_id_and_org(query_id, org)\n24: \n25:     if query.data_source:\n26:         query_result = models.QueryResult.get_by_id_and_org(query.latest_query_data_id, org)\n27:         return query_result.data\n28:     else:\n29:         raise QueryDetachedFromDataSourceError(query_id)\n30: \n31: \n32: def dropdown_values(query_id, org):\n33:     data = _load_result(query_id, org)\n34:     first_column = data[\"columns\"][0][\"name\"]\n35:     pluck = partial(_pluck_name_and_value, first_column)\n36:     return list(map(pluck, data[\"rows\"]))\n37: \n38: \n39: def join_parameter_list_values(parameters, schema):\n40:     updated_parameters = {}\n41:     for key, value in parameters.items():\n42:         if isinstance(value, list):\n43:             definition = next((definition for definition in schema if definition[\"name\"] == key), {})\n44:             multi_values_options = definition.get(\"multiValuesOptions\", {})\n45:             separator = str(multi_values_options.get(\"separator\", \",\"))\n46:             prefix = str(multi_values_options.get(\"prefix\", \"\"))\n47:             suffix = str(multi_values_options.get(\"suffix\", \"\"))\n48:             updated_parameters[key] = separator.join([prefix + v + suffix for v in value])\n49:         else:\n50:             updated_parameters[key] = value\n51:     return updated_parameters\n52: \n53: \n54: def _collect_key_names(nodes):\n55:     keys = []\n56:     for node in nodes._parse_tree:\n57:         if isinstance(node, pystache.parser._EscapeNode):\n58:             keys.append(node.key)\n59:         elif isinstance(node, pystache.parser._SectionNode):\n60:             keys.append(node.key)\n61:             keys.extend(_collect_key_names(node.parsed))\n62: \n63:     return distinct(keys)\n64: \n65: \n66: def _collect_query_parameters(query):\n67:     nodes = pystache.parse(query)\n68:     keys = _collect_key_names(nodes)\n69:     return keys\n70: \n71: \n72: def _parameter_names(parameter_values):\n73:     names = []\n74:     for key, value in parameter_values.items():\n75:         if isinstance(value, dict):\n76:             for inner_key in value.keys():\n77:                 names.append(\"{}.{}\".format(key, inner_key))\n78:         else:\n79:             names.append(key)\n80: \n81:     return names\n82: \n83: \n84: def _is_number(string):\n85:     if isinstance(string, Number):\n86:         return True\n87:     else:\n88:         float(string)\n89:         return True\n90: \n91: \n92: def _is_regex_pattern(value, regex):\n93:     try:\n94:         if re.compile(regex).fullmatch(value):\n95:             return True\n96:         else:\n97:             return False\n98:     except re.error:\n99:         return False\n100: \n101: \n102: def _is_date(string):\n103:     parse(string)\n104:     return True\n105: \n106: \n107: def _is_date_range(obj):\n108:     return _is_date(obj[\"start\"]) and _is_date(obj[\"end\"])\n109: \n110: \n111: def _is_value_within_options(value, dropdown_options, allow_list=False):\n112:     if isinstance(value, list):\n113:         return allow_list and set(map(str, value)).issubset(set(dropdown_options))\n114:     return str(value) in dropdown_options\n115: \n116: \n117: class ParameterizedQuery:\n118:     def __init__(self, template, schema=None, org=None):\n119:         self.schema = schema or []\n120:         self.org = org\n121:         self.template = template\n122:         self.query = template\n123:         self.parameters = {}\n124: \n125:     def apply(self, parameters):\n126:         invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n127:         if invalid_parameter_names:\n128:             raise InvalidParameterError(invalid_parameter_names)\n129:         else:\n130:             self.parameters.update(parameters)\n131:             self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n132: \n133:         return self\n134: \n135:     def _valid(self, name, value):\n136:         if not self.schema:\n137:             return True\n138: \n139:         definition = next(\n140:             (definition for definition in self.schema if definition[\"name\"] == name),\n141:             None,\n142:         )\n143: \n144:         if not definition:\n145:             return False\n146: \n147:         enum_options = definition.get(\"enumOptions\")\n148:         query_id = definition.get(\"queryId\")\n149:         regex = definition.get(\"regex\")\n150:         allow_multiple_values = isinstance(definition.get(\"multiValuesOptions\"), dict)\n151: \n152:         if isinstance(enum_options, str):\n153:             enum_options = enum_options.split(\"\\n\")\n154: \n155:         validators = {\n156:             \"text\": lambda value: isinstance(value, str),\n157:             \"text-pattern\": lambda value: _is_regex_pattern(value, regex),\n158:             \"number\": _is_number,\n159:             \"enum\": lambda value: _is_value_within_options(value, enum_options, allow_multiple_values),\n160:             \"query\": lambda value: _is_value_within_options(\n161:                 value,\n162:                 [v[\"value\"] for v in dropdown_values(query_id, self.org)],\n163:                 allow_multiple_values,\n164:             ),\n165:             \"date\": _is_date,\n166:             \"datetime-local\": _is_date,\n167:             \"datetime-with-seconds\": _is_date,\n168:             \"date-range\": _is_date_range,\n169:             \"datetime-range\": _is_date_range,\n170:             \"datetime-range-with-seconds\": _is_date_range,\n171:         }\n172: \n173:         validate = validators.get(definition[\"type\"], lambda x: False)\n174: \n175:         try:\n176:             # multiple error types can be raised here; but we want to convert\n177:             # all except QueryDetached to InvalidParameterError in `apply`\n178:             return validate(value)\n179:         except QueryDetachedFromDataSourceError:\n180:             raise\n181:         except Exception:\n182:             return False\n183: \n184:     @property\n185:     def is_safe(self):\n186:         text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n187:         return not any(text_parameters)\n188: \n189:     @property\n190:     def missing_params(self):\n191:         query_parameters = set(_collect_query_parameters(self.template))\n192:         return set(query_parameters) - set(_parameter_names(self.parameters))\n193: \n194:     @property\n195:     def text(self):\n196:         return self.query\n197: \n198: \n199: class InvalidParameterError(Exception):\n200:     def __init__(self, parameters):\n201:         parameter_names = \", \".join(parameters)\n202:         message = \"The following parameter values are incompatible with their definitions: {}\".format(parameter_names)\n203:         super(InvalidParameterError, self).__init__(message)\n204: \n205: \n206: class QueryDetachedFromDataSourceError(Exception):\n207:     def __init__(self, query_id):\n208:         self.query_id = query_id\n209:         super(QueryDetachedFromDataSourceError, self).__init__(\n210:             \"This query is detached from any data source. Please select a different query.\"\n211:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/__init__.py",
+                  "start_line": 835,
+                  "end_line": 860,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/__init__.py lines=835-860]\n835:         return self.data_source.groups\n836: \n837:     @hybrid_property\n838:     def lowercase_name(self):\n839:         \"Optional property useful for sorting purposes.\"\n840:         return self.name.lower()\n841: \n842:     @lowercase_name.expression\n843:     def lowercase_name(cls):\n844:         \"The SQLAlchemy expression for the property above.\"\n845:         return func.lower(cls.name)\n846: \n847:     @property\n848:     def parameters(self):\n849:         return self.options.get(\"parameters\", [])\n850: \n851:     @property\n852:     def parameterized(self):\n853:         return ParameterizedQuery(self.query_text, self.parameters, self.org)\n854: \n855:     @property\n856:     def dashboard_api_keys(self):\n857:         query = \"\"\"SELECT api_keys.api_key\n858:                    FROM api_keys\n859:                    JOIN dashboards ON object_id = dashboards.id\n860:                    JOIN widgets ON dashboards.id = widgets.dashboard_id\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "view only users refresh queries with parameters text type safe parameters results API"
+                },
+                "result": "[CHANGELOG.md:756-780] (relevance 0.65)\n- **Dashboard Parameters**: We improved the flow of adding queries with parameters to dashboards and now give you full control over how parameters are mapped. You no longer have to make sure all parameters have the same name or use the\u00a0`Global`\u00a0checkbox. We also added new options, like keeping the parameter local to the widget or setting a static value. [Read more in our Knowledge Base \u2192](https://redash.io/help/user-guide/querying/query-parameters#Parameter-Mapping-on-Dashboards)\n- We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.\n- Refreshing safe queries is done using the new results API endpoint, which takes only a query ID (and optionally parameter values) and does not need the query text.\n\n### Query Editor Improvements\n\n- Run only the highlighted query text: hit Execute after highlighting a portion of your query and only the selected portion will be sent to the database. This is useful for testing sub-SELECT statements and CTE's.\n- Improved auto complete:\u00a0add a dot . after a table name in the query editor and auto complete will only suggest columns on that table.\n- Autosave parameter configuration changes.\n- YAML syntax support (for data sources like Yandex Metrica).\n\n### Improved Query Scheduler\n\nThe Query Scheduler got a face lift and some new options: you can pick a day for a weekly schedule to run on and also set an end date after which the query will no longer execute on schedule.\n\n### Data Sources\n\nWe added Apache Drill, Uptycs and a new JSON data source. Also fixed a few bugs in Athena's query runner and others.\n\n### User Management\n\nThe users page got revamped with a new look and feel and few new features:\n\n- An indication when a user was last active.\n- Show if an invited user hasn't finished the setup process yet (Pending Invitations section).\n\n---\n\n[CHANGELOG.md:976-1009] (relevance 0.40)\n- #2978 Prevent the query update timestamp from changing when it is linked to new query results. @rauchy\n- #3046 Fix query page header. @kravets-levko\n- #3097 Mongo: Fix collection fields retreival bug when Views are present. @jodevsa\n- #3107 Keep query text in local state for now. @washort\n- #3111 Fix mobile padding issues on Query results. @kocsmy\n- #3122 Show menu divider only if query is archived. @jezdez\n- #3120 Fix tag counts for dashboards and queries. @jezdez\n- #3141 Fix schema refresh to work on MySQL 8. @hoangphuoc25\n- #3142 Fix: editing dashboard title results in the visualizations being replaced by the loading markers. @kravets-levko\n\n### Other\n\n- #2850 The setup scripts are now based on Ubuntu 18.04 LTS and Docker. @pashaxp, @arikfr\n- #2985 Add Jest based tests to our stack. @arikfr\n- #2999 Add netlify configuration. @arikfr\n- #3000 Initial Cypress based E2E test infrastructure. @gabrieldutra\n- #2898 Move Ant styles into a central location. @arikfr\n- #2910 Fix webpack build error about BigMessage. @jezdez\n- #2928 Speed up builds by skipping installing requirements_all_ds.txt in CI unit tests. @arikfr\n- #2963 Fix tarball build failure. @emtwo\n- #2996 Fix setup.sh failures when run as root. @arikfr\n- #2989 Rearrange make targets. @koooge\n- #3036 Update Flask-Admin to 1.5.2. @yoavbls\n- #2901 Fix documentation links. @kravets-levko\n- #3073 Remove only Redash containers in clean Make task. @ariarijp\n- #3048 Remove pytest-watch dependency to workaround an issue with watchdog. @rauchy\n- #2905 Update development docker-compose.yml file to use latest Redis and Postgres servers and specify working volume explictly. @Rovel\n- #3032 Makefile: Add make targets for test. @koooge\n- #2933 Switch to Webpack 4. @dmonego\n- #2908 Update setup files. @arikfr\n- #2946 Update snowflake_connector_python version. @arikfr\n- #2773 Upgrade to Celery 4.2.1. @emtwo, @jezdez\n- #2881 CircleCI: Make flake8 tests pass on Legacy Python and Python 3. @cclauss\n- #2907 Remove unused dependencies (honcho, wsgiref). @arikfr\n\n---\n\n[CHANGELOG.md:1151-1198] (relevance 0.37)\n- #2554: Display name to be delete (@kyoshidajp)\n- #2510: Display confirmation dialog when deleting a item (@kyoshidajp)\n- #2518: Design improvements (@kocsmy)\n- #2520: Filter data sources in a data source input area (@kyoshidajp)\n\n### Fixed\n\n- #2722: Elasticsearch: Don't send source_content_type parameter. (@arikfr)\n- #2719: Remove closing input tags (@maxv)\n- #2458: Get all tables in the BigQuery (@kyoshidajp)\n- #2698: Make sure we return distinct data source values (@arikfr)\n- #2315: Fix: pyHive type matches (@yuua)\n- #2638: Dashboard stops rendering when adding widget with empty query (@kravets-levko)\n- #2610: Fix export query results output file name (@gabrieldutra)\n- #2574: commit query result to db before evaluating alerts (@mtrbean)\n- #2580: add break-word wrap to add/edit text box on dashboard (@alison985)\n- #2578: Fix connection error when you run \"create_tables\" (@ariarijp)\n- #2572: remove extra menu line if query is archived (@alison985)\n- #2526: Fix pivot hide control in dashboards (@deecay)\n- #2511: Fixing signed_out.html template (@kocsmy)\n- #2523: Frontend: fix boolean field with null value display as null. (@innovia)\n\n### Other\n\n- #2682: Add Zeit's now support to have preview builds for every PR (@arikfr)\n- #2668: Upgrade bootstrap script to Redash 4.0.1 (@ariarijp)\n- #2639: Add tests for SpreadSheets (@ariarijp)\n- #2635: Add tests for Query Results (@ariarijp)\n- #2537: Remove trailing semicolon (@sieben)\n\n## v4.0.1 - 2018-05-02\n\n### Added\n\n- Log user's screen resolution. @arikfr\n\n### Changed\n\n- [Redshift] fix the order of columns in the schema browser. @akiray03\n- Improve dashboard refresh UX: show previous data while refreshing. @arikfr\n\n### Fixed\n\n- Disable fork button to view_only users. @tonyjiangh\n- Hide overflowing data source and alert destination names. @kocsmy\n- Login pages were broken on mobile. @kocsmy\n- Cohort visualization wasn't rendering if value wasn't properly detected as date. @kravets-levko\n- Dashboard filters setting wasn't persisting. @arikfr\n\n---\n\n[CHANGELOG.md:433-471] (relevance 0.36)\n- Fix: numerical comparisons failed if value from query was a string\n\n### Parameters\n- Added \u201cLast 12 months\u201d option for dynamic date ranges\n\n### Bug Fixes\n- Fix: Private addresses were not allowed even when enforcing was disabled \n- Fix: Python query runner wasn\u2019t updated for Python 3\n- Fix: Sorting queries by schedule returned the wrong order\n- Fix: Counter visualization was enormous in some cases\n- Fix: Dashboard URL will now change when the dashboard title changes\n- Fix: URL parameters were removed when forking a query\n- Fix: Create link on data sources page was broken\n- Fix: Queries could be reassigned to read-only data sources\n- Fix: Multi-select dropdown was very slow if there were 1k+ options\n- Fix: Search Input couldn\u2019t be focused or updated while editing a dashboard\n- Fix: The CLI command for \u201cstatus\u201d did not work\n- Fix: The dashboard list screen displayed too few items under certain pagination configurations\n\n### Other\n- Added an environment variable to disable public sharing links for queries and dashboards\n- Alert destinations are now encrypted at the database\n- The base query runner now has stubs to implement result truncating for other data sources\n- Static SAML configuration and assertion encryption are now supported\n- Adds new component for adding extra actions to the query and dashboard pages\n- Non-admins with at least view_only permission on a dashboard can now make GET requests to the data source resource\n- Added a BLOCKED_DOMAINS setting to prevent sign-ups from emails at specific domains\n- Added a rate limit to the \u201cforgot password\u201d page\n- RQ workers will now shutdown gracefully for known error codes\n- Scheduled execution failure counter now resets following a successful ad hoc execution\n- Redash now deletes locks for c"
+              }
+            ]
+          },
+          {
+            "assistant": "The changed code adds a `not_view_only` gate for unsafe (text-parameter) queries, which is consistent with the documented policy. However, the safety decision relies on `ParameterizedQuery.is_safe`, which only inspects the query's declared parameter schema (`query.parameters`) and not the actual mustache placeholders present in the query text. A query whose text contains a `{{...}}` placeholder that is not declared in its parameter schema is treated as \"safe\" (empty schema \u2192 `is_safe` True), so a view-only user can inject arbitrary SQL through that undeclared placeholder, bypassing the new authorization gate.\n\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The new authorization gate (query_results.py:72-76) only blocks view-only users when `parameterized.is_safe` is False. `is_safe` (parameterized_query.py:184-187) is computed solely from the query's declared parameter schema (`self.schema`, i.e. `query.parameters`), not from the mustache placeholders actually present in `query_text`. A query whose text contains a `{{...}}` placeholder that is not declared in its parameter schema yields an empty schema, so `is_safe` is True and the `not_view_only` check is skipped. `apply()` then renders the user-supplied value into the query text (parameterized_query.py:131) and it is executed at query_results.py:83. This lets a view-only user inject arbitrary SQL, bypassing the authorization the PR intends to enforce. The policy states only 'safe' (validated, non-text) parameters may be refreshed by View Only users; an undeclared placeholder is neither validated nor restricted, so the gate is bypassable.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"redash/query_runner/query_results.py\", \"lines\": [70, 83], \"content\": \"parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\\n\\n            if not parameterized.is_safe:\\n                if not has_access(query.data_source, user, not_view_only):\\n                    raise PermissionError(...)\\n\\n            qs = parse_qs(params)\\n            parameters = {key: value[0] for key, value in qs.items()}\\n            parameterized.apply(parameters)\\n            query_text = parameterized.query\\n\\n        results, error = query.data_source.query_runner.run_query(query_text, user)\"},\n        {\"type\": \"code\", \"file\": \"redash/models/parameterized_query.py\", \"lines\": [184, 187], \"content\": \"@property\\n    def is_safe(self):\\n        text_parameters = [param for param in self.schema if param[\\\"type\\\"] == \\\"text\\\"]\\n        return not any(text_parameters)\"},\n        {\"type\": \"code\", \"file\": \"redash/models/parameterized_query.py\", \"lines\": [125, 133], \"content\": \"def apply(self, parameters):\\n        invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\\n        if invalid_parameter_names:\\n            raise InvalidParameterError(invalid_parameter_names)\\n        else:\\n            self.parameters.update(parameters)\\n            self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\\n\\n        return self\"},\n        {\"type\": \"code\", \"file\": \"redash/models/parameterized_query.py\", \"lines\": [135, 137], \"content\": \"def _valid(self, name, value):\\n        if not self.schema:\\n            return True\"},\n        {\"type\": \"policy\", \"source\": \"CHANGELOG.md:756-780\", \"content\": \"We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.\"}\n      ],\n      \"suggested_fix\": \"Base the safety/authorization decision on the placeholders actually present in the query text, not only the declared schema. For example, collect the mustache keys in the template (e.g. via `_collect_query_parameters`) and require that every placeholder be declared in the schema and of a safe (non-text) type before allowing a view-only user to refresh; otherwise enforce the `not_view_only` gate. This closes the bypass where an undeclared `{{...}}` placeholder is rendered with user input for a view-only user.\",\n      \"file\": \"redash/query_runner/query_results.py\",\n      \"line\": 72\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "param-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=1-221]\n1: import datetime\n2: import decimal\n3: import hashlib\n4: import logging\n5: import re\n6: import sqlite3\n7: from urllib.parse import parse_qs\n8: \n9: from redash import models\n10: from redash.models.parameterized_query import ParameterizedQuery\n11: from redash.permissions import has_access, not_view_only, view_only\n12: from redash.query_runner import (\n13:     TYPE_STRING,\n14:     BaseQueryRunner,\n15:     JobTimeoutException,\n16:     guess_type,\n17:     register,\n18: )\n19: from redash.utils import json_dumps\n20: \n21: logger = logging.getLogger(__name__)\n22: \n23: \n24: class PermissionError(Exception):\n25:     pass\n26: \n27: \n28: class CreateTableError(Exception):\n29:     pass\n30: \n31: \n32: def extract_query_params(query):\n33:     return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n34: \n35: \n36: def extract_query_ids(query):\n37:     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n38:     return [int(q) for q in queries]\n39: \n40: \n41: def extract_cached_query_ids(query):\n42:     queries = re.findall(r\"(?:join|from)\\s+cached_query_(\\d+)\", query, re.IGNORECASE)\n43:     return [int(q) for q in queries]\n44: \n45: \n46: def _load_query(user, query_id):\n47:     query = models.Query.get_by_id(query_id)\n48: \n49:     if user.org_id != query.org_id:\n50:         raise PermissionError(\"Query id {} not found.\".format(query.id))\n51: \n52:     # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n53:     # We should merge it so it's consistent.\n54:     if not has_access(query.data_source, user, view_only):\n55:         raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n56: \n57:     return query\n58: \n59: \n60: def get_query_results(user, query_id, bring_from_cache, params=None):\n61:     query = _load_query(user, query_id)\n62:     if bring_from_cache:\n63:         if query.latest_query_data_id is not None:\n64:             results = query.latest_query_data.data\n65:         else:\n66:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n67:     else:\n68:         query_text = query.query_text\n69:         if params is not None:\n70:             parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n71: \n72:             if not parameterized.is_safe:\n73:                 if not has_access(query.data_source, user, not_view_only):\n74:                     raise PermissionError(\n75:                         \"You do not have full access to the data source of query id {}.\".format(query.id)\n76:                     )\n77: \n78:             qs = parse_qs(params)\n79:             parameters = {key: value[0] for key, value in qs.items()}\n80:             parameterized.apply(parameters)\n81:             query_text = parameterized.query\n82: \n83:         results, error = query.data_source.query_runner.run_query(query_text, user)\n84:         if error:\n85:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n86: \n87:     return results\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n95: \n96:     for query in set(query_params):\n97:         results = get_query_results(user, query[0], False, query[1])\n98:         table_hash = hashlib.md5(\n99:             \"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode(), usedforsecurity=False\n100:         ).hexdigest()\n101:         table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n102:         create_table(connection, table_name, results)\n103: \n104:     for query_id in set(query_ids):\n105:         results = get_query_results(user, query_id, False)\n106:         table_name = \"query_{query_id}\".format(query_id=query_id)\n107:         create_table(connection, table_name, results)\n108: \n109: \n110: def fix_column_name(name):\n111:     return '\"{}\"'.format(re.sub(r'[:.\"\\s]', \"_\", name, flags=re.UNICODE))\n112: \n113: \n114: def flatten(value):\n115:     if isinstance(value, (list, dict)):\n116:         return json_dumps(value)\n117:     elif isinstance(value, decimal.Decimal):\n118:         return float(value)\n119:     elif isinstance(value, datetime.timedelta):\n120:         return str(value)\n121:     else:\n122:         return value\n123: \n124: \n125: def create_table(connection, table_name, query_results):\n126:     try:\n127:         columns = [column[\"name\"] for column in query_results[\"columns\"]]\n128:         safe_columns = [fix_column_name(column) for column in columns]\n129: \n130:         column_list = \", \".join(safe_columns)\n131:         create_table = \"CREATE TABLE {table_name} ({column_list})\".format(\n132:             table_name=table_name, column_list=column_list\n133:         )\n134:         logger.debug(\"CREATE TABLE query: %s\", create_table)\n135:         connection.execute(create_table)\n136:     except sqlite3.OperationalError as exc:\n137:         raise CreateTableError(\"Error creating table {}: {}\".format(table_name, str(exc)))\n138: \n139:     insert_template = \"insert into {table_name} ({column_list}) values ({place_holders})\".format(\n140:         table_name=table_name,\n141:         column_list=column_list,\n142:         place_holders=\",\".join([\"?\"] * len(columns)),\n143:     )\n144: \n145:     for row in query_results[\"rows\"]:\n146:         values = [flatten(row.get(column)) for column in columns]\n147:         connection.execute(insert_template, values)\n148: \n149: \n150: def prepare_parameterized_query(query, query_params):\n151:     for params in query_params:\n152:         table_hash = hashlib.md5(\n153:             \"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode(), usedforsecurity=False\n154:         ).hexdigest()\n155:         key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])\n156:         value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)\n157:         query = query.replace(key, value)\n158:     return query\n159: \n160: \n161: class Results(BaseQueryRunner):\n162:     should_annotate_query = False\n163:     noop_query = \"SELECT 1\"\n164: \n165:     @classmethod\n166:     def configuration_schema(cls):\n167:         return {\"type\": \"object\", \"properties\": {}}\n168: \n169:     @classmethod\n170:     def name(cls):\n171:         return \"Query Results\"\n172: \n173:     def run_query(self, query, user):\n174:         connection = sqlite3.connect(\":memory:\")\n175: \n176:         query_ids = extract_query_ids(query)\n177: \n178:         query_params = extract_query_params(query)\n179: \n180:         cached_query_ids = extract_cached_query_ids(query)\n181:         create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n182: \n183:         cursor = connection.cursor()\n184: \n185:         if query_params is not None:\n186:             query = prepare_parameterized_query(query, query_params)\n187: \n188:         try:\n189:             cursor.execute(query)\n190: \n191:             if cursor.description is not None:\n192:                 columns = self.fetch_columns([(i[0], None) for i in cursor.description])\n193: \n194:                 rows = []\n195:                 column_names = [c[\"name\"] for c in columns]\n196: \n197:                 for i, row in enumerate(cursor):\n198:                     for j, col in enumerate(row):\n199:                         guess = guess_type(col)\n200: \n201:                         if columns[j][\"type\"] is None:\n202:                             columns[j][\"type\"] = guess\n203:                         elif columns[j][\"type\"] != guess:\n204:                             columns[j][\"type\"] = TYPE_STRING\n205: \n206:                     rows.append(dict(zip(column_names, row)))\n207: \n208:                 data = {\"columns\": columns, \"rows\": rows}\n209:                 error = None\n210:             else:\n211:                 error = \"Query completed but it returned no data.\"\n212:                 data = None\n213:         except (KeyboardInterrupt, JobTimeoutException):\n214:             connection.cancel()\n215:             raise\n216:         finally:\n217:             connection.close()\n218:         return data, error\n219: \n220: \n221: register(Results)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/parameterized_query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/parameterized_query.py lines=1-211]\n1: import re\n2: from functools import partial\n3: from numbers import Number\n4: \n5: import pystache\n6: from dateutil.parser import parse\n7: from funcy import distinct\n8: \n9: from redash.utils import mustache_render\n10: \n11: \n12: def _pluck_name_and_value(default_column, row):\n13:     row = {k.lower(): v for k, v in row.items()}\n14:     name_column = \"name\" if \"name\" in row.keys() else default_column.lower()\n15:     value_column = \"value\" if \"value\" in row.keys() else default_column.lower()\n16: \n17:     return {\"name\": row[name_column], \"value\": str(row[value_column])}\n18: \n19: \n20: def _load_result(query_id, org):\n21:     from redash import models\n22: \n23:     query = models.Query.get_by_id_and_org(query_id, org)\n24: \n25:     if query.data_source:\n26:         query_result = models.QueryResult.get_by_id_and_org(query.latest_query_data_id, org)\n27:         return query_result.data\n28:     else:\n29:         raise QueryDetachedFromDataSourceError(query_id)\n30: \n31: \n32: def dropdown_values(query_id, org):\n33:     data = _load_result(query_id, org)\n34:     first_column = data[\"columns\"][0][\"name\"]\n35:     pluck = partial(_pluck_name_and_value, first_column)\n36:     return list(map(pluck, data[\"rows\"]))\n37: \n38: \n39: def join_parameter_list_values(parameters, schema):\n40:     updated_parameters = {}\n41:     for key, value in parameters.items():\n42:         if isinstance(value, list):\n43:             definition = next((definition for definition in schema if definition[\"name\"] == key), {})\n44:             multi_values_options = definition.get(\"multiValuesOptions\", {})\n45:             separator = str(multi_values_options.get(\"separator\", \",\"))\n46:             prefix = str(multi_values_options.get(\"prefix\", \"\"))\n47:             suffix = str(multi_values_options.get(\"suffix\", \"\"))\n48:             updated_parameters[key] = separator.join([prefix + v + suffix for v in value])\n49:         else:\n50:             updated_parameters[key] = value\n51:     return updated_parameters\n52: \n53: \n54: def _collect_key_names(nodes):\n55:     keys = []\n56:     for node in nodes._parse_tree:\n57:         if isinstance(node, pystache.parser._EscapeNode):\n58:             keys.append(node.key)\n59:         elif isinstance(node, pystache.parser._SectionNode):\n60:             keys.append(node.key)\n61:             keys.extend(_collect_key_names(node.parsed))\n62: \n63:     return distinct(keys)\n64: \n65: \n66: def _collect_query_parameters(query):\n67:     nodes = pystache.parse(query)\n68:     keys = _collect_key_names(nodes)\n69:     return keys\n70: \n71: \n72: def _parameter_names(parameter_values):\n73:     names = []\n74:     for key, value in parameter_values.items():\n75:         if isinstance(value, dict):\n76:             for inner_key in value.keys():\n77:                 names.append(\"{}.{}\".format(key, inner_key))\n78:         else:\n79:             names.append(key)\n80: \n81:     return names\n82: \n83: \n84: def _is_number(string):\n85:     if isinstance(string, Number):\n86:         return True\n87:     else:\n88:         float(string)\n89:         return True\n90: \n91: \n92: def _is_regex_pattern(value, regex):\n93:     try:\n94:         if re.compile(regex).fullmatch(value):\n95:             return True\n96:         else:\n97:             return False\n98:     except re.error:\n99:         return False\n100: \n101: \n102: def _is_date(string):\n103:     parse(string)\n104:     return True\n105: \n106: \n107: def _is_date_range(obj):\n108:     return _is_date(obj[\"start\"]) and _is_date(obj[\"end\"])\n109: \n110: \n111: def _is_value_within_options(value, dropdown_options, allow_list=False):\n112:     if isinstance(value, list):\n113:         return allow_list and set(map(str, value)).issubset(set(dropdown_options))\n114:     return str(value) in dropdown_options\n115: \n116: \n117: class ParameterizedQuery:\n118:     def __init__(self, template, schema=None, org=None):\n119:         self.schema = schema or []\n120:         self.org = org\n121:         self.template = template\n122:         self.query = template\n123:         self.parameters = {}\n124: \n125:     def apply(self, parameters):\n126:         invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n127:         if invalid_parameter_names:\n128:             raise InvalidParameterError(invalid_parameter_names)\n129:         else:\n130:             self.parameters.update(parameters)\n131:             self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n132: \n133:         return self\n134: \n135:     def _valid(self, name, value):\n136:         if not self.schema:\n137:             return True\n138: \n139:         definition = next(\n140:             (definition for definition in self.schema if definition[\"name\"] == name),\n141:             None,\n142:         )\n143: \n144:         if not definition:\n145:             return False\n146: \n147:         enum_options = definition.get(\"enumOptions\")\n148:         query_id = definition.get(\"queryId\")\n149:         regex = definition.get(\"regex\")\n150:         allow_multiple_values = isinstance(definition.get(\"multiValuesOptions\"), dict)\n151: \n152:         if isinstance(enum_options, str):\n153:             enum_options = enum_options.split(\"\\n\")\n154: \n155:         validators = {\n156:             \"text\": lambda value: isinstance(value, str),\n157:             \"text-pattern\": lambda value: _is_regex_pattern(value, regex),\n158:             \"number\": _is_number,\n159:             \"enum\": lambda value: _is_value_within_options(value, enum_options, allow_multiple_values),\n160:             \"query\": lambda value: _is_value_within_options(\n161:                 value,\n162:                 [v[\"value\"] for v in dropdown_values(query_id, self.org)],\n163:                 allow_multiple_values,\n164:             ),\n165:             \"date\": _is_date,\n166:             \"datetime-local\": _is_date,\n167:             \"datetime-with-seconds\": _is_date,\n168:             \"date-range\": _is_date_range,\n169:             \"datetime-range\": _is_date_range,\n170:             \"datetime-range-with-seconds\": _is_date_range,\n171:         }\n172: \n173:         validate = validators.get(definition[\"type\"], lambda x: False)\n174: \n175:         try:\n176:             # multiple error types can be raised here; but we want to convert\n177:             # all except QueryDetached to InvalidParameterError in `apply`\n178:             return validate(value)\n179:         except QueryDetachedFromDataSourceError:\n180:             raise\n181:         except Exception:\n182:             return False\n183: \n184:     @property\n185:     def is_safe(self):\n186:         text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n187:         return not any(text_parameters)\n188: \n189:     @property\n190:     def missing_params(self):\n191:         query_parameters = set(_collect_query_parameters(self.template))\n192:         return set(query_parameters) - set(_parameter_names(self.parameters))\n193: \n194:     @property\n195:     def text(self):\n196:         return self.query\n197: \n198: \n199: class InvalidParameterError(Exception):\n200:     def __init__(self, parameters):\n201:         parameter_names = \", \".join(parameters)\n202:         message = \"The following parameter values are incompatible with their definitions: {}\".format(parameter_names)\n203:         super(InvalidParameterError, self).__init__(message)\n204: \n205: \n206: class QueryDetachedFromDataSourceError(Exception):\n207:     def __init__(self, query_id):\n208:         self.query_id = query_id\n209:         super(QueryDetachedFromDataSourceError, self).__init__(\n210:             \"This query is detached from any data source. Please select a different query.\"\n211:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "replace_query_parameters",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"replace_query_parameters\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "replace_query_parameters",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd pattern=\"replace_query_parameters\"]\nredash/query_runner/query_results.py:59:def replace_query_parameters(query_text, params):\nredash/query_runner/query_results.py:76:            query_text = replace_query_parameters(query_text, params)\ntests/query_runner/test_query_results.py:20:    replace_query_parameters,\ntests/query_runner/test_query_results.py:225:        result = replace_query_parameters(\"SELECT '{{token1}}', '{{token2}}'\", \"token1=test1&token2=test2\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 59,
+                  "end_line": 90,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd path=redash/query_runner/query_results.py lines=59-90]\n59: def replace_query_parameters(query_text, params):\n60:     qs = parse_qs(params)\n61:     for key, value in qs.items():\n62:         query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])\n63:     return query_text\n64: \n65: \n66: def get_query_results(user, query_id, bring_from_cache, params=None):\n67:     query = _load_query(user, query_id)\n68:     if bring_from_cache:\n69:         if query.latest_query_data_id is not None:\n70:             results = query.latest_query_data.data\n71:         else:\n72:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n73:     else:\n74:         query_text = query.query_text\n75:         if params is not None:\n76:             query_text = replace_query_parameters(query_text, params)\n77: \n78:         results, error = query.data_source.query_runner.run_query(query_text, user)\n79:         if error:\n80:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n81: \n82:     return results\n83: \n84: \n85: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n86:     for query_id in set(cached_query_ids):\n87:         results = get_query_results(user, query_id, True)\n88:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n89:         create_table(connection, table_name, results)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The PR removes the old `replace_query_parameters` helper (which did raw string substitution of user-supplied params) and replaces its use in `get_query_results` with the `ParameterizedQuery` flow that validates params against the schema and enforces `not_view_only` access for unsafe (text) parameters. The authorization checks (`_load_query` org/`has_access` and the `is_safe`/`not_view_only` gate) are retained and unchanged. The removed code was a weaker, less-secure path; its removal does not introduce a new authorization flaw. No changed or removed line introduces an IDOR, missing, or incorrect authorization check.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:param-authz",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/parameterized_query.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/parameterized_query.py lines=1-211]\n1: import re\n2: from functools import partial\n3: from numbers import Number\n4: \n5: import pystache\n6: from dateutil.parser import parse\n7: from funcy import distinct\n8: \n9: from redash.utils import mustache_render\n10: \n11: \n12: def _pluck_name_and_value(default_column, row):\n13:     row = {k.lower(): v for k, v in row.items()}\n14:     name_column = \"name\" if \"name\" in row.keys() else default_column.lower()\n15:     value_column = \"value\" if \"value\" in row.keys() else default_column.lower()\n16: \n17:     return {\"name\": row[name_column], \"value\": str(row[value_column])}\n18: \n19: \n20: def _load_result(query_id, org):\n21:     from redash import models\n22: \n23:     query = models.Query.get_by_id_and_org(query_id, org)\n24: \n25:     if query.data_source:\n26:         query_result = models.QueryResult.get_by_id_and_org(query.latest_query_data_id, org)\n27:         return query_result.data\n28:     else:\n29:         raise QueryDetachedFromDataSourceError(query_id)\n30: \n31: \n32: def dropdown_values(query_id, org):\n33:     data = _load_result(query_id, org)\n34:     first_column = data[\"columns\"][0][\"name\"]\n35:     pluck = partial(_pluck_name_and_value, first_column)\n36:     return list(map(pluck, data[\"rows\"]))\n37: \n38: \n39: def join_parameter_list_values(parameters, schema):\n40:     updated_parameters = {}\n41:     for key, value in parameters.items():\n42:         if isinstance(value, list):\n43:             definition = next((definition for definition in schema if definition[\"name\"] == key), {})\n44:             multi_values_options = definition.get(\"multiValuesOptions\", {})\n45:             separator = str(multi_values_options.get(\"separator\", \",\"))\n46:             prefix = str(multi_values_options.get(\"prefix\", \"\"))\n47:             suffix = str(multi_values_options.get(\"suffix\", \"\"))\n48:             updated_parameters[key] = separator.join([prefix + v + suffix for v in value])\n49:         else:\n50:             updated_parameters[key] = value\n51:     return updated_parameters\n52: \n53: \n54: def _collect_key_names(nodes):\n55:     keys = []\n56:     for node in nodes._parse_tree:\n57:         if isinstance(node, pystache.parser._EscapeNode):\n58:             keys.append(node.key)\n59:         elif isinstance(node, pystache.parser._SectionNode):\n60:             keys.append(node.key)\n61:             keys.extend(_collect_key_names(node.parsed))\n62: \n63:     return distinct(keys)\n64: \n65: \n66: def _collect_query_parameters(query):\n67:     nodes = pystache.parse(query)\n68:     keys = _collect_key_names(nodes)\n69:     return keys\n70: \n71: \n72: def _parameter_names(parameter_values):\n73:     names = []\n74:     for key, value in parameter_values.items():\n75:         if isinstance(value, dict):\n76:             for inner_key in value.keys():\n77:                 names.append(\"{}.{}\".format(key, inner_key))\n78:         else:\n79:             names.append(key)\n80: \n81:     return names\n82: \n83: \n84: def _is_number(string):\n85:     if isinstance(string, Number):\n86:         return True\n87:     else:\n88:         float(string)\n89:         return True\n90: \n91: \n92: def _is_regex_pattern(value, regex):\n93:     try:\n94:         if re.compile(regex).fullmatch(value):\n95:             return True\n96:         else:\n97:             return False\n98:     except re.error:\n99:         return False\n100: \n101: \n102: def _is_date(string):\n103:     parse(string)\n104:     return True\n105: \n106: \n107: def _is_date_range(obj):\n108:     return _is_date(obj[\"start\"]) and _is_date(obj[\"end\"])\n109: \n110: \n111: def _is_value_within_options(value, dropdown_options, allow_list=False):\n112:     if isinstance(value, list):\n113:         return allow_list and set(map(str, value)).issubset(set(dropdown_options))\n114:     return str(value) in dropdown_options\n115: \n116: \n117: class ParameterizedQuery:\n118:     def __init__(self, template, schema=None, org=None):\n119:         self.schema = schema or []\n120:         self.org = org\n121:         self.template = template\n122:         self.query = template\n123:         self.parameters = {}\n124: \n125:     def apply(self, parameters):\n126:         invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n127:         if invalid_parameter_names:\n128:             raise InvalidParameterError(invalid_parameter_names)\n129:         else:\n130:             self.parameters.update(parameters)\n131:             self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n132: \n133:         return self\n134: \n135:     def _valid(self, name, value):\n136:         if not self.schema:\n137:             return True\n138: \n139:         definition = next(\n140:             (definition for definition in self.schema if definition[\"name\"] == name),\n141:             None,\n142:         )\n143: \n144:         if not definition:\n145:             return False\n146: \n147:         enum_options = definition.get(\"enumOptions\")\n148:         query_id = definition.get(\"queryId\")\n149:         regex = definition.get(\"regex\")\n150:         allow_multiple_values = isinstance(definition.get(\"multiValuesOptions\"), dict)\n151: \n152:         if isinstance(enum_options, str):\n153:             enum_options = enum_options.split(\"\\n\")\n154: \n155:         validators = {\n156:             \"text\": lambda value: isinstance(value, str),\n157:             \"text-pattern\": lambda value: _is_regex_pattern(value, regex),\n158:             \"number\": _is_number,\n159:             \"enum\": lambda value: _is_value_within_options(value, enum_options, allow_multiple_values),\n160:             \"query\": lambda value: _is_value_within_options(\n161:                 value,\n162:                 [v[\"value\"] for v in dropdown_values(query_id, self.org)],\n163:                 allow_multiple_values,\n164:             ),\n165:             \"date\": _is_date,\n166:             \"datetime-local\": _is_date,\n167:             \"datetime-with-seconds\": _is_date,\n168:             \"date-range\": _is_date_range,\n169:             \"datetime-range\": _is_date_range,\n170:             \"datetime-range-with-seconds\": _is_date_range,\n171:         }\n172: \n173:         validate = validators.get(definition[\"type\"], lambda x: False)\n174: \n175:         try:\n176:             # multiple error types can be raised here; but we want to convert\n177:             # all except QueryDetached to InvalidParameterError in `apply`\n178:             return validate(value)\n179:         except QueryDetachedFromDataSourceError:\n180:             raise\n181:         except Exception:\n182:             return False\n183: \n184:     @property\n185:     def is_safe(self):\n186:         text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n187:         return not any(text_parameters)\n188: \n189:     @property\n190:     def missing_params(self):\n191:         query_parameters = set(_collect_query_parameters(self.template))\n192:         return set(query_parameters) - set(_parameter_names(self.parameters))\n193: \n194:     @property\n195:     def text(self):\n196:         return self.query\n197: \n198: \n199: class InvalidParameterError(Exception):\n200:     def __init__(self, parameters):\n201:         parameter_names = \", \".join(parameters)\n202:         message = \"The following parameter values are incompatible with their definitions: {}\".format(parameter_names)\n203:         super(InvalidParameterError, self).__init__(message)\n204: \n205: \n206: class QueryDetachedFromDataSourceError(Exception):\n207:     def __init__(self, query_id):\n208:         self.query_id = query_id\n209:         super(QueryDetachedFromDataSourceError, self).__init__(\n210:             \"This query is detached from any data source. Please select a different query.\"\n211:         )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=1-221]\n1: import datetime\n2: import decimal\n3: import hashlib\n4: import logging\n5: import re\n6: import sqlite3\n7: from urllib.parse import parse_qs\n8: \n9: from redash import models\n10: from redash.models.parameterized_query import ParameterizedQuery\n11: from redash.permissions import has_access, not_view_only, view_only\n12: from redash.query_runner import (\n13:     TYPE_STRING,\n14:     BaseQueryRunner,\n15:     JobTimeoutException,\n16:     guess_type,\n17:     register,\n18: )\n19: from redash.utils import json_dumps\n20: \n21: logger = logging.getLogger(__name__)\n22: \n23: \n24: class PermissionError(Exception):\n25:     pass\n26: \n27: \n28: class CreateTableError(Exception):\n29:     pass\n30: \n31: \n32: def extract_query_params(query):\n33:     return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n34: \n35: \n36: def extract_query_ids(query):\n37:     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n38:     return [int(q) for q in queries]\n39: \n40: \n41: def extract_cached_query_ids(query):\n42:     queries = re.findall(r\"(?:join|from)\\s+cached_query_(\\d+)\", query, re.IGNORECASE)\n43:     return [int(q) for q in queries]\n44: \n45: \n46: def _load_query(user, query_id):\n47:     query = models.Query.get_by_id(query_id)\n48: \n49:     if user.org_id != query.org_id:\n50:         raise PermissionError(\"Query id {} not found.\".format(query.id))\n51: \n52:     # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n53:     # We should merge it so it's consistent.\n54:     if not has_access(query.data_source, user, view_only):\n55:         raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n56: \n57:     return query\n58: \n59: \n60: def get_query_results(user, query_id, bring_from_cache, params=None):\n61:     query = _load_query(user, query_id)\n62:     if bring_from_cache:\n63:         if query.latest_query_data_id is not None:\n64:             results = query.latest_query_data.data\n65:         else:\n66:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n67:     else:\n68:         query_text = query.query_text\n69:         if params is not None:\n70:             parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n71: \n72:             if not parameterized.is_safe:\n73:                 if not has_access(query.data_source, user, not_view_only):\n74:                     raise PermissionError(\n75:                         \"You do not have full access to the data source of query id {}.\".format(query.id)\n76:                     )\n77: \n78:             qs = parse_qs(params)\n79:             parameters = {key: value[0] for key, value in qs.items()}\n80:             parameterized.apply(parameters)\n81:             query_text = parameterized.query\n82: \n83:         results, error = query.data_source.query_runner.run_query(query_text, user)\n84:         if error:\n85:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n86: \n87:     return results\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n95: \n96:     for query in set(query_params):\n97:         results = get_query_results(user, query[0], False, query[1])\n98:         table_hash = hashlib.md5(\n99:             \"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode(), usedforsecurity=False\n100:         ).hexdigest()\n101:         table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n102:         create_table(connection, table_name, results)\n103: \n104:     for query_id in set(query_ids):\n105:         results = get_query_results(user, query_id, False)\n106:         table_name = \"query_{query_id}\".format(query_id=query_id)\n107:         create_table(connection, table_name, results)\n108: \n109: \n110: def fix_column_name(name):\n111:     return '\"{}\"'.format(re.sub(r'[:.\"\\s]', \"_\", name, flags=re.UNICODE))\n112: \n113: \n114: def flatten(value):\n115:     if isinstance(value, (list, dict)):\n116:         return json_dumps(value)\n117:     elif isinstance(value, decimal.Decimal):\n118:         return float(value)\n119:     elif isinstance(value, datetime.timedelta):\n120:         return str(value)\n121:     else:\n122:         return value\n123: \n124: \n125: def create_table(connection, table_name, query_results):\n126:     try:\n127:         columns = [column[\"name\"] for column in query_results[\"columns\"]]\n128:         safe_columns = [fix_column_name(column) for column in columns]\n129: \n130:         column_list = \", \".join(safe_columns)\n131:         create_table = \"CREATE TABLE {table_name} ({column_list})\".format(\n132:             table_name=table_name, column_list=column_list\n133:         )\n134:         logger.debug(\"CREATE TABLE query: %s\", create_table)\n135:         connection.execute(create_table)\n136:     except sqlite3.OperationalError as exc:\n137:         raise CreateTableError(\"Error creating table {}: {}\".format(table_name, str(exc)))\n138: \n139:     insert_template = \"insert into {table_name} ({column_list}) values ({place_holders})\".format(\n140:         table_name=table_name,\n141:         column_list=column_list,\n142:         place_holders=\",\".join([\"?\"] * len(columns)),\n143:     )\n144: \n145:     for row in query_results[\"rows\"]:\n146:         values = [flatten(row.get(column)) for column in columns]\n147:         connection.execute(insert_template, values)\n148: \n149: \n150: def prepare_parameterized_query(query, query_params):\n151:     for params in query_params:\n152:         table_hash = hashlib.md5(\n153:             \"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode(), usedforsecurity=False\n154:         ).hexdigest()\n155:         key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])\n156:         value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)\n157:         query = query.replace(key, value)\n158:     return query\n159: \n160: \n161: class Results(BaseQueryRunner):\n162:     should_annotate_query = False\n163:     noop_query = \"SELECT 1\"\n164: \n165:     @classmethod\n166:     def configuration_schema(cls):\n167:         return {\"type\": \"object\", \"properties\": {}}\n168: \n169:     @classmethod\n170:     def name(cls):\n171:         return \"Query Results\"\n172: \n173:     def run_query(self, query, user):\n174:         connection = sqlite3.connect(\":memory:\")\n175: \n176:         query_ids = extract_query_ids(query)\n177: \n178:         query_params = extract_query_params(query)\n179: \n180:         cached_query_ids = extract_cached_query_ids(query)\n181:         create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n182: \n183:         cursor = connection.cursor()\n184: \n185:         if query_params is not None:\n186:             query = prepare_parameterized_query(query, query_params)\n187: \n188:         try:\n189:             cursor.execute(query)\n190: \n191:             if cursor.description is not None:\n192:                 columns = self.fetch_columns([(i[0], None) for i in cursor.description])\n193: \n194:                 rows = []\n195:                 column_names = [c[\"name\"] for c in columns]\n196: \n197:                 for i, row in enumerate(cursor):\n198:                     for j, col in enumerate(row):\n199:                         guess = guess_type(col)\n200: \n201:                         if columns[j][\"type\"] is None:\n202:                             columns[j][\"type\"] = guess\n203:                         elif columns[j][\"type\"] != guess:\n204:                             columns[j][\"type\"] = TYPE_STRING\n205: \n206:                     rows.append(dict(zip(column_names, row)))\n207: \n208:                 data = {\"columns\": columns, \"rows\": rows}\n209:                 error = None\n210:             else:\n211:                 error = \"Query completed but it returned no data.\"\n212:                 data = None\n213:         except (KeyboardInterrupt, JobTimeoutException):\n214:             connection.cancel()\n215:             raise\n216:         finally:\n217:             connection.close()\n218:         return data, error\n219: \n220: \n221: register(Results)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/permissions.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/permissions.py lines=1-118]\n1: import functools\n2: \n3: from flask_login import current_user\n4: from flask_restful import abort\n5: from funcy import flatten\n6: \n7: view_only = True\n8: not_view_only = False\n9: \n10: ACCESS_TYPE_VIEW = \"view\"\n11: ACCESS_TYPE_MODIFY = \"modify\"\n12: ACCESS_TYPE_DELETE = \"delete\"\n13: \n14: ACCESS_TYPES = (ACCESS_TYPE_VIEW, ACCESS_TYPE_MODIFY, ACCESS_TYPE_DELETE)\n15: \n16: \n17: def has_access(obj, user, need_view_only):\n18:     if hasattr(obj, \"api_key\") and user.is_api_user():\n19:         return has_access_to_object(obj, user.id, need_view_only)\n20:     else:\n21:         return has_access_to_groups(obj, user, need_view_only)\n22: \n23: \n24: def has_access_to_object(obj, api_key, need_view_only):\n25:     if obj.api_key == api_key:\n26:         return need_view_only\n27:     elif hasattr(obj, \"dashboard_api_keys\"):\n28:         # check if api_key belongs to a dashboard containing this query\n29:         return api_key in obj.dashboard_api_keys and need_view_only\n30:     else:\n31:         return False\n32: \n33: \n34: def has_access_to_groups(obj, user, need_view_only):\n35:     groups = obj.groups if hasattr(obj, \"groups\") else obj\n36: \n37:     if \"admin\" in user.permissions:\n38:         return True\n39: \n40:     matching_groups = set(groups.keys()).intersection(user.group_ids)\n41: \n42:     if not matching_groups:\n43:         return False\n44: \n45:     required_level = 1 if need_view_only else 2\n46: \n47:     group_level = 1 if all(flatten([groups[group] for group in matching_groups])) else 2\n48: \n49:     return required_level <= group_level\n50: \n51: \n52: def require_access(obj, user, need_view_only):\n53:     if not has_access(obj, user, need_view_only):\n54:         abort(403)\n55: \n56: \n57: class require_permissions:\n58:     def __init__(self, permissions, allow_one=False):\n59:         self.permissions = permissions\n60:         self.allow_one = allow_one\n61: \n62:     def __call__(self, fn):\n63:         @functools.wraps(fn)\n64:         def decorated(*args, **kwargs):\n65:             if self.allow_one:\n66:                 has_permissions = any([current_user.has_permission(permission) for permission in self.permissions])\n67:             else:\n68:                 has_permissions = current_user.has_permissions(self.permissions)\n69: \n70:             if has_permissions:\n71:                 return fn(*args, **kwargs)\n72:             else:\n73:                 abort(403)\n74: \n75:         return decorated\n76: \n77: \n78: def require_permission(permission):\n79:     return require_permissions((permission,))\n80: \n81: \n82: def require_any_of_permission(permissions):\n83:     return require_permissions(permissions, True)\n84: \n85: \n86: def require_admin(fn):\n87:     return require_permission(\"admin\")(fn)\n88: \n89: \n90: def require_super_admin(fn):\n91:     return require_permission(\"super_admin\")(fn)\n92: \n93: \n94: def has_permission_or_owner(permission, object_owner_id):\n95:     return int(object_owner_id) == current_user.id or current_user.has_permission(permission)\n96: \n97: \n98: def is_admin_or_owner(object_owner_id):\n99:     return has_permission_or_owner(\"admin\", object_owner_id)\n100: \n101: \n102: def require_permission_or_owner(permission, object_owner_id):\n103:     if not has_permission_or_owner(permission, object_owner_id):\n104:         abort(403)\n105: \n106: \n107: def require_admin_or_owner(object_owner_id):\n108:     if not is_admin_or_owner(object_owner_id):\n109:         abort(403, message=\"You don't have permission to edit this resource.\")\n110: \n111: \n112: def can_modify(obj, user):\n113:     return is_admin_or_owner(obj.user_id) or user.has_access(obj, ACCESS_TYPE_MODIFY)\n114: \n115: \n116: def require_object_modify_permission(obj, user):\n117:     if not can_modify(obj, user):\n118:         abort(403)\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def mustache_render",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"def mustache_render\"]\nredash/utils/__init__.py:146:def mustache_render(template, context=None, **kwargs):\nredash/utils/__init__.py:151:def mustache_render_escape(template, context=None, **kwargs):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/utils/__init__.py",
+                  "start_line": 140,
+                  "end_line": 160,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/utils/__init__.py lines=140-160]\n140:     # Float value nan or inf in Python should be render to None or null in json.\n141:     # Using allow_nan = True will make Python render nan as NaN, leading to parse error in front-end\n142:     kwargs.setdefault(\"allow_nan\", False)\n143:     return json.dumps(_sanitize_data(data), *args, **kwargs)\n144: \n145: \n146: def mustache_render(template, context=None, **kwargs):\n147:     renderer = pystache.Renderer(escape=lambda u: u)\n148:     return renderer.render(template, context, **kwargs)\n149: \n150: \n151: def mustache_render_escape(template, context=None, **kwargs):\n152:     renderer = pystache.Renderer()\n153:     return renderer.render(template, context, **kwargs)\n154: \n155: \n156: def build_url(request, host, path):\n157:     parts = request.host.split(\":\")\n158:     if len(parts) > 1:\n159:         port = parts[1]\n160:         if (port, request.scheme) not in ((\"80\", \"http\"), (\"443\", \"https\")):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section's changed code (query_results.py lines 70-81) builds SQL by substituting attacker-controlled parameter values into the query template via `mustache_render` (which uses `escape=lambda u: u`, i.e. no escaping) and then executes the resulting text with `run_query`. For `text`-type parameters the value is inserted verbatim, so a value like `1 UNION SELECT version()` becomes executable SQL. The PR's only mitigation is the `not_view_only` gate, which is an authorization control, not an injection control \u2014 it still permits full-access users to inject arbitrary SQL through text parameters. This is a genuine CWE-89 candidate.\n\n{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-89\",\n      \"explanation\": \"In get_query_results, attacker-controlled parameter values (from the `params` query string, parsed via parse_qs) are substituted into the query template by ParameterizedQuery.apply -> mustache_render, which renders with escape=lambda u: u (no escaping). For 'text'-type parameters the value is inserted verbatim into the SQL text, which is then executed via query.data_source.query_runner.run_query(query_text, user). The PR's added `not_view_only` gate is only an authorization check (full-access users still pass it), so a full-access user can inject arbitrary SQL (e.g. 'val=1 UNION SELECT version()') through a text parameter. The value is neither bound as a parameter nor escaped/allowlisted.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"redash/query_runner/query_results.py\", \"lines\": [78, 83], \"content\": \"qs = parse_qs(params)\\n            parameters = {key: value[0] for key, value in qs.items()}\\n            parameterized.apply(parameters)\\n            query_text = parameterized.query\\n\\n        results, error = query.data_source.query_runner.run_query(query_text, user)\"},\n        {\"type\": \"code\", \"file\": \"redash/models/parameterized_query.py\", \"lines\": [125, 131], \"content\": \"def apply(self, parameters):\\n        invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\\n        if invalid_parameter_names:\\n            raise InvalidParameterError(invalid_parameter_names)\\n        else:\\n            self.parameters.update(parameters)\\n            self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\"},\n        {\"type\": \"code\", \"file\": \"redash/models/parameterized_query.py\", \"lines\": [155, 156], \"content\": \"validators = {\\n            \\\"text\\\": lambda value: isinstance(value, str),\"},\n        {\"type\": \"code\", \"file\": \"redash/utils/__init__.py\", \"lines\": [146, 148], \"content\": \"def mustache_render(template, context=None, **kwargs):\\n    renderer = pystache.Renderer(escape=lambda u: u)\\n    return renderer.render(template, context, **kwargs)\"},\n        {\"type\": \"code\", \"file\": \"redash/query_runner/query_results.py\", \"lines\": [72, 76], \"content\": \"if not parameterized.is_safe:\\n                if not has_access(query.data_source, user, not_view_only):\\n                    raise PermissionError(\\n                        \\\"You do not have full access to the data source of query id {}.\\\".format(query.id)\\n                    )\"},\n        {\"type\": \"policy\", \"source\": \"CHANGELOG.md\", \"content\": \"We added server side validation of parameter values for all parameter types, except for parameters of `text` type. All validated parameter types are considered safe. When a query is using safe parameters (or no parameters at all), View Only users can refresh it.\"}\n      ],\n      \"suggested_fix\": \"Do not interpolate parameter values into the SQL text. Use the data source's native bound-parameter mechanism (placeholders with a separate params argument) for all parameter types, or at minimum escape/quote text values per the target dialect and validate them against a strict allowlist. The `not_view_only` authorization gate does not prevent injection and should not be relied upon as the control.\",\n      \"file\": \"redash/query_runner/query_results.py\",\n      \"line\": 81\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:param-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 1,
+                  "end_line": 120,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/query_runner/query_results.py lines=1-120]\n1: import datetime\n2: import decimal\n3: import hashlib\n4: import logging\n5: import re\n6: import sqlite3\n7: from urllib.parse import parse_qs\n8: \n9: from redash import models\n10: from redash.models.parameterized_query import ParameterizedQuery\n11: from redash.permissions import has_access, not_view_only, view_only\n12: from redash.query_runner import (\n13:     TYPE_STRING,\n14:     BaseQueryRunner,\n15:     JobTimeoutException,\n16:     guess_type,\n17:     register,\n18: )\n19: from redash.utils import json_dumps\n20: \n21: logger = logging.getLogger(__name__)\n22: \n23: \n24: class PermissionError(Exception):\n25:     pass\n26: \n27: \n28: class CreateTableError(Exception):\n29:     pass\n30: \n31: \n32: def extract_query_params(query):\n33:     return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n34: \n35: \n36: def extract_query_ids(query):\n37:     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n38:     return [int(q) for q in queries]\n39: \n40: \n41: def extract_cached_query_ids(query):\n42:     queries = re.findall(r\"(?:join|from)\\s+cached_query_(\\d+)\", query, re.IGNORECASE)\n43:     return [int(q) for q in queries]\n44: \n45: \n46: def _load_query(user, query_id):\n47:     query = models.Query.get_by_id(query_id)\n48: \n49:     if user.org_id != query.org_id:\n50:         raise PermissionError(\"Query id {} not found.\".format(query.id))\n51: \n52:     # TODO: this duplicates some of the logic we already have in the redash.handlers.query_results.\n53:     # We should merge it so it's consistent.\n54:     if not has_access(query.data_source, user, view_only):\n55:         raise PermissionError(\"You do not have access to query id {}.\".format(query.id))\n56: \n57:     return query\n58: \n59: \n60: def get_query_results(user, query_id, bring_from_cache, params=None):\n61:     query = _load_query(user, query_id)\n62:     if bring_from_cache:\n63:         if query.latest_query_data_id is not None:\n64:             results = query.latest_query_data.data\n65:         else:\n66:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n67:     else:\n68:         query_text = query.query_text\n69:         if params is not None:\n70:             parameterized = ParameterizedQuery(query_text, query.parameters, query.org)\n71: \n72:             if not parameterized.is_safe:\n73:                 if not has_access(query.data_source, user, not_view_only):\n74:                     raise PermissionError(\n75:                         \"You do not have full access to the data source of query id {}.\".format(query.id)\n76:                     )\n77: \n78:             qs = parse_qs(params)\n79:             parameters = {key: value[0] for key, value in qs.items()}\n80:             parameterized.apply(parameters)\n81:             query_text = parameterized.query\n82: \n83:         results, error = query.data_source.query_runner.run_query(query_text, user)\n84:         if error:\n85:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n86: \n87:     return results\n88: \n89: \n90: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n91:     for query_id in set(cached_query_ids):\n92:         results = get_query_results(user, query_id, True)\n93:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n94:         create_table(connection, table_name, results)\n95: \n96:     for query in set(query_params):\n97:         results = get_query_results(user, query[0], False, query[1])\n98:         table_hash = hashlib.md5(\n99:             \"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode(), usedforsecurity=False\n100:         ).hexdigest()\n101:         table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n102:         create_table(connection, table_name, results)\n103: \n104:     for query_id in set(query_ids):\n105:         results = get_query_results(user, query_id, False)\n106:         table_name = \"query_{query_id}\".format(query_id=query_id)\n107:         create_table(connection, table_name, results)\n108: \n109: \n110: def fix_column_name(name):\n111:     return '\"{}\"'.format(re.sub(r'[:.\"\\s]', \"_\", name, flags=re.UNICODE))\n112: \n113: \n114: def flatten(value):\n115:     if isinstance(value, (list, dict)):\n116:         return json_dumps(value)\n117:     elif isinstance(value, decimal.Decimal):\n118:         return float(value)\n119:     elif isinstance(value, datetime.timedelta):\n120:         return str(value)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/models/parameterized_query.py",
+                  "start_line": 100,
+                  "end_line": 210,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 path=redash/models/parameterized_query.py lines=100-210]\n100: \n101: \n102: def _is_date(string):\n103:     parse(string)\n104:     return True\n105: \n106: \n107: def _is_date_range(obj):\n108:     return _is_date(obj[\"start\"]) and _is_date(obj[\"end\"])\n109: \n110: \n111: def _is_value_within_options(value, dropdown_options, allow_list=False):\n112:     if isinstance(value, list):\n113:         return allow_list and set(map(str, value)).issubset(set(dropdown_options))\n114:     return str(value) in dropdown_options\n115: \n116: \n117: class ParameterizedQuery:\n118:     def __init__(self, template, schema=None, org=None):\n119:         self.schema = schema or []\n120:         self.org = org\n121:         self.template = template\n122:         self.query = template\n123:         self.parameters = {}\n124: \n125:     def apply(self, parameters):\n126:         invalid_parameter_names = [key for (key, value) in parameters.items() if not self._valid(key, value)]\n127:         if invalid_parameter_names:\n128:             raise InvalidParameterError(invalid_parameter_names)\n129:         else:\n130:             self.parameters.update(parameters)\n131:             self.query = mustache_render(self.template, join_parameter_list_values(parameters, self.schema))\n132: \n133:         return self\n134: \n135:     def _valid(self, name, value):\n136:         if not self.schema:\n137:             return True\n138: \n139:         definition = next(\n140:             (definition for definition in self.schema if definition[\"name\"] == name),\n141:             None,\n142:         )\n143: \n144:         if not definition:\n145:             return False\n146: \n147:         enum_options = definition.get(\"enumOptions\")\n148:         query_id = definition.get(\"queryId\")\n149:         regex = definition.get(\"regex\")\n150:         allow_multiple_values = isinstance(definition.get(\"multiValuesOptions\"), dict)\n151: \n152:         if isinstance(enum_options, str):\n153:             enum_options = enum_options.split(\"\\n\")\n154: \n155:         validators = {\n156:             \"text\": lambda value: isinstance(value, str),\n157:             \"text-pattern\": lambda value: _is_regex_pattern(value, regex),\n158:             \"number\": _is_number,\n159:             \"enum\": lambda value: _is_value_within_options(value, enum_options, allow_multiple_values),\n160:             \"query\": lambda value: _is_value_within_options(\n161:                 value,\n162:                 [v[\"value\"] for v in dropdown_values(query_id, self.org)],\n163:                 allow_multiple_values,\n164:             ),\n165:             \"date\": _is_date,\n166:             \"datetime-local\": _is_date,\n167:             \"datetime-with-seconds\": _is_date,\n168:             \"date-range\": _is_date_range,\n169:             \"datetime-range\": _is_date_range,\n170:             \"datetime-range-with-seconds\": _is_date_range,\n171:         }\n172: \n173:         validate = validators.get(definition[\"type\"], lambda x: False)\n174: \n175:         try:\n176:             # multiple error types can be raised here; but we want to convert\n177:             # all except QueryDetached to InvalidParameterError in `apply`\n178:             return validate(value)\n179:         except QueryDetachedFromDataSourceError:\n180:             raise\n181:         except Exception:\n182:             return False\n183: \n184:     @property\n185:     def is_safe(self):\n186:         text_parameters = [param for param in self.schema if param[\"type\"] == \"text\"]\n187:         return not any(text_parameters)\n188: \n189:     @property\n190:     def missing_params(self):\n191:         query_parameters = set(_collect_query_parameters(self.template))\n192:         return set(query_parameters) - set(_parameter_names(self.parameters))\n193: \n194:     @property\n195:     def text(self):\n196:         return self.query\n197: \n198: \n199: class InvalidParameterError(Exception):\n200:     def __init__(self, parameters):\n201:         parameter_names = \", \".join(parameters)\n202:         message = \"The following parameter values are incompatible with their definitions: {}\".format(parameter_names)\n203:         super(InvalidParameterError, self).__init__(message)\n204: \n205: \n206: class QueryDetachedFromDataSourceError(Exception):\n207:     def __init__(self, query_id):\n208:         self.query_id = query_id\n209:         super(QueryDetachedFromDataSourceError, self).__init__(\n210:             \"This query is detached from any data source. Please select a different query.\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "replace_query_parameters",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8 pattern=\"replace_query_parameters\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "replace_query_parameters",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd pattern=\"replace_query_parameters\"]\nredash/query_runner/query_results.py:59:def replace_query_parameters(query_text, params):\nredash/query_runner/query_results.py:76:            query_text = replace_query_parameters(query_text, params)\ntests/query_runner/test_query_results.py:20:    replace_query_parameters,\ntests/query_runner/test_query_results.py:225:        result = replace_query_parameters(\"SELECT '{{token1}}', '{{token2}}'\", \"token1=test1&token2=test2\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "redash/query_runner/query_results.py",
+                  "start_line": 59,
+                  "end_line": 90,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=f5ecbd5ec58c7bbe131203409177fc50ba6f3ddd path=redash/query_runner/query_results.py lines=59-90]\n59: def replace_query_parameters(query_text, params):\n60:     qs = parse_qs(params)\n61:     for key, value in qs.items():\n62:         query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])\n63:     return query_text\n64: \n65: \n66: def get_query_results(user, query_id, bring_from_cache, params=None):\n67:     query = _load_query(user, query_id)\n68:     if bring_from_cache:\n69:         if query.latest_query_data_id is not None:\n70:             results = query.latest_query_data.data\n71:         else:\n72:             raise Exception(\"No cached result available for query {}.\".format(query.id))\n73:     else:\n74:         query_text = query.query_text\n75:         if params is not None:\n76:             query_text = replace_query_parameters(query_text, params)\n77: \n78:         results, error = query.data_source.query_runner.run_query(query_text, user)\n79:         if error:\n80:             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n81: \n82:     return results\n83: \n84: \n85: def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n86:     for query_id in set(cached_query_ids):\n87:         results = get_query_results(user, query_id, True)\n88:         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n89:         create_table(connection, table_name, results)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:param-authz:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8201,
+        "not_judged_reason": ""
+      },
+      {
+        "finding_id": "sqli:param-authz:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8543,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "redash-query-results-param-sqli",
+  "url": "https://github.com/getredash/redash/commit/048bcd9fe7208e42f2f0cdf007d7e9dcb82829d8",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-v43x-rgcc-wh77",
+  "expected": "safe",
+  "vulnerable_files": [
+    "redash/query_runner/query_results.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": true
+}

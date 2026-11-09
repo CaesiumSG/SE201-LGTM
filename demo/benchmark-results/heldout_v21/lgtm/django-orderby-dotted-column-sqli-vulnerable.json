@@ -1,0 +1,556 @@
+{
+  "id": "django-orderby-dotted-column-sqli-vulnerable",
+  "repo": "django/django",
+  "pr": 12669,
+  "title": "Reworking QuerySet.order_by() validation dropped the ORDER_PATTERN regex check for strings containing a period, so a 'table.column'-style value from request input is passed through as raw SQL in ORDER BY.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "98ea4f0f4696221f00e111f1d623452002192e6c",
+  "pr_sha": "513948735b799239f3ef8c89397592445e1a0cd5",
+  "files_changed": 3,
+  "python_files_changed": 3,
+  "added_lines": 19,
+  "diff_chars": 3463,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 145.8,
+  "index_seconds": 0.0,
+  "index_reused": true,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "n_findings": 0,
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 14,
+  "reviewer_units": 4,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "ORDER_PATTERN usage in query.py and where order_by validation happens"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=98ea4f0f4696221f00e111f1d623452002192e6c status=ok truncated=true incomplete=true query=\"ORDER_PATTERN usage in query.py and where order_by validation happens\"]\n**Exploration: ORDER_PATTERN usage in query.py and where order_by validation happens**\n\nFound 166 symbols across 7 files. 1 file pinned from the query. Not pinned: `django/db/models/sql/query.py`, which defines none of the named symbols.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `order_by` (django/db/models/query.py:1114) \u2014 71 callers in `django/core/management/commands/dumpdata.py`, `django/contrib/admin/views/main.py`, `django/db/models/query.py`, `django/contrib/admin/options.py` +6 more; tests: `tests/aggregation_regress/tests.py`, `tests/db_functions/tests.py`, `tests/queries/tests.py`, `tests/db_functions/comparison/test_coalesce.py` +18\n- `ORDER_PATTERN` (django/db/models/sql/constants.py:19) \u2014 1 caller in `django/db/models/sql/query.py`; tested via callers: `tests/queries/test_query.py`\n- `Ord` (django/db/models/functions/text.py:193) \u2014 6 callers in `django/db/models/functions/__init__.py`; tests: `tests/db_functions/text/test_chr.py`, `tests/db_functions/text/test_ord.py`\n- `DatabaseValidation` (django/db/backends/mysql/validation.py:6) \u2014 3 callers in `django/db/backends/mysql/base.py`; tests: `tests/invalid_models_tests/test_ordinary_fields.py`\n- `DatabaseValidation` (django/db/backends/oracle/validation.py:5) \u2014 2 callers in `django/db/backends/oracle/base.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- Ord \u2192 Transform\n- Transform \u2192 Func\n- Func \u2192 Expression\n- Expression \u2192 Combinable\n- Expression \u2192 BaseExpression\n- Func \u2192 SQLiteNumericMixin\n- Transform \u2192 RegisterLookupMixin\n- DatabaseValidation \u2192 BaseDatabaseValidation\n- DatabaseValidation \u2192 BaseDatabaseValidation\n- TruncBase \u2192 Transform\n- ... and 15 more\n\n**calls:**\n- order_by \u2192 _chain\n- order_by \u2192 clear_ordering\n- order_by \u2192 add_ordering\n- assertQuerysetResults \u2192 order_by\n- get_objects \u2192 order_by\n- test_func_transform_bilateral_multivalue \u2192 order_by\n- test_extra_values_order_multiple \u2192 order_by\n- test_basic \u2192 order_by\n- test_union_with_values_list_and_order \u2192 order_by\n- test_ordering_grouping_by_key_transform \u2192 order_by\n- ... and 90 more\n\n**references:**\n- _lazy_re_compile \u2192 _compile\n- test_transform \u2192 Ord\n- DatabaseWrapper \u2192 DatabaseValidation\n- BaseDatabaseWrapper \u2192 BaseDatabaseValidation\n- DatabaseWrapper \u2192 DatabaseValidation\n- DatabaseWrapper \u2192 DatabaseClient\n- ngettext \u2192 _trans\n- ngettext_lazy \u2192 ngettext\n- test_transform \u2192 IntegerField\n- test_validate \u2192 ValidationError\n- ... and 2 more\n\n**instantiates:**\n- Ord \u2192 IntegerField\n- test_basic \u2192 Ord\n- test_transform \u2192 Ord\n- test_too_long_char_field_under_mysql \u2192 DatabaseValidation\n- _check_sql_mode \u2192 Warning\n- check_field_type \u2192 Warning\n- test_too_long_char_field_under_mysql \u2192 Warning\n- check_field_type \u2192 Warning\n- DatabaseWrapper \u2192 _UninitializedOperatorsDescriptor\n- validate \u2192 ValidationError\n- ... and 4 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/query.py`** \u2014 _chain(calls), instantiates(instantiates), _not_support_combined_queries(calls), _fetch_all(calls), __init__(method), EmptyQuerySet(references), BaseIterable(extends), filter(calls), references(references), clear_ordering(calls), +161 more\n\n```python\n41\t        self.chunk_size = chunk_size\n42\t\n43\t\n44\tclass ModelIterable(BaseIterable):\n45\t    \"\"\"Iterable that yields a model instance for each row.\"\"\"\n46\t\n47\t    def __iter__(self):\n48\t        queryset = self.queryset\n49\t        db = queryset.db\n50\t        compiler = queryset.query.get_compiler(using=db)\n51\t        # Execute the query. This will also fill compiler.select, klass_info,\n52\t        # and annotations.\n53\t        results = compiler.execute_sql(chunked_fetch=self.chunked_fetch, chunk_size=self.chunk_size)\n54\t        select, klass_info, annotation_col_map = (compiler.select, compiler.klass_info,\n55\t                                                  compiler.annotation_col_map)\n56\t        model_cls = klass_info['model']\n57\t        select_fields = klass_info['select_fields']\n58\t        model_fields_start, model_fields_end = select_fields[0], select_fields[-1] + 1\n59\t        init_list = [f[0].target.attname\n60\t                     for f in select[model_fields_start:model_fields_end]]\n61\t        related_populators = get_related_populators(klass_info, select, db)\n62\t        known_related_objects = [\n63\t            (field, related_objs, operator.attrgetter(*[\n64\t                field.attname\n65\t                if from_field == 'self' else\n66\t                queryset.model._meta.get_field(from_field).attname\n67\t                for from_field in field.from_fields\n68\t            ])) for field, related_objs in queryset._known_related_objects.items()\n69\t        ]\n70\t        for row in compiler.results_iter(results):\n71\t            obj = model_cls.from_db(db, init_list, row[model_fields_start:model_fields_end])\n72\t            for rel_populator in related_populators:\n73\t                rel_populator.populate(row, obj)\n74\t            if annotation_col_map:\n75\t                for attr_name, col_pos in annotation_col_map.items():\n76\t                    setattr(obj, attr_name, row[col_pos])\n77\t\n78\t            # Add the known related objects to the model.\n79\t            for field, rel_objs, rel_getter in known_related_objects:\n80\t                # Avoid overwriting objects loaded by, e.g., select_related().\n81\t                if field.is_cached(obj):\n82\t   \n[TRUNCATED omitted_chars=19099]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "order_by validation names_to_path in query.py"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 status=ok truncated=true incomplete=true query=\"order_by validation names_to_path in query.py\"]\n**Flow (call path among the symbols you queried)**\n\n1. order_by (django/db/models/query.py:1114)\n   \u2193 calls\n2. add_ordering (django/db/models/sql/query.py:1885)\n   \u2193 calls (when isinstance(item, str) && !('.' in item) && !(item == '?') && !(item in self.annotations) && !(self.extra and item in self.extra))\n3. names_to_path (django/db/models/sql/query.py:1420)\n\n> Full source for these symbols is below \u2014 the call flow among them, followed by their bodies.\n**Exploration: order_by validation names_to_path in query.py**\n\nFound 327 symbols across 8 files. 2 files pinned from the query.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `names_to_path` (django/db/models/sql/query.py:1420) \u2014 3 callers in `django/db/models/sql/query.py`; tested via callers: `tests/aggregation_regress/tests.py`, `tests/db_functions/tests.py` +20\n- `order_by` (django/db/models/query.py:1114) \u2014 71 callers in `django/core/management/commands/dumpdata.py`, `django/contrib/admin/views/main.py`, `django/db/models/query.py`, `django/contrib/admin/options.py` +6 more; tests: `tests/aggregation_regress/tests.py`, `tests/db_functions/tests.py`, `tests/queries/tests.py`, `tests/db_functions/comparison/test_coalesce.py` +18\n- `path` (django/core/files/storage.py:110) \u2014 17 callers in `django/contrib/staticfiles/management/commands/collectstatic.py`, `django/db/models/fields/files.py`, `django/contrib/staticfiles/finders.py`; tests: `tests/file_storage/tests.py`, `tests/staticfiles_tests/test_management.py`\n\n**Relationships**\n\n**calls:**\n- names_to_path \u2192 get_field_names_from_opts\n- names_to_path \u2192 get_path_to_parent\n- names_to_path \u2192 get_path_info\n- names_to_path \u2192 get_field\n- solve_lookup_type \u2192 names_to_path\n- setup_joins \u2192 names_to_path\n- add_ordering \u2192 names_to_path\n- order_by \u2192 _chain\n- order_by \u2192 clear_ordering\n- order_by \u2192 add_ordering\n- ... and 97 more\n\n**instantiates:**\n- names_to_path \u2192 FieldError\n- names_to_path \u2192 MultiJoin\n- test_eq \u2192 TranslatableFile\n- test_repr \u2192 TranslatableFile\n- test_makemessages_gettext_version \u2192 Command\n- test_msgfmt_error_including_non_ascii \u2192 Command\n- write_migration_files \u2192 MigrationWriter\n- handle_merge \u2192 MigrationWriter\n- handle \u2192 MigrationWriter\n- as_string \u2192 OperationWriter\n\n**references:**\n- Command \u2192 TranslatableFile\n- Command \u2192 BuildFile\n- FileField \u2192 FieldFile\n- __get__ \u2192 FieldFile\n- __get__ \u2192 File\n\n**extends:**\n- Command \u2192 BaseCommand\n- FieldFile \u2192 File\n- ImageFieldFile \u2192 FieldFile\n\n**decorates:**\n- path \u2192 cached_property\n- output_field \u2192 cached_property\n- name \u2192 cached_property\n- local_related_fields \u2192 cached_property\n- option_value \u2192 cached_property\n- headers \u2192 cached_property\n- _mysql_storage_engine \u2192 cached_property\n- model \u2192 cached_property\n- accepted_types \u2192 cached_property\n- geo_field \u2192 cached_property\n- ... and 2 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`django/db/models/query.py`** \u2014 _chain(calls), instantiates(instantiates), _not_support_combined_queries(calls), _fetch_all(calls), __init__(method), EmptyQuerySet(references), chain(calls), BaseIterable(extends), set_limits(calls), filter(calls), +192 more\n\n```python\n41\t        self.chunk_size = chunk_size\n42\t\n43\t\n44\tclass ModelIterable(BaseIterable):\n45\t    \"\"\"Iterable that yields a model instance for each row.\"\"\"\n46\t\n47\t    def __iter__(self):\n48\t        queryset = self.queryset\n49\t        db = queryset.db\n50\t        compiler = queryset.query.get_compiler(using=db)\n51\t        # Execute the query. This will also fill compiler.select, klass_info,\n52\t        # and annotations.\n53\t        results = compiler.execute_sql(chunked_fetch=self.chunked_fetch, chunk_size=self.chunk_size)\n54\t        select, klass_info, annotation_col_map = (compiler.select, compiler.klass_info,\n55\t                                                  compiler.annotation_col_map)\n56\t        model_cls = klass_info['model']\n57\t        select_fields = klass_info['select_fields']\n58\t        model_fields_start, model_fields_end = select_fields[0], select_fields[-1] + 1\n59\t        init_list = [f[0].target.attname\n60\t                     for f in select[model_fields_start:model_fields_end]]\n61\t        related_populators = get_related_populators(klass_info, select, db)\n62\t        known_related_objects = [\n63\t            (field, related_objs, operator.attrgetter(*[\n64\t                field.attname\n65\t                if from_field == 'self' else\n66\t                queryset.model._meta.get_field(from_field).attname\n67\t                for from_field in field.from_fields\n68\t            ])) for field, related_objs in queryset._known_related_objects.items()\n69\t        ]\n70\t        for row in compiler.results_iter(results):\n71\t            obj = model_cls.from_db(db, init_list, row[model_fields_start:model_fields_end])\n72\t            for rel_populator in related_populators:\n73\t                rel_populator.populate(row, obj)\n74\t            if annotation_col_map:\n75\t                for attr_name, col_pos in annotation_col_map.items():\n76\t                    setattr(obj, attr_name, row[col_pos])\n77\t\n78\t            # Add the known related objects to the model.\n79\t            for field, rel_objs, rel_getter in known_related_objects:\n80\t                # Avoid overwriting objects loaded by, e.g., select_related().\n81\t                if field.is_cached(obj):\n82\t                    continue\n83\t                rel_obj_id = rel_g\n[TRUNCATED omitted_chars=19318]\nNOTE: INCOMPLETE categories=nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1880,
+                  "end_line": 1930,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1880-1930]\n1880:                     *self.annotation_select, *self._filtered_relations\n1881:                 ])\n1882:                 raise FieldError(\"Cannot resolve keyword %r into field. \"\n1883:                                  \"Choices are: %s\" % (name, \", \".join(names)))\n1884: \n1885:     def add_ordering(self, *ordering):\n1886:         \"\"\"\n1887:         Add items from the 'ordering' sequence to the query's \"order by\"\n1888:         clause. These items are either field names (not column names) --\n1889:         possibly with a direction prefix ('-' or '?') -- or OrderBy\n1890:         expressions.\n1891: \n1892:         If 'ordering' is empty, clear all ordering from the query.\n1893:         \"\"\"\n1894:         errors = []\n1895:         for item in ordering:\n1896:             if isinstance(item, str):\n1897:                 if '.' in item:\n1898:                     warnings.warn(\n1899:                         'Passing column raw column aliases to order_by() is '\n1900:                         'deprecated. Wrap %r in a RawSQL expression before '\n1901:                         'passing it to order_by().' % item,\n1902:                         category=RemovedInDjango40Warning,\n1903:                         stacklevel=3,\n1904:                     )\n1905:                     continue\n1906:                 if item == '?':\n1907:                     continue\n1908:                 if item.startswith('-'):\n1909:                     item = item[1:]\n1910:                 if item in self.annotations:\n1911:                     continue\n1912:                 if self.extra and item in self.extra:\n1913:                     continue\n1914:                 # names_to_path() validates the lookup. A descriptive\n1915:                 # FieldError will be raise if it's not.\n1916:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1917:             elif not hasattr(item, 'resolve_expression'):\n1918:                 errors.append(item)\n1919:             if getattr(item, 'contains_aggregate', False):\n1920:                 raise FieldError(\n1921:                     'Using an aggregate in order_by() without also including '\n1922:                     'it in annotate() is not allowed: %s' % item\n1923:                 )\n1924:         if errors:\n1925:             raise FieldError('Invalid order_by arguments: %s' % errors)\n1926:         if ordering:\n1927:             self.order_by += ordering\n1928:         else:\n1929:             self.default_ordering = False\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1420,
+                  "end_line": 1470,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1420-1470]\n1420:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1421:         \"\"\"\n1422:         Walk the list of names and turns them into PathInfo tuples. A single\n1423:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1424: \n1425:         'names' is the path of names to travel, 'opts' is the model Options we\n1426:         start the name resolving from, 'allow_many' is as for setup_joins().\n1427:         If fail_on_missing is set to True, then a name that can't be resolved\n1428:         will generate a FieldError.\n1429: \n1430:         Return a list of PathInfo tuples. In addition return the final field\n1431:         (the last used join field) and target (which is a field guaranteed to\n1432:         contain the same value as the final field). Finally, return those names\n1433:         that weren't found (which are likely transforms and the final lookup).\n1434:         \"\"\"\n1435:         path, names_with_path = [], []\n1436:         for pos, name in enumerate(names):\n1437:             cur_names_with_path = (name, [])\n1438:             if name == 'pk':\n1439:                 name = opts.pk.name\n1440: \n1441:             field = None\n1442:             filtered_relation = None\n1443:             try:\n1444:                 field = opts.get_field(name)\n1445:             except FieldDoesNotExist:\n1446:                 if name in self.annotation_select:\n1447:                     field = self.annotation_select[name].output_field\n1448:                 elif name in self._filtered_relations and pos == 0:\n1449:                     filtered_relation = self._filtered_relations[name]\n1450:                     field = opts.get_field(filtered_relation.relation_name)\n1451:             if field is not None:\n1452:                 # Fields that contain one-to-many relations with a generic\n1453:                 # model (like a GenericForeignKey) cannot generate reverse\n1454:                 # relations and therefore cannot be used for reverse querying.\n1455:                 if field.is_relation and not field.related_model:\n1456:                     raise FieldError(\n1457:                         \"Field %r does not generate an automatic reverse \"\n1458:                         \"relation and therefore cannot be used for reverse \"\n1459:                         \"querying. If it is a GenericForeignKey, consider \"\n1460:                         \"adding a GenericRelation.\" % name\n1461:                     )\n1462:                 try:\n1463:                     model = field.model._meta.concrete_model\n1464:                 except AttributeError:\n1465:                     # QuerySet.annotate() may introduce fields that aren't\n1466:                     # attached to a model.\n1467:                     model = None\n1468:             else:\n1469:                 # We didn't find the current field, so move position back\n1470:                 # one step.\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1114,
+                  "end_line": 1140,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/query.py lines=1114-1140]\n1114:     def order_by(self, *field_names):\n1115:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1116:         assert not self.query.is_sliced, \\\n1117:             \"Cannot reorder a query once a slice has been taken.\"\n1118:         obj = self._chain()\n1119:         obj.query.clear_ordering(force_empty=False)\n1120:         obj.query.add_ordering(*field_names)\n1121:         return obj\n1122: \n1123:     def distinct(self, *field_names):\n1124:         \"\"\"\n1125:         Return a new QuerySet instance that will select only distinct results.\n1126:         \"\"\"\n1127:         assert not self.query.is_sliced, \\\n1128:             \"Cannot create distinct fields once a slice has been taken.\"\n1129:         obj = self._chain()\n1130:         obj.query.add_distinct_fields(*field_names)\n1131:         return obj\n1132: \n1133:     def extra(self, select=None, where=None, params=None, tables=None,\n1134:               order_by=None, select_params=None):\n1135:         \"\"\"Add extra SQL fragments to the query.\"\"\"\n1136:         self._not_support_combined_queries('extra')\n1137:         assert not self.query.is_sliced, \\\n1138:             \"Cannot change a query once a slice has been taken\"\n1139:         clone = self._chain()\n1140:         clone.query.add_extra(select, select_params, where, params, tables, order_by)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 3095,
+                  "end_line": 3130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=tests/queries/tests.py lines=3095-3130]\n3095:         with self.assertRaises(EmptyResultSet):\n3096:             w.as_sql(compiler, connection)\n3097:         w.negate()\n3098:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3099:         w = WhereNode(children=[empty_w, NothingNode()], connector='OR')\n3100:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3101:         w = WhereNode(children=[empty_w, NothingNode()], connector='AND')\n3102:         with self.assertRaises(EmptyResultSet):\n3103:             w.as_sql(compiler, connection)\n3104: \n3105: \n3106: class QuerySetExceptionTests(SimpleTestCase):\n3107:     def test_iter_exceptions(self):\n3108:         qs = ExtraInfo.objects.only('author')\n3109:         msg = \"'ManyToOneRel' object has no attribute 'attname'\"\n3110:         with self.assertRaisesMessage(AttributeError, msg):\n3111:             list(qs)\n3112: \n3113:     def test_invalid_order_by(self):\n3114:         msg = (\n3115:             \"Cannot resolve keyword '*' into field. Choices are: created, id, \"\n3116:             \"name\"\n3117:         )\n3118:         with self.assertRaisesMessage(FieldError, msg):\n3119:             Article.objects.order_by('*')\n3120: \n3121:     def test_invalid_queryset_model(self):\n3122:         msg = 'Cannot use QuerySet for \"Article\": Use a QuerySet for \"ExtraInfo\".'\n3123:         with self.assertRaisesMessage(ValueError, msg):\n3124:             list(Author.objects.filter(extra=Article.objects.all()))\n3125: \n3126: \n3127: class NullJoinPromotionOrTest(TestCase):\n3128:     @classmethod\n3129:     def setUpTestData(cls):\n3130:         cls.d1 = ModelD.objects.create(name='foo')\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/constants.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ORDER_PATTERN",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"ORDER_PATTERN\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1860,
+                  "end_line": 1884,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1860-1884]\n1860:                 join_info = self.setup_joins(name.split(LOOKUP_SEP), opts, alias, allow_many=allow_m2m)\n1861:                 targets, final_alias, joins = self.trim_joins(\n1862:                     join_info.targets,\n1863:                     join_info.joins,\n1864:                     join_info.path,\n1865:                 )\n1866:                 for target in targets:\n1867:                     cols.append(join_info.transform_function(target, final_alias))\n1868:             if cols:\n1869:                 self.set_select(cols)\n1870:         except MultiJoin:\n1871:             raise FieldError(\"Invalid field name: '%s'\" % name)\n1872:         except FieldError:\n1873:             if LOOKUP_SEP in name:\n1874:                 # For lookups spanning over relationships, show the error\n1875:                 # from the model on which the lookup failed.\n1876:                 raise\n1877:             else:\n1878:                 names = sorted([\n1879:                     *get_field_names_from_opts(opts), *self.extra,\n1880:                     *self.annotation_select, *self._filtered_relations\n1881:                 ])\n1882:                 raise FieldError(\"Cannot resolve keyword %r into field. \"\n1883:                                  \"Choices are: %s\" % (name, \", \".join(names)))\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1470,
+                  "end_line": 1500,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1470-1500]\n1470:                 # one step.\n1471:                 pos -= 1\n1472:                 if pos == -1 or fail_on_missing:\n1473:                     available = sorted([\n1474:                         *get_field_names_from_opts(opts),\n1475:                         *self.annotation_select,\n1476:                         *self._filtered_relations,\n1477:                     ])\n1478:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1479:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n1480:                 break\n1481:             # Check if we need any joins for concrete inheritance cases (the\n1482:             # field lives in parent, but we are currently in one of its\n1483:             # children)\n1484:             if model is not opts.model:\n1485:                 path_to_parent = opts.get_path_to_parent(model)\n1486:                 if path_to_parent:\n1487:                     path.extend(path_to_parent)\n1488:                     cur_names_with_path[1].extend(path_to_parent)\n1489:                     opts = path_to_parent[-1].to_opts\n1490:             if hasattr(field, 'get_path_info'):\n1491:                 pathinfos = field.get_path_info(filtered_relation)\n1492:                 if not allow_many:\n1493:                     for inner_pos, p in enumerate(pathinfos):\n1494:                         if p.m2m:\n1495:                             cur_names_with_path[1].extend(pathinfos[0:inner_pos + 1])\n1496:                             names_with_path.append(cur_names_with_path)\n1497:                             raise MultiJoin(pos + 1, names_with_path)\n1498:                 last = pathinfos[-1]\n1499:                 path.extend(pathinfos)\n1500:                 final_field = last.join_field\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def add_ordering",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"def add_ordering\"]\ndjango/db/models/sql/query.py:1885:    def add_ordering(self, *ordering):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "add_ordering",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"add_ordering\"]\ndjango/db/models/query.py:663:        obj.query.add_ordering(*order_by)\ndjango/db/models/query.py:1120:        obj.query.add_ordering(*field_names)\ndjango/db/models/sql/query.py:1885:    def add_ordering(self, *ordering):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 655,
+                  "end_line": 670,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/query.py lines=655-670]\n655:                 \"arguments or 'get_latest_by' in the model's Meta.\"\n656:             )\n657: \n658:         assert not self.query.is_sliced, \\\n659:             \"Cannot change a query once a slice has been taken.\"\n660:         obj = self._chain()\n661:         obj.query.set_limits(high=1)\n662:         obj.query.clear_ordering(force_empty=True)\n663:         obj.query.add_ordering(*order_by)\n664:         return obj.get()\n665: \n666:     def earliest(self, *fields):\n667:         return self._earliest(*fields)\n668: \n669:     def latest(self, *fields):\n670:         return self.reverse()._earliest(*fields)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Invalid order_by arguments",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"Invalid order_by arguments\"]\ndjango/db/models/sql/query.py:1925:            raise FieldError('Invalid order_by arguments: %s' % errors)\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "order_by\\('\\*'\\)|order_by\\(\"\\*\"\\)",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"order_by\\('\\*'\\)|order_by\\('\\*'\\)\"]\ntests/queries/tests.py:3119:            Article.objects.order_by('*')\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "order_by",
+                  "file_glob": "django/contrib/admin/views/main.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"order_by\"]\ndjango/contrib/admin/views/main.py:328:        ordering.extend(queryset.query.order_by)\ndjango/contrib/admin/views/main.py:468:        qs = qs.order_by(*ordering)\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "order_by",
+                  "file_glob": "django/core/management/commands/dumpdata.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"order_by\"]\ndjango/core/management/commands/dumpdata.py:162:                    queryset = objects.using(using).order_by(model._meta.pk.name)\ndjango/core/management/commands/dumpdata.py:166:                        yield queryset.order_by().count()\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 315,
+                  "end_line": 340,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=315-340]\n315:                         ordering.append(order_field)\n316:                     elif hasattr(order_field, 'resolve_expression'):\n317:                         # order_field is an expression.\n318:                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())\n319:                     # reverse order if order_field has already \"-\" as prefix\n320:                     elif order_field.startswith('-') and pfx == '-':\n321:                         ordering.append(order_field[1:])\n322:                     else:\n323:                         ordering.append(pfx + order_field)\n324:                 except (IndexError, ValueError):\n325:                     continue  # Invalid ordering specified, skip it.\n326: \n327:         # Add the given query's ordering fields, if any.\n328:         ordering.extend(queryset.query.order_by)\n329: \n330:         return self._get_deterministic_ordering(ordering)\n331: \n332:     def _get_deterministic_ordering(self, ordering):\n333:         \"\"\"\n334:         Ensure a deterministic order across all database backends. Search for a\n335:         single field or unique together set of fields providing a total\n336:         ordering. If these are missing, augment the ordering with a descendant\n337:         primary key.\n338:         \"\"\"\n339:         ordering = list(ordering)\n340:         ordering_fields = set()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 455,
+                  "end_line": 475,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=455-475]\n455:         except Exception as e:\n456:             # Every other error is caught with a naked except, because we don't\n457:             # have any other way of validating lookup parameters. They might be\n458:             # invalid if the keyword arguments are incorrect, or if the values\n459:             # are not in the correct type, so we might get FieldError,\n460:             # ValueError, ValidationError, or ?.\n461:             raise IncorrectLookupParameters(e)\n462: \n463:         if not qs.query.select_related:\n464:             qs = self.apply_select_related(qs)\n465: \n466:         # Set ordering.\n467:         ordering = self.get_ordering(request, qs)\n468:         qs = qs.order_by(*ordering)\n469: \n470:         # Apply search results\n471:         qs, search_use_distinct = self.model_admin.get_search_results(request, qs, self.query)\n472: \n473:         # Remove duplicates from results, if necessary\n474:         if filters_use_distinct | search_use_distinct:\n475:             return qs.distinct()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 290,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=290-330]\n290:         \"\"\"\n291:         Return the list of ordering fields for the change list.\n292:         First check the get_ordering() method in model admin, then check\n293:         the object's default ordering. Then, any manually-specified ordering\n294:         from the query string overrides anything. Finally, a deterministic\n295:         order is guaranteed by calling _get_deterministic_ordering() with the\n296:         constructed ordering.\n297:         \"\"\"\n298:         params = self.params\n299:         ordering = list(self.model_admin.get_ordering(request) or self._get_default_ordering())\n300:         if ORDER_VAR in params:\n301:             # Clear ordering and used params\n302:             ordering = []\n303:             order_params = params[ORDER_VAR].split('.')\n304:             for p in order_params:\n305:                 try:\n306:                     none, pfx, idx = p.rpartition('-')\n307:                     field_name = self.list_display[int(idx)]\n308:                     order_field = self.get_ordering_field(field_name)\n309:                     if not order_field:\n310:                         continue  # No 'admin_order_field', skip it\n311:                     if isinstance(order_field, OrderBy):\n312:                         if pfx == '-':\n313:                             order_field = order_field.copy()\n314:                             order_field.reverse_ordering()\n315:                         ordering.append(order_field)\n316:                     elif hasattr(order_field, 'resolve_expression'):\n317:                         # order_field is an expression.\n318:                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())\n319:                     # reverse order if order_field has already \"-\" as prefix\n320:                     elif order_field.startswith('-') and pfx == '-':\n321:                         ordering.append(order_field[1:])\n322:                     else:\n323:                         ordering.append(pfx + order_field)\n324:                 except (IndexError, ValueError):\n325:                     continue  # Invalid ordering specified, skip it.\n326: \n327:         # Add the given query's ordering fields, if any.\n328:         ordering.extend(queryset.query.order_by)\n329: \n330:         return self._get_deterministic_ordering(ordering)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_ordering_field",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"def get_ordering_field\"]\ndjango/contrib/admin/views/main.py:265:    def get_ordering_field(self, field_name):\ndjango/contrib/admin/views/main.py:394:    def get_ordering_field_columns(self):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_ordering",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"def get_ordering\"]\ndjango/contrib/admin/options.py:333:    def get_ordering(self, request):\ndjango/contrib/admin/views/main.py:265:    def get_ordering_field(self, field_name):\ndjango/contrib/admin/views/main.py:289:    def get_ordering(self, request, queryset):\ndjango/contrib/admin/views/main.py:394:    def get_ordering_field_columns(self):\ndjango/forms/formsets.py:271:    def get_ordering_widget(cls):\ndjango/views/generic/dates.py:311:    def get_ordering(self):\ndjango/views/generic/list.py:50:    def get_ordering(self):\ndocs/ref/contrib/admin/index.txt:1491:            def get_ordering(self, request):\ndocs/topics/forms/formsets.txt:490:    ...     def get_ordering_widget(self):\ntests/admin_ordering/models.py:35:    def get_ordering(self, request):\ntests/forms_tests/tests/test_formsets.py:600:            def get_ordering_widget(self):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 265,
+                  "end_line": 288,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=265-288]\n265:     def get_ordering_field(self, field_name):\n266:         \"\"\"\n267:         Return the proper model field name corresponding to the given\n268:         field_name to use for ordering. field_name may either be the name of a\n269:         proper model field or the name of a method (on the admin or model) or a\n270:         callable with the 'admin_order_field' attribute. Return None if no\n271:         proper model field name can be matched.\n272:         \"\"\"\n273:         try:\n274:             field = self.lookup_opts.get_field(field_name)\n275:             return field.name\n276:         except FieldDoesNotExist:\n277:             # See whether field_name is a name of a non-field\n278:             # that allows sorting.\n279:             if callable(field_name):\n280:                 attr = field_name\n281:             elif hasattr(self.model_admin, field_name):\n282:                 attr = getattr(self.model_admin, field_name)\n283:             else:\n284:                 attr = getattr(self.model, field_name)\n285:             if isinstance(attr, property) and hasattr(attr, 'fget'):\n286:                 attr = attr.fget\n287:             return getattr(attr, 'admin_order_field', None)\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/options.py",
+                  "start_line": 333,
+                  "end_line": 345,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/options.py lines=333-345]\n333:     def get_ordering(self, request):\n334:         \"\"\"\n335:         Hook for specifying field ordering.\n336:         \"\"\"\n337:         return self.ordering or ()  # otherwise we might try to *None, which is bad ;)\n338: \n339:     def get_readonly_fields(self, request, obj=None):\n340:         \"\"\"\n341:         Hook for specifying custom readonly fields.\n342:         \"\"\"\n343:         return self.readonly_fields\n344: \n345:     def get_prepopulated_fields(self, request, obj=None):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"order-by-validation\",\n      \"title\": \"Validate order_by() field names eagerly via names_to_path instead of a regex allowlist\",\n      \"rationale\": \"The constants.py deletions, the query.py import change, and the add_ordering() rewrite all implement one behavior change: replacing the ORDER_PATTERN regex gate with a names_to_path() resolution so invalid order_by() strings raise a descriptive FieldError at call time rather than at query execution.\",\n      \"hunks\": [\n        \"django/db/models/sql/constants.py#0\",\n        \"django/db/models/sql/constants.py#1\",\n        \"django/db/models/sql/query.py#0\",\n        \"django/db/models/sql/query.py#1\",\n        \"django/db/models/sql/query.py#2\"\n      ],\n      \"context\": [\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"add_ordering\", \"start_line\": 1885, \"end_line\": 1929, \"snapshot\": \"pr\", \"why\": \"Changed method that now calls names_to_path() to validate ordering strings\"},\n        {\"path\": \"django/db/models/sql/query.py\", \"symbol\": \"names_to_path\", \"start_line\": 1420, \"end_line\": 1480, \"snapshot\": \"pr\", \"why\": \"Validation target that raises FieldError for unresolvable ordering names\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"order_by\", \"start_line\": 1114, \"end_line\": 1121, \"snapshot\": \"pr\", \"why\": \"Public QuerySet API that routes user-supplied ordering into add_ordering()\"},\n        {\"path\": \"django/db/models/query.py\", \"symbol\": \"_earliest\", \"start_line\": 663, \"end_line\": 663, \"snapshot\": \"pr\", \"why\": \"Second caller of add_ordering() affected by the new eager validation\"},\n        {\"path\": \"django/contrib/admin/views/main.py\", \"symbol\": \"get_ordering\", \"start_line\": 289, \"end_line\": 330, \"snapshot\": \"pr\", \"why\": \"Admin builds ordering from request params and model_admin.get_ordering() then calls qs.order_by(), so invalid names now raise earlier\"}\n      ]\n    },\n    {\n      \"id\": \"order-by-tests\",\n      \"title\": \"Update order_by() exception tests for eager FieldError\",\n      \"rationale\": \"The test hunk removes the deferred-iteration test and rewrites test_invalid_order_by to expect the new eager FieldError from names_to_path(), directly exercising the validation change.\",\n      \"hunks\": [\n        \"tests/queries/tests.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"tests/queries/tests.py\", \"symbol\": \"test_invalid_order_by\", \"start_line\": 3113, \"end_line\": 3119, \"snapshot\": \"pr\", \"why\": \"Rewritten test asserting the new eager FieldError message for order_by('*')\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "order-by-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "order_by ordering validation authorization access control"
+                },
+                "result": "ERROR: tool failed: Collection [a8adf635-dffb-43f4-a97c-89c9e6625ba5] does not exist."
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1420,
+                  "end_line": 1480,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1420-1480]\n1420:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1421:         \"\"\"\n1422:         Walk the list of names and turns them into PathInfo tuples. A single\n1423:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1424: \n1425:         'names' is the path of names to travel, 'opts' is the model Options we\n1426:         start the name resolving from, 'allow_many' is as for setup_joins().\n1427:         If fail_on_missing is set to True, then a name that can't be resolved\n1428:         will generate a FieldError.\n1429: \n1430:         Return a list of PathInfo tuples. In addition return the final field\n1431:         (the last used join field) and target (which is a field guaranteed to\n1432:         contain the same value as the final field). Finally, return those names\n1433:         that weren't found (which are likely transforms and the final lookup).\n1434:         \"\"\"\n1435:         path, names_with_path = [], []\n1436:         for pos, name in enumerate(names):\n1437:             cur_names_with_path = (name, [])\n1438:             if name == 'pk':\n1439:                 name = opts.pk.name\n1440: \n1441:             field = None\n1442:             filtered_relation = None\n1443:             try:\n1444:                 field = opts.get_field(name)\n1445:             except FieldDoesNotExist:\n1446:                 if name in self.annotation_select:\n1447:                     field = self.annotation_select[name].output_field\n1448:                 elif name in self._filtered_relations and pos == 0:\n1449:                     filtered_relation = self._filtered_relations[name]\n1450:                     field = opts.get_field(filtered_relation.relation_name)\n1451:             if field is not None:\n1452:                 # Fields that contain one-to-many relations with a generic\n1453:                 # model (like a GenericForeignKey) cannot generate reverse\n1454:                 # relations and therefore cannot be used for reverse querying.\n1455:                 if field.is_relation and not field.related_model:\n1456:                     raise FieldError(\n1457:                         \"Field %r does not generate an automatic reverse \"\n1458:                         \"relation and therefore cannot be used for reverse \"\n1459:                         \"querying. If it is a GenericForeignKey, consider \"\n1460:                         \"adding a GenericRelation.\" % name\n1461:                     )\n1462:                 try:\n1463:                     model = field.model._meta.concrete_model\n1464:                 except AttributeError:\n1465:                     # QuerySet.annotate() may introduce fields that aren't\n1466:                     # attached to a model.\n1467:                     model = None\n1468:             else:\n1469:                 # We didn't find the current field, so move position back\n1470:                 # one step.\n1471:                 pos -= 1\n1472:                 if pos == -1 or fail_on_missing:\n1473:                     available = sorted([\n1474:                         *get_field_names_from_opts(opts),\n1475:                         *self.annotation_select,\n1476:                         *self._filtered_relations,\n1477:                     ])\n1478:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1479:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n1480:                 break\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1110,
+                  "end_line": 1125,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/query.py lines=1110-1125]\n1110:                 break\n1111: \n1112:         return clone\n1113: \n1114:     def order_by(self, *field_names):\n1115:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1116:         assert not self.query.is_sliced, \\\n1117:             \"Cannot reorder a query once a slice has been taken.\"\n1118:         obj = self._chain()\n1119:         obj.query.clear_ordering(force_empty=False)\n1120:         obj.query.add_ordering(*field_names)\n1121:         return obj\n1122: \n1123:     def distinct(self, *field_names):\n1124:         \"\"\"\n1125:         Return a new QuerySet instance that will select only distinct results.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 285,
+                  "end_line": 335,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=285-335]\n285:             if isinstance(attr, property) and hasattr(attr, 'fget'):\n286:                 attr = attr.fget\n287:             return getattr(attr, 'admin_order_field', None)\n288: \n289:     def get_ordering(self, request, queryset):\n290:         \"\"\"\n291:         Return the list of ordering fields for the change list.\n292:         First check the get_ordering() method in model admin, then check\n293:         the object's default ordering. Then, any manually-specified ordering\n294:         from the query string overrides anything. Finally, a deterministic\n295:         order is guaranteed by calling _get_deterministic_ordering() with the\n296:         constructed ordering.\n297:         \"\"\"\n298:         params = self.params\n299:         ordering = list(self.model_admin.get_ordering(request) or self._get_default_ordering())\n300:         if ORDER_VAR in params:\n301:             # Clear ordering and used params\n302:             ordering = []\n303:             order_params = params[ORDER_VAR].split('.')\n304:             for p in order_params:\n305:                 try:\n306:                     none, pfx, idx = p.rpartition('-')\n307:                     field_name = self.list_display[int(idx)]\n308:                     order_field = self.get_ordering_field(field_name)\n309:                     if not order_field:\n310:                         continue  # No 'admin_order_field', skip it\n311:                     if isinstance(order_field, OrderBy):\n312:                         if pfx == '-':\n313:                             order_field = order_field.copy()\n314:                             order_field.reverse_ordering()\n315:                         ordering.append(order_field)\n316:                     elif hasattr(order_field, 'resolve_expression'):\n317:                         # order_field is an expression.\n318:                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())\n319:                     # reverse order if order_field has already \"-\" as prefix\n320:                     elif order_field.startswith('-') and pfx == '-':\n321:                         ordering.append(order_field[1:])\n322:                     else:\n323:                         ordering.append(pfx + order_field)\n324:                 except (IndexError, ValueError):\n325:                     continue  # Invalid ordering specified, skip it.\n326: \n327:         # Add the given query's ordering fields, if any.\n328:         ordering.extend(queryset.query.order_by)\n329: \n330:         return self._get_deterministic_ordering(ordering)\n331: \n332:     def _get_deterministic_ordering(self, ordering):\n333:         \"\"\"\n334:         Ensure a deterministic order across all database backends. Search for a\n335:         single field or unique together set of fields providing a total\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ORDER_PATTERN",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"ORDER_PATTERN\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "order-by-tests",
+        "turns": [
+          {
+            "assistant": "This section is a test file change. Let me verify the context to confirm it's purely test code with no authorization implications.",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 3100,
+                  "end_line": 3130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=tests/queries/tests.py lines=3100-3130]\n3100:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3101:         w = WhereNode(children=[empty_w, NothingNode()], connector='AND')\n3102:         with self.assertRaises(EmptyResultSet):\n3103:             w.as_sql(compiler, connection)\n3104: \n3105: \n3106: class QuerySetExceptionTests(SimpleTestCase):\n3107:     def test_iter_exceptions(self):\n3108:         qs = ExtraInfo.objects.only('author')\n3109:         msg = \"'ManyToOneRel' object has no attribute 'attname'\"\n3110:         with self.assertRaisesMessage(AttributeError, msg):\n3111:             list(qs)\n3112: \n3113:     def test_invalid_order_by(self):\n3114:         msg = (\n3115:             \"Cannot resolve keyword '*' into field. Choices are: created, id, \"\n3116:             \"name\"\n3117:         )\n3118:         with self.assertRaisesMessage(FieldError, msg):\n3119:             Article.objects.order_by('*')\n3120: \n3121:     def test_invalid_queryset_model(self):\n3122:         msg = 'Cannot use QuerySet for \"Article\": Use a QuerySet for \"ExtraInfo\".'\n3123:         with self.assertRaisesMessage(ValueError, msg):\n3124:             list(Author.objects.filter(extra=Article.objects.all()))\n3125: \n3126: \n3127: class NullJoinPromotionOrTest(TestCase):\n3128:     @classmethod\n3129:     def setUpTestData(cls):\n3130:         cls.d1 = ModelD.objects.create(name='foo')\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "authorization access control order_by queryset"
+                },
+                "result": "ERROR: tool failed: Collection [a8adf635-dffb-43f4-a97c-89c9e6625ba5] does not exist."
+              }
+            ]
+          },
+          {
+            "assistant": "This is a test file change within `QuerySetExceptionTests(SimpleTestCase)`. The change only modifies test assertions about error messages for invalid `order_by` arguments. There is no authentication, authorization, user-controlled identifier, or access-control logic involved. This is purely test code asserting exception behavior, with no security policy implications.\n\nNo authorization flaws are present in this section.\n\n```json\n{\"findings\": []}\n```",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:order-by-validation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1420,
+                  "end_line": 1490,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1420-1490]\n1420:     def names_to_path(self, names, opts, allow_many=True, fail_on_missing=False):\n1421:         \"\"\"\n1422:         Walk the list of names and turns them into PathInfo tuples. A single\n1423:         name in 'names' can generate multiple PathInfos (m2m, for example).\n1424: \n1425:         'names' is the path of names to travel, 'opts' is the model Options we\n1426:         start the name resolving from, 'allow_many' is as for setup_joins().\n1427:         If fail_on_missing is set to True, then a name that can't be resolved\n1428:         will generate a FieldError.\n1429: \n1430:         Return a list of PathInfo tuples. In addition return the final field\n1431:         (the last used join field) and target (which is a field guaranteed to\n1432:         contain the same value as the final field). Finally, return those names\n1433:         that weren't found (which are likely transforms and the final lookup).\n1434:         \"\"\"\n1435:         path, names_with_path = [], []\n1436:         for pos, name in enumerate(names):\n1437:             cur_names_with_path = (name, [])\n1438:             if name == 'pk':\n1439:                 name = opts.pk.name\n1440: \n1441:             field = None\n1442:             filtered_relation = None\n1443:             try:\n1444:                 field = opts.get_field(name)\n1445:             except FieldDoesNotExist:\n1446:                 if name in self.annotation_select:\n1447:                     field = self.annotation_select[name].output_field\n1448:                 elif name in self._filtered_relations and pos == 0:\n1449:                     filtered_relation = self._filtered_relations[name]\n1450:                     field = opts.get_field(filtered_relation.relation_name)\n1451:             if field is not None:\n1452:                 # Fields that contain one-to-many relations with a generic\n1453:                 # model (like a GenericForeignKey) cannot generate reverse\n1454:                 # relations and therefore cannot be used for reverse querying.\n1455:                 if field.is_relation and not field.related_model:\n1456:                     raise FieldError(\n1457:                         \"Field %r does not generate an automatic reverse \"\n1458:                         \"relation and therefore cannot be used for reverse \"\n1459:                         \"querying. If it is a GenericForeignKey, consider \"\n1460:                         \"adding a GenericRelation.\" % name\n1461:                     )\n1462:                 try:\n1463:                     model = field.model._meta.concrete_model\n1464:                 except AttributeError:\n1465:                     # QuerySet.annotate() may introduce fields that aren't\n1466:                     # attached to a model.\n1467:                     model = None\n1468:             else:\n1469:                 # We didn't find the current field, so move position back\n1470:                 # one step.\n1471:                 pos -= 1\n1472:                 if pos == -1 or fail_on_missing:\n1473:                     available = sorted([\n1474:                         *get_field_names_from_opts(opts),\n1475:                         *self.annotation_select,\n1476:                         *self._filtered_relations,\n1477:                     ])\n1478:                     raise FieldError(\"Cannot resolve keyword '%s' into field. \"\n1479:                                      \"Choices are: %s\" % (name, \", \".join(available)))\n1480:                 break\n1481:             # Check if we need any joins for concrete inheritance cases (the\n1482:             # field lives in parent, but we are currently in one of its\n1483:             # children)\n1484:             if model is not opts.model:\n1485:                 path_to_parent = opts.get_path_to_parent(model)\n1486:                 if path_to_parent:\n1487:                     path.extend(path_to_parent)\n1488:                     cur_names_with_path[1].extend(path_to_parent)\n1489:                     opts = path_to_parent[-1].to_opts\n1490:             if hasattr(field, 'get_path_info'):\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/sql/query.py",
+                  "start_line": 1885,
+                  "end_line": 1935,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/sql/query.py lines=1885-1935]\n1885:     def add_ordering(self, *ordering):\n1886:         \"\"\"\n1887:         Add items from the 'ordering' sequence to the query's \"order by\"\n1888:         clause. These items are either field names (not column names) --\n1889:         possibly with a direction prefix ('-' or '?') -- or OrderBy\n1890:         expressions.\n1891: \n1892:         If 'ordering' is empty, clear all ordering from the query.\n1893:         \"\"\"\n1894:         errors = []\n1895:         for item in ordering:\n1896:             if isinstance(item, str):\n1897:                 if '.' in item:\n1898:                     warnings.warn(\n1899:                         'Passing column raw column aliases to order_by() is '\n1900:                         'deprecated. Wrap %r in a RawSQL expression before '\n1901:                         'passing it to order_by().' % item,\n1902:                         category=RemovedInDjango40Warning,\n1903:                         stacklevel=3,\n1904:                     )\n1905:                     continue\n1906:                 if item == '?':\n1907:                     continue\n1908:                 if item.startswith('-'):\n1909:                     item = item[1:]\n1910:                 if item in self.annotations:\n1911:                     continue\n1912:                 if self.extra and item in self.extra:\n1913:                     continue\n1914:                 # names_to_path() validates the lookup. A descriptive\n1915:                 # FieldError will be raise if it's not.\n1916:                 self.names_to_path(item.split(LOOKUP_SEP), self.model._meta)\n1917:             elif not hasattr(item, 'resolve_expression'):\n1918:                 errors.append(item)\n1919:             if getattr(item, 'contains_aggregate', False):\n1920:                 raise FieldError(\n1921:                     'Using an aggregate in order_by() without also including '\n1922:                     'it in annotate() is not allowed: %s' % item\n1923:                 )\n1924:         if errors:\n1925:             raise FieldError('Invalid order_by arguments: %s' % errors)\n1926:         if ordering:\n1927:             self.order_by += ordering\n1928:         else:\n1929:             self.default_ordering = False\n1930: \n1931:     def clear_ordering(self, force_empty):\n1932:         \"\"\"\n1933:         Remove any ordering settings. If 'force_empty' is True, there will be\n1934:         no ordering in the resulting query (not even the model's default).\n1935:         \"\"\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/contrib/admin/views/main.py",
+                  "start_line": 285,
+                  "end_line": 335,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/contrib/admin/views/main.py lines=285-335]\n285:             if isinstance(attr, property) and hasattr(attr, 'fget'):\n286:                 attr = attr.fget\n287:             return getattr(attr, 'admin_order_field', None)\n288: \n289:     def get_ordering(self, request, queryset):\n290:         \"\"\"\n291:         Return the list of ordering fields for the change list.\n292:         First check the get_ordering() method in model admin, then check\n293:         the object's default ordering. Then, any manually-specified ordering\n294:         from the query string overrides anything. Finally, a deterministic\n295:         order is guaranteed by calling _get_deterministic_ordering() with the\n296:         constructed ordering.\n297:         \"\"\"\n298:         params = self.params\n299:         ordering = list(self.model_admin.get_ordering(request) or self._get_default_ordering())\n300:         if ORDER_VAR in params:\n301:             # Clear ordering and used params\n302:             ordering = []\n303:             order_params = params[ORDER_VAR].split('.')\n304:             for p in order_params:\n305:                 try:\n306:                     none, pfx, idx = p.rpartition('-')\n307:                     field_name = self.list_display[int(idx)]\n308:                     order_field = self.get_ordering_field(field_name)\n309:                     if not order_field:\n310:                         continue  # No 'admin_order_field', skip it\n311:                     if isinstance(order_field, OrderBy):\n312:                         if pfx == '-':\n313:                             order_field = order_field.copy()\n314:                             order_field.reverse_ordering()\n315:                         ordering.append(order_field)\n316:                     elif hasattr(order_field, 'resolve_expression'):\n317:                         # order_field is an expression.\n318:                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())\n319:                     # reverse order if order_field has already \"-\" as prefix\n320:                     elif order_field.startswith('-') and pfx == '-':\n321:                         ordering.append(order_field[1:])\n322:                     else:\n323:                         ordering.append(pfx + order_field)\n324:                 except (IndexError, ValueError):\n325:                     continue  # Invalid ordering specified, skip it.\n326: \n327:         # Add the given query's ordering fields, if any.\n328:         ordering.extend(queryset.query.order_by)\n329: \n330:         return self._get_deterministic_ordering(ordering)\n331: \n332:     def _get_deterministic_ordering(self, ordering):\n333:         \"\"\"\n334:         Ensure a deterministic order across all database backends. Search for a\n335:         single field or unique together set of fields providing a total\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "django/db/models/query.py",
+                  "start_line": 1105,
+                  "end_line": 1130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=django/db/models/query.py lines=1105-1130]\n1105:             if alias in annotations and annotation.contains_aggregate:\n1106:                 if clone._fields is None:\n1107:                     clone.query.group_by = True\n1108:                 else:\n1109:                     clone.query.set_group_by()\n1110:                 break\n1111: \n1112:         return clone\n1113: \n1114:     def order_by(self, *field_names):\n1115:         \"\"\"Return a new QuerySet instance with the ordering changed.\"\"\"\n1116:         assert not self.query.is_sliced, \\\n1117:             \"Cannot reorder a query once a slice has been taken.\"\n1118:         obj = self._chain()\n1119:         obj.query.clear_ordering(force_empty=False)\n1120:         obj.query.add_ordering(*field_names)\n1121:         return obj\n1122: \n1123:     def distinct(self, *field_names):\n1124:         \"\"\"\n1125:         Return a new QuerySet instance that will select only distinct results.\n1126:         \"\"\"\n1127:         assert not self.query.is_sliced, \\\n1128:             \"Cannot create distinct fields once a slice has been taken.\"\n1129:         obj = self._chain()\n1130:         obj.query.add_distinct_fields(*field_names)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ORDER_PATTERN",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 pattern=\"ORDER_PATTERN\"]\nNo matches found.\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "The changed code removes the `ORDER_PATTERN` regex gate and instead validates ordering strings by resolving them through `names_to_path()`, which raises `FieldError` for any name that does not resolve to a real field/annotation. This is a strict allowlist-style validation (only resolvable model fields pass), and the ordering values are still passed to the ORM as field names (bound/resolved), not concatenated into raw SQL. The admin path derives `order_field` from `list_display`/`admin_order_field` (developer-controlled), and the public `order_by()` path now rejects unresolvable names. No attacker-influenced value reaches SQL text unbound or unallowlisted.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:order-by-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 3100,
+                  "end_line": 3130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=513948735b799239f3ef8c89397592445e1a0cd5 path=tests/queries/tests.py lines=3100-3130]\n3100:         self.assertEqual(w.as_sql(compiler, connection), ('', []))\n3101:         w = WhereNode(children=[empty_w, NothingNode()], connector='AND')\n3102:         with self.assertRaises(EmptyResultSet):\n3103:             w.as_sql(compiler, connection)\n3104: \n3105: \n3106: class QuerySetExceptionTests(SimpleTestCase):\n3107:     def test_iter_exceptions(self):\n3108:         qs = ExtraInfo.objects.only('author')\n3109:         msg = \"'ManyToOneRel' object has no attribute 'attname'\"\n3110:         with self.assertRaisesMessage(AttributeError, msg):\n3111:             list(qs)\n3112: \n3113:     def test_invalid_order_by(self):\n3114:         msg = (\n3115:             \"Cannot resolve keyword '*' into field. Choices are: created, id, \"\n3116:             \"name\"\n3117:         )\n3118:         with self.assertRaisesMessage(FieldError, msg):\n3119:             Article.objects.order_by('*')\n3120: \n3121:     def test_invalid_queryset_model(self):\n3122:         msg = 'Cannot use QuerySet for \"Article\": Use a QuerySet for \"ExtraInfo\".'\n3123:         with self.assertRaisesMessage(ValueError, msg):\n3124:             list(Author.objects.filter(extra=Article.objects.all()))\n3125: \n3126: \n3127: class NullJoinPromotionOrTest(TestCase):\n3128:     @classmethod\n3129:     def setUpTestData(cls):\n3130:         cls.d1 = ModelD.objects.create(name='foo')\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "This section is a test file change. The test asserts that `order_by('*')` now raises a `FieldError` eagerly (at call time) rather than at iteration time. This is a test-only change that verifies the ORM's field resolution behavior \u2014 it does not build or execute SQL with attacker-controlled input. The `'*'` is a literal test value, and the test is asserting that the ORM correctly rejects invalid field names.\n\nThere is no SQL injection candidate here:\n- No SQL text is built from attacker-influenced values.\n- No raw-SQL API is called.\n- The test is verifying that the ORM raises an error for an invalid field name, which is a security-positive behavior (rejecting invalid identifiers).",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/queries/tests.py",
+                  "start_line": 3113,
+                  "end_line": 3119,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=98ea4f0f4696221f00e111f1d623452002192e6c path=tests/queries/tests.py lines=3113-3119]\n3113:     def test_invalid_qs_list(self):\n3114:         # Test for #19895 - second iteration over invalid queryset\n3115:         # raises errors.\n3116:         qs = Article.objects.order_by('invalid_column')\n3117:         msg = \"Cannot resolve keyword 'invalid_column' into field.\"\n3118:         with self.assertRaisesMessage(FieldError, msg):\n3119:             list(qs)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The change is purely a test modification. The base version tested that `order_by('invalid_column')` raised `FieldError` at iteration time (`list(qs)`). The PR version tests that `order_by('*')` raises `FieldError` eagerly at call time. Both are test assertions verifying the ORM's field validation behavior. No SQL is built or executed with attacker-controlled input in this section.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "django-orderby-dotted-column-sqli",
+  "url": "https://github.com/django/django/pull/12669",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xpfp-f569-q3p2",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "django/db/models/sql/query.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

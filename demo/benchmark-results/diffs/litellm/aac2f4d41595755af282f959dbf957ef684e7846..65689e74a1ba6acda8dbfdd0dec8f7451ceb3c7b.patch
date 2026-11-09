@@ -1,0 +1,95 @@
+diff --git a/litellm/proxy/proxy_server.py b/litellm/proxy/proxy_server.py
+index 39eaf65..ef2e4f8 100644
+--- a/litellm/proxy/proxy_server.py
++++ b/litellm/proxy/proxy_server.py
+@@ -4068,23 +4068,50 @@ async def view_spend_logs(
+     "/global/spend/logs",
+     tags=["Budget & Spend Tracking"],
+     dependencies=[Depends(user_api_key_auth)],
+ )
+-async def global_spend_logs():
++async def global_spend_logs(
++    api_key: str = fastapi.Query(
++        default=None,
++        description="API Key to get global spend (spend per day for last 30d). Admin-only endpoint",
++    )
++):
+     """
+     [BETA] This is a beta endpoint. It will change.
+ 
+     Use this to get global spend (spend per day for last 30d). Admin-only endpoint
+ 
+     More efficient implementation of /spend/logs, by creating a view over the spend logs table.
+     """
+     global prisma_client
++    if prisma_client is None:
++        raise ProxyException(
++            message="Prisma Client is not initialized",
++            type="internal_error",
++            param="None",
++            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
++        )
++    if api_key is None:
++        sql_query = """SELECT * FROM "MonthlyGlobalSpend";"""
+ 
+-    sql_query = """SELECT * FROM "MonthlyGlobalSpend";"""
++        response = await prisma_client.db.query_raw(query=sql_query)
+ 
+-    response = await prisma_client.db.query_raw(query=sql_query)
++        return response
++    else:
++        sql_query = (
++            """
++            SELECT * FROM "MonthlyGlobalSpendPerKey"
++            WHERE "api_key" = '"""
++            + api_key
++            + """'
++            ORDER BY "date";
++        """
++        )
+ 
+-    return response
++        response = await prisma_client.db.query_raw(query=sql_query)
++
++        return response
++    return
+ 
+ 
+ @router.get(
+     "/global/spend/keys",
+diff --git a/litellm/proxy/utils.py b/litellm/proxy/utils.py
+index 6a01094..f3a552f 100644
+--- a/litellm/proxy/utils.py
++++ b/litellm/proxy/utils.py
+@@ -591,8 +591,31 @@ class PrismaClient:
+             """
+             await self.db.execute_raw(query=sql_query)
+ 
+             print("Last30dModelsBySpend Created!")  # noqa
++        try:
++            await self.db.query_raw(
++                """SELECT 1 FROM "MonthlyGlobalSpendPerKey" LIMIT 1"""
++            )
++            print("MonthlyGlobalSpendPerKey Exists!")  # noqa
++        except Exception as e:
++            sql_query = """
++                CREATE OR REPLACE VIEW "MonthlyGlobalSpendPerKey" AS 
++                SELECT
++                DATE("startTime") AS date, 
++                SUM("spend") AS spend,
++                api_key as api_key
++                FROM 
++                "LiteLLM_SpendLogs" 
++                WHERE 
++                "startTime" >= (CURRENT_DATE - INTERVAL '30 days')
++                GROUP BY 
++                DATE("startTime"),
++                api_key;
++            """
++            await self.db.execute_raw(query=sql_query)
++
++            print("MonthlyGlobalSpendPerKey Created!")  # noqa
+ 
+         return
+ 
+     @backoff.on_exception(

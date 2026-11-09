@@ -1,0 +1,183 @@
+diff --git a/src/pretix/api/views/exporters.py b/src/pretix/api/views/exporters.py
+index 63344b2..9cbe4c5 100644
+--- a/src/pretix/api/views/exporters.py
++++ b/src/pretix/api/views/exporters.py
+@@ -73,8 +73,13 @@ class ExportersMixin:
+ 
+     @action(detail=True, methods=['GET'], url_name='download', url_path='download/(?P<asyncid>[^/]+)/(?P<cfid>[^/]+)')
+     def download(self, *args, **kwargs):
+         cf = get_object_or_404(CachedFile, id=kwargs['cfid'])
++        if not cf.allowed_for_session(self.request, "exporters-api"):
++            return Response(
++                {'status': 'failed', 'message': 'Unknown file ID or export failed'},
++                status=status.HTTP_410_GONE
++            )
+         if cf.file:
+             resp = ChunkBasedFileResponse(cf.file.file, content_type=cf.type)
+             resp['Content-Disposition'] = 'attachment; filename="{}"'.format(cf.filename).encode("ascii", "ignore")
+             return resp
+@@ -108,9 +113,10 @@ class ExportersMixin:
+         instance = self.get_object()
+         serializer = JobRunSerializer(exporter=instance, data=self.request.data, **self.get_serializer_kwargs())
+         serializer.is_valid(raise_exception=True)
+ 
+-        cf = CachedFile(web_download=False)
++        cf = CachedFile(web_download=True)
++        cf.bind_to_session(self.request, "exporters-api")
+         cf.date = now()
+         cf.expires = now() + timedelta(hours=24)
+         cf.save()
+         d = serializer.data
+diff --git a/src/pretix/base/models/base.py b/src/pretix/base/models/base.py
+index 397168c..0a15dd1 100644
+--- a/src/pretix/base/models/base.py
++++ b/src/pretix/base/models/base.py
+@@ -58,8 +58,39 @@ class CachedFile(models.Model):
+     file = models.FileField(null=True, blank=True, upload_to=_cachedfile_name, max_length=255)
+     web_download = models.BooleanField(default=True)  # allow web download, True for backwards compatibility in plugins
+     session_key = models.TextField(null=True, blank=True)  # only allow download in this session
+ 
++    def session_key_for_request(self, request, salt=None):
++        from ...api.models import OAuthAccessToken, OAuthApplication
++        from .devices import Device
++        from .organizer import TeamAPIToken
++
++        if hasattr(request, "auth") and isinstance(request.auth, OAuthAccessToken):
++            k = f'app:{request.auth.application.pk}'
++        elif hasattr(request, "auth") and isinstance(request.auth, OAuthApplication):
++            k = f'app:{request.auth.pk}'
++        elif hasattr(request, "auth") and isinstance(request.auth, TeamAPIToken):
++            k = f'token:{request.auth.pk}'
++        elif hasattr(request, "auth") and isinstance(request.auth, Device):
++            k = f'device:{request.auth.pk}'
++        elif request.session.session_key:
++            k = request.session.session_key
++        else:
++            raise ValueError("No auth method found to bind to")
++
++        if salt:
++            k = f"{k}!{salt}"
++        return k
++
++    def allowed_for_session(self, request, salt=None):
++        return (
++            not self.session_key or
++            self.session_key_for_request(request, salt) == self.session_key
++        )
++
++    def bind_to_session(self, request, salt=None):
++        self.session_key = self.session_key_for_request(request, salt)
++
+ 
+ @receiver(post_delete, sender=CachedFile)
+ def cached_file_delete(sender, instance, **kwargs):
+     if instance.file:
+diff --git a/src/pretix/base/views/cachedfiles.py b/src/pretix/base/views/cachedfiles.py
+index 744ea8c..487d608 100644
+--- a/src/pretix/base/views/cachedfiles.py
++++ b/src/pretix/base/views/cachedfiles.py
+@@ -35,11 +35,10 @@ class DownloadView(TemplateView):
+     @cached_property
+     def object(self) -> CachedFile:
+         try:
+             o = get_object_or_404(CachedFile, id=self.kwargs['id'], web_download=True)
+-            if o.session_key:
+-                if o.session_key != self.request.session.session_key:
+-                    raise Http404()
++            if not o.allowed_for_session(self.request):
++                raise Http404()
+             return o
+         except (ValueError, ValidationError):   # Invalid URLs
+             raise Http404()
+ 
+diff --git a/src/pretix/control/views/modelimport.py b/src/pretix/control/views/modelimport.py
+index 9d3ed57..0afc401 100644
+--- a/src/pretix/control/views/modelimport.py
++++ b/src/pretix/control/views/modelimport.py
+@@ -37,8 +37,9 @@ import logging
+ from datetime import timedelta
+ 
+ from django.conf import settings
+ from django.contrib import messages
++from django.http import Http404
+ from django.shortcuts import get_object_or_404, redirect
+ from django.urls import reverse
+ from django.utils.functional import cached_property
+ from django.utils.timezone import now
+@@ -84,8 +85,9 @@ class BaseImportView(TemplateView):
+             date=now(),
+             filename='import.csv',
+             type='text/csv',
+         )
++        cf.bind_to_session(request, "modelimport")
+         cf.file.save('import.csv', request.FILES['file'])
+ 
+         if self.request.POST.get("charset") in ENCODINGS:
+             charset = self.request.POST.get("charset")
+@@ -136,9 +138,12 @@ class BaseProcessView(AsyncAction, FormView):
+         )
+ 
+     @cached_property
+     def file(self):
+-        return get_object_or_404(CachedFile, pk=self.kwargs.get("file"), filename="import.csv")
++        cf = get_object_or_404(CachedFile, pk=self.kwargs.get("file"), filename="import.csv")
++        if not cf.allowed_for_session(self.request, "modelimport"):
++            raise Http404()
++        return cf
+ 
+     @cached_property
+     def parsed(self):
+         if self.request.GET.get("charset") in ENCODINGS:
+diff --git a/src/pretix/control/views/pdf.py b/src/pretix/control/views/pdf.py
+index 719fa4c..bc2164d 100644
+--- a/src/pretix/control/views/pdf.py
++++ b/src/pretix/control/views/pdf.py
+@@ -246,9 +246,9 @@ class BaseEditorView(EventPermissionRequiredMixin, TemplateView):
+ 
+         cf = None
+         if request.POST.get("background", "").strip():
+             try:
+-                cf = CachedFile.objects.get(id=request.POST.get("background"))
++                cf = CachedFile.objects.get(id=request.POST.get("background"), web_download=True)
+             except CachedFile.DoesNotExist:
+                 pass
+ 
+         if "preview" in request.POST:
+diff --git a/src/pretix/control/views/shredder.py b/src/pretix/control/views/shredder.py
+index aed2c07..5236035 100644
+--- a/src/pretix/control/views/shredder.py
++++ b/src/pretix/control/views/shredder.py
+@@ -37,9 +37,10 @@ import logging
+ from collections import OrderedDict
+ from zipfile import ZipFile
+ 
+ from django.contrib import messages
+-from django.shortcuts import get_object_or_404, redirect
++from django.http import Http404
++from django.shortcuts import redirect
+ from django.urls import reverse
+ from django.utils.functional import cached_property
+ from django.utils.translation import get_language, gettext_lazy as _
+ from django.views import View
+@@ -93,8 +94,10 @@ class ShredDownloadView(RecentAuthenticationRequiredMixin, EventPermissionRequir
+         try:
+             cf = CachedFile.objects.get(pk=kwargs['file'])
+         except CachedFile.DoesNotExist:
+             raise ShredError(_("The download file could no longer be found on the server, please try to start again."))
++        if not cf.allowed_for_session(self.request):
++            raise Http404()
+ 
+         with ZipFile(cf.file.file, 'r') as zipfile:
+             indexdata = json.loads(zipfile.read('index.json').decode())
+ 
+@@ -110,9 +113,9 @@ class ShredDownloadView(RecentAuthenticationRequiredMixin, EventPermissionRequir
+ 
+         ctx = super().get_context_data(**kwargs)
+         ctx['shredders'] = self.shredders
+         ctx['download_on_shred'] = any(shredder.require_download_confirmation for shredder in shredders)
+-        ctx['file'] = get_object_or_404(CachedFile, pk=kwargs.get("file"))
++        ctx['file'] = cf
+         return ctx
+ 
+ 
+ class ShredExportView(RecentAuthenticationRequiredMixin, EventPermissionRequiredMixin, ShredderMixin, AsyncAction, View):

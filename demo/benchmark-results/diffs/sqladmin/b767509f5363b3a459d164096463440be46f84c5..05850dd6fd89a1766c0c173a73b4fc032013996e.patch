@@ -1,0 +1,73 @@
+diff --git a/sqladmin/application.py b/sqladmin/application.py
+index 49138c6..ed2e84d 100644
+--- a/sqladmin/application.py
++++ b/sqladmin/application.py
+@@ -726,19 +726,18 @@ class Admin(BaseAdminView):
+             return response
+ 
+         return RedirectResponse(request.url_for("admin:index"), status_code=302)
+ 
++    @login_required
+     async def ajax_lookup(self, request: Request) -> Response:
+         """Ajax lookup route."""
+ 
+-        if self.authentication_backend is not None:
+-            authenticated = await self.authentication_backend.authenticate(request)
+-            if not authenticated or isinstance(authenticated, Response):
+-                return RedirectResponse(request.url_for("admin:login"), status_code=302)
+-
+         identity = request.path_params["identity"]
+         model_view = self._find_model_view(identity)
+ 
++        if not model_view.is_accessible(request):
++            raise HTTPException(status_code=403)
++
+         name = request.query_params.get("name")
+         term = request.query_params.get("term")
+ 
+         if not name or not term:
+diff --git a/tests/test_authentication.py b/tests/test_authentication.py
+index 24add87..8f2c2ca 100644
+--- a/tests/test_authentication.py
++++ b/tests/test_authentication.py
+@@ -153,10 +153,22 @@ class SongAuthAdmin(ModelView, model=SongAuth):
+         }
+     }
+ 
+ 
++class RestrictedModel(Base):
++    __tablename__ = "restricted_model_auth"
++
++    id = Column(Integer, primary_key=True)
++
++
++class RestrictedModelAdmin(ModelView, model=RestrictedModel):
++    def is_accessible(self, request: Request) -> bool:
++        return False
++
++
+ admin.add_view(ArtistAdmin)
+ admin.add_view(SongAuthAdmin)
++admin.add_view(RestrictedModelAdmin)
+ 
+ 
+ @pytest.fixture(autouse=False)
+ def prepare_ajax_tables() -> Generator[None, None, None]:
+@@ -196,4 +208,17 @@ def test_ajax_lookup_after_logout_redirects_to_login(
+     client.get("/admin/logout")
+ 
+     response = client.get("/admin/song-auth/ajax/lookup?name=artist&term=test")
+     assert response.url == "http://testserver/admin/login"
++
++
++def test_ajax_lookup_is_accessible_false_returns_403(
++    client: TestClient,
++    prepare_ajax_tables: None,
++) -> None:
++    client.post(
++        "/admin/login",
++        data={"username": "a", "password": "b"},
++    )
++
++    response = client.get("/admin/restricted-model/ajax/lookup?name=x&term=y")
++    assert response.status_code == 403

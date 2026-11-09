@@ -1,0 +1,208 @@
+diff --git a/src/sentry/api/endpoints/rule_snooze.py b/src/sentry/api/endpoints/rule_snooze.py
+index cfa4e9872..ea201a275 100644
+--- a/src/sentry/api/endpoints/rule_snooze.py
++++ b/src/sentry/api/endpoints/rule_snooze.py
+@@ -1,9 +1,10 @@
+ import datetime
++from typing import Literal
+ 
+ from django.contrib.auth.models import AnonymousUser
+ from rest_framework import serializers, status
+-from rest_framework.exceptions import PermissionDenied
++from rest_framework.exceptions import NotFound, PermissionDenied
+ from rest_framework.request import Request
+ from rest_framework.response import Response
+ 
+ from sentry import analytics, audit_log
+@@ -21,27 +22,8 @@ from sentry.models.project import Project
+ from sentry.models.rule import Rule
+ from sentry.models.rulesnooze import RuleSnooze
+ 
+ 
+-class RuleSnoozeValidator(CamelSnakeSerializer):
+-    target = serializers.CharField(required=True, allow_null=False)
+-    until = serializers.DateTimeField(required=False, allow_null=True)
+-
+-
+-@register(RuleSnooze)
+-class RuleSnoozeSerializer(Serializer):
+-    def serialize(self, obj, attrs, user, **kwargs):
+-        result = {
+-            "ownerId": obj.owner_id,
+-            "userId": obj.user_id or "everyone",
+-            "until": obj.until or "forever",
+-            "dateAdded": obj.date_added,
+-            "ruleId": obj.rule_id,
+-            "alertRuleId": obj.alert_rule_id,
+-        }
+-        return result
+-
+-
+ def can_edit_alert_rule(organization, request):
+     mute_for_user = request.data.get("target") == "me"
+     user = request.user
+ 
+@@ -71,27 +53,55 @@ def can_edit_alert_rule(organization, request):
+     # if the rule is unassigned, anyone can edit it
+     return True
+ 
+ 
++class RuleSnoozeValidator(CamelSnakeSerializer):
++    target = serializers.CharField(required=True, allow_null=False)
++    until = serializers.DateTimeField(required=False, allow_null=True)
++
++
++@register(RuleSnooze)
++class RuleSnoozeSerializer(Serializer):
++    def serialize(self, obj, attrs, user, **kwargs):
++        result = {
++            "ownerId": obj.owner_id,
++            "userId": obj.user_id or "everyone",
++            "until": obj.until or "forever",
++            "dateAdded": obj.date_added,
++            "ruleId": obj.rule_id,
++            "alertRuleId": obj.alert_rule_id,
++        }
++        return result
++
++
+ @region_silo_endpoint
+ class BaseRuleSnoozeEndpoint(ProjectEndpoint):
+     permission_classes = (ProjectAlertRulePermission,)
++    rule_model = type[Rule] | type[AlertRule]
++    rule_field = Literal["rule", "alert_rule"]
+ 
+-    def get_rule(self, rule_id):
++    def convert_args(self, request: Request, rule_id: int, *args, **kwargs):
++        (args, kwargs) = super().convert_args(request, *args, **kwargs)
++        project = kwargs["project"]
+         try:
+-            rule = self.rule_model.objects.get(id=rule_id)
++            if self.rule_model is AlertRule:
++                queryset = self.rule_model.objects.fetch_for_project(project)
++            else:
++                queryset = self.rule_model.objects.filter(project=project)
++            rule = queryset.get(id=rule_id)
+         except self.rule_model.DoesNotExist:
+-            raise serializers.ValidationError("Rule does not exist")
++            raise NotFound(detail="Rule does not exist")
+ 
+-        return rule
++        kwargs["rule"] = rule
+ 
+-    def post(self, request: Request, project: Project, rule_id) -> Response:
++        return (args, kwargs)
++
++    def post(self, request: Request, project: Project, rule: Rule | AlertRule) -> Response:
+         serializer = RuleSnoozeValidator(data=request.data)
+         if not serializer.is_valid():
+             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+ 
+         data = serializer.validated_data
+-        rule = self.get_rule(rule_id)
+ 
+         if not can_edit_alert_rule(project.organization, request):
+             raise PermissionDenied(
+                 detail="Requesting user cannot mute this rule.", code=status.HTTP_403_FORBIDDEN
+@@ -132,9 +142,9 @@ class BaseRuleSnoozeEndpoint(ProjectEndpoint):
+             "rule.snoozed",
+             user_id=request.user.id,
+             organization_id=project.organization_id,
+             project_id=project.id,
+-            rule_id=rule_id,
++            rule_id=rule.id,
+             rule_type=self.rule_field,
+             target=data.get("target"),
+             until=data.get("until"),
+         )
+@@ -143,11 +153,9 @@ class BaseRuleSnoozeEndpoint(ProjectEndpoint):
+             serialize(rule_snooze, request.user, RuleSnoozeSerializer()),
+             status=status.HTTP_201_CREATED,
+         )
+ 
+-    def delete(self, request: Request, project: Project, rule_id) -> Response:
+-        rule = self.get_rule(rule_id)
+-
++    def delete(self, request: Request, project: Project, rule: Rule | AlertRule) -> Response:
+         # find if there is a mute for all that I can remove
+         shared_snooze = None
+         deletion_type = None
+         kwargs = {self.rule_field: rule, "user_id": None}
+@@ -179,9 +187,9 @@ class BaseRuleSnoozeEndpoint(ProjectEndpoint):
+                 "rule.unsnoozed",
+                 user_id=request.user.id,
+                 organization_id=project.organization_id,
+                 project_id=project.id,
+-                rule_id=rule_id,
++                rule_id=rule.id,
+                 rule_type=self.rule_field,
+                 target=deletion_type,
+             )
+             return Response(status=status.HTTP_204_NO_CONTENT)
+diff --git a/tests/sentry/api/endpoints/test_rule_snooze.py b/tests/sentry/api/endpoints/test_rule_snooze.py
+index e7af92161..a81ba4c0c 100644
+--- a/tests/sentry/api/endpoints/test_rule_snooze.py
++++ b/tests/sentry/api/endpoints/test_rule_snooze.py
+@@ -29,8 +29,22 @@ class BaseRuleSnoozeTest(APITestCase):
+ class PostRuleSnoozeTest(BaseRuleSnoozeTest):
+     endpoint = "sentry-api-0-rule-snooze"
+     method = "post"
+ 
++    def test_cannot_mute_unowned_alert(self):
++        user2 = self.create_user("foo@example.com")
++        org2 = self.create_organization(name="Other Org", owner=user2)
++        project2 = self.create_project(organization=org2, name="Other Project")
++        self.login_as(user2)
++        response = self.get_error_response(
++            org2.slug,
++            project2.slug,
++            self.issue_alert_rule.id,
++            target="everyone",
++            status_code=404,
++        )
++        assert response.data["detail"] == "Rule does not exist"
++
+     def test_mute_issue_alert_user_forever(self):
+         """Test that a user can mute an issue alert rule for themselves forever"""
+         response = self.get_success_response(
+             self.organization.slug,
+@@ -276,21 +290,20 @@ class PostRuleSnoozeTest(BaseRuleSnoozeTest):
+ 
+     def test_no_issue_alert(self):
+         """Test that we throw an error when an issue alert rule doesn't exist"""
+         response = self.get_error_response(
+-            self.organization.slug, self.project.slug, 777, target="me", status_code=400
++            self.organization.slug, self.project.slug, 777, target="me", status_code=404
+         )
+         assert not RuleSnooze.objects.filter(alert_rule=self.issue_alert_rule.id).exists()
+-        assert response.status_code == 400
+-        assert "Rule does not exist" in response.data
++        assert response.data["detail"] == "Rule does not exist"
+ 
+     def test_invalid_data_issue_alert(self):
+         """Test that we throw an error when passed invalid data"""
+         data = {"target": "me", "until": 123}
+         response = self.get_error_response(
+             self.organization.slug,
+             self.project.slug,
+-            self.metric_alert_rule.id,
++            self.issue_alert_rule.id,
+             **data,
+             status_code=400,
+         )
+         assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
+@@ -572,12 +585,12 @@ class PostMetricRuleSnoozeTest(BaseRuleSnoozeTest):
+ 
+     def test_no_metric_alert(self):
+         """Test that we throw an error when a metric alert rule doesn't exist"""
+         response = self.get_error_response(
+-            self.organization.slug, self.project.slug, 777, target="me", status_code=400
++            self.organization.slug, self.project.slug, 777, target="me", status_code=404
+         )
+         assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()
+-        assert "Rule does not exist" in response.data
++        assert response.data["detail"] == "Rule does not exist"
+ 
+ 
+ class DeleteMetricRuleSnoozeTest(BaseRuleSnoozeTest):
+     endpoint = "sentry-api-0-metric-rule-snooze"

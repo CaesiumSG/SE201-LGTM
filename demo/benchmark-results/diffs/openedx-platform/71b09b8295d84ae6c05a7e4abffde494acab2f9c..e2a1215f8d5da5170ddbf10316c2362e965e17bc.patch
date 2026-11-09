@@ -1,0 +1,185 @@
+diff --git a/lms/djangoapps/support/rest_api/v1/tests/test_views.py b/lms/djangoapps/support/rest_api/v1/tests/test_views.py
+index 73864f87..710e8b64 100644
+--- a/lms/djangoapps/support/rest_api/v1/tests/test_views.py
++++ b/lms/djangoapps/support/rest_api/v1/tests/test_views.py
+@@ -7,9 +7,9 @@ from django.urls import reverse
+ from rest_framework.test import APIClient
+ 
+ from common.djangoapps.student.models import CourseEnrollment
+ from common.djangoapps.student.models.user import CourseAccessRole
+-from common.djangoapps.student.roles import CourseInstructorRole, CourseStaffRole
++from common.djangoapps.student.roles import CourseInstructorRole, CourseStaffRole, SupportStaffRole
+ from common.djangoapps.student.tests.factories import (
+     TEST_PASSWORD,
+     AdminFactory,
+     InstructorFactory,
+@@ -54,9 +54,9 @@ class CourseTeamManageAPIViewTest(SupportViewTestCase):
+     # --- GET API TEST CASES ---
+ 
+     def test_get_api_missing_query_params_returns_400(self):
+         """GET API: Returns 400 if no query parameters are provided."""
+-        self.client.login(username=self.user.username, password=TEST_PASSWORD)
++        self.client.login(username=self.staff.username, password=TEST_PASSWORD)
+         resp = self.client.get(self.url)
+         self.assertEqual(resp.status_code, 400)  # noqa: PT009
+ 
+     def test_get_api_with_username_parameter(self):
+@@ -74,9 +74,9 @@ class CourseTeamManageAPIViewTest(SupportViewTestCase):
+         self.assertIsInstance(resp.data, list)  # noqa: PT009
+ 
+     def test_get_api_nonexistent_user_returns_404(self):
+         """GET API: Returns 404 for a nonexistent user email."""
+-        self.client.login(username=self.user.username, password=TEST_PASSWORD)
++        self.client.login(username=self.staff.username, password=TEST_PASSWORD)
+         resp = self.client.get(self.url, {"email": "notfound@example.com"})
+         self.assertEqual(resp.status_code, 404)  # noqa: PT009
+ 
+     def test_get_api_unauthenticated_user_returns_401(self):
+@@ -118,9 +118,15 @@ class CourseTeamManageAPIViewTest(SupportViewTestCase):
+                 course_found = True
+         self.assertTrue(course_found, "Expected course not found in response.")  # noqa: PT009
+ 
+     def test_get_api_instructor_can_only_see_their_courses(self):
+-        """GET API: Course instructor sees only courses they have access to."""
++        """
++        GET API: Course instructor sees only courses within their scope.
++
++        Read access mirrors PUT: any user with an instructor CourseAccessRole
++        may reach GET so they can inspect the current state before making
++        modifications.
++        """
+         self.client.login(
+             username=self.instructor_user.username, password=TEST_PASSWORD
+         )
+         resp = self.client.get(self.url, {"email": self.user.email})
+@@ -130,14 +136,47 @@ class CourseTeamManageAPIViewTest(SupportViewTestCase):
+         self.assertIn(str(self.extra_courses[0].id), course_ids)  # noqa: PT009
+         for i in range(1, 3):
+             self.assertNotIn(str(self.extra_courses[i].id), course_ids)  # noqa: PT009
+ 
+-    def test_get_api_user_with_no_access_sees_no_courses(self):
+-        """GET API: Non-instructor users see no courses in the response."""
++    def test_get_api_plain_learner_returns_403(self):
++        """
++        GET API: A plain authenticated learner is denied.
++
++        Regression for GHSA-95xv-3c54-c3pw: before the fix, this call reached
++        the view and produced a 200 with an empty results list, letting any
++        authenticated user enumerate other accounts via the 404-vs-200 response.
++        """
++        self.client.login(username=self.user.username, password=TEST_PASSWORD)
++        resp = self.client.get(self.url, {"email": self.user.email})
++        self.assertEqual(resp.status_code, 403)  # noqa: PT009
++
++    def test_get_api_enumeration_not_reachable_by_learner(self):
++        """
++        GET API: A plain learner cannot enumerate accounts via 404 vs 200.
++
++        Regression for GHSA-95xv-3c54-c3pw: the fix must return 403 for BOTH an
++        existing target and a nonexistent target so the response doesn't confirm
++        whether an arbitrary email/username/user_id belongs to an active account.
++        """
++        self.client.login(username=self.user.username, password=TEST_PASSWORD)
++        existing = self.client.get(self.url, {"email": self.user.email})
++        absent = self.client.get(self.url, {"email": "notfound@example.com"})
++        self.assertEqual(existing.status_code, 403)  # noqa: PT009
++        self.assertEqual(absent.status_code, 403)  # noqa: PT009
++
++    def test_get_api_support_role_sees_all_courses(self):
++        """
++        GET API: A user holding SupportStaffRole reaches the view and sees all
++        courses (like admin/staff), not the empty list they'd get by falling
++        through to the instructor branch.
++        """
++        SupportStaffRole().add_users(self.user)
+         self.client.login(username=self.user.username, password=TEST_PASSWORD)
+         resp = self.client.get(self.url, {"email": self.user.email})
+         self.assertEqual(resp.status_code, 200)  # noqa: PT009
+-        self.assertEqual(resp.data, [])  # noqa: PT009
++        course_ids = [course["course_id"] for course in resp.data]
++        for extra in self.extra_courses:
++            self.assertIn(str(extra.id), course_ids)  # noqa: PT009
+ 
+     # --- PUT API TEST CASES ---
+ 
+     def test_put_api_missing_email_returns_400(self):
+diff --git a/lms/djangoapps/support/rest_api/v1/views.py b/lms/djangoapps/support/rest_api/v1/views.py
+index 0fe9c327..ef0d1f68 100644
+--- a/lms/djangoapps/support/rest_api/v1/views.py
++++ b/lms/djangoapps/support/rest_api/v1/views.py
+@@ -6,15 +6,16 @@ from django.contrib.auth import get_user_model
+ from django.core.exceptions import ObjectDoesNotExist
+ from django.db.models import Q
+ from opaque_keys.edx.keys import CourseKey
+ from rest_framework import status
+-from rest_framework.exceptions import NotFound, ValidationError
++from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+ from rest_framework.generics import GenericAPIView
+ from rest_framework.permissions import IsAuthenticated
+ from rest_framework.response import Response
+ 
+ from common.djangoapps.student.models import CourseEnrollment
+ from common.djangoapps.student.models.user import CourseAccessRole
++from common.djangoapps.student.roles import SupportStaffRole
+ from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+ 
+ from ..serializers import CourseTeamManageSerializer
+ 
+@@ -44,8 +45,29 @@ class CourseTeamManageAPIView(GenericAPIView):
+         context = super().get_serializer_context()
+         context["course_role_map"] = getattr(self, "_course_role_map", {})
+         return context
+ 
++    def _caller_can_manage_course_team(self, auth_user):
++        """
++        Return True if the caller may view or manage course team roles.
++
++        This is the union of the PUT authorization set (`is_staff`,
++        `is_superuser`, or any user with a `CourseAccessRole` of
++        `role="instructor"`) and the global `SupportStaffRole`. Read access
++        must at least match write access — a user who can PUT changes needs
++        to see the current state to make them — and the endpoint lives in
++        the support module, so support staff belong in the set too.
++        """
++        if (
++            auth_user.is_superuser
++            or auth_user.is_staff
++            or SupportStaffRole().has_user(auth_user)
++        ):
++            return True
++        return CourseAccessRole.objects.filter(
++            user=auth_user, role="instructor"
++        ).exists()
++
+     def get_course_role_map_for_user(self, user):
+         """Return a mapping of course_id to role for staff/instructor roles of given user."""
+         access_roles = CourseAccessRole.objects.filter(
+             user=user, role__in=["staff", "instructor"]
+@@ -59,9 +81,13 @@ class CourseTeamManageAPIView(GenericAPIView):
+         return course_role_map
+ 
+     def get_accessible_courses_for_user(self, auth_user):
+         """Return queryset of courses accessible by the authenticated user."""
+-        if auth_user.is_superuser or auth_user.is_staff:
++        if (
++            auth_user.is_superuser
++            or auth_user.is_staff
++            or SupportStaffRole().has_user(auth_user)
++        ):
+             return CourseOverview.objects.all()
+ 
+         access_roles = CourseAccessRole.objects.filter(
+             user=auth_user, role="instructor"
+@@ -216,8 +242,12 @@ class CourseTeamManageAPIView(GenericAPIView):
+                 ]
+             }
+         ```
+         """
++        if not self._caller_can_manage_course_team(request.user):
++            raise PermissionDenied(
++                "You do not have permission to view course team information."
++            )
+         return self.list(request, *args, **kwargs)
+ 
+     def put(self, request, *args, **kwargs):
+         """
