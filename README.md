@@ -16,7 +16,7 @@ evidence validator and a small judge model (Kev-4B) keep the LLM honest.
 |---|---|
 | Lee Jin Rae | AI engineering: investigator and section pipeline, agent tool loop, Kev-4B judge, held-out guard run |
 | Brian Sng | AI engineering: prompt-injection red-teaming and mitigations, safe Markdown in the demo App |
-| Jayce Lye Jia Jun | Security engineering: Semgrep rules and policy docs, Shoply and real-PR benchmarks, SQLi reviewer, final evaluation, demo GitHub App |
+| Lye Jia Jun | Security engineering: Semgrep rules and policy docs, Shoply and real-PR benchmarks, SQLi reviewer, final evaluation, demo GitHub App |
 | Hsu Yati Ko | Software engineering: diff reader hardening, policy index built from the base commit, CI, one-command runner |
 | Loh Kai Zhe | Evaluation engineering: real-world CVE benchmark and its write-up |
 
