@@ -2,18 +2,56 @@
 
 LGTM reviews pull requests for security vulnerabilities by combining
 **deterministic SAST** (Semgrep) with **LLM agents grounded in repository
-context**. Semgrep provides high-recall signal for SQL injection; local
-LLM agents (Qwen via Ollama) triage those findings against the actual code
-and review changed code sections against the project's *documented* security
-policy (retrieved with RAG) — catching authorization flaws SAST cannot see,
-while an evidence validator keeps the LLM honest.
+context**. Semgrep provides high-recall signal for SQL injection; LLM agents
+(Qwen3.8 27B via Ollama, locally or on the SCIS GPU cluster) triage those
+findings against the actual code, review every changed code section for SQL
+injection, and check it against the project's *documented* security policy
+(retrieved with RAG), which catches authorization flaws SAST cannot see. An
+evidence validator and a small judge model (Kev-4B) keep the LLM honest.
+
+**Course:** SE201 AI-Driven Software Engineering, AY2026-27 Term 1.
+**Team:** "wo men ai AI".
+
+| Member | Main areas |
+|---|---|
+| Lee Jin Rae | AI engineering: investigator and section pipeline, agent tool loop, Kev-4B judge, held-out guard run |
+| Brian Sng | AI engineering: prompt-injection red-teaming and mitigations, safe Markdown in the demo App |
+| Jayce Lye Jia Jun | Security engineering: Semgrep rules and policy docs, Shoply and real-PR benchmarks, SQLi reviewer, final evaluation, demo GitHub App |
+| Hsu Yati Ko | Software engineering: diff reader hardening, policy index built from the base commit, CI, one-command runner |
+| Loh Kai Zhe | Evaluation engineering: real-world CVE benchmark and its write-up |
+
+Roles as planned are in [`docs/project-proposal.md`](docs/project-proposal.md);
+who did what since is in [`docs/team-tasks.md`](docs/team-tasks.md) and the
+commit history.
+
+## Results in brief
+
+On **17 published advisories that we did not tune on** (the pull request that
+introduced each flaw, plus the commit that fixed it), with the same model
+(Qwen3.8 27B, temperature 0) in every row:
+
+| Condition | Caught | Right file and CWE | False alarms on the 17 fixes | Median time per diff |
+|---|---|---|---|---|
+| **LGTM** (full pipeline) | **15/17** | **14/17** | **1/17** | 124 s |
+| LGTM without Semgrep | 14/17 | 13/17 | 3/17 | 101 s |
+| Same model, diff only (plain LLM) | 7/17 | 7/17 | 2/17 | 7 s |
+| Semgrep only | 3/17 | 3/17 | 2/17 | 1 s |
+
+The LGTM and plain-LLM rows were identical in three repeated runs. Larger cloud models
+(gpt-oss 120B, Claude Haiku 4.5, Claude Sonnet 4.6) in the same pipeline
+catch one or two more advisories in some runs but raise 3 to 11 false alarms
+per run. All benchmarks and the full tables
+are under [Benchmarks](#benchmarks) and in
+[`benchmark/runs/final-2026-11/RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md).
 
 ## Scope
 
-LGTM does two jobs:
+LGTM looks for two classes of vulnerability:
 
-1. Triage of Semgrep SQL injection warnings.
-2. Authorization (authz) bugs that Semgrep cannot see.
+1. SQL injection (CWE-89): triage of Semgrep warnings, plus a review of
+   every changed section for injection Semgrep has no rule for.
+2. Authorization (authz) bugs that Semgrep cannot see (CWE-639, CWE-862,
+   CWE-863).
 
 Every other vulnerability class is out of scope.
 
@@ -116,6 +154,39 @@ ollama pull qwen3.8:27b         # the default model; any tool-calling model work
 model/deploy/up.sh
 ```
 
+**The Kev-4B judge.** `lgtm` mode sends every candidate finding to the Kev-4B
+judge at `http://127.0.0.1:8008` (`--judge-endpoint` to change it). Without
+a judge the review still runs, but candidates with cited code are reported as
+not judged, and the exit code is 2 rather than 1. To run it:
+
+- **On the SCIS GPU cluster** (how we ran every evaluation):
+  `model/deploy/kev-provision.sh` once, then `model/deploy/kev-up.sh`, which
+  starts the server and opens the tunnel. `./run-lgtm.sh` below starts it and
+  opens the tunnel for you, but the one-time `kev-provision.sh` is still needed. Details in [model/README.md](model/README.md#kev-4b-system-one-judge).
+- **On your own NVIDIA GPU:** Kev is open source
+  ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)). Install it with
+  `uv`, download the weights as in `model/deploy/kev-provision.sh`, then
+  start the same server the cluster job starts:
+
+  ```bash
+  git clone https://github.com/jaredpalmer/kev.git && cd kev
+  uv sync --extra serve
+  uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --device cuda --port 8008
+  curl http://127.0.0.1:8008/v1/models   # check it answers
+  ```
+
+  We ran Kev on the cluster's RTX 3090, A40 and L40S GPUs; the demo also
+  runs it locally with `--device auto` (see [demo/README.md](demo/README.md)).
+
+**A first run.** With a reviewer model and Kev up, this reviews one
+vulnerable and one safe Shoply PR from the benchmark and scores them against
+their labels:
+
+```bash
+python benchmark/evaluate.py --model qwen3.8:27b --cases sqli_01_vulnerable sqli_01_safe
+# or, on the GPU cluster tunnel: --gpu-cluster instead of --model
+```
+
 ## Usage
 
 ### One command (GPU cluster)
@@ -195,6 +266,17 @@ thinking disabled. It cannot be combined with `--gpu-cluster` or
 `--model`; `--ollama-url` overrides the URL. The registry URL assumes
 `LOCAL_OLLAMA_PORT=11435`. `benchmark/evaluate.py` and
 `benchmark/real_world/evaluate_real.py` accept the same flag.
+
+**Other reviewer models (optional).** The reviewer can also run on Amazon
+Bedrock (Claude, or gpt-oss through Bedrock's OpenAI-compatible API); the Kev
+judge is unchanged. Set `"llm_backend": "bedrock"` and `"bedrock_model"` in the
+`--config-file` JSON, put the token in `AWS_BEARER_TOKEN_BEDROCK`, and for
+Claude install the extra: `pip install -e ".[bedrock]"`. Every call is charged
+to a spend ledger (`bedrock_ledger`, default `~/.lgtm/bedrock-spend.jsonl`) and
+stops at `bedrock_budget_usd`. `benchmark/real_prs/run_real_prs.py` takes
+`--bedrock-model` directly. This is how
+the model comparison in the final evaluation was run; Qwen on Ollama remains
+the default and the configuration we recommend.
 
 ## Configuration
 
@@ -292,30 +374,91 @@ are ignored with an `Ignoring unknown config keys` warning.
   snapshot, and any line range must be ordered, positive and inside the file.
 - Human-in-the-loop: LGTM reports, it never auto-fixes.
 
+The full risk assessment (hallucination, prompt injection, policy tampering,
+privacy, evaluation bias, intellectual property, responsible disclosure,
+non-determinism and cost) is in
+[`docs/responsible-ai.md`](docs/responsible-ai.md).
+
 ## Benchmarks
 
-There are **three separate benchmarks**. Each one answers a different
+There are **six separate benchmarks**. Each one answers a different
 question, has its own script and its own metric:
 
 | Benchmark | Question | Cases | Script | Metric | Write-up |
 |---|---|---|---|---|---|
-| **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 52 (dev 26 / eval 26) | `benchmark/evaluate.py` | Precision / recall / F1 | `docs/evaluation-log.md` |
+| **Real PRs, held-out** (main result) | Does LGTM flag the real PR that introduced a published vulnerability, and stay quiet on its fix? | 17 advisories, 34 diffs | `benchmark/real_prs/run_real_prs.py --cases-file benchmark/real_prs/heldout.json` | Caught / exact / false alarms on fixes | [`docs/real-prs-eval.md`](docs/real-prs-eval.md) |
+| **Real PRs, development** | Same question; used to find the SQLi blind spot and build the SQLi reviewer | 13 advisories, 26 diffs | `benchmark/real_prs/run_real_prs.py` | Caught / exact / false alarms on fixes | [`docs/real-prs-eval.md`](docs/real-prs-eval.md) |
+| **Shoply** (synthetic) | Does LGTM catch vulnerabilities, without false alarms? | 52 (dev 26 / eval 26) | `benchmark/evaluate.py` | Precision / recall / F1 | [`docs/evaluation-log.md`](docs/evaluation-log.md) |
 | **Real-world CVEs** | Does that hold on code real developers shipped? | 12 (development set) | `benchmark/real_world/evaluate_real.py` | Precision / recall / F1 | [`docs/real-world-eval.md`](docs/real-world-eval.md) |
 | **Prompt injection** | Can text in a PR trick LGTM into missing a vulnerability? | 6 attacks on Shoply cases | `benchmark/injection/run_injection_bench.py` | Attack success rate | [`docs/prompt-injection.md`](docs/prompt-injection.md) |
+| **Field trial** | Does it crash, how long does it take, and does it raise false alarms on ordinary PRs? | 12 merged PRs | `benchmark/field_trial/run_field_trial.py` | Crashes, flags, latency | [`docs/field-trial.md`](docs/field-trial.md) |
+
+The final evaluation ran all of them on one commit (`af878ce`) on 6–7 Nov
+2026: 33 runs, 0 errored cases. Changes merged after that commit (for
+example the policy index read from the base commit, PR #39) were tested by
+the unit suite but not re-measured on the benchmarks. The final run's
+results, run log and cost are in
+[`benchmark/runs/final-2026-11/`](benchmark/runs/final-2026-11/)
+(`RESULTS.md`, `RUNLOG.md`, `results.json`); the scripts that ran and
+aggregated it are in `benchmark/final_eval/`.
 
 The Shoply files (`app/`, `cases/`, `labels.json`, the policy docs and
 `evaluate.py`) sit at the top of `benchmark/` because Shoply came first;
-`evaluate.py` evaluates **only Shoply**, not the other two. Its `--split eval`
+`evaluate.py` evaluates **only Shoply**, not the others. Its `--split eval`
 means the 26 held-out *Shoply* cases.
 
 **Why the results aren't combined into one score:** the benchmarks measure
 different things (accuracy vs. resistance to attack) with different metrics,
-and they differ in how independent they are: Shoply's dev split was used to
-tune the prompts, and the real-world cases are tuned on too; both are
-development sets, while the eval split is held out. One
-pooled F1 would mix tuned and untuned data and hide the drop on real code.
+and they differ in how independent they are: Shoply's dev split, the
+real-world CVE cases and the 13 development real PRs were all used to tune
+prompts and rules, while the 17 held-out real PRs were chosen after the last
+change and run without tuning. One pooled F1 would mix tuned and untuned data.
 Read them side by side; the [summary at the end of this
 section](#all-results-at-a-glance) does that.
+
+### 0. Real PRs that introduced published vulnerabilities (main result)
+
+Each case is a GitHub Security Advisory in an open-source Python web app. LGTM
+reviews two diffs: the commit or PR that **introduced** the flaw (a flag is a
+true positive) and the commit that **fixed** it (a flag is a false alarm). A
+catch is **exact** when a finding is in a file the advisory names and its CWE
+matches the advisory's class. The held-out set (8 SQLi, 9 authz) was picked
+after the SQLi reviewer was written and has not been tuned on.
+
+```bash
+model/deploy/judged-up.sh 4:00:00   # Qwen + Kev on the GPU cluster; then connect.sh / kev-connect.sh <job>
+python benchmark/real_prs/run_real_prs.py --cases-file benchmark/real_prs/heldout.json \
+    --gpu-model qwen3.8-27b --modes lgtm llm-only sast-only --output benchmark/results/heldout
+python benchmark/real_prs/run_real_prs.py --gpu-model qwen3.8-27b --modes lgtm llm-only   # development set
+```
+
+Final results (Qwen3.8 27B, T=0; the same in all three runs):
+
+| Mode | Held-out caught | Exact | SQLi exact | Authz exact | False alarms on fixes | Development set caught (exact) |
+|---|---|---|---|---|---|---|
+| `lgtm` | **15/17** | **14/17** | 7/8 | 7/9 | 1/17 | 13/13 (13), 2 false alarms |
+| `lgtm-no-sast` | 14/17 | 13/17 | 6/8 | 7/9 | 3/17 | not run |
+| `llm-only` | 7/17 | 7/17 | 4/8 | 3/9 | 2/17 | 7/13 (6), 0 false alarms |
+| `sast-only` | 3/17 | 3/17 | 3/8 | 0/9 | 2/17 | 0/13 |
+
+The same pipeline with other reviewer models (gpt-oss at T=0, Claude at the
+provider's default temperature; three runs each for all but gpt-oss 20B,
+which ran once):
+
+| Reviewer in `lgtm` | Caught (runs) | False alarms on fixes (runs) | Bedrock cost, run 1 |
+|---|---|---|---|
+| Qwen3.8 27B (GPU cluster) | 15, 15, 15 | 1, 1, 1 | free (cluster) |
+| gpt-oss 20B | 7 | 1 | USD 1.43 |
+| gpt-oss 120B | 16, 15, 15 | 5, 7, 4 | USD 2.60 |
+| Claude Haiku 4.5 | 16, 16, 16 | 8, 6, 11 | USD 9.31 |
+| Claude Sonnet 4.6 | 16, 16, 17 | 5, 5, 3 | USD 22.06 |
+
+Missed by Qwen in every run: `django-orderby-dotted-column-sqli` (the flaw is
+a removed check deep in Django's ORM) and
+`readthedocs-team-access-filter-authz` (two chained `.filter()` calls on a
+many-valued relation). Per-advisory outcomes, temperature runs and the
+repeatability analysis are in
+[`benchmark/runs/final-2026-11/RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md).
 
 ### 1. Shoply (synthetic)
 
@@ -365,7 +508,11 @@ each), recorded in the `split` field of `labels.json`: tune prompts and
 config on `--split dev`, report results on the held-out `--split eval`.
 
 Results: the run writes its summary to the Shoply run folder under
-`benchmark/runs/` (`summary.json`).
+`benchmark/runs/` (`summary.json`). Final run (all 52 cases,
+`benchmark/runs/final-2026-11/shoply/`): `lgtm` 26 TP, 0 FP, 0 FN, 26 TN
+(F1 1.00); `llm-only` F1 0.94 (1 false alarm, 2 authz misses). Shoply was
+written by the team and tuned on, so it shows the pipeline works end to end
+rather than how well it generalises.
 
 ### 2. Real-world CVEs
 
@@ -388,8 +535,13 @@ the batch finishes; running the same command again continues with the next
 unrun batch. `guard.py` writes `guard/flips.json` under the results root. See
 [`benchmark/real_world/README.md`](benchmark/real_world/README.md).
 
-Results: `benchmark/runs/archive/real_world/summary.json`; write-up in
-[`docs/real-world-eval.md`](docs/real-world-eval.md).
+Results: final run in `benchmark/runs/final-2026-11/real_world/`; earlier
+rounds in `benchmark/runs/archive/real_world/`; write-up in
+[`docs/real-world-eval.md`](docs/real-world-eval.md). Final run, 9 in-scope
+cases: `lgtm` F1 0.91 (1 false alarm), `llm-only` F1 1.00. Counting every case,
+both modes catch all 6 vulnerable cases; `lgtm` raises 2 false alarms on the 6
+safe ones. The vulnerable cases are synthetic reverts of a fix, which is why
+the real-PR benchmark above replaced this set as the main result.
 
 ### 3. Prompt injection
 
@@ -404,7 +556,9 @@ python benchmark/injection/run_injection_bench.py --mode lgtm --model qwen3.8:27
 python benchmark/injection/run_injection_bench.py --mode llm-only --model qwen3.8:27b
 ```
 
-Results: `benchmark/runs/archive/injection-results/` (see
+Results: final run in `benchmark/runs/final-2026-11/injection/`, where
+**0 of 6 attacks succeeded** in either mode; earlier rounds in
+`benchmark/runs/archive/injection-results/` (see
 [`docs/prompt-injection.md`](docs/prompt-injection.md)). The mitigations are
 on by default in lgtm mode (§7 there; the dev-split comparison is archived in
 `benchmark/runs/archive/run7-mitigation-defaults/`).
@@ -421,13 +575,47 @@ python benchmark/field_trial/run_field_trial.py --fetch
 python benchmark/field_trial/run_field_trial.py --modes lgtm llm-only
 ```
 
-Results: `benchmark/runs/archive/field_trial/summary.json`; write-up in
+Results: final run summarised in
+[`benchmark/runs/final-2026-11/RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md):
+no crashes, 1 of 12 PRs flagged in each mode, median 78 s per PR for `lgtm`.
+The flagged PR is a possible real issue that has not been reported upstream,
+so its per-PR records are kept out of this public repository. Earlier rounds:
+`benchmark/runs/archive/field_trial/<mode>/summary.json`; write-up in
 [`docs/field-trial.md`](docs/field-trial.md).
+
+### 5. Component benchmark
+
+Scores the four AI components on their own (SAST triage with Kev, the authz
+reviewer, the SQLi reviewer, the Kev judge) on 25 cases: the 12 real-world
+cases and the 13 development real PRs. Latest results (PR #33, 8–9 Nov):
+SAST triage F1 0.71, authz reviewer F1 0.84, SQLi reviewer F1 1.00 on 9
+cases, Kev verdicts correct for 25 of 28 candidates but severities for only
+0.55. Every gold label is still marked `draft` (drafted with Claude Opus 5.5,
+not yet approved by the team), so these figures are provisional. Results:
+[`docs/component-bench-results.md`](docs/component-bench-results.md); method:
+[`docs/component-bench.md`](docs/component-bench.md). An earlier, smaller
+version ran in the final evaluation on 6 Nov
+([`RESULTS.md`](benchmark/runs/final-2026-11/RESULTS.md), component section)
+and is superseded by these.
 
 ### All results at a glance
 
-The per-benchmark result files above hold the figures for the LGTM and
-LLM-only conditions.
+Final evaluation, Qwen3.8 27B reviewer and Kev-4B judge, commit `af878ce`:
+
+| Benchmark | Tuned on? | `lgtm` | `llm-only` (same model, diff only) | Semgrep only |
+|---|---|---|---|---|
+| Real PRs, held-out (17 advisories) | No | 15/17 caught, 1/17 false alarms | 7/17, 2/17 | 3/17, 2/17 |
+| Real PRs, development (13) | Yes | 13/13 caught, 2/13 false alarms | 7/13, 0/13 | 0/13, 0/13 |
+| Shoply (52 synthetic) | Yes | F1 1.00 | F1 0.94 | not run in final |
+| Real-world CVEs (9 in scope) | Yes | F1 0.91 | F1 1.00 | not run in final |
+| Prompt injection (6 attacks) | Yes | 0/6 succeeded | 0/6 succeeded | n/a |
+| Field trial (12 ordinary PRs) | No | 0 crashes, 1 flagged, 78 s median | 0 crashes, 1 flagged, 7 s median | n/a |
+
+What this says: on tuned or synthetic sets a plain LLM is nearly as good as
+the full pipeline, but on real PRs we did not tune on, the agents (repository
+tools, policy retrieval, the SQLi reviewer, the judge) double the catch rate
+at the same false-alarm level. The price is time: about 2 minutes per diff
+against 7 seconds.
 
 The full history of rounds, failures, fixes and lessons is in
 [`docs/evaluation-log.md`](docs/evaluation-log.md); the checkpoint report
@@ -443,10 +631,16 @@ is [`docs/checkpoint.md`](docs/checkpoint.md).
 - ✅ 6 prompt-injection cases (comments, docstrings, fake JSON findings,
   renamed identifiers, a policy-exemption doc, delimiter escapes); see
   [`docs/prompt-injection.md`](docs/prompt-injection.md).
-- Next: more OWASP patterns (stacked queries, second-order injection) and
-  more CVE-linked cases, including real vulnerable PRs rather than reverts.
-- Keep the eval split held out: prompt and config tuning uses the dev split
-  and the real-world set only.
+- ✅ 30 real PRs that introduced published advisories (13 development, 17
+  held-out), each with its fix commit; see
+  [`docs/real-prs-eval.md`](docs/real-prs-eval.md).
+- ✅ 12 ordinary merged PRs as a field trial; see
+  [`docs/field-trial.md`](docs/field-trial.md).
+- Next: a larger held-out set of real PRs (17 advisories means one case
+  moves the rate by 6 points), more OWASP patterns (stacked queries, second-order
+  injection), and team-reviewed labels for the component benchmark.
+- Keep the held-out sets held out: prompt and config tuning uses the Shoply
+  dev split, the real-world CVEs and the development real PRs only.
 
 ## Project layout
 
@@ -469,12 +663,15 @@ src/lgtm/
 ├── graph/snapshot.py       # commit SHA resolution
 ├── graph/format.py         # tool output formatting
 ├── agents/base.py          # finding schema, LLM loop, JSON parsing
+├── agents/bedrock_llm.py   # optional Amazon Bedrock backend (Claude models)
+├── agents/bedrock_openai_llm.py  # optional Bedrock backend (gpt-oss models)
 ├── agents/prompts.toml     # all model-visible prompt text
 ├── agents/registry.py      # loader for prompts.toml
 ├── agents/prompt_parts.py  # tool guidance shared by the agent prompts
 ├── agents/tools.py         # read-only snapshot tools, graph tools, call budget
 ├── agents/investigator.py  # proposes review sections from the PR diff
 ├── agents/sast_triage.py   # CWE-89 triage agent
+├── agents/sqli_reviewer.py # CWE-89 section reviewer (finds injection Semgrep misses)
 ├── agents/authz_reviewer.py# CWE-639/862/863 section reviewer
 ├── agents/plain_reviewer.py# tool-free LLM-only baseline (Baseline B)
 ├── review/sections.py      # plan review sections from investigator output
@@ -486,19 +683,25 @@ src/lgtm/
 ├── validation/judge.py     # Kev-4B judge for each candidate finding
 ├── validation/judge_examples.py  # few-shot examples for the judge
 ├── validation/cwe_criteria.py    # short per-CWE criteria shown to the judge
-└── reporting/report_builder.py  # JSON + Markdown reports
+├── reporting/report_builder.py  # JSON + Markdown reports
+└── usage.py                # reviewer and judge token counts per review
 tests/                      # unit and integration tests, no Ollama needed
 benchmark/                  # Shoply app, 52 cases, evaluate.py, guard.py
 benchmark/real_world/       # 12 real-world CVE cases, fetch.py, evaluate_real.py
 benchmark/real_prs/         # real PRs that introduced a vulnerability, run_real_prs.py
 benchmark/field_trial/      # ordinary merged PRs from real projects, run_field_trial.py
 benchmark/injection/        # 6 prompt-injection cases, run_injection_bench.py
-benchmark/kev_support/      # helpers for the Kev judge runs
-benchmark/judge_eval.py     # citation support and judge-quality measures
+benchmark/live_hunt/        # live hunt on recent PRs, run_live_hunt.py
+benchmark/component_bench/  # per-component benchmark (SAST triage, reviewers, Kev)
+benchmark/final_eval/       # final-evaluation run streams and aggregate.py
+benchmark/runs/             # committed run outputs (final-2026-11/, archive/)
 benchmark/citation_export.py# export citations for blind labelling
 model/                      # SCIS GPU cluster: deploy scripts, Slurm jobs (model/README.md)
 viewer/                     # offline HTML report viewer (viewer/README.md)
-docs/                       # design notes, evaluation logs, checkpoint
+demo/                       # demo GitHub App and dashboard (demo/README.md)
+scripts/make_submission.sh  # builds the course submission zip
+ai-log/                     # AI use logs, one per member, and the team declaration
+docs/                       # design notes, evaluation logs, checkpoint, responsible AI
 ```
 
 ## Development

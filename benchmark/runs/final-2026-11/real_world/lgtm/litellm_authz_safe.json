@@ -1,0 +1,1371 @@
+{
+  "id": "litellm_authz_safe",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "safe",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 120.57,
+  "case_seconds": 166.09,
+  "est_tokens": 926,
+  "findings": [
+    {
+      "finding_id": "authz:key-spend-authorization:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The PR widens the admin-only guard so that modifying a key's `spend` now triggers `_check_key_admin_access`. However, `_check_key_admin_access` (lines 4986-5015) only authorizes Proxy Admins, Team Admins, and Org Admins. The RBAC policy (multi_tenant_architecture.md) grants regular team members the `/key/update` permission (\"Allow key creation: [\"/key/info\", \"/key/health\", \"/key/generate\", \"/key/update\"]\"). Because `spend` is a computed, system-tracked cost value (not a user-settable budget like `max_budget`), a regular team member who is permitted to call `/key/update` and who changes `spend` will be denied by the new admin-only check \u2014 i.e., the authorization check is incorrect for the role that the policy allows to update keys. This is an incorrect-authorization regression: the check does not account for the team-member role that the policy authorizes for key updates.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+          "lines": [
+            1964,
+            1979
+          ],
+          "source": null,
+          "content": "    if (\n        data.max_budget is not None and data.max_budget != existing_key_row.max_budget\n    ) or (\n        data.spend is not None\n        and data.spend != getattr(existing_key_row, \"spend\", None)\n    ):\n        if prisma_client is not None:\n            hashed_key = existing_key_row.token\n            await _check_key_admin_access(\n                user_api_key_dict=user_api_key_dict,\n                hashed_token=hashed_key,\n                prisma_client=prisma_client,\n                user_api_key_cache=user_api_key_cache,\n                route=\"/key/update (max_budget/spend)\",\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+          "lines": [
+            4986,
+            5015
+          ],
+          "source": null,
+          "content": "    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n        return\n    ...\n        if team_obj is not None:\n            if _is_user_team_admin(\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\n            ):\n                return\n            if await _is_user_org_admin_for_team(\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\n            ):\n                return",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/my-website/docs/proxy/multi_tenant_architecture.md",
+          "content": "**Allow key creation**:\n```json\n[\"/key/info\", \"/key/health\", \"/key/generate\", \"/key/update\"]\n```",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Do not route `spend` changes through the admin-only `_check_key_admin_access` check. `spend` is a system-tracked value; either exclude it from the admin-only guard (keep it only for `max_budget`), or align the authorization check with the RBAC policy so that team members permitted to call `/key/update` are handled consistently. If `spend` should be admin-only, document that and ensure the check matches the intended role set.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8354,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+      "line": 1964,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1336
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "update_user endpoint role check user_role proxy admin"
+          }
+        },
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "_check_key_admin_access function definition"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1100,
+            "end_line": 1160,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1480,
+            "end_line": 1580,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 1900,
+            "end_line": 2010,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "async def _check_key_admin_access",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4968,
+            "end_line": 5040,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 740,
+            "end_line": 790,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 3260,
+            "end_line": 3300,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 3460,
+            "end_line": 3500,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4090,
+            "end_line": 4140,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4180,
+            "end_line": 4230,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "async def user_update|async def bulk_user_update",
+            "file_glob": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "async def update_key|async def delete_keys|async def generate_key",
+            "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1290,
+            "end_line": 1330,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1440,
+            "end_line": 1470,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def delete_keys|def _delete_keys|def _delete_key",
+            "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def rotate_master_key|def _rotate_master_key",
+            "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"user-role-authorization\",\n      \"title\": \"Restrict user_role modification to proxy admins on /user/update and /user/bulk_update\",\n      \"rationale\": \"Both hunks add 403 guards that block non-proxy-admin callers from setting user_role (single and bulk/all-users paths).\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/internal_user_endpoints.py#0\",\n        \"litellm/proxy/management_endpoints/internal_user_endpoints.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/internal_user_endpoints.py\", \"symbol\": \"_update_single_user_helper\", \"start_line\": 1118, \"end_line\": 1142, \"snapshot\": \"pr\", \"why\": \"Helper used by user_update; new role guard added here\"},\n        {\"path\": \"litellm/proxy/management_endpoints/internal_user_endpoints.py\", \"symbol\": \"bulk_user_update\", \"start_line\": 1453, \"end_line\": 1549, \"snapshot\": \"pr\", \"why\": \"Bulk endpoint where the new bulk-role and all-users admin guards are added\"}\n      ]\n    },\n    {\n      \"id\": \"key-spend-authorization\",\n      \"title\": \"Extend key-update admin check to cover spend changes\",\n      \"rationale\": \"The two hunks widen the condition that triggers _check_key_admin_access so modifying a key's spend now requires proxy/team/org admin, matching the max_budget rule.\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#1\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#2\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_validate_update_key_data\", \"start_line\": 1913, \"end_line\": 1979, \"snapshot\": \"pr\", \"why\": \"Validation function where the spend condition and route label were changed\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_check_key_admin_access\", \"start_line\": 4968, \"end_line\": 5023, \"snapshot\": \"pr\", \"why\": \"Authorization helper invoked by the widened condition\"}\n      ]\n    },\n    {\n      \"id\": \"formatting-only\",\n      \"title\": \"Cosmetic reformatting of soft_budget assignment and type-annotated DB queries\",\n      \"rationale\": \"These hunks only reflow line breaks/annotations (soft_budget response, key-delete find_many, model-table fetch, user/team lookups) with no change to authorization logic.\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#0\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#3\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#4\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#5\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#6\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"generate_key_fn\", \"start_line\": 767, \"end_line\": 775, \"snapshot\": \"pr\", \"why\": \"soft_budget response assignment reformatted\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"validate_key_list_check\", \"start_line\": 4106, \"end_line\": 4130, \"snapshot\": \"pr\", \"why\": \"User-table find_unique annotation reflowed\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_fetch_user_team_objects\", \"start_line\": 4204, \"end_line\": 4216, \"snapshot\": \"pr\", \"why\": \"Team-table find_many annotation reflowed\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "user-role-authorization",
+      "tool_calls": [
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "who can modify user roles proxy admin only user update endpoint"
+          }
+        },
+        {
+          "tool": "investigate_pr_code",
+          "args": {
+            "query": "can_user_call_user_update definition and user_update endpoint route"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def can_user_call_user_update",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def bulk_update_processed_users",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1278,
+            "end_line": 1445,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "Based on my review, the PR adds authorization guards (role-modification restricted to `proxy_admin`, all-users bulk update restricted to `proxy_admin`) that align with the documented policy. The per-user ownership check (`can_user_call_user_update`) and the new role guard are both present and correctly ordered. I found no authorization flaw newly introduced or exposed by these changed lines.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "key-spend-authorization",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4960,
+            "end_line": 5030,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "who can update key spend and max_budget, key update authorization admin"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "spend",
+            "file_glob": "litellm/types/llms.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "class UpdateKeyRequest",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/_types.py",
+            "start_line": 940,
+            "end_line": 1060,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR widens the admin-only guard so that modifying a key's `spend` now triggers `_check_key_admin_access`. However, `_check_key_admin_access` (lines 4986-5015) only authorizes Proxy Admins, Team Admins, and Org Admins. The RBAC policy (multi_tenant_architecture.md) grants regular team members the `/key/update` permission (\\\"Allow key creation: [\\\"/key/info\\\", \\\"/key/health\\\", \\\"/key/generate\\\", \\\"/key/update\\\"]\\\"). Because `spend` is a computed, system-tracked cost value (not a user-settable budget like `max_budget`), a regular team member who is permitted to call `/key/update` and who changes `spend` will be denied by the new admin-only check \u2014 i.e., the authorization check is incorrect for the role that the policy allows to update keys. This is an incorrect-authorization regression: the check does not account for the team-member role that the policy authorizes for key updates.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"lines\": [1964, 1979], \"content\": \"    if (\\n        data.max_budget is not None and data.max_budget != existing_key_row.max_budget\\n    ) or (\\n        data.spend is not None\\n        and data.spend != getattr(existing_key_row, \\\"spend\\\", None)\\n    ):\\n        if prisma_client is not None:\\n            hashed_key = existing_key_row.token\\n            await _check_key_admin_access(\\n                user_api_key_dict=user_api_key_dict,\\n                hashed_token=hashed_key,\\n                prisma_client=prisma_client,\\n                user_api_key_cache=user_api_key_cache,\\n                route=\\\"/key/update (max_budget/spend)\\\",\\n            )\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"lines\": [4986, 5015], \"content\": \"    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\\n        return\\n    ...\\n        if team_obj is not None:\\n            if _is_user_team_admin(\\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\\n            ):\\n                return\\n            if await _is_user_org_admin_for_team(\\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\\n            ):\\n                return\"},\n        {\"type\": \"policy\", \"source\": \"docs/my-website/docs/proxy/multi_tenant_architecture.md\", \"content\": \"**Allow key creation**:\\n```json\\n[\\\"/key/info\\\", \\\"/key/health\\\", \\\"/key/generate\\\", \\\"/key/update\\\"]\\n```\"}\n      ],\n      \"suggested_fix\": \"Do not route `spend` changes through the admin-only `_check_key_admin_access` check. `spend` is a system-tracked value; either exclude it from the admin-only guard (keep it only for `max_budget`), or align the authorization check with the RBAC policy so that team members permitted to call `/key/update` are handled consistently. If `spend` should be admin-only, document that and ensure the check matches the intended role set.\",\n      \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\",\n      \"line\": 1964\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "formatting-only",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 760,
+            "end_line": 780,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4100,
+            "end_line": 4135,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4195,
+            "end_line": 4225,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 760,
+            "end_line": 780,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4100,
+            "end_line": 4135,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4195,
+            "end_line": 4225,
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:user-role-authorization",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1118,
+            "end_line": 1160,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "start_line": 1518,
+            "end_line": 1560,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "def update_data|def insert_data|def get_data",
+            "file_glob": "litellm/proxy/*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/utils.py",
+            "start_line": 3271,
+            "end_line": 3360,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute|raw|text\\(|literal_column|\\.format\\(|f\".*SELECT|f\".*UPDATE",
+            "file_glob": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:formatting-only",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 760,
+            "end_line": 780,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4115,
+            "end_line": 4135,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 4200,
+            "end_line": 4220,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 3270,
+            "end_line": 3290,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "start_line": 3475,
+            "end_line": 3490,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "update_user endpoint role check user_role proxy admin"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 status=ok truncated=true incomplete=true query=\"update_user endpoint role check user_role proxy admin\"]\n**Exploration: update_user endpoint role check user_role proxy admin**\n\nFound 31 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `update_model_prices` (cookbook/misc/update_json_caching.py:22) \u2014 1 caller in `cookbook/misc/update_json_caching.py`; no tests found within 3 caller hops\n- `check_file_length` (ci_cd/check_file_length.py:4) \u2014 1 caller in `ci_cd/check_file_length.py`; no tests found within 3 caller hops\n- `check_view_exists` (db_scripts/create_views.py:18) \u2014 1 caller in `db_scripts/create_views.py`; no tests found within 3 caller hops\n- `check_pii` (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:240) \u2014 1 caller in `cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py`** \u2014 BedrockGuardrailOutput(class), BedrockGuardrailOutput(instantiates), TopicPolicyItem(class), TopicPolicyItem(instantiates), TopicPolicy(class), +21 more\n\n```python\n61\t    filters: List[ContentFilterItem] = Field(default_factory=list)\n62\t\n63\t\n64\tclass CustomWord(BaseModel):\n65\t    match: str\n66\t    action: Literal[\"BLOCKED\", \"NONE\"]\n67\t\n68\t\n69\tclass WordPolicy(BaseModel):\n70\t    customWords: List[CustomWord] = Field(default_factory=list)\n71\t    managedWordLists: List[Dict[str, Any]] = Field(default_factory=list)\n72\t\n73\t\n74\tclass PiiEntity(BaseModel):\n75\t    type: str\n76\t    match: str\n77\t    action: Literal[\"BLOCKED\", \"ANONYMIZED\", \"NONE\"]\n78\t\n79\t\n80\tclass RegexMatch(BaseModel):\n\n... (gap) ...\n\n84\t    action: Literal[\"BLOCKED\", \"ANONYMIZED\", \"NONE\"]\n85\t\n86\t\n87\tclass SensitiveInformationPolicy(BaseModel):\n88\t    piiEntities: List[PiiEntity] = Field(default_factory=list)\n89\t    regexes: List[RegexMatch] = Field(default_factory=list)\n90\t\n91\t\n92\tclass ContextualGroundingFilter(BaseModel):\n\n... (gap: ContextualGroundingPolicy (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:99), Assessment (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:103), BedrockGuardrailResponse (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:111), GuardrailConfig (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:125), GUARDRAIL_CONFIG (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:145), app (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:151), +1 more) ...\n\n207\t# ============================================================================\n208\t\n209\t\n210\tdef check_blocked_words(text: str) -> Optional[WordPolicy]:\n211\t    \"\"\"Check if text contains blocked words\"\"\"\n212\t    found_words = []\n213\t    text_lower = text.lower()\n214\t\n215\t    for word in GUARDRAIL_CONFIG.blocked_words:\n216\t        if word.lower() in text_lower:\n217\t            found_words.append(CustomWord(match=word, action=\"BLOCKED\"))\n218\t\n219\t    if found_words:\n220\t        return WordPolicy(customWords=found_words)\n221\t    return None\n222\t\n223\t\n224\tdef check_blocked_topics(text: str) -> Optional[TopicPolicy]:\n225\t    \"\"\"Check if text contains blocked topics\"\"\"\n226\t    found_topics = []\n227\t    text_lower = text.lower()\n228\t\n229\t    for topic in GUARDRAIL_CONFIG.blocked_topics:\n230\t        if topic.lower() in text_lower:\n231\t            found_topics.append(\n232\t                TopicPolicyItem(name=topic, type=topic.upper(), action=\"BLOCKED\")\n233\t            )\n234\t\n235\t    if found_topics:\n236\t        return TopicPolicy(topics=found_topics)\n237\t    return None\n238\t\n239\t\n240\tdef check_pii(text: str) -> tuple[Optional[SensitiveInformationPolicy], str]:\n241\t    \"\"\"\n242\t    Check for PII in text and return policy + anonymized text\n243\t\n244\t    Returns:\n245\t        Tuple of (SensitiveInformationPolicy or None, anonymized_text)\n246\t    \"\"\"\n247\t    pii_entities = []\n248\t    anonymized_text = text\n249\t    action = \"ANONYMIZED\" if GUARDRAIL_CONFIG.anonymize_pii else \"BLOCKED\"\n250\t\n251\t    for pii_type, pattern in GUARDRAIL_CONFIG.pii_patterns.items():\n252\t        try:\n253\t            # Compile the regex pattern with a timeout to prevent ReDoS attacks\n254\t            compiled_pattern = re.compile(pattern)\n255\t            matches = compiled_pattern.finditer(text)\n256\t            for match in matches:\n257\t                matched_text = match.group()\n258\t                pii_entities.append(\n259\t                    PiiEntity(type=pii_type, match=matched_text, action=action)\n260\t                )\n261\t\n262\t                # Anonymize the text if configured\n263\t                if GUARDRAIL_CONFIG.anonymize_pii:\n264\t                    anonymized_text = anonymized_text.replace(\n265\t                        matched_text, f\"[{pii_type}_REDACTED]\"\n266\t                    )\n267\t        except re.error:\n268\t            # Invalid regex pattern - skip it and log a warning\n269\t            print(f\"Warning: Invalid regex pattern for PII type {pii_type}: {pattern}\")\n270\t            continue\n271\t\n272\t    if pii_entities:\n273\t        return SensitiveInformationPolicy(piiEntities=pii_entities), anonymized_text\n274\t\n275\t    return None, text\n276\t\n277\t\n278\tdef process_guardrail_request(\n\n... (gap) ...\n\n296\t    combined_text = \" \".join(all_text_content)\n297\t\n298\t    # Initialize response\n299\t    response = BedrockGuardrailResponse()\n300\t    assessment = Assessment()\n301\t    has_in\n[TRUNCATED omitted_chars=9736]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "_check_key_admin_access function definition"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 status=ok truncated=true incomplete=true query=\"_check_key_admin_access function definition\"]\n**Exploration: _check_key_admin_access function definition**\n\nFound 33 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `check_file_length` (ci_cd/check_file_length.py:4) \u2014 1 caller in `ci_cd/check_file_length.py`; no tests found within 3 caller hops\n- `check_view_exists` (db_scripts/create_views.py:18) \u2014 1 caller in `db_scripts/create_views.py`; no tests found within 3 caller hops\n- `check_pii` (cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py:240) \u2014 1 caller in `cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py`; no tests found within 3 caller hops\n- `check_single` (.github/scripts/close_duplicate_issues.py:146) \u2014 1 caller in `.github/scripts/close_duplicate_issues.py`; no tests found within 3 caller hops\n- `detect_keywords` (.github/scripts/scan_keywords.py:27) \u2014 1 caller in `.github/scripts/scan_keywords.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py`** \u2014 BedrockGuardrailOutput(class), BedrockGuardrailOutput(instantiates), TopicPolicyItem(class), TopicPolicyItem(instantiates), TopicPolicy(class), +20 more\n\n```python\n207\t# ============================================================================\n208\t\n209\t\n210\tdef check_blocked_words(text: str) -> Optional[WordPolicy]:\n211\t    \"\"\"Check if text contains blocked words\"\"\"\n212\t    found_words = []\n213\t    text_lower = text.lower()\n214\t\n215\t    for word in GUARDRAIL_CONFIG.blocked_words:\n216\t        if word.lower() in text_lower:\n217\t            found_words.append(CustomWord(match=word, action=\"BLOCKED\"))\n218\t\n219\t    if found_words:\n220\t        return WordPolicy(customWords=found_words)\n221\t    return None\n222\t\n223\t\n224\tdef check_blocked_topics(text: str) -> Optional[TopicPolicy]:\n225\t    \"\"\"Check if text contains blocked topics\"\"\"\n226\t    found_topics = []\n227\t    text_lower = text.lower()\n228\t\n229\t    for topic in GUARDRAIL_CONFIG.blocked_topics:\n230\t        if topic.lower() in text_lower:\n231\t            found_topics.append(\n232\t                TopicPolicyItem(name=topic, type=topic.upper(), action=\"BLOCKED\")\n233\t            )\n234\t\n235\t    if found_topics:\n236\t        return TopicPolicy(topics=found_topics)\n237\t    return None\n238\t\n239\t\n240\tdef check_pii(text: str) -> tuple[Optional[SensitiveInformationPolicy], str]:\n241\t    \"\"\"\n242\t    Check for PII in text and return policy + anonymized text\n243\t\n244\t    Returns:\n245\t        Tuple of (SensitiveInformationPolicy or None, anonymized_text)\n246\t    \"\"\"\n247\t    pii_entities = []\n248\t    anonymized_text = text\n249\t    action = \"ANONYMIZED\" if GUARDRAIL_CONFIG.anonymize_pii else \"BLOCKED\"\n250\t\n251\t    for pii_type, pattern in GUARDRAIL_CONFIG.pii_patterns.items():\n252\t        try:\n253\t            # Compile the regex pattern with a timeout to prevent ReDoS attacks\n254\t            compiled_pattern = re.compile(pattern)\n255\t            matches = compiled_pattern.finditer(text)\n256\t            for match in matches:\n257\t                matched_text = match.group()\n258\t                pii_entities.append(\n259\t                    PiiEntity(type=pii_type, match=matched_text, action=action)\n260\t                )\n261\t\n262\t                # Anonymize the text if configured\n263\t                if GUARDRAIL_CONFIG.anonymize_pii:\n264\t                    anonymized_text = anonymized_text.replace(\n265\t                        matched_text, f\"[{pii_type}_REDACTED]\"\n266\t                    )\n267\t        except re.error:\n268\t            # Invalid regex pattern - skip it and log a warning\n269\t            print(f\"Warning: Invalid regex pattern for PII type {pii_type}: {pattern}\")\n270\t            continue\n271\t\n272\t    if pii_entities:\n273\t        return SensitiveInformationPolicy(piiEntities=pii_entities), anonymized_text\n274\t\n275\t    return None, text\n276\t\n277\t\n278\tdef process_guardrail_request(\n\n... (gap) ...\n\n296\t    combined_text = \" \".join(all_text_content)\n297\t\n298\t    # Initialize response\n299\t    response = BedrockGuardrailResponse()\n300\t    assessment = Assessment()\n301\t    has_intervention = False\n302\t\n303\t    # Check for blocked words\n304\t    word_policy = check_blocked_words(combined_text)\n305\t    if word_policy:\n306\t        assessment.wordPolicy = word_policy\n307\t        has_intervention = True\n308\t\n309\t    # Check for blocked topics\n310\t    topic_policy = check_blocked_topics(combined_text)\n311\t    if topic_policy:\n312\t        assessment.topicPolicy = topic_policy\n313\t        has_intervention = True\n314\t\n315\t    # Check for PII\n316\t    for text in all_text_content:\n317\t        pii_policy, anonymized_text = check_pii(text)\n318\t        if pii_policy:\n319\t            assessment.sensitiveInformationPolicy = pii_policy\n320\t            if GUARDRAIL_CONFIG.anonymize_pii:\n\n... (gap) ...\n\n335\t        response.assessments = [assessment]\n336\t\n337\t    # Add outputs (modified or original text)\n338\t    response.outputs = [BedrockGuardrailOutput(text=txt) for txt in output_texts]\n339\t\n340\t    return response, output_texts\n341\t\n```\n\n**`.github/scripts/close_duplicate_issues.py`** \u2014 close_as_duplicate(calls), fetch_open_issues(calls), fetch_open_issues(function), close_as_duplicate(function), normalize_title(calls), +10 more\n\n```python\n17\timport sys\n18\t\n19\t\n20\tdef normalize_title(title: str) -> str:\n21\t    \"\"\"Strip common p\n[TRUNCATED omitted_chars=9275]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1100,
+                  "end_line": 1160,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1100-1160]\n1100:             non_default_values[\"max_budget\"] = litellm.max_internal_user_budget\n1101: \n1102:     if (\n1103:         \"budget_duration\" not in non_default_values\n1104:     ):  # applies internal user limits, if user role updated\n1105:         if is_internal_user and litellm.internal_user_budget_duration is not None:\n1106:             non_default_values[\n1107:                 \"budget_duration\"\n1108:             ] = litellm.internal_user_budget_duration\n1109:             from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time\n1110: \n1111:             non_default_values[\"budget_reset_at\"] = get_budget_reset_time(\n1112:                 budget_duration=non_default_values[\"budget_duration\"]\n1113:             )\n1114: \n1115:     return non_default_values\n1116: \n1117: \n1118: async def _update_single_user_helper(\n1119:     user_request: UpdateUserRequest,\n1120:     user_api_key_dict: UserAPIKeyAuth,\n1121:     litellm_changed_by: Optional[str] = None,\n1122: ) -> Dict[str, Any]:\n1123:     \"\"\"\n1124:     Helper function to update a single user.\n1125:     Used by both user_update and bulk_user_update endpoints.\n1126: \n1127:     Returns the updated user data or raises an exception on failure.\n1128:     \"\"\"\n1129:     from litellm.proxy.proxy_server import litellm_proxy_admin_name, prisma_client\n1130: \n1131:     if prisma_client is None:\n1132:         raise Exception(\"Not connected to DB!\")\n1133: \n1134:     # Only proxy admins can modify user_role\n1135:     if (\n1136:         user_request.user_role is not None\n1137:         and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n1138:     ):\n1139:         raise HTTPException(\n1140:             status_code=403,\n1141:             detail=\"Only proxy admins can modify user roles.\",\n1142:         )\n1143: \n1144:     # Validate user identifier\n1145:     if not user_request.user_id and not user_request.user_email:\n1146:         raise ValueError(\"Either user_id or user_email must be provided\")\n1147: \n1148:     # Convert to data format expected by update logic\n1149:     data_json: dict = user_request.model_dump(exclude_unset=True)\n1150: \n1151:     # Apply update transformations (reuse existing logic)\n1152:     non_default_values = _update_internal_user_params(\n1153:         data_json=data_json, data=user_request\n1154:     )\n1155: \n1156:     _hash_password_in_dict(non_default_values)\n1157: \n1158:     # Get existing user data for audit logging and metadata preparation\n1159:     existing_user_row: Optional[BaseModel] = None\n1160:     if user_request.user_id:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1480,
+                  "end_line": 1580,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1480-1580]\n1480:     curl --location 'http://0.0.0.0:4000/user/bulk_update' \\\n1481:     --header 'Authorization: Bearer sk-1234' \\\n1482:     --header 'Content-Type: application/json' \\\n1483:     --data '{\n1484:         \"users\": [\n1485:             {\n1486:                 \"user_id\": \"user1\",\n1487:                 \"user_role\": \"internal_user\",\n1488:                 \"max_budget\": 100.0\n1489:             },\n1490:             {\n1491:                 \"user_email\": \"user2@example.com\", \n1492:                 \"user_role\": \"internal_user_viewer\",\n1493:                 \"max_budget\": 50.0\n1494:             }\n1495:         ]\n1496:     }'\n1497:     ```\n1498:     \n1499:     Example request for all users:\n1500:     ```bash\n1501:     curl --location 'http://0.0.0.0:4000/user/bulk_update' \\\n1502:     --header 'Authorization: Bearer sk-1234' \\\n1503:     --header 'Content-Type: application/json' \\\n1504:     --data '{\n1505:         \"all_users\": true,\n1506:         \"user_updates\": {\n1507:             \"user_role\": \"internal_user\",\n1508:             \"max_budget\": 50.0\n1509:         }\n1510:     }'\n1511:     ```\n1512:     \"\"\"\n1513:     from litellm.proxy.proxy_server import litellm_proxy_admin_name, prisma_client\n1514: \n1515:     if prisma_client is None:\n1516:         raise HTTPException(\n1517:             status_code=500,\n1518:             detail={\"error\": \"Database not connected\"},\n1519:         )\n1520: \n1521:     # Only proxy admins can modify user_role in bulk updates\n1522:     _bulk_role = (\n1523:         getattr(data.user_updates, \"user_role\", None) if data.user_updates else None\n1524:     )\n1525:     if _bulk_role is None and data.users:\n1526:         _bulk_role = next(\n1527:             (u.user_role for u in data.users if u.user_role is not None), None\n1528:         )\n1529:     if (\n1530:         _bulk_role is not None\n1531:         and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n1532:     ):\n1533:         raise HTTPException(\n1534:             status_code=403,\n1535:             detail=\"Only proxy admins can modify user roles.\",\n1536:         )\n1537: \n1538:     # Determine the list of users to update\n1539:     users_to_update: Union[\n1540:         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]\n1541:     ] = []\n1542: \n1543:     if data.all_users and data.user_updates:\n1544:         # Only proxy admins can update all users at once\n1545:         if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:\n1546:             raise HTTPException(\n1547:                 status_code=403,\n1548:                 detail=\"Only proxy admins can update all users at once.\",\n1549:             )\n1550:         # Optimized path for updating all users directly in database\n1551:         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(\n1552:             order={\"created_at\": \"desc\"}\n1553:         )\n1554: \n1555:         if not all_users_in_db:\n1556:             raise HTTPException(\n1557:                 status_code=400,\n1558:                 detail={\"error\": \"No users found to update\"},\n1559:             )\n1560: \n1561:         # Limit batch size to prevent overwhelming the system\n1562:         MAX_BATCH_SIZE = 500  # Increased limit for all-users operations\n1563:         if len(all_users_in_db) > MAX_BATCH_SIZE:\n1564:             raise HTTPException(\n1565:                 status_code=400,\n1566:                 detail={\n1567:                     \"error\": f\"Maximum {MAX_BATCH_SIZE} users can be updated at once. Found {len(all_users_in_db)} users.\"\n1568:                 },\n1569:             )\n1570: \n1571:         # Apply update transformations (reuse existing logic)\n1572:         data_json: dict = data.user_updates.model_dump(exclude_unset=True)\n1573:         non_default_values = _update_internal_user_params(\n1574:             data_json=data_json, data=data.user_updates\n1575:         )\n1576: \n1577:         # Remove user identification fields since we're updating by user_id\n1578:         non_default_values.pop(\"user_id\", None)\n1579:         non_default_values.pop(\"user_email\", None)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 1900,
+                  "end_line": 2010,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=1900-2010]\n1900:     object_permission_dict: Optional[dict] = None\n1901:     if data.object_permission is not None:\n1902:         object_permission_dict = (\n1903:             data.object_permission.model_dump()\n1904:             if hasattr(data.object_permission, \"model_dump\")\n1905:             else dict(data.object_permission)  # type: ignore[arg-type]\n1906:         )\n1907:     await validate_key_mcp_servers_against_team(\n1908:         object_permission=object_permission_dict,\n1909:         team_obj=effective_team_obj,\n1910:     )\n1911: \n1912: \n1913: async def _validate_update_key_data(\n1914:     data: UpdateKeyRequest,\n1915:     existing_key_row: Any,\n1916:     user_api_key_dict: UserAPIKeyAuth,\n1917:     llm_router: Any,\n1918:     premium_user: bool,\n1919:     prisma_client: Any,\n1920:     user_api_key_cache: Any,\n1921: ) -> None:\n1922:     \"\"\"Validate permissions and constraints for key update.\"\"\"\n1923:     _is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value\n1924: \n1925:     _check_allowed_routes_caller_permission(\n1926:         allowed_routes=data.allowed_routes,\n1927:         user_api_key_dict=user_api_key_dict,\n1928:     )\n1929: \n1930:     # Prevent non-admin from removing user_id (setting to empty string) (LIT-1884)\n1931:     if data.user_id is not None and data.user_id == \"\" and not _is_proxy_admin:\n1932:         raise HTTPException(\n1933:             status_code=403,\n1934:             detail=\"Non-admin users cannot remove the user_id from a key.\",\n1935:         )\n1936: \n1937:     # sanity check - prevent non-proxy admin user from updating key to belong to a different user\n1938:     if (\n1939:         data.user_id is not None\n1940:         and data.user_id != existing_key_row.user_id\n1941:         and not _is_proxy_admin\n1942:     ):\n1943:         raise HTTPException(\n1944:             status_code=403,\n1945:             detail=f\"User={data.user_id} is not allowed to update key={data.key} to belong to user={existing_key_row.user_id}\",\n1946:         )\n1947: \n1948:     common_key_access_checks(\n1949:         user_api_key_dict=user_api_key_dict,\n1950:         data=data,\n1951:         user_id=existing_key_row.user_id,\n1952:         llm_router=llm_router,\n1953:         premium_user=premium_user,\n1954:     )\n1955: \n1956:     await TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint(\n1957:         user_api_key_dict=user_api_key_dict,\n1958:         route=KeyManagementRoutes.KEY_UPDATE,\n1959:         prisma_client=prisma_client,\n1960:         existing_key_row=existing_key_row,\n1961:         user_api_key_cache=user_api_key_cache,\n1962:     )\n1963: \n1964:     # Admin-only: only proxy admins, team admins, or org admins can modify max_budget or spend\n1965:     if (\n1966:         data.max_budget is not None and data.max_budget != existing_key_row.max_budget\n1967:     ) or (\n1968:         data.spend is not None\n1969:         and data.spend != getattr(existing_key_row, \"spend\", None)\n1970:     ):\n1971:         if prisma_client is not None:\n1972:             hashed_key = existing_key_row.token\n1973:             await _check_key_admin_access(\n1974:                 user_api_key_dict=user_api_key_dict,\n1975:                 hashed_token=hashed_key,\n1976:                 prisma_client=prisma_client,\n1977:                 user_api_key_cache=user_api_key_cache,\n1978:                 route=\"/key/update (max_budget/spend)\",\n1979:             )\n1980: \n1981:     # Check team limits if key has a team_id (from request or existing key)\n1982:     team_obj: Optional[LiteLLM_TeamTableCachedObj] = None\n1983:     _team_id_to_check = data.team_id or getattr(existing_key_row, \"team_id\", None)\n1984:     if _team_id_to_check is not None:\n1985:         team_obj = await get_team_object(\n1986:             team_id=_team_id_to_check,\n1987:             prisma_client=prisma_client,\n1988:             user_api_key_cache=user_api_key_cache,\n1989:             check_db_only=True,\n1990:         )\n1991: \n1992:         # Validate team exists when non-admin sets a new team_id (LIT-1884)\n1993:         if team_obj is None and data.team_id is not None and not _is_proxy_admin:\n1994:             raise HTTPException(\n1995:                 status_code=400,\n1996:                 detail=f\"Team not found for team_id={data.team_id}. Non-admin users cannot set keys to non-existent teams.\",\n1997:             )\n1998: \n1999:         if team_obj is not None:\n2000:             await _check_team_key_limits(\n2001:                 team_table=team_obj,\n2002:                 data=data,\n2003:                 prisma_client=prisma_client,\n2004:             )\n2005: \n2006:     # Validate key against project limits if project_id is being set\n2007:     _project_id_to_check = getattr(data, \"project_id\", None) or getattr(\n2008:         existing_key_row, \"project_id\", None\n2009:     )\n2010:     if _project_id_to_check is not None and (\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "async def _check_key_admin_access",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"async def _check_key_admin_access\"]\nlitellm/proxy/management_endpoints/key_management_endpoints.py:4968:async def _check_key_admin_access(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4968,
+                  "end_line": 5040,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4968-5040]\n4968: async def _check_key_admin_access(\n4969:     user_api_key_dict: UserAPIKeyAuth,\n4970:     hashed_token: str,\n4971:     prisma_client: Any,\n4972:     user_api_key_cache: DualCache,\n4973:     route: str,\n4974: ) -> None:\n4975:     \"\"\"\n4976:     Check that the caller has admin privileges for the target key.\n4977: \n4978:     Allowed callers:\n4979:     - Proxy admin\n4980:     - Team admin for the key's team\n4981:     - Org admin for the key's team's organization\n4982: \n4983:     Raises HTTPException(403) if the caller is not authorized.\n4984:     \"\"\"\n4985: \n4986:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4987:         return\n4988: \n4989:     # Look up the target key to find its team\n4990:     target_key_row = await prisma_client.db.litellm_verificationtoken.find_unique(\n4991:         where={\"token\": hashed_token}\n4992:     )\n4993:     if target_key_row is None:\n4994:         raise HTTPException(\n4995:             status_code=404,\n4996:             detail={\"error\": f\"Key not found: {hashed_token}\"},\n4997:         )\n4998: \n4999:     # If the key belongs to a team, check team admin / org admin\n5000:     if target_key_row.team_id:\n5001:         team_obj = await get_team_object(\n5002:             team_id=target_key_row.team_id,\n5003:             prisma_client=prisma_client,\n5004:             user_api_key_cache=user_api_key_cache,\n5005:             check_db_only=True,\n5006:         )\n5007:         if team_obj is not None:\n5008:             if _is_user_team_admin(\n5009:                 user_api_key_dict=user_api_key_dict, team_obj=team_obj\n5010:             ):\n5011:                 return\n5012:             if await _is_user_org_admin_for_team(\n5013:                 user_api_key_dict=user_api_key_dict, team_obj=team_obj\n5014:             ):\n5015:                 return\n5016: \n5017:     raise HTTPException(\n5018:         status_code=403,\n5019:         detail={\n5020:             \"error\": f\"Only proxy admins, team admins, or org admins can call {route}. \"\n5021:             f\"user_role={user_api_key_dict.user_role}, user_id={user_api_key_dict.user_id}\"\n5022:         },\n5023:     )\n5024: \n5025: \n5026: @router.post(\n5027:     \"/key/block\", tags=[\"key management\"], dependencies=[Depends(user_api_key_auth)]\n5028: )\n5029: @management_endpoint_wrapper\n5030: async def block_key(\n5031:     data: BlockKeyRequest,\n5032:     http_request: Request,\n5033:     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\n5034:     litellm_changed_by: Optional[str] = Header(\n5035:         None,\n5036:         description=\"The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability\",\n5037:     ),\n5038: ) -> Optional[LiteLLM_VerificationToken]:\n5039:     \"\"\"\n5040:     Block an Virtual key from making any requests.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 740,
+                  "end_line": 790,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=740-790]\n740:             status_code=400,\n741:             detail={\n742:                 \"error\": f\"Invalid key format. LiteLLM Virtual Key must start with 'sk-'. Received: {_masked}\"\n743:             },\n744:         )\n745: \n746:     # check org key limits - done here to handle inheriting org id from team\n747:     if data.organization_id is not None:\n748:         from litellm.proxy.proxy_server import prisma_client, user_api_key_cache\n749: \n750:         if prisma_client:\n751:             org_table = await get_org_object(\n752:                 org_id=data.organization_id,\n753:                 user_api_key_cache=user_api_key_cache,\n754:                 prisma_client=prisma_client,\n755:             )\n756:             if org_table is None:\n757:                 raise HTTPException(\n758:                     status_code=400,\n759:                     detail=f\"Organization not found for organization_id={data.organization_id}\",\n760:                 )\n761:             await _check_org_key_limits(\n762:                 org_table=org_table,\n763:                 data=data,\n764:                 prisma_client=prisma_client,\n765:             )\n766: \n767:     response = await generate_key_helper_fn(\n768:         request_type=\"key\", **data_json, table_name=\"key\"\n769:     )\n770: \n771:     response[\n772:         \"soft_budget\"\n773:     ] = data.soft_budget  # include the user-input soft budget in the response\n774: \n775:     response = GenerateKeyResponse(**response)\n776: \n777:     response.token = (\n778:         response.token_id\n779:     )  # remap token to use the hash, and leave the key in the `key` field [TODO]: clean up generate_key_helper_fn to do this\n780: \n781:     asyncio.create_task(\n782:         KeyManagementEventHooks.async_key_generated_hook(\n783:             data=data,\n784:             response=response,\n785:             user_api_key_dict=user_api_key_dict,\n786:             litellm_changed_by=litellm_changed_by,\n787:         )\n788:     )\n789: \n790:     return response\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 3260,
+                  "end_line": 3300,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=3260-3300]\n3260:     - check if user is team admin and key is a team key\n3261: \n3262:     Args:\n3263:         tokens: List of tokens to delete\n3264:         user_id: Optional user_id to filter by\n3265: \n3266:     Returns:\n3267:         Tuple[Optional[Dict], List[LiteLLM_VerificationToken]]:\n3268:             Optional[Dict]:\n3269:                 - Number of deleted tokens\n3270:             List[LiteLLM_VerificationToken]:\n3271:                 - List of keys being deleted, this contains information about the key_alias, token, and user_id being deleted,\n3272:                 this is passed down to the KeyManagementEventHooks to delete the keys from the secret manager and handle audit logs\n3273:     \"\"\"\n3274:     from litellm.proxy.proxy_server import prisma_client\n3275: \n3276:     failed_tokens: List = []\n3277:     try:\n3278:         if prisma_client:\n3279:             tokens = [_hash_token_if_needed(token=key) for key in tokens]\n3280:             _keys_being_deleted: List[\n3281:                 LiteLLM_VerificationToken\n3282:             ] = await prisma_client.db.litellm_verificationtoken.find_many(\n3283:                 where={\"token\": {\"in\": tokens}}\n3284:             )\n3285: \n3286:             if len(_keys_being_deleted) == 0:\n3287:                 raise HTTPException(\n3288:                     status_code=status.HTTP_404_NOT_FOUND,\n3289:                     detail={\"error\": \"No keys found\"},\n3290:                 )\n3291: \n3292:             if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n3293:                 authorized_keys = _keys_being_deleted\n3294:             else:\n3295:                 authorized_keys = []\n3296:                 for key in _keys_being_deleted:\n3297:                     if await can_modify_verification_token(\n3298:                         key_info=key,\n3299:                         user_api_key_cache=user_api_key_cache,\n3300:                         user_api_key_dict=user_api_key_dict,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 3460,
+                  "end_line": 3500,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=3460-3500]\n3460:     prisma_client: PrismaClient,\n3461:     user_api_key_dict: UserAPIKeyAuth,\n3462:     current_master_key: str,\n3463:     new_master_key: str,\n3464: ) -> None:\n3465:     \"\"\"\n3466:     Rotate the master key\n3467: \n3468:     1. Get the values from the DB\n3469:         - Get models from DB\n3470:         - Get config from DB\n3471:     2. Decrypt the values\n3472:         - ModelTable\n3473:             - [{\"model_name\": \"str\", \"litellm_params\": {}}]\n3474:         - ConfigTable\n3475:     3. Encrypt the values with the new master key\n3476:     4. Update the values in the DB\n3477:     \"\"\"\n3478:     import prisma\n3479: \n3480:     from litellm.proxy.proxy_server import proxy_config\n3481: \n3482:     try:\n3483:         models: Optional[\n3484:             List\n3485:         ] = await prisma_client.db.litellm_proxymodeltable.find_many()\n3486:     except Exception:\n3487:         models = None\n3488:     # 2. process model table\n3489:     if models:\n3490:         decrypted_models = proxy_config.decrypt_model_list_from_db(new_models=models)\n3491:         verbose_proxy_logger.debug(\n3492:             \"ABLE TO DECRYPT MODELS - len(decrypted_models): %s\", len(decrypted_models)\n3493:         )\n3494:         new_models = []\n3495:         for model in decrypted_models:\n3496:             new_model = await _add_model_to_db(\n3497:                 model_params=Deployment(**model),\n3498:                 user_api_key_dict=user_api_key_dict,\n3499:                 prisma_client=prisma_client,\n3500:                 new_encryption_key=new_master_key,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4090,
+                  "end_line": 4140,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4090-4140]\n4090:         budget_reset_at = updated_key.budget_reset_at\n4091: \n4092:         return {\n4093:             \"key_hash\": hashed_api_key,\n4094:             \"spend\": reset_to,\n4095:             \"previous_spend\": current_spend,\n4096:             \"max_budget\": max_budget,\n4097:             \"budget_reset_at\": budget_reset_at,\n4098:         }\n4099:     except HTTPException:\n4100:         raise\n4101:     except Exception as e:\n4102:         verbose_proxy_logger.exception(\"Error resetting key spend: %s\", e)\n4103:         raise handle_exception_on_proxy(e)\n4104: \n4105: \n4106: async def validate_key_list_check(\n4107:     user_api_key_dict: UserAPIKeyAuth,\n4108:     user_id: Optional[str],\n4109:     team_id: Optional[str],\n4110:     organization_id: Optional[str],\n4111:     key_alias: Optional[str],\n4112:     key_hash: Optional[str],\n4113:     prisma_client: PrismaClient,\n4114: ) -> Optional[LiteLLM_UserTable]:\n4115:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4116:         return None\n4117: \n4118:     if user_api_key_dict.user_id is None:\n4119:         raise ProxyException(\n4120:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4121:             type=ProxyErrorTypes.bad_request_error,\n4122:             param=\"user_id\",\n4123:             code=status.HTTP_403_FORBIDDEN,\n4124:         )\n4125:     complete_user_info_db_obj: Optional[\n4126:         BaseModel\n4127:     ] = await prisma_client.db.litellm_usertable.find_unique(\n4128:         where={\"user_id\": user_api_key_dict.user_id},\n4129:         include={\"organization_memberships\": True},\n4130:     )\n4131: \n4132:     if complete_user_info_db_obj is None:\n4133:         raise ProxyException(\n4134:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4135:             type=ProxyErrorTypes.bad_request_error,\n4136:             param=\"user_id\",\n4137:             code=status.HTTP_403_FORBIDDEN,\n4138:         )\n4139: \n4140:     complete_user_info = LiteLLM_UserTable(**complete_user_info_db_obj.model_dump())\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4180,
+                  "end_line": 4230,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4180-4230]\n4180:                 where={\"token\": key_hash},\n4181:             )\n4182:         except Exception:\n4183:             raise ProxyException(\n4184:                 message=\"Key Hash not found.\",\n4185:                 type=ProxyErrorTypes.bad_request_error,\n4186:                 param=\"key_hash\",\n4187:                 code=status.HTTP_403_FORBIDDEN,\n4188:             )\n4189:         can_user_query_key_info = await _can_user_query_key_info(\n4190:             user_api_key_dict=user_api_key_dict,\n4191:             key=key_hash,\n4192:             key_info=key_info,\n4193:         )\n4194:         if not can_user_query_key_info:\n4195:             raise HTTPException(\n4196:                 status_code=status.HTTP_403_FORBIDDEN,\n4197:                 detail=\"You are not allowed to access this key's info. Your role={}\".format(\n4198:                     user_api_key_dict.user_role\n4199:                 ),\n4200:             )\n4201:     return complete_user_info\n4202: \n4203: \n4204: async def _fetch_user_team_objects(\n4205:     complete_user_info: Optional[LiteLLM_UserTable],\n4206:     prisma_client: PrismaClient,\n4207: ) -> List[LiteLLM_TeamTable]:\n4208:     \"\"\"Fetch team objects for all teams a user belongs to (single DB query).\"\"\"\n4209:     if complete_user_info is None or not complete_user_info.teams:\n4210:         return []\n4211: \n4212:     teams: Optional[\n4213:         List[BaseModel]\n4214:     ] = await prisma_client.db.litellm_teamtable.find_many(\n4215:         where={\"team_id\": {\"in\": complete_user_info.teams}}\n4216:     )\n4217:     if teams is None:\n4218:         return []\n4219: \n4220:     return [LiteLLM_TeamTable(**team.model_dump()) for team in teams]\n4221: \n4222: \n4223: def _get_admin_team_ids_from_objects(\n4224:     user_api_key_dict: UserAPIKeyAuth,\n4225:     team_objects: List[LiteLLM_TeamTable],\n4226: ) -> List[str]:\n4227:     \"\"\"Filter team objects to those where the user is an admin.\"\"\"\n4228:     return [\n4229:         team.team_id\n4230:         for team in team_objects\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "async def user_update|async def bulk_user_update",
+                  "file_glob": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"async def user_update|async def bulk_user_update\"]\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:1298:async def user_update(\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:1453:async def bulk_user_update(\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "async def update_key|async def delete_keys|async def generate_key",
+                  "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"async def update_key|async def delete_keys|async def generate_key\"]\nlitellm/proxy/management_endpoints/key_management_endpoints.py:1163:async def generate_key_fn(\nlitellm/proxy/management_endpoints/key_management_endpoints.py:2084:async def update_key_fn(  # noqa: PLR0915\nlitellm/proxy/management_endpoints/key_management_endpoints.py:2830:async def generate_key_helper_fn(  # noqa: PLR0915\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1290,
+                  "end_line": 1330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1290-1330]\n1290: \n1291: \n1292: @router.post(\n1293:     \"/user/update\",\n1294:     tags=[\"Internal User management\"],\n1295:     dependencies=[Depends(user_api_key_auth)],\n1296: )\n1297: @management_endpoint_wrapper\n1298: async def user_update(\n1299:     data: UpdateUserRequest,\n1300:     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\n1301: ):\n1302:     \"\"\"\n1303:     Example curl \n1304: \n1305:     ```\n1306:     curl --location 'http://0.0.0.0:4000/user/update' \\\n1307:     --header 'Authorization: Bearer sk-1234' \\\n1308:     --header 'Content-Type: application/json' \\\n1309:     --data '{\n1310:         \"user_id\": \"test-litellm-user-4\",\n1311:         \"user_role\": \"proxy_admin_viewer\"\n1312:     }'\n1313:     ```\n1314:     \n1315:     Parameters:\n1316:         - user_id: Optional[str] - Specify a user id. If not set, a unique id will be generated.\n1317:         - user_email: Optional[str] - Specify a user email.\n1318:         - password: Optional[str] - Specify a user password.\n1319:         - user_alias: Optional[str] - A descriptive name for you to know who this user id refers to.\n1320:         - teams: Optional[list] - specify a list of team id's a user belongs to.\n1321:         - send_invite_email: Optional[bool] - Specify if an invite email should be sent.\n1322:         - user_role: Optional[str] - Specify a user role - \"proxy_admin\", \"proxy_admin_viewer\", \"internal_user\", \"internal_user_viewer\", \"team\", \"customer\". Info about each role here: `https://github.com/BerriAI/litellm/litellm/proxy/_types.py#L20`\n1323:         - max_budget: Optional[float] - Specify max budget for a given user.\n1324:         - budget_duration: Optional[str] - Budget is reset at the end of specified duration. If not set, budget is never reset. You can set duration as seconds (\"30s\"), minutes (\"30m\"), hours (\"30h\"), days (\"30d\"), months (\"1mo\").\n1325:         - models: Optional[list] - Model_name's a user is allowed to call. (if empty, key is allowed to call all models)\n1326:         - tpm_limit: Optional[int] - Specify tpm limit for a given user (Tokens per minute)\n1327:         - rpm_limit: Optional[int] - Specify rpm limit for a given user (Requests per minute)\n1328:         - auto_create_key: bool - Default=True. Flag used for returning a key as part of the /user/new response\n1329:         - aliases: Optional[dict] - Model aliases for the user - [Docs](https://litellm.vercel.app/docs/proxy/virtual_keys#model-aliases)\n1330:         - config: Optional[dict] - [DEPRECATED PARAM] User-specific config.\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1440,
+                  "end_line": 1470,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1440-1470]\n1440:         )\n1441:     except Exception as e:\n1442:         verbose_proxy_logger.exception(f\"Failed to update users: {e}\")\n1443:         raise HTTPException(status_code=500, detail={\"error\": str(e)})\n1444: \n1445: \n1446: @router.post(\n1447:     \"/user/bulk_update\",\n1448:     tags=[\"Internal User management\"],\n1449:     dependencies=[Depends(user_api_key_auth)],\n1450:     response_model=BulkUpdateUserResponse,\n1451: )\n1452: @management_endpoint_wrapper\n1453: async def bulk_user_update(\n1454:     data: BulkUpdateUserRequest,\n1455:     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\n1456:     litellm_changed_by: Optional[str] = Header(\n1457:         None,\n1458:         description=\"The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability\",\n1459:     ),\n1460: ):\n1461:     \"\"\"\n1462:     Bulk update multiple users at once.\n1463:     \n1464:     This endpoint allows updating multiple users in a single request. Each user update\n1465:     is processed independently - if some updates fail, others will still succeed.\n1466:     \n1467:     Parameters:\n1468:     - users: Optional[List[UpdateUserRequest]] - List of specific user update requests\n1469:     - all_users: Optional[bool] - Set to true to update all users in the system\n1470:     - user_updates: Optional[UpdateUserRequest] - Updates to apply when all_users=True\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def delete_keys|def _delete_keys|def _delete_key",
+                  "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def rotate_master_key|def _rotate_master_key",
+                  "file_glob": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"user-role-authorization\",\n      \"title\": \"Restrict user_role modification to proxy admins on /user/update and /user/bulk_update\",\n      \"rationale\": \"Both hunks add 403 guards that block non-proxy-admin callers from setting user_role (single and bulk/all-users paths).\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/internal_user_endpoints.py#0\",\n        \"litellm/proxy/management_endpoints/internal_user_endpoints.py#1\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/internal_user_endpoints.py\", \"symbol\": \"_update_single_user_helper\", \"start_line\": 1118, \"end_line\": 1142, \"snapshot\": \"pr\", \"why\": \"Helper used by user_update; new role guard added here\"},\n        {\"path\": \"litellm/proxy/management_endpoints/internal_user_endpoints.py\", \"symbol\": \"bulk_user_update\", \"start_line\": 1453, \"end_line\": 1549, \"snapshot\": \"pr\", \"why\": \"Bulk endpoint where the new bulk-role and all-users admin guards are added\"}\n      ]\n    },\n    {\n      \"id\": \"key-spend-authorization\",\n      \"title\": \"Extend key-update admin check to cover spend changes\",\n      \"rationale\": \"The two hunks widen the condition that triggers _check_key_admin_access so modifying a key's spend now requires proxy/team/org admin, matching the max_budget rule.\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#1\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#2\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_validate_update_key_data\", \"start_line\": 1913, \"end_line\": 1979, \"snapshot\": \"pr\", \"why\": \"Validation function where the spend condition and route label were changed\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_check_key_admin_access\", \"start_line\": 4968, \"end_line\": 5023, \"snapshot\": \"pr\", \"why\": \"Authorization helper invoked by the widened condition\"}\n      ]\n    },\n    {\n      \"id\": \"formatting-only\",\n      \"title\": \"Cosmetic reformatting of soft_budget assignment and type-annotated DB queries\",\n      \"rationale\": \"These hunks only reflow line breaks/annotations (soft_budget response, key-delete find_many, model-table fetch, user/team lookups) with no change to authorization logic.\",\n      \"hunks\": [\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#0\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#3\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#4\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#5\",\n        \"litellm/proxy/management_endpoints/key_management_endpoints.py#6\"\n      ],\n      \"context\": [\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"generate_key_fn\", \"start_line\": 767, \"end_line\": 775, \"snapshot\": \"pr\", \"why\": \"soft_budget response assignment reformatted\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"validate_key_list_check\", \"start_line\": 4106, \"end_line\": 4130, \"snapshot\": \"pr\", \"why\": \"User-table find_unique annotation reflowed\"},\n        {\"path\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"symbol\": \"_fetch_user_team_objects\", \"start_line\": 4204, \"end_line\": 4216, \"snapshot\": \"pr\", \"why\": \"Team-table find_many annotation reflowed\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "user-role-authorization",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "who can modify user roles proxy admin only user update endpoint"
+                },
+                "result": "[docs/my-website/docs/proxy/access_control.md:29-76] (relevance 0.53)\n- Use **user + team keys** when you want individual accountability within a team budget\n\n---\n\n## User Roles\n\nLiteLLM has two types of roles:\n\n1. **Global Proxy Roles** - Platform-wide roles that apply across all organizations and teams\n2. **Organization/Team Specific Roles** - Roles scoped to specific organizations or teams (**Premium Feature**)\n\n### Global Proxy Roles\n\n| Role Name | Permissions |\n|-----------|-------------|\n| `proxy_admin` | Admin over the entire platform. Full control over all organizations, teams, and users |\n| `proxy_admin_viewer` | Can login, view all keys, view all spend across the platform. **Cannot** create keys/delete keys/add new users |\n| `internal_user` | Can login, view/create (when allowed by team-specific permissions)/delete their own keys, view their spend. **Cannot** add new users |\n| `internal_user_viewer` | \u26a0\ufe0f **DEPRECATED** - Use team/org specific roles instead. Can login, view their own keys, view their own spend. **Cannot** create/delete keys, add new users |\n\n### Organization/Team Specific Roles\n\n| Role Name | Permissions |\n|-----------|-------------|\n| `org_admin` | Admin over a specific organization. Can create teams and users within their organization \u2728 **Premium Feature** |\n| `team_admin` | Admin over a specific team. Can manage team members, update team member permissions, and create keys for their team. \u2728 **Premium Feature** |\n\n## What Can Each Role Do?\n\nHere's what each role can actually do. Think of it like levels of access.\n\n---\n\n## Global Proxy Roles\n\nThese roles apply across the entire LiteLLM platform, regardless of organization or team boundaries.\n\n### Proxy Admin - Full Access\n\nThe proxy admin controls everything. They're like the owner of the whole platform.\n\n**What they can do:**\n- Create and manage all organizations\n- Create and manage all teams (across all organizations)\n- Create and manage all users\n- View all spend and usage across the platform\n- Create and delete keys for anyone\n- Update team budgets, rate limits, and models\n\n---\n\n[docs/my-website/docs/proxy/access_control.md:278-336] (relevance 0.53)\n--header 'Authorization: Bearer sk-1234' \\\n    --header 'Content-Type: application/json' \\\n    --data '{\n        \"team_id\": \"team-123\",\n        \"team_member_permissions\": [\"/key/info\", \"/key/health\", \"/key/generate\", \"/key/update\"]\n    }'\n```\n\nThis allows team members to:\n- View key information\n- Create new keys\n- Update existing keys\n- But NOT delete keys\n\n### Who Can Configure These Permissions?\n\n- **Proxy Admin**: Can configure permissions for any team\n- **Org Admin**: Can configure permissions for teams in their organization\n- **Team Admin**: Can configure permissions for their own team\n\n---\n\n## Quick Comparison\n\nHere's the quick version:\n\n### Global Proxy Roles\n\n| Action | Proxy Admin | Proxy Admin Viewer | Internal User | Internal User Viewer \u26a0\ufe0f (Deprecated) |\n|--------|-------------|-------------------|---------------|-------------------------------------|\n| Create organizations | \u2705 | \u274c | \u274c | \u274c |\n| Create teams | \u2705 | \u274c | \u274c | \u274c |\n| Manage all teams | \u2705 | \u274c | \u274c | \u274c |\n| Create/delete any keys | \u2705 | \u274c | \u274c | \u274c |\n| Create/delete own keys | \u2705 | \u274c | \u2705 | \u274c |\n| View all platform spend | \u2705 | \u2705 | \u274c | \u274c |\n| View own spend | \u2705 | \u2705 | \u2705 | \u2705 |\n| View all keys | \u2705 | \u2705 | \u274c | \u274c |\n| View own keys | \u2705 | \u2705 | \u2705 | \u2705 |\n| Add/remove users | \u2705 | \u274c | \u274c | \u274c |\n\n> **Note:** The `internal_user_viewer` role is deprecated. Use team/org specific roles for better granular access control.\n\n### Organization/Team Specific Roles\n\n| Action | Org Admin | Team Admin |\n|--------|-----------|------------|\n| Create teams (in their org) | \u2705 | \u274c |\n| Manage teams in their org | \u2705 | \u274c |\n| Manage their specific team | \u2705 | \u2705 |\n| Add/remove team members | \u2705 (in their org) | \u2705 (their team only) |\n| Update team budgets | \u2705 (in their org) | \u2705 (their team only) |\n| Create keys for team members | \u2705 (in their org) | \u2705 (their team only) |\n| View organization spend | \u2705 (their org) | \u274c |\n| View team spend | \u2705 (in their org) | \u2705 (their team) |\n| Create organizations | \u274c | \u274c |\n| View all platform spend | \u274c | \u274c |\n\n## Onboarding Organizations\n\n---\n\n[docs/my-website/docs/proxy/access_control.md:72-133] (relevance 0.52)\n- Create and manage all teams (across all organizations)\n- Create and manage all users\n- View all spend and usage across the platform\n- Create and delete keys for anyone\n- Update team budgets, rate limits, and models\n- Manage team members and assign roles\n\n**Who should be a proxy admin:** Only the people running the LiteLLM instance.\n\n---\n\n### Proxy Admin Viewer - Platform-Wide Read Access\n\nThe proxy admin viewer can see everything across the platform but cannot make changes.\n\n**What they can do:**\n- View all organizations, teams, and users\n- View all spend and usage across the platform\n- View all API keys\n- Login to the admin dashboard\n\n**What they cannot do:**\n- Create or delete keys\n- Add or remove users\n- Modify budgets, rate limits, or settings\n- Make any changes to the platform\n\n**Who should be a proxy admin viewer:** Finance teams, auditors, or stakeholders who need platform-wide visibility without modification rights.\n\n---\n\n### Internal User\n\nAn internal user can create API keys (when allowed by team-specific permissions) and make calls. They see their own stuff only. They can become a team admin or org admin if they are assigned the respective roles.\n\n**What they can do:**\n- Create API keys for themselves\n- Delete their own API keys\n- View their own spend and usage\n- Make API calls using their keys\n\n\n**Who should be an internal user:** Anyone who needs UI access for team/org specific operations **OR** for developers you plan to give multiple keys to.\n\n---\n\n### Internal User Viewer - Read-Only Access\n\n:::warning DEPRECATED\nThis role is deprecated in favor of team/org specific roles. Use `org_admin` or `team_admin` roles for better granular control over user permissions within organizations and teams.\n:::\n\nAn internal user viewer can view their own information but cannot create or delete keys.\n\n**What they can do:**\n- View their own API keys\n- View their own spend and usage\n- Login to see their dashboard\n\n**What they cannot do:**\n- Create or delete API keys\n- Make changes to any settings\n\n---\n\n[docs/my-website/docs/tutorials/msft_sso.md:156-212] (relevance 0.47)\n- `internal_user` - Standard user (can create/view/delete their own keys and view their own spend)\n\n### 4.2 Create App Roles in Entra ID\n\n1. Navigate to your App Registration on https://portal.azure.com/\n2. Go to **App roles** > **Create app role**\n\n3. Configure the app role:\n   - **Display name**: Proxy Admin (or your preferred display name)\n   - **Value**: `proxy_admin` (use one of the supported role values above)\n   - **Description**: Administrator access to LiteLLM proxy\n   - **Allowed member types**: Users/Groups\n\n\n4. Click **Apply** to save the role\n\n### 4.3 Assign Users to App Roles\n\n1. Navigate to **Enterprise Applications** on https://portal.azure.com/\n2. Select your LiteLLM application\n3. Go to **Users and groups** > **Add user/group**\n4. Select the user and assign them to one of the app roles you created\n\n\n### 4.4 Test the Role Assignment\n\n1. Sign in to LiteLLM UI via SSO as a user with an assigned app role\n2. LiteLLM will automatically extract the app role from the JWT token\n3. The user will be assigned the corresponding LiteLLM role in the database\n4. The user's permissions will reflect their assigned role\n\n**How it works:**\n- When a user signs in via Microsoft SSO, LiteLLM extracts the `roles` claim from the JWT `id_token`\n- If any of the roles match a valid LiteLLM role (case-insensitive), that role is assigned to the user\n- If multiple roles are present, LiteLLM uses the first valid role it finds\n- This role assignment persists in the LiteLLM database and determines the user's access level\n\n## Video Walkthrough\n\nThis walks through setting up sso auto-add for **Microsoft Entra ID**\n\nFollo"
+              },
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "can_user_call_user_update definition and user_update endpoint route"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 status=ok truncated=true incomplete=true query=\"can_user_call_user_update definition and user_update endpoint route\"]\n**Exploration: can_user_call_user_update definition and user_update endpoint route**\n\nFound 28 symbols across 4 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `update_model_prices` (cookbook/misc/update_json_caching.py:22) \u2014 1 caller in `cookbook/misc/update_json_caching.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`cookbook/misc/update_json_caching.py`** \u2014 update_model_prices(function), models_to_update(variable), file_path(variable), update_json_caching.py(file)\n\n```python\n1\timport json\n2\t\n3\t# List of models to update\n4\tmodels_to_update = [\n5\t    \"gpt-4o-mini\",\n6\t    \"gpt-4o-mini-2024-07-18\",\n7\t    \"gpt-4o\",\n8\t    \"gpt-4o-2024-11-20\",\n9\t    \"gpt-4o-2024-08-06\",\n10\t    \"gpt-4o-2024-05-13\",\n11\t    \"text-embedding-3-small\",\n12\t    \"text-embedding-3-large\",\n13\t    \"text-embedding-ada-002-v2\",\n14\t    \"ft:gpt-4o-2024-08-06\",\n15\t    \"ft:gpt-4o-mini-2024-07-18\",\n16\t    \"ft:gpt-3.5-turbo\",\n17\t    \"ft:davinci-002\",\n18\t    \"ft:babbage-002\",\n19\t]\n20\t\n21\t\n22\tdef update_model_prices(file_path):\n23\t    # Read the JSON file as text first to preserve number formatting\n24\t    with open(file_path, \"r\") as file:\n25\t        original_text = file.read()\n26\t        data = json.loads(original_text)\n27\t\n28\t    # Update specified models\n29\t    for model_name in models_to_update:\n30\t        print(\"finding model\", model_name)\n31\t        if model_name in data:\n32\t            print(\"found model\")\n33\t            model = data[model_name]\n34\t            if \"input_cost_per_token\" in model:\n35\t                # Format new values to match original style\n36\t                model[\"input_cost_per_token_batches\"] = float(\n37\t                    \"{:.12f}\".format(model[\"input_cost_per_token\"] / 2)\n38\t                )\n39\t            if \"output_cost_per_token\" in model:\n40\t                model[\"output_cost_per_token_batches\"] = float(\n41\t                    \"{:.12f}\".format(model[\"output_cost_per_token\"] / 2)\n42\t                )\n43\t        print(\"new pricing for model=\")\n44\t        # Convert all float values to full decimal format before printing\n45\t        formatted_model = {\n46\t            k: \"{:.9f}\".format(v) if isinstance(v, float) else v\n47\t            for k, v in data[model_name].items()\n48\t        }\n49\t        print(json.dumps(formatted_model, indent=4))\n50\t\n51\t\n52\t# Run the update\n53\tfile_path = \"model_prices_and_context_window.json\"\n54\tupdate_model_prices(file_path)\n```\n\n**`cookbook/misc/add_new_models.py`** \u2014 get_user_input(function), main(function), get_initial_config(function), make_request(function)\n\n```python\n1\timport requests\n2\t\n3\t\n4\tdef get_initial_config():\n5\t    proxy_base_url = input(\"Enter your proxy base URL (e.g., http://localhost:4000): \")\n6\t    master_key = input(\"Enter your LITELLM_MASTER_KEY \")\n7\t    return proxy_base_url, master_key\n8\t\n9\t\n10\tdef get_user_input():\n11\t    model_name = input(\n12\t        \"Enter model_name (this is the 'model' passed in /chat/completions requests):\"\n13\t    )\n14\t    model = input(\"litellm_params: Enter model eg. 'azure/<your-deployment-name>': \")\n15\t    tpm = int(input(\"litellm_params: Enter tpm (tokens per minute): \"))\n16\t    rpm = int(input(\"litellm_params: Enter rpm (requests per minute): \"))\n17\t    api_key = input(\"litellm_params: Enter api_key: \")\n18\t    api_base = input(\"litellm_params: Enter api_base: \")\n19\t    api_version = input(\"litellm_params: Enter api_version: \")\n20\t    timeout = int(input(\"litellm_params: Enter timeout (0 for default): \"))\n21\t    stream_timeout = int(\n22\t        input(\"litellm_params: Enter stream_timeout (0 for default): \")\n23\t    )\n24\t    max_retries = int(input(\"litellm_params: Enter max_retries (0 for default): \"))\n25\t\n26\t    return {\n27\t        \"model_name\": model_name,\n28\t        \"litellm_params\": {\n29\t            \"model\": model,\n30\t            \"tpm\": tpm,\n31\t            \"rpm\": rpm,\n32\t            \"api_key\": api_key,\n33\t            \"api_base\": api_base,\n34\t            \"api_version\": api_version,\n35\t            \"timeout\": timeout,\n36\t            \"stream_timeout\": stream_timeout,\n37\t            \"max_retries\": max_retries,\n38\t        },\n39\t    }\n40\t\n41\t\n42\tdef make_request(proxy_base_url, master_key, data):\n43\t    url = f\"{proxy_base_url}/model/new\"\n44\t    headers = {\n45\t        \"Content-Type\": \"application/json\",\n46\t        \"Authorization\": f\"Bearer {master_key}\",\n47\t    }\n48\t\n49\t    response = requests.post(url, headers=headers, json=data)\n50\t\n51\t    print(f\"Status Code: {response.status_code}\")\n52\t    print(f\"Response from adding model: {response.text}\")\n53\t\n54\t\n55\tdef main():\n56\t    proxy_base_url, master_key = get_initial_config()\n57\t\n58\t    while True:\n59\t        print(\"Adding new Model to your proxy server...\")\n60\t        data = get_user_input()\n61\t        make_request(proxy_base_url, master_key, data)\n62\t\n63\t        add_another = input(\"Do you want to add another model? (yes/no): \").lower()\n64\t        if add_another != \"yes\":\n65\t            break\n66\t\n67\t    print(\"Script finished.\")\n68\t\n69\t\n70\tif __name__ == \"__main__\":\n71\t    main()\n```\n\n**`cookbook/mock_guardrail_server/mock_bedrock_guardrail_server.py`** \u2014 update_config(function)\n\n```python\n446\t\n447\t\n448\t@app.post(\"/config/update\")\n449\tasync def update_config(\n450\t    config: GuardrailConfig, token: str = Depends(verify_bearer_token)\n451\t):\n452\t    \"\"\"\n453\t    Update t\n[TRUNCATED omitted_chars=7048]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def can_user_call_user_update",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"def can_user_call_user_update\"]\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:1278:def can_user_call_user_update(\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def bulk_update_processed_users",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"def bulk_update_processed_users\"]\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:1383:async def bulk_update_processed_users(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1278,
+                  "end_line": 1445,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1278-1445]\n1278: def can_user_call_user_update(\n1279:     user_api_key_dict: UserAPIKeyAuth,\n1280:     user_info: LiteLLM_UserTable,\n1281: ) -> bool:\n1282:     \"\"\"\n1283:     Helper to check if the user has access to the key's info\n1284:     \"\"\"\n1285:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n1286:         return True\n1287:     elif user_api_key_dict.user_id == user_info.user_id:\n1288:         return True\n1289:     return False\n1290: \n1291: \n1292: @router.post(\n1293:     \"/user/update\",\n1294:     tags=[\"Internal User management\"],\n1295:     dependencies=[Depends(user_api_key_auth)],\n1296: )\n1297: @management_endpoint_wrapper\n1298: async def user_update(\n1299:     data: UpdateUserRequest,\n1300:     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),\n1301: ):\n1302:     \"\"\"\n1303:     Example curl \n1304: \n1305:     ```\n1306:     curl --location 'http://0.0.0.0:4000/user/update' \\\n1307:     --header 'Authorization: Bearer sk-1234' \\\n1308:     --header 'Content-Type: application/json' \\\n1309:     --data '{\n1310:         \"user_id\": \"test-litellm-user-4\",\n1311:         \"user_role\": \"proxy_admin_viewer\"\n1312:     }'\n1313:     ```\n1314:     \n1315:     Parameters:\n1316:         - user_id: Optional[str] - Specify a user id. If not set, a unique id will be generated.\n1317:         - user_email: Optional[str] - Specify a user email.\n1318:         - password: Optional[str] - Specify a user password.\n1319:         - user_alias: Optional[str] - A descriptive name for you to know who this user id refers to.\n1320:         - teams: Optional[list] - specify a list of team id's a user belongs to.\n1321:         - send_invite_email: Optional[bool] - Specify if an invite email should be sent.\n1322:         - user_role: Optional[str] - Specify a user role - \"proxy_admin\", \"proxy_admin_viewer\", \"internal_user\", \"internal_user_viewer\", \"team\", \"customer\". Info about each role here: `https://github.com/BerriAI/litellm/litellm/proxy/_types.py#L20`\n1323:         - max_budget: Optional[float] - Specify max budget for a given user.\n1324:         - budget_duration: Optional[str] - Budget is reset at the end of specified duration. If not set, budget is never reset. You can set duration as seconds (\"30s\"), minutes (\"30m\"), hours (\"30h\"), days (\"30d\"), months (\"1mo\").\n1325:         - models: Optional[list] - Model_name's a user is allowed to call. (if empty, key is allowed to call all models)\n1326:         - tpm_limit: Optional[int] - Specify tpm limit for a given user (Tokens per minute)\n1327:         - rpm_limit: Optional[int] - Specify rpm limit for a given user (Requests per minute)\n1328:         - auto_create_key: bool - Default=True. Flag used for returning a key as part of the /user/new response\n1329:         - aliases: Optional[dict] - Model aliases for the user - [Docs](https://litellm.vercel.app/docs/proxy/virtual_keys#model-aliases)\n1330:         - config: Optional[dict] - [DEPRECATED PARAM] User-specific config.\n1331:         - allowed_cache_controls: Optional[list] - List of allowed cache control values. Example - [\"no-cache\", \"no-store\"]. See all values - https://docs.litellm.ai/docs/proxy/caching#turn-on--off-caching-per-request-\n1332:         - blocked: Optional[bool] - [Not Implemented Yet] Whether the user is blocked.\n1333:         - guardrails: Optional[List[str]] - [Not Implemented Yet] List of active guardrails for the user\n1334:         - policies: Optional[List[str]] - List of policy names to apply to the user. Policies define guardrails, conditions, and inheritance rules.\n1335:         - permissions: Optional[dict] - [Not Implemented Yet] User-specific permissions, eg. turning off pii masking.\n1336:         - metadata: Optional[dict] - Metadata for user, store information for user. Example metadata = {\"team\": \"core-infra\", \"app\": \"app2\", \"email\": \"ishaan@berri.ai\" }\n1337:         - max_parallel_requests: Optional[int] - Rate limit a user based on the number of parallel requests. Raises 429 error, if user's parallel requests > x.\n1338:         - soft_budget: Optional[float] - Get alerts when user crosses given budget, doesn't block requests.\n1339:         - model_max_budget: Optional[dict] - Model-specific max budget for user. [Docs](https://docs.litellm.ai/docs/proxy/users#add-model-specific-budgets-to-keys)\n1340:         - model_rpm_limit: Optional[float] - Model-specific rpm limit for user. [Docs](https://docs.litellm.ai/docs/proxy/users#add-model-specific-limits-to-keys)\n1341:         - model_tpm_limit: Optional[float] - Model-specific tpm limit for user. [Docs](https://docs.litellm.ai/docs/proxy/users#add-model-specific-limits-to-keys)\n1342:         - spend: Optional[float] - Amount spent by user. Default is 0. Will be updated by proxy whenever user is used. You can set duration as seconds (\"30s\"), minutes (\"30m\"), hours (\"30h\"), days (\"30d\"), months (\"1mo\").\n1343:         - agent_id: Optional[str] - The agent id associated with the user.\n1344:         - team_id: Optional[str] - [DEPRECATED PARAM] The team id of the user. Default is None.\n1345:         - duration: Optional[str] - [NOT IMPLEMENTED].\n1346:         - key_alias: Optional[str] - [NOT IMPLEMENTED].\n1347:         - object_permission: Optional[LiteLLM_ObjectPermissionBase] - internal user-specific object permission. Example - {\"vector_stores\": [\"vector_store_1\", \"vector_store_2\"]}. IF null or {} then no object permission.\n1348:         - prompts: Optional[List[str]] - List of allowed prompts for the user. If specified, the user will only be able to use these specific prompts.\n1349:     \n1350:     \"\"\"\n1351:     try:\n1352:         verbose_proxy_logger.debug(\"/user/update: Received data = %s\", data)\n1353: \n1354:         response = await _update_single_user_helper(\n1355:             user_request=data,\n1356:             user_api_key_dict=user_api_key_dict,\n1357:         )\n1358:         return response\n1359:     except Exception as e:\n1360:         verbose_proxy_logger.exception(\n1361:             \"litellm.proxy.proxy_server.user_update(): Exception occured - {}\".format(\n1362:                 str(e)\n1363:             )\n1364:         )\n1365:         verbose_proxy_logger.debug(traceback.format_exc())\n1366:         if isinstance(e, HTTPException):\n1367:             raise ProxyException(\n1368:                 message=getattr(e, \"detail\", f\"Authentication Error({str(e)})\"),\n1369:                 type=ProxyErrorTypes.auth_error,\n1370:                 param=getattr(e, \"param\", \"None\"),\n1371:                 code=getattr(e, \"status_code\", status.HTTP_400_BAD_REQUEST),\n1372:             )\n1373:         elif isinstance(e, ProxyException):\n1374:             raise e\n1375:         raise ProxyException(\n1376:             message=\"Authentication Error, \" + str(e),\n1377:             type=ProxyErrorTypes.auth_error,\n1378:             param=getattr(e, \"param\", \"None\"),\n1379:             code=status.HTTP_400_BAD_REQUEST,\n1380:         )\n1381: \n1382: \n1383: async def bulk_update_processed_users(\n1384:     users_to_update: List[UpdateUserRequest],\n1385:     user_api_key_dict: UserAPIKeyAuth,\n1386:     litellm_changed_by: Optional[str] = None,\n1387: ) -> BulkUpdateUserResponse:\n1388:     results: List[UserUpdateResult] = []\n1389:     successful_updates = 0\n1390:     failed_updates = 0\n1391: \n1392:     # Process each user update independently\n1393:     try:\n1394:         for user_request in users_to_update:\n1395:             try:\n1396:                 response = await _update_single_user_helper(\n1397:                     user_request=user_request,\n1398:                     user_api_key_dict=user_api_key_dict,\n1399:                     litellm_changed_by=litellm_changed_by,\n1400:                 )\n1401:                 # Record success\n1402:                 results.append(\n1403:                     UserUpdateResult(\n1404:                         user_id=(\n1405:                             response.get(\"user_id\")\n1406:                             if response\n1407:                             else user_request.user_id\n1408:                         ),\n1409:                         user_email=user_request.user_email,\n1410:                         success=True,\n1411:                         updated_user=response,\n1412:                     )\n1413:                 )\n1414:                 successful_updates += 1\n1415:             except Exception as e:\n1416:                 verbose_proxy_logger.exception(\n1417:                     f\"Failed to update user {user_request.user_id or user_request.user_email}: {e}\"\n1418:                 )\n1419:                 # Record failure\n1420:                 error_message = str(e)\n1421:                 verbose_proxy_logger.error(\n1422:                     f\"Failed to update user {user_request.user_id or user_request.user_email}: {error_message}\"\n1423:                 )\n1424: \n1425:                 results.append(\n1426:                     UserUpdateResult(\n1427:                         user_id=user_request.user_id,\n1428:                         user_email=user_request.user_email,\n1429:                         success=False,\n1430:                         error=error_message,\n1431:                     )\n1432:                 )\n1433:                 failed_updates += 1\n1434: \n1435:         return BulkUpdateUserResponse(\n1436:             results=results,\n1437:             total_requested=len(users_to_update),\n1438:             successful_updates=successful_updates,\n1439:             failed_updates=failed_updates,\n1440:         )\n1441:     except Exception as e:\n1442:         verbose_proxy_logger.exception(f\"Failed to update users: {e}\")\n1443:         raise HTTPException(status_code=500, detail={\"error\": str(e)})\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my review, the PR adds authorization guards (role-modification restricted to `proxy_admin`, all-users bulk update restricted to `proxy_admin`) that align with the documented policy. The per-user ownership check (`can_user_call_user_update`) and the new role guard are both present and correctly ordered. I found no authorization flaw newly introduced or exposed by these changed lines.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "key-spend-authorization",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4960,
+                  "end_line": 5030,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4960-5030]\n4960:             {\"team_id\": None},  # Include records where team_id is null\n4961:             {\n4962:                 \"team_id\": {\"not\": UI_SESSION_TOKEN_TEAM_ID}\n4963:             },  # Include records where team_id != UI_SESSION_TOKEN_TEAM_ID\n4964:         ]\n4965:     }\n4966: \n4967: \n4968: async def _check_key_admin_access(\n4969:     user_api_key_dict: UserAPIKeyAuth,\n4970:     hashed_token: str,\n4971:     prisma_client: Any,\n4972:     user_api_key_cache: DualCache,\n4973:     route: str,\n4974: ) -> None:\n4975:     \"\"\"\n4976:     Check that the caller has admin privileges for the target key.\n4977: \n4978:     Allowed callers:\n4979:     - Proxy admin\n4980:     - Team admin for the key's team\n4981:     - Org admin for the key's team's organization\n4982: \n4983:     Raises HTTPException(403) if the caller is not authorized.\n4984:     \"\"\"\n4985: \n4986:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4987:         return\n4988: \n4989:     # Look up the target key to find its team\n4990:     target_key_row = await prisma_client.db.litellm_verificationtoken.find_unique(\n4991:         where={\"token\": hashed_token}\n4992:     )\n4993:     if target_key_row is None:\n4994:         raise HTTPException(\n4995:             status_code=404,\n4996:             detail={\"error\": f\"Key not found: {hashed_token}\"},\n4997:         )\n4998: \n4999:     # If the key belongs to a team, check team admin / org admin\n5000:     if target_key_row.team_id:\n5001:         team_obj = await get_team_object(\n5002:             team_id=target_key_row.team_id,\n5003:             prisma_client=prisma_client,\n5004:             user_api_key_cache=user_api_key_cache,\n5005:             check_db_only=True,\n5006:         )\n5007:         if team_obj is not None:\n5008:             if _is_user_team_admin(\n5009:                 user_api_key_dict=user_api_key_dict, team_obj=team_obj\n5010:             ):\n5011:                 return\n5012:             if await _is_user_org_admin_for_team(\n5013:                 user_api_key_dict=user_api_key_dict, team_obj=team_obj\n5014:             ):\n5015:                 return\n5016: \n5017:     raise HTTPException(\n5018:         status_code=403,\n5019:         detail={\n5020:             \"error\": f\"Only proxy admins, team admins, or org admins can call {route}. \"\n5021:             f\"user_role={user_api_key_dict.user_role}, user_id={user_api_key_dict.user_id}\"\n5022:         },\n5023:     )\n5024: \n5025: \n5026: @router.post(\n5027:     \"/key/block\", tags=[\"key management\"], dependencies=[Depends(user_api_key_auth)]\n5028: )\n5029: @management_endpoint_wrapper\n5030: async def block_key(\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "who can update key spend and max_budget, key update authorization admin"
+                },
+                "result": "[docs/my-website/docs/proxy/multi_tenant_architecture.md:86-137] (relevance 0.52)\n- Team admins can manage their team without affecting others\n- Service account keys survive team member changes\n- Per-team spend tracking and billing\n\n[API Reference for Teams](https://litellm-api.up.railway.app/#/team%20management)\n\n---\n\n### 3. Users (Individual Members) \u2705 Open Source\n\n**Users** are individuals who belong to teams and create/use API keys.\n\n- Each user can:\n  - Belong to multiple teams\n  - Have their own budget limits\n  - Create personal API keys\n  - Track individual spend\n\n**User Types:**\n- **Internal Users**: Employees, developers, data scientists\n- **Team Admins**: Lead their teams, manage members\n- **Org Admins**: Manage multiple teams within their organization\n- **Proxy Admins**: Platform-wide administrators\n\n**Key Features:**\n- User spend tracked individually\n- Users can be on multiple teams simultaneously\n- Role-based permissions control what users can do\n- User keys deleted when user is removed\n\n[API Reference for Users](https://litellm-api.up.railway.app/#/user%20management)\n\n---\n\n### 4. Virtual Keys (Authentication Layer) \u2705 Open Source\n\n**Virtual Keys** are the API keys used to authenticate requests and track spend.\n\nEach key can be one of three types:\n\n| Key Type | Configuration | Use Case | Spend Tracking | Lifecycle |\n|----------|---------------|----------|----------------|-----------|\n| **User-only** | `user_id` only | Developer personal keys | User level | Deleted with user |\n| **Team Service Account** | `team_id` only | Production apps, CI/CD | Team level | Survives member changes |\n| **User + Team** | Both `user_id` and `team_id` | User within team context | User AND Team | Deleted with user |\n\n**Example Scenarios:**\n- Use **user-only keys** for developers testing locally\n- Use **team service account keys** for your production application that shouldn't break when employees leave\n- Use **user + team keys** when you want individual accountability within a team budget\n\n[API Reference for Keys](https://litellm-api.up.railway.app/#/key%20management)\n\n---\n\n[docs/my-website/docs/proxy/multi_tenant_architecture.md:134-206] (relevance 0.52)\n- Use **team service account keys** for your production application that shouldn't break when employees leave\n- Use **user + team keys** when you want individual accountability within a team budget\n\n[API Reference for Keys](https://litellm-api.up.railway.app/#/key%20management)\n\n---\n\n## Role-Based Access Control (RBAC)\n\nLiteLLM provides granular RBAC across the hierarchy:\n\n### Global Proxy Roles (Platform-Wide)\n\n| Role | Scope | Permissions |\n|------|-------|-------------|\n| **Proxy Admin** | Entire platform | Create orgs, teams, users. View all spend. Full control. |\n| **Proxy Admin Viewer** | Entire platform | View-only access to all data. Cannot make changes. |\n| **Internal User** | Own resources | Create/delete own keys. View own spend. |\n\n### Organization/Team Roles (Scoped)\n\n| Role | Scope | Permissions |\n|------|-------|-------------|\n| **Org Admin** \u2728 | Specific organization | Create teams, add users, view org spend within their org only. |\n| **Team Admin** \u2728 | Specific team | Manage team members, budgets, keys within their team only. |\n\n\u2728 = Premium Feature\n\n### Team Member Permissions\n\nTeam admins can configure granular permissions for regular team members:\n\n**Read-only** (default):\n```json\n[\"/key/info\", \"/key/health\"]\n```\n\n**Allow key creation**:\n```json\n[\"/key/info\", \"/key/health\", \"/key/generate\", \"/key/update\"]\n```\n\n**Full key management**:\n```json\n[\"/key/info\", \"/key/health\", \"/key/generate\", \"/key/update\", \"/key/delete\", \"/key/regenerate\", \"/key/block\", \"/key/unblock\"]\n```\n\n[Learn more about RBAC](./access_control)\n\n---\n\n## Spend Tracking & Cost Attribution\n\nLiteLLM provides multi-level spend tracking that flows through the hierarchy:\n\n### Hierarchical Spend Flow\n\n```\nOrganization Spend\n    \u251c\u2500\u2500 Team 1 Spend\n    \u2502   \u251c\u2500\u2500 User A Spend\n    \u2502   \u2502   \u251c\u2500\u2500 Key 1 Spend\n    \u2502   \u2502   \u2514\u2500\u2500 Key 2 Spend\n    \u2502   \u2514\u2500\u2500 Service Account Spend\n    \u2502       \u2514\u2500\u2500 Key 3 Spend\n    \u2514\u2500\u2500 Team 2 Spend\n        \u2514\u2500\u2500 User B Spend\n            \u2514\u2500\u2500 Key 4 Spend\n```\n\n### Budget Enforcement\n\nBudgets can be set at every level with inheritance:\n\n---\n\n[docs/my-website/docs/proxy/temporary_budget_increase.md:1-74] (relevance 0.52)\n# \u2728 Temporary Budget Increase\n\nSet temporary budget increase for a LiteLLM Virtual Key. Use this if you get asked to increase the budget for a key temporarily.\n\n\n| Hierarchy | Supported | \n|-----------|-----------|\n| LiteLLM Virtual Key | \u2705 |\n| User | \u274c |\n| Team | \u274c |\n| Organization | \u274c |\n\n:::note\n\n\u2728 Temporary Budget Increase is a LiteLLM Enterprise feature.\n\n[Enterprise Pricing](https://www.litellm.ai/#pricing)\n\n[Get free 7-day trial key](https://www.litellm.ai/enterprise#trial)\n\n:::\n\n\n1. Create a LiteLLM Virtual Key with budget\n\n```bash\ncurl -L -X POST 'http://localhost:4000/key/generate' \\\n-H 'Content-Type: application/json' \\\n-H 'Authorization: Bearer LITELLM_MASTER_KEY' \\\n-d '{\n    \"max_budget\": 0.0000001\n}'\n```\n\nExpected response:\n\n```json\n{\n    \"key\": \"sk-your-new-key\"\n}\n```\n\n2. Update key with temporary budget increase\n\n```bash\ncurl -L -X POST 'http://localhost:4000/key/update' \\\n-H 'Authorization: Bearer LITELLM_MASTER_KEY' \\\n-H 'Content-Type: application/json' \\\n-d '{\n    \"key\": \"sk-your-new-key\",\n    \"temp_budget_increase\": 100, \n    \"temp_budget_expiry\": \"2025-01-15\"\n}'\n```\n\n3. Test it! \n\n```bash\ncurl -L -X POST 'http://localhost:4000/chat/completions' \\\n-H 'Authorization: Bearer sk-your-new-key' \\\n-H 'Content-Type: application/json' \\\n-d '{\n    \"model\": \"gpt-4o\",\n    \"messages\": [{\"role\": \"user\", \"content\": \"Hello, world!\"}]\n}'\n```\n\nExpected Response Header:\n\n```\nx-litellm-key-max-budget: 100.0000001\n```\n\n---\n\n[docs/my-website/docs/proxy/ui_project_management.md:132-142] (relevance 0.52)\n2. **Set Budgets** \u2013 Configure project-level budget limits via the [Project Management API](./project_management.md)\n3. **Track Spend** \u2013 View project-level spend in the Usage dashboard\n4. **Manage Access** \u2013 Use [Access Groups](./access_groups.md) to control model and MCP server access\n\n## Related Documentation\n\n- [Project Management API](./project_management.md) \u2013 Full API reference for projects\n- [Access Groups](./access_groups.md) \u2013 Define reusable access controls for models, MCP servers, and agents\n- [Virtual Keys](./virtual_keys.md) \u2013 Create and manage API keys scoped to projects\n- [Role-based Access Control](./access_control.md) \u2013 Organizations, teams, and user roles\n- [Spend Logs](./spend_logs_deletion.md) \u2013 Track detailed request-level costs and usage\n\n---\n\n[docs/my-website/docs/proxy/multi_tenant_architecture.md:197-276] (relevance 0.49)\n\u2502   \u2514\u2500\u2500 Service Account Spend\n    \u2502       \u2514\u2500\u2500 Key 3 Spend\n    \u2514\u2500\u2500 Team 2 Spend\n        \u2514\u2500\u2500 User B Spend\n            \u2514\u2500\u2500 Key 4 Spend\n```\n\n### Budget Enforcement\n\nBudgets can be set at every level with inheritance:\n\n1. **Organization Budget**: `$10,000/month`\n   - Team 1: `$6,000/month` (within org limit)\n     - User A: `$3,000/month` (within team limit)\n     - User B: `$3,000/month` (within team limit)\n   - Team 2: `$4,000/month` (within org limit)\n\n**Enforcement Rules:**\n- Team budgets cannot exceed organization budget\n- User budgets cannot exceed team budget\n- Requests blocked when any level exceeds budget\n- Real-time tracking prevents overruns\n\n[Learn more about Budgets](./team_budgets)\n\n---\n\n## Common Multi-Tenant Patterns\n\n### Pattern 1: Enterprise Departments\n\n**Scenario**: Large enterprise with multiple departments needing centralized LLM access\n\n**Enterprise Setup** (with Organizations):\n```\nPlatform (LiteLLM Instance)\n\u251c\u2500\u2500 Engineering Organization \u2728\n\u2502   \u251c\u2500\u2500 Backend Team\n\u2502   \u251c\u2500\u2500 Frontend Team\n\u2502   \u2514\u2500\u2500 ML Team\n\u251c\u2500\u2500 Marketing Organization \u2728\n\u2502   \u251c\u2500\u2500 Content Team\n\u2502   \u2514\u2500\u2500 Analytics Team\n\u2514\u2500\u2500 Sales Organization \u2728\n    \u251c\u2500\u2500 Sales Ops Team\n    \u2514\u2500\u2500 Customer Success Team\n```\n\n**Open Source Alternative** (Teams only):\n```\nPlatform (LiteLLM Instance)\n\u251c\u2500\u2500 Engineering Backend Team\n\u251c\u2500\u2500 "
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "spend",
+                  "file_glob": "litellm/types/llms.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"spend\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class UpdateKeyRequest",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"class UpdateKeyRequest\"]\nlitellm/proxy/_types.py:1016:class UpdateKeyRequest(KeyRequestBase):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/_types.py",
+                  "start_line": 940,
+                  "end_line": 1060,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/_types.py lines=940-1060]\n940:     ] = None  # raise an error if 'guaranteed_throughput' is set and we're overallocating rpm\n941:     tpm_limit_type: Optional[\n942:         Literal[\"guaranteed_throughput\", \"best_effort_throughput\", \"dynamic\"]\n943:     ] = None  # raise an error if 'guaranteed_throughput' is set and we're overallocating tpm\n944:     router_settings: Optional[UpdateRouterConfig] = None\n945:     access_group_ids: Optional[List[str]] = None\n946: \n947: \n948: class LiteLLMKeyType(str, enum.Enum):\n949:     \"\"\"\n950:     Enum for key types that determine what routes a key can access\n951:     \"\"\"\n952: \n953:     LLM_API = \"llm_api\"  # Can call LLM API routes (chat/completions, embeddings, etc.)\n954:     MANAGEMENT = \"management\"  # Can call management routes (user/team/key management)\n955:     READ_ONLY = \"read_only\"  # Can only call info/read routes\n956:     DEFAULT = \"default\"  # Uses default allowed routes\n957: \n958: \n959: class GenerateKeyRequest(KeyRequestBase):\n960:     soft_budget: Optional[float] = None\n961:     send_invite_email: Optional[bool] = None\n962:     key_type: Optional[LiteLLMKeyType] = Field(\n963:         default=LiteLLMKeyType.DEFAULT,\n964:         description=\"Type of key that determines default allowed routes.\",\n965:     )\n966:     auto_rotate: Optional[bool] = Field(\n967:         default=False, description=\"Whether this key should be automatically rotated\"\n968:     )\n969:     rotation_interval: Optional[str] = Field(\n970:         default=None,\n971:         description=\"How often to rotate this key (e.g., '30d', '90d'). Required if auto_rotate=True\",\n972:     )\n973:     organization_id: Optional[str] = None\n974:     project_id: Optional[str] = None\n975: \n976: \n977: class GenerateKeyResponse(KeyRequestBase):\n978:     key: str  # type: ignore\n979:     key_name: Optional[str] = None\n980:     expires: Optional[datetime] = None\n981:     user_id: Optional[str] = None\n982:     token_id: Optional[str] = None\n983:     organization_id: Optional[str] = None\n984:     project_id: Optional[str] = None\n985:     litellm_budget_table: Optional[Any] = None\n986:     token: Optional[str] = None\n987:     created_by: Optional[str] = None\n988:     updated_by: Optional[str] = None\n989:     created_at: Optional[datetime] = None\n990:     updated_at: Optional[datetime] = None\n991: \n992:     @model_validator(mode=\"before\")\n993:     @classmethod\n994:     def set_model_info(cls, values):\n995:         if values.get(\"token\") is not None:\n996:             values.update({\"key\": values.get(\"token\")})\n997:         dict_fields = [\n998:             \"metadata\",\n999:             \"aliases\",\n1000:             \"config\",\n1001:             \"permissions\",\n1002:             \"model_max_budget\",\n1003:             \"router_settings\",\n1004:         ]\n1005:         for field in dict_fields:\n1006:             value = values.get(field)\n1007:             if value is not None and isinstance(value, str):\n1008:                 try:\n1009:                     values[field] = json.loads(value)\n1010:                 except json.JSONDecodeError:\n1011:                     raise ValueError(f\"Field {field} should be a valid dictionary\")\n1012: \n1013:         return values\n1014: \n1015: \n1016: class UpdateKeyRequest(KeyRequestBase):\n1017:     # Note: the defaults of all Params here MUST BE NONE\n1018:     # else they will get overwritten\n1019:     key: str  # type: ignore\n1020:     duration: Optional[str] = None\n1021:     spend: Optional[float] = None\n1022:     metadata: Optional[dict] = None\n1023:     temp_budget_increase: Optional[float] = None\n1024:     temp_budget_expiry: Optional[datetime] = None\n1025:     auto_rotate: Optional[bool] = None\n1026:     rotation_interval: Optional[str] = None\n1027:     organization_id: Optional[str] = None\n1028: \n1029:     @model_validator(mode=\"after\")\n1030:     def validate_temp_budget(self) -> \"UpdateKeyRequest\":\n1031:         if self.temp_budget_increase is not None or self.temp_budget_expiry is not None:\n1032:             if self.temp_budget_increase is None or self.temp_budget_expiry is None:\n1033:                 raise ValueError(\n1034:                     \"temp_budget_increase and temp_budget_expiry must be set together\"\n1035:                 )\n1036:         return self\n1037: \n1038: \n1039: class RegenerateKeyRequest(GenerateKeyRequest):\n1040:     # This needs to be different from UpdateKeyRequest, because \"key\" is optional for this\n1041:     key: Optional[str] = None\n1042:     new_key: Optional[str] = None\n1043:     duration: Optional[str] = None\n1044:     spend: Optional[float] = None\n1045:     metadata: Optional[dict] = None\n1046:     new_master_key: Optional[str] = None\n1047:     grace_period: Optional[\n1048:         str\n1049:     ] = None  # Duration to keep old key valid (e.g. \"24h\", \"2d\"); None = immediate revoke\n1050: \n1051: \n1052: class ResetSpendRequest(LiteLLMPydanticObjectBase):\n1053:     reset_to: float\n1054: \n1055: \n1056: class KeyRequest(LiteLLMPydanticObjectBase):\n1057:     keys: Optional[List[str]] = None\n1058:     key_aliases: Optional[List[str]] = None\n1059: \n1060:     @model_validator(mode=\"before\")\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-863\",\n      \"explanation\": \"The PR widens the admin-only guard so that modifying a key's `spend` now triggers `_check_key_admin_access`. However, `_check_key_admin_access` (lines 4986-5015) only authorizes Proxy Admins, Team Admins, and Org Admins. The RBAC policy (multi_tenant_architecture.md) grants regular team members the `/key/update` permission (\\\"Allow key creation: [\\\"/key/info\\\", \\\"/key/health\\\", \\\"/key/generate\\\", \\\"/key/update\\\"]\\\"). Because `spend` is a computed, system-tracked cost value (not a user-settable budget like `max_budget`), a regular team member who is permitted to call `/key/update` and who changes `spend` will be denied by the new admin-only check \u2014 i.e., the authorization check is incorrect for the role that the policy allows to update keys. This is an incorrect-authorization regression: the check does not account for the team-member role that the policy authorizes for key updates.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"lines\": [1964, 1979], \"content\": \"    if (\\n        data.max_budget is not None and data.max_budget != existing_key_row.max_budget\\n    ) or (\\n        data.spend is not None\\n        and data.spend != getattr(existing_key_row, \\\"spend\\\", None)\\n    ):\\n        if prisma_client is not None:\\n            hashed_key = existing_key_row.token\\n            await _check_key_admin_access(\\n                user_api_key_dict=user_api_key_dict,\\n                hashed_token=hashed_key,\\n                prisma_client=prisma_client,\\n                user_api_key_cache=user_api_key_cache,\\n                route=\\\"/key/update (max_budget/spend)\\\",\\n            )\"},\n        {\"type\": \"code\", \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\", \"lines\": [4986, 5015], \"content\": \"    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\\n        return\\n    ...\\n        if team_obj is not None:\\n            if _is_user_team_admin(\\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\\n            ):\\n                return\\n            if await _is_user_org_admin_for_team(\\n                user_api_key_dict=user_api_key_dict, team_obj=team_obj\\n            ):\\n                return\"},\n        {\"type\": \"policy\", \"source\": \"docs/my-website/docs/proxy/multi_tenant_architecture.md\", \"content\": \"**Allow key creation**:\\n```json\\n[\\\"/key/info\\\", \\\"/key/health\\\", \\\"/key/generate\\\", \\\"/key/update\\\"]\\n```\"}\n      ],\n      \"suggested_fix\": \"Do not route `spend` changes through the admin-only `_check_key_admin_access` check. `spend` is a system-tracked value; either exclude it from the admin-only guard (keep it only for `max_budget`), or align the authorization check with the RBAC policy so that team members permitted to call `/key/update` are handled consistently. If `spend` should be admin-only, document that and ensure the check matches the intended role set.\",\n      \"file\": \"litellm/proxy/management_endpoints/key_management_endpoints.py\",\n      \"line\": 1964\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "formatting-only",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 760,
+                  "end_line": 780,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=760-780]\n760:                 )\n761:             await _check_org_key_limits(\n762:                 org_table=org_table,\n763:                 data=data,\n764:                 prisma_client=prisma_client,\n765:             )\n766: \n767:     response = await generate_key_helper_fn(\n768:         request_type=\"key\", **data_json, table_name=\"key\"\n769:     )\n770: \n771:     response[\n772:         \"soft_budget\"\n773:     ] = data.soft_budget  # include the user-input soft budget in the response\n774: \n775:     response = GenerateKeyResponse(**response)\n776: \n777:     response.token = (\n778:         response.token_id\n779:     )  # remap token to use the hash, and leave the key in the `key` field [TODO]: clean up generate_key_helper_fn to do this\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4100,
+                  "end_line": 4135,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4100-4135]\n4100:         raise\n4101:     except Exception as e:\n4102:         verbose_proxy_logger.exception(\"Error resetting key spend: %s\", e)\n4103:         raise handle_exception_on_proxy(e)\n4104: \n4105: \n4106: async def validate_key_list_check(\n4107:     user_api_key_dict: UserAPIKeyAuth,\n4108:     user_id: Optional[str],\n4109:     team_id: Optional[str],\n4110:     organization_id: Optional[str],\n4111:     key_alias: Optional[str],\n4112:     key_hash: Optional[str],\n4113:     prisma_client: PrismaClient,\n4114: ) -> Optional[LiteLLM_UserTable]:\n4115:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4116:         return None\n4117: \n4118:     if user_api_key_dict.user_id is None:\n4119:         raise ProxyException(\n4120:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4121:             type=ProxyErrorTypes.bad_request_error,\n4122:             param=\"user_id\",\n4123:             code=status.HTTP_403_FORBIDDEN,\n4124:         )\n4125:     complete_user_info_db_obj: Optional[\n4126:         BaseModel\n4127:     ] = await prisma_client.db.litellm_usertable.find_unique(\n4128:         where={\"user_id\": user_api_key_dict.user_id},\n4129:         include={\"organization_memberships\": True},\n4130:     )\n4131: \n4132:     if complete_user_info_db_obj is None:\n4133:         raise ProxyException(\n4134:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4135:             type=ProxyErrorTypes.bad_request_error,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4195,
+                  "end_line": 4225,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4195-4225]\n4195:             raise HTTPException(\n4196:                 status_code=status.HTTP_403_FORBIDDEN,\n4197:                 detail=\"You are not allowed to access this key's info. Your role={}\".format(\n4198:                     user_api_key_dict.user_role\n4199:                 ),\n4200:             )\n4201:     return complete_user_info\n4202: \n4203: \n4204: async def _fetch_user_team_objects(\n4205:     complete_user_info: Optional[LiteLLM_UserTable],\n4206:     prisma_client: PrismaClient,\n4207: ) -> List[LiteLLM_TeamTable]:\n4208:     \"\"\"Fetch team objects for all teams a user belongs to (single DB query).\"\"\"\n4209:     if complete_user_info is None or not complete_user_info.teams:\n4210:         return []\n4211: \n4212:     teams: Optional[\n4213:         List[BaseModel]\n4214:     ] = await prisma_client.db.litellm_teamtable.find_many(\n4215:         where={\"team_id\": {\"in\": complete_user_info.teams}}\n4216:     )\n4217:     if teams is None:\n4218:         return []\n4219: \n4220:     return [LiteLLM_TeamTable(**team.model_dump()) for team in teams]\n4221: \n4222: \n4223: def _get_admin_team_ids_from_objects(\n4224:     user_api_key_dict: UserAPIKeyAuth,\n4225:     team_objects: List[LiteLLM_TeamTable],\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 760,
+                  "end_line": 780,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e12d3c562d77df6fe29e50e7e9b4ed81f80e3fc path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=760-780]\n760:                 )\n761:             await _check_org_key_limits(\n762:                 org_table=org_table,\n763:                 data=data,\n764:                 prisma_client=prisma_client,\n765:             )\n766: \n767:     response = await generate_key_helper_fn(\n768:         request_type=\"key\", **data_json, table_name=\"key\"\n769:     )\n770: \n771:     response[\"soft_budget\"] = (\n772:         data.soft_budget\n773:     )  # include the user-input soft budget in the response\n774: \n775:     response = GenerateKeyResponse(**response)\n776: \n777:     response.token = (\n778:         response.token_id\n779:     )  # remap token to use the hash, and leave the key in the `key` field [TODO]: clean up generate_key_helper_fn to do this\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4100,
+                  "end_line": 4135,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=4e12d3c562d77df6fe29e50e7e9b4ed81f80e3fc path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4100-4135]\n4100: \n4101: async def validate_key_list_check(\n4102:     user_api_key_dict: UserAPIKeyAuth,\n4103:     user_id: Optional[str],\n4104:     team_id: Optional[str],\n4105:     organization_id: Optional[str],\n4106:     key_alias: Optional[str],\n4107:     key_hash: Optional[str],\n4108:     prisma_client: PrismaClient,\n4109: ) -> Optional[LiteLLM_UserTable]:\n4110:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4111:         return None\n4112: \n4113:     if user_api_key_dict.user_id is None:\n4114:         raise ProxyException(\n4115:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4116:             type=ProxyErrorTypes.bad_request_error,\n4117:             param=\"user_id\",\n4118:             code=status.HTTP_403_FORBIDDEN,\n4119:         )\n4120:     complete_user_info_db_obj: Optional[BaseModel] = (\n4121:         await prisma_client.db.litellm_usertable.find_unique(\n4122:             where={\"user_id\": user_api_key_dict.user_id},\n4123:             include={\"organization_memberships\": True},\n4124:         )\n4125:     )\n4126: \n4127:     if complete_user_info_db_obj is None:\n4128:         raise ProxyException(\n4129:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4130:             type=ProxyErrorTypes.bad_request_error,\n4131:             param=\"user_id\",\n4132:             code=status.HTTP_403_FORBIDDEN,\n4133:         )\n4134: \n4135:     complete_user_info = LiteLLM_UserTable(**complete_user_info_db_obj.model_dump())\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4195,
+                  "end_line": 4225,
+                  "snapshot": "base"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:user-role-authorization",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1118,
+                  "end_line": 1160,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1118-1160]\n1118: async def _update_single_user_helper(\n1119:     user_request: UpdateUserRequest,\n1120:     user_api_key_dict: UserAPIKeyAuth,\n1121:     litellm_changed_by: Optional[str] = None,\n1122: ) -> Dict[str, Any]:\n1123:     \"\"\"\n1124:     Helper function to update a single user.\n1125:     Used by both user_update and bulk_user_update endpoints.\n1126: \n1127:     Returns the updated user data or raises an exception on failure.\n1128:     \"\"\"\n1129:     from litellm.proxy.proxy_server import litellm_proxy_admin_name, prisma_client\n1130: \n1131:     if prisma_client is None:\n1132:         raise Exception(\"Not connected to DB!\")\n1133: \n1134:     # Only proxy admins can modify user_role\n1135:     if (\n1136:         user_request.user_role is not None\n1137:         and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n1138:     ):\n1139:         raise HTTPException(\n1140:             status_code=403,\n1141:             detail=\"Only proxy admins can modify user roles.\",\n1142:         )\n1143: \n1144:     # Validate user identifier\n1145:     if not user_request.user_id and not user_request.user_email:\n1146:         raise ValueError(\"Either user_id or user_email must be provided\")\n1147: \n1148:     # Convert to data format expected by update logic\n1149:     data_json: dict = user_request.model_dump(exclude_unset=True)\n1150: \n1151:     # Apply update transformations (reuse existing logic)\n1152:     non_default_values = _update_internal_user_params(\n1153:         data_json=data_json, data=user_request\n1154:     )\n1155: \n1156:     _hash_password_in_dict(non_default_values)\n1157: \n1158:     # Get existing user data for audit logging and metadata preparation\n1159:     existing_user_row: Optional[BaseModel] = None\n1160:     if user_request.user_id:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "start_line": 1518,
+                  "end_line": 1560,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/internal_user_endpoints.py lines=1518-1560]\n1518:             detail={\"error\": \"Database not connected\"},\n1519:         )\n1520: \n1521:     # Only proxy admins can modify user_role in bulk updates\n1522:     _bulk_role = (\n1523:         getattr(data.user_updates, \"user_role\", None) if data.user_updates else None\n1524:     )\n1525:     if _bulk_role is None and data.users:\n1526:         _bulk_role = next(\n1527:             (u.user_role for u in data.users if u.user_role is not None), None\n1528:         )\n1529:     if (\n1530:         _bulk_role is not None\n1531:         and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value\n1532:     ):\n1533:         raise HTTPException(\n1534:             status_code=403,\n1535:             detail=\"Only proxy admins can modify user roles.\",\n1536:         )\n1537: \n1538:     # Determine the list of users to update\n1539:     users_to_update: Union[\n1540:         List[UpdateUserRequest], List[UpdateUserRequestNoUserIDorEmail]\n1541:     ] = []\n1542: \n1543:     if data.all_users and data.user_updates:\n1544:         # Only proxy admins can update all users at once\n1545:         if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:\n1546:             raise HTTPException(\n1547:                 status_code=403,\n1548:                 detail=\"Only proxy admins can update all users at once.\",\n1549:             )\n1550:         # Optimized path for updating all users directly in database\n1551:         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(\n1552:             order={\"created_at\": \"desc\"}\n1553:         )\n1554: \n1555:         if not all_users_in_db:\n1556:             raise HTTPException(\n1557:                 status_code=400,\n1558:                 detail={\"error\": \"No users found to update\"},\n1559:             )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def update_data|def insert_data|def get_data",
+                  "file_glob": "litellm/proxy/*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"def update_data|def insert_data|def get_data\"]\nlitellm/proxy/db/base_client.py:12:    def get_data(self, key: str, table_name: Literal[\"user\", \"key\", \"config\"]):\nlitellm/proxy/db/base_client.py:18:    def insert_data(self, value: Any, table_name: Literal[\"user\", \"key\", \"config\"]):\nlitellm/proxy/db/base_client.py:24:    def update_data(\nlitellm/proxy/db/db_spend_update_writer.py:92:    async def update_database(\nlitellm/proxy/utils.py:2694:    async def get_data(  # noqa: PLR0915\nlitellm/proxy/utils.py:3128:    async def insert_data(  # noqa: PLR0915\nlitellm/proxy/utils.py:3271:    async def update_data(  # noqa: PLR0915\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/utils.py",
+                  "start_line": 3271,
+                  "end_line": 3360,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/utils.py lines=3271-3360]\n3271:     async def update_data(  # noqa: PLR0915\n3272:         self,\n3273:         token: Optional[str] = None,\n3274:         data: dict = {},\n3275:         data_list: Optional[List] = None,\n3276:         user_id: Optional[str] = None,\n3277:         team_id: Optional[str] = None,\n3278:         query_type: Literal[\"update\", \"update_many\"] = \"update\",\n3279:         table_name: Optional[\n3280:             Literal[\"user\", \"key\", \"config\", \"spend\", \"team\", \"enduser\", \"budget\"]\n3281:         ] = None,\n3282:         update_key_values: Optional[dict] = None,\n3283:         update_key_values_custom_query: Optional[dict] = None,\n3284:     ):\n3285:         \"\"\"\n3286:         Update existing data\n3287:         \"\"\"\n3288:         verbose_proxy_logger.debug(\n3289:             f\"PrismaClient: update_data, table_name: {table_name}\"\n3290:         )\n3291:         start_time = time.time()\n3292:         try:\n3293:             db_data = self.jsonify_object(data=data)\n3294:             if update_key_values is not None:\n3295:                 update_key_values = self.jsonify_object(data=update_key_values)\n3296:             if token is not None:\n3297:                 print_verbose(f\"token: [set={token is not None}]\")\n3298:                 # check if plain text or hash\n3299:                 token = _hash_token_if_needed(token=token)\n3300:                 db_data[\"token\"] = token\n3301:                 response = await self.db.litellm_verificationtoken.update(\n3302:                     where={\"token\": token},  # type: ignore\n3303:                     data={**db_data},  # type: ignore\n3304:                 )\n3305:                 verbose_proxy_logger.debug(\n3306:                     \"\\033[91m\"\n3307:                     + f\"DB Token Table update succeeded {response}\"\n3308:                     + \"\\033[0m\"\n3309:                 )\n3310:                 _data: dict = {}\n3311:                 if response is not None:\n3312:                     try:\n3313:                         _data = response.model_dump()  # type: ignore\n3314:                     except Exception:\n3315:                         _data = response.dict()\n3316:                 return {\"token\": token, \"data\": _data}\n3317:             elif (\n3318:                 user_id is not None\n3319:                 or (table_name is not None and table_name == \"user\")\n3320:                 and query_type == \"update\"\n3321:             ):\n3322:                 \"\"\"\n3323:                 If data['spend'] + data['user'], update the user table with spend info as well\n3324:                 \"\"\"\n3325:                 if user_id is None:\n3326:                     user_id = db_data[\"user_id\"]\n3327:                 if update_key_values is None:\n3328:                     if update_key_values_custom_query is not None:\n3329:                         update_key_values = update_key_values_custom_query\n3330:                     else:\n3331:                         update_key_values = db_data\n3332:                 update_user_row = await self.db.litellm_usertable.upsert(\n3333:                     where={\"user_id\": user_id},  # type: ignore\n3334:                     data={\n3335:                         \"create\": {**db_data},  # type: ignore\n3336:                         \"update\": {\n3337:                             **update_key_values  # type: ignore\n3338:                         },  # just update user-specified values, if it already exists\n3339:                     },\n3340:                 )\n3341:                 verbose_proxy_logger.info(\n3342:                     \"\\033[91m\"\n3343:                     + f\"DB User Table - update succeeded {update_user_row}\"\n3344:                     + \"\\033[0m\"\n3345:                 )\n3346:                 return {\"user_id\": user_id, \"data\": update_user_row}\n3347:             elif (\n3348:                 team_id is not None\n3349:                 or (table_name is not None and table_name == \"team\")\n3350:                 and query_type == \"update\"\n3351:             ):\n3352:                 \"\"\"\n3353:                 If data['spend'] + data['user'], update the user table with spend info as well\n3354:                 \"\"\"\n3355:                 if team_id is None:\n3356:                     team_id = db_data[\"team_id\"]\n3357:                 if update_key_values is None:\n3358:                     update_key_values = db_data\n3359:                 if \"team_id\" not in db_data and team_id is not None:\n3360:                     db_data[\"team_id\"] = team_id\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "execute|raw|text\\(|literal_column|\\.format\\(|f\".*SELECT|f\".*UPDATE",
+                  "file_glob": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 pattern=\"execute|raw|text\\(|literal_column|\\.format\\(|f'.*SELECT|f'.*UPDATE\"]\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:261:                \"litellm.proxy.management_endpoints.internal_user_endpoints.new_user(): User already exists in team - {}\".format(\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:267:                \"litellm.proxy.management_endpoints.internal_user_endpoints.new_user(): Exception occured - {}\".format(\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:274:                \"litellm.proxy.management_endpoints.internal_user_endpoints.new_user(): User already exists in team - {}\".format(\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:283:                \"litellm.proxy.management_endpoints.internal_user_endpoints.new_user(): User already exists in team - {}\".format(\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:525:            \"/user/new: Exception occured - {}\".format(str(e))\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:594:    # Get the raw query string and parse it properly to handle + characters\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:598:        # Extract the user_id value from the raw query string\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:605:            raw_user_id = unquote(match.group(1))\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:606:            if _is_valid_user_id(raw_user_id):\nlitellm/proxy/management_endpoints/internal_user_endpoints.py:607:                user_id = raw_user_id\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:formatting-only",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 760,
+                  "end_line": 780,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=760-780]\n760:                 )\n761:             await _check_org_key_limits(\n762:                 org_table=org_table,\n763:                 data=data,\n764:                 prisma_client=prisma_client,\n765:             )\n766: \n767:     response = await generate_key_helper_fn(\n768:         request_type=\"key\", **data_json, table_name=\"key\"\n769:     )\n770: \n771:     response[\n772:         \"soft_budget\"\n773:     ] = data.soft_budget  # include the user-input soft budget in the response\n774: \n775:     response = GenerateKeyResponse(**response)\n776: \n777:     response.token = (\n778:         response.token_id\n779:     )  # remap token to use the hash, and leave the key in the `key` field [TODO]: clean up generate_key_helper_fn to do this\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4115,
+                  "end_line": 4135,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4115-4135]\n4115:     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:\n4116:         return None\n4117: \n4118:     if user_api_key_dict.user_id is None:\n4119:         raise ProxyException(\n4120:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4121:             type=ProxyErrorTypes.bad_request_error,\n4122:             param=\"user_id\",\n4123:             code=status.HTTP_403_FORBIDDEN,\n4124:         )\n4125:     complete_user_info_db_obj: Optional[\n4126:         BaseModel\n4127:     ] = await prisma_client.db.litellm_usertable.find_unique(\n4128:         where={\"user_id\": user_api_key_dict.user_id},\n4129:         include={\"organization_memberships\": True},\n4130:     )\n4131: \n4132:     if complete_user_info_db_obj is None:\n4133:         raise ProxyException(\n4134:             message=\"You are not authorized to access this endpoint. No 'user_id' is associated with your API key.\",\n4135:             type=ProxyErrorTypes.bad_request_error,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 4200,
+                  "end_line": 4220,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=4200-4220]\n4200:             )\n4201:     return complete_user_info\n4202: \n4203: \n4204: async def _fetch_user_team_objects(\n4205:     complete_user_info: Optional[LiteLLM_UserTable],\n4206:     prisma_client: PrismaClient,\n4207: ) -> List[LiteLLM_TeamTable]:\n4208:     \"\"\"Fetch team objects for all teams a user belongs to (single DB query).\"\"\"\n4209:     if complete_user_info is None or not complete_user_info.teams:\n4210:         return []\n4211: \n4212:     teams: Optional[\n4213:         List[BaseModel]\n4214:     ] = await prisma_client.db.litellm_teamtable.find_many(\n4215:         where={\"team_id\": {\"in\": complete_user_info.teams}}\n4216:     )\n4217:     if teams is None:\n4218:         return []\n4219: \n4220:     return [LiteLLM_TeamTable(**team.model_dump()) for team in teams]\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 3270,
+                  "end_line": 3290,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=3270-3290]\n3270:             List[LiteLLM_VerificationToken]:\n3271:                 - List of keys being deleted, this contains information about the key_alias, token, and user_id being deleted,\n3272:                 this is passed down to the KeyManagementEventHooks to delete the keys from the secret manager and handle audit logs\n3273:     \"\"\"\n3274:     from litellm.proxy.proxy_server import prisma_client\n3275: \n3276:     failed_tokens: List = []\n3277:     try:\n3278:         if prisma_client:\n3279:             tokens = [_hash_token_if_needed(token=key) for key in tokens]\n3280:             _keys_being_deleted: List[\n3281:                 LiteLLM_VerificationToken\n3282:             ] = await prisma_client.db.litellm_verificationtoken.find_many(\n3283:                 where={\"token\": {\"in\": tokens}}\n3284:             )\n3285: \n3286:             if len(_keys_being_deleted) == 0:\n3287:                 raise HTTPException(\n3288:                     status_code=status.HTTP_404_NOT_FOUND,\n3289:                     detail={\"error\": \"No keys found\"},\n3290:                 )\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+                  "start_line": 3475,
+                  "end_line": 3490,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=bdc72651e8338059afb5119c48c999fecbdefcc5 path=litellm/proxy/management_endpoints/key_management_endpoints.py lines=3475-3490]\n3475:     3. Encrypt the values with the new master key\n3476:     4. Update the values in the DB\n3477:     \"\"\"\n3478:     import prisma\n3479: \n3480:     from litellm.proxy.proxy_server import proxy_config\n3481: \n3482:     try:\n3483:         models: Optional[\n3484:             List\n3485:         ] = await prisma_client.db.litellm_proxymodeltable.find_many()\n3486:     except Exception:\n3487:         models = None\n3488:     # 2. process model table\n3489:     if models:\n3490:         decrypted_models = proxy_config.decrypt_model_list_from_db(new_models=models)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:key-spend-authorization:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8354,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "project": "litellm",
+  "mode": "lgtm",
+  "case_scope": "in",
+  "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+  "vulnerable_locations": [
+    {
+      "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+      "old_range": null,
+      "new_range": [
+        1134,
+        1142
+      ]
+    },
+    {
+      "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+      "old_range": null,
+      "new_range": [
+        1521,
+        1536
+      ]
+    },
+    {
+      "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+      "old_range": null,
+      "new_range": [
+        1544,
+        1549
+      ]
+    },
+    {
+      "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+      "old_range": [
+        1964,
+        1973
+      ],
+      "new_range": [
+        1964,
+        1978
+      ]
+    }
+  ],
+  "diff_files": 2,
+  "diff_added": 60,
+  "diff_deleted": 22,
+  "diff_py_chars": 6246,
+  "diff_max_file_chars": 4053,
+  "index_seconds": 44.94,
+  "index_chunks": 6166,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "4e12d3c562d77df6fe29e50e7e9b4ed81f80e3fc",
+    "pr_sha": "bdc72651e8338059afb5119c48c999fecbdefcc5",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "semgrep_findings_in_diff": 0,
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 18,
+    "files_total": 2,
+    "files_in_scope": 2,
+    "hunks_total": 9,
+    "hunks_assigned": 9,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 9,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "user-role-authorization",
+        "origin": "investigator",
+        "title": "Restrict user_role modification to proxy admins on /user/update and /user/bulk_update",
+        "files": [
+          "litellm/proxy/management_endpoints/internal_user_endpoints.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/internal_user_endpoints.py#0",
+            "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "old_start": 1131,
+            "old_count": 6,
+            "new_start": 1131,
+            "new_count": 16,
+            "change": "add"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/internal_user_endpoints.py#1",
+            "file": "litellm/proxy/management_endpoints/internal_user_endpoints.py",
+            "old_start": 1508,
+            "old_count": 12,
+            "new_start": 1518,
+            "new_count": 35,
+            "change": "add"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      },
+      {
+        "section_id": "key-spend-authorization",
+        "origin": "investigator",
+        "title": "Extend key-update admin check to cover spend changes",
+        "files": [
+          "litellm/proxy/management_endpoints/key_management_endpoints.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#1",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 1961,
+            "old_count": 8,
+            "new_start": 1961,
+            "new_count": 13,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#2",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 1970,
+            "old_count": 7,
+            "new_start": 1975,
+            "new_count": 7,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:key-spend-authorization:1"
+        ],
+        "error": null
+      },
+      {
+        "section_id": "formatting-only",
+        "origin": "investigator",
+        "title": "Cosmetic reformatting of soft_budget assignment and type-annotated DB queries",
+        "files": [
+          "litellm/proxy/management_endpoints/key_management_endpoints.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#0",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 768,
+            "old_count": 9,
+            "new_start": 768,
+            "new_count": 9,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#3",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 3272,
+            "old_count": 10,
+            "new_start": 3277,
+            "new_count": 10,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#4",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 3475,
+            "old_count": 9,
+            "new_start": 3480,
+            "new_count": 9,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#5",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 4117,
+            "old_count": 11,
+            "new_start": 4122,
+            "new_count": 11,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "litellm/proxy/management_endpoints/key_management_endpoints.py#6",
+            "file": "litellm/proxy/management_endpoints/key_management_endpoints.py",
+            "old_start": 4204,
+            "old_count": 10,
+            "new_start": 4209,
+            "new_count": 10,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [],
+        "finding_ids": [],
+        "error": null
+      }
+    ]
+  },
+  "coverage_summary": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 18,
+    "files_total": 2,
+    "files_in_scope": 2,
+    "hunks_total": 9,
+    "hunks_assigned": 9,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 9,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions_total": 0
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 0.45,
+  "base_sha": "4e12d3c562d77df6fe29e50e7e9b4ed81f80e3fc",
+  "pr_sha": "bdc72651e8338059afb5119c48c999fecbdefcc5",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "user-role-authorization",
+    "key-spend-authorization"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "FP",
+  "outcome_grounded": "FP",
+  "correct": false,
+  "scope": "in",
+  "off_category": []
+}

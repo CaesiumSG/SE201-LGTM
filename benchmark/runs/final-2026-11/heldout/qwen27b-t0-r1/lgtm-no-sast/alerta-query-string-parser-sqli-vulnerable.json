@@ -1,0 +1,368 @@
+{
+  "id": "alerta-query-string-parser-sqli-vulnerable",
+  "repo": "alerta/alerta",
+  "pr": 712,
+  "title": "Adding Lucene-style ?q= query string search for alerts made the Postgres backend build WHERE clauses by str.format()-ing user search terms into SQL.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "cc0993d0b245dbeaa19e8ec30c9992ec06fa293e",
+  "pr_sha": "aeba85a37a09e5769a7a2da56481aa979ff99a00",
+  "files_changed": 13,
+  "python_files_changed": 11,
+  "added_lines": 555,
+  "diff_chars": 24745,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 206.7,
+  "index_seconds": 0.2,
+  "index_reused": false,
+  "index_chunks": 12,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 14,
+    "hunks_reviewed": 7,
+    "sections_scheduled": 5,
+    "sections_completed": 4,
+    "sections_failed": 1,
+    "complete": false
+  },
+  "judged": {
+    "supported": 3,
+    "unsupported": 1,
+    "not_judged": 0
+  },
+  "n_findings": 4,
+  "agent_errors": [
+    {
+      "source": "q-param-injection.1",
+      "stage": null,
+      "message": "Section review returned no parsable findings for alerta/database/backends/mongodb/parser.py, alerta/database/backends/mongodb/syntax.py, alerta/database/backends/mongodb/utils.py, alerta/database/backends/postgres/parser.py, alerta/database/backends/postgres/syntax.py, alerta/database/backends/postg"
+    }
+  ],
+  "verdicts": {
+    "safe": 1,
+    "vulnerable": 3
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:q-param-injection.1:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "alerta/database/backends/postgres/parser.py",
+      "line": 60,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The user-supplied 'q' request parameter is parsed by the new pyparsing grammar and its SearchTerm.__repr__ interpolates the attacker-controlled field name and word/string/wildcard/regex values directly into a raw SQL WHERE clause (e.g. '\"{}\" ILIKE \\'%%{}%%\\''). This string is returned as the Query.where text and executed, not as a bound parameter. The grammar's valid_word only excludes the charact"
+    },
+    {
+      "finding_id": "sqli:q-param-injection.1:2",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "alerta/database/backends/mongodb/parser.py",
+      "line": 58,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "For the MongoDB backend, the user-supplied 'q' parameter is parsed and SearchTerm.__repr__ interpolates the attacker-controlled field name and word/string/wildcard/regex values into a JSON filter string (e.g. '{{ \"{}\": {{ \"$regex\": \"{}\" }} }}'), which is then json.loads'd and executed as a query filter. The grammar's valid_word only excludes ? * : \" and does not exclude the double quote, so a valu"
+    },
+    {
+      "finding_id": "sqli:q-param-injection.2:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "alerta/database/backends/postgres/utils.py",
+      "line": 22,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The PR newly enables the 'q' search parameter (previously it raised NotImplementedError). In from_params, the user-supplied 'q' value is parsed by pyparsing and its repr() is used directly as the SQL WHERE clause text (query = [repr(expression.parseString(params.get('q'))[0])]). SearchTerm.__repr__ in parser.py interpolates the attacker-controlled field name and word/string/wildcard/regex values d"
+    }
+  ],
+  "tool_calls_total": 20,
+  "investigator_tool_calls": 12,
+  "sast_triage_tool_calls": 5,
+  "sast_triage_units": 1,
+  "reviewer_tool_calls": 43,
+  "reviewer_units": 8,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:tests/test_postgres_query.py:18",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line 18 is `with self.app.test_request_context('/'):` inside a unittest test method (test_word_and_phrase_terms). This line merely establishes a Flask test request context; it does not construct or execute any SQL. The actual SQL-like strings in this file are produced by `postgres_search.parseString(string)` (lines 22, 27, 36, etc.) from hardcoded literal test inputs (e.g. `r'''quick'''`, `r'''status:active'''`) and are only compared via `assertEqual` against expected repr strings \u2014 they are never passed to a database cursor or executed. No user-controlled input reaches any query in this test file, and the flagged line itself contains no SQL. This is a false positive from a heuristic that matched the presence of SQL-looking strings in a file that also sets up a request context.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "tests/test_postgres_query.py",
+          "lines": [
+            16,
+            28
+          ],
+          "source": null,
+          "content": "    def test_word_and_phrase_terms(self):\n\n        with self.app.test_request_context('/'):\n\n            # default field (ie. \"text\") contains word\n            string = r'''quick'''\n            r = postgres_search.parseString(string)\n            self.assertEqual(repr(r[0]), '\"text\" ILIKE \\'%%quick%%\\'')\n\n            # default field (ie. \"text\") contains phrase\n            string = r'''\"'\"'\"quick brown\"'''\n            r = postgres_search.parseString(string)\n            self.assertEqual(repr(r[0]), '\"text\" ~* \\'quick brown\\'')",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            20,
+            26
+          ],
+          "source": null,
+          "content": "        # q\n        if params.get('q', None):\n            query = [repr(expression.parseString(params.get('q'))[0])]\n            qvars = dict()\n        else:\n            query = ['1=1']\n            qvars = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "No fix required for the flagged line \u2014 it is a Flask test request context, not a SQL sink. If the heuristic keeps firing, suppress the rule for the tests/ directory or refine the rule to only flag actual SQL execution sinks (cursor.execute / query construction) rather than any file containing SQL-like string literals. Separately, note that the production path in alerta/database/backends/postgres/utils.py builds the `q` clause via string interpolation of parseString output; if that parser does not fully escape/parameterize user input, that production code path (not this test) should be reviewed for injection.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.4476,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "tests/test_postgres_query.py",
+      "line": 18,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:q-param-injection.1:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The user-supplied 'q' request parameter is parsed by the new pyparsing grammar and its SearchTerm.__repr__ interpolates the attacker-controlled field name and word/string/wildcard/regex values directly into a raw SQL WHERE clause (e.g. '\"{}\" ILIKE \\'%%{}%%\\''). This string is returned as the Query.where text and executed, not as a bound parameter. The grammar's valid_word only excludes the characters ? * : \" and does not exclude the single quote, so a value like \"a' OR '1'='1\" (or a field name containing a single quote) breaks out of the quoted SQL literal and injects arbitrary SQL. The PR newly introduces this repr-based SQL construction (previously 'q' was not parsed into SQL this way).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            21,
+            26
+          ],
+          "source": null,
+          "content": "if params.get('q', None):\n            query = [repr(expression.parseString(params.get('q'))[0])]\n            qvars = dict()\n        else:\n            query = ['1=1']\n            qvars = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/parser.py",
+          "lines": [
+            54,
+            75
+          ],
+          "source": null,
+          "content": "def __repr__(self):\n        if 'field' in self.tokens:\n            if 'word' in self.tokens:\n                if self.tokens.field == '_exists_':\n                    return '\"attributes\"::jsonb ? \\'{}\\''.format(self.term)\n                else:\n                    return '\"{}\" ILIKE \\'%%{}%%\\''.format(self.tokens.field, self.tokens.word)\n            if 'string' in self.tokens:\n                return '\"{}\"=\\'{}\\''.format(self.tokens.field, self.tokens.string.strip('\"'))\n            if 'wildcard' in self.tokens:\n                wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')\n                return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, wildcard)\n            if 'regex' in self.tokens:\n                return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, self.tokens.regex.strip('/'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/syntax.py",
+          "lines": [
+            15,
+            18
+          ],
+          "source": null,
+          "content": "valid_word = Word(printables, excludeChars='?*:\"').setName('word')\nvalid_word.setParseAction(\n    lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Do not build SQL by string interpolation of user input. Either (a) parse 'q' into a structured AST and emit parameterized SQL with the field/value as bound parameters (e.g. '\"%s\" ILIKE %s' with a separately bound value and a strict allowlist of column names), or (b) escape single quotes in every interpolated value and validate field names against a fixed allowlist of known columns before embedding them.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8204,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/postgres/parser.py",
+      "line": 60,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:q-param-injection.1:2",
+      "cwe_id": "CWE-89",
+      "explanation": "For the MongoDB backend, the user-supplied 'q' parameter is parsed and SearchTerm.__repr__ interpolates the attacker-controlled field name and word/string/wildcard/regex values into a JSON filter string (e.g. '{{ \"{}\": {{ \"$regex\": \"{}\" }} }}'), which is then json.loads'd and executed as a query filter. The grammar's valid_word only excludes ? * : \" and does not exclude the double quote, so a value containing an unescaped double quote (e.g. \"a\" : {\"$regex\": \".*\"}) breaks out of the JSON string and injects arbitrary filter operators (e.g. $regex, $where, $expr) into the query, enabling NoSQL injection / data exfiltration. The PR newly introduces this repr-based filter construction.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/mongodb/utils.py",
+          "lines": [
+            23,
+            26
+          ],
+          "source": null,
+          "content": "if params.get('q', None):\n            query = json.loads(repr(expression.parseString(params.get('q'))[0]))\n        else:\n            query = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/mongodb/parser.py",
+          "lines": [
+            52,
+            73
+          ],
+          "source": null,
+          "content": "def __repr__(self):\n        if 'field' in self.tokens:\n            if 'word' in self.tokens:\n                if self.tokens.field == '_exists_':\n                    return '{{ \"attributes.{}\": {{ \"$exists\": true }} }}'.format(self.term)\n                else:\n                    return '{{ \"{}\": {{ \"$regex\": \"{}\" }} }}'.format(self.tokens.field, self.tokens.word)\n            if 'string' in self.tokens:\n                return '{{ \"{}\": \"{}\" }}'.format(self.tokens.field, self.tokens.string.strip('\"'))\n            if 'wildcard' in self.tokens:\n                wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')\n                return '{{ \"{}\": {{ \"$regex\": \"{}\" }} }}'.format(self.tokens.field, wildcard)\n            if 'regex' in self.tokens:\n                return '{{ \"{}\": {{ \"$regex\": \"{}\" }} }}'.format(self.tokens.field, self.tokens.regex.strip('/'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/mongodb/syntax.py",
+          "lines": [
+            15,
+            18
+          ],
+          "source": null,
+          "content": "valid_word = Word(printables, excludeChars='?*:\"').setName('word')\nvalid_word.setParseAction(\n    lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Build the MongoDB filter as a Python dict (not a JSON string) so values are stored as data, not interpolated into the filter text; validate field names against a fixed allowlist of known document fields, and never place raw user input into $regex/$where/$expr operators without proper escaping/allowlisting.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.715,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/mongodb/parser.py",
+      "line": 58,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:q-param-injection.2:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The PR newly enables the 'q' search parameter (previously it raised NotImplementedError). In from_params, the user-supplied 'q' value is parsed by pyparsing and its repr() is used directly as the SQL WHERE clause text (query = [repr(expression.parseString(params.get('q'))[0])]). SearchTerm.__repr__ in parser.py interpolates the attacker-controlled field name and word/string/wildcard/regex values directly into SQL literals (e.g. '\"{}\" ILIKE \\'%%{}%%\\''.format(self.tokens.field, self.tokens.word)) with no binding or escaping. The parser's valid_word parse action (syntax.py) only strips backslashes and does not escape single quotes, so a value containing a single quote breaks out of the quoted SQL literal. This WHERE text is then executed via .format(where=query.where) in base.py (get_alerts, tag_alerts, delete_alerts, etc.), so an attacker can inject arbitrary SQL through the 'q' request parameter.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/utils.py",
+          "lines": [
+            21,
+            23
+          ],
+          "source": null,
+          "content": "if params.get('q', None):\n            query = [repr(expression.parseString(params.get('q'))[0])]\n            qvars = dict()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/parser.py",
+          "lines": [
+            54,
+            74
+          ],
+          "source": null,
+          "content": "def __repr__(self):\n        if 'field' in self.tokens:\n            if 'word' in self.tokens:\n                if self.tokens.field == '_exists_':\n                    return '\"attributes\"::jsonb ? \\'{}\\''.format(self.term)\n                else:\n                    return '\"{}\" ILIKE \\'%%{}%%\\''.format(self.tokens.field, self.tokens.word)\n            if 'string' in self.tokens:\n                return '\"{}\"=\\'{}\\''.format(self.tokens.field, self.tokens.string.strip('\"'))\n            if 'wildcard' in self.tokens:\n                wildcard = self.tokens.wildcard.replace('?', '.?').replace('*', '.*')\n                return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, wildcard)\n            if 'regex' in self.tokens:\n                return '\"{}\" ~* \\'{}\\''.format(self.tokens.field, self.tokens.regex.strip('/'))\n        else:\n            if 'word' in self.tokens:\n                return '\"{}\" ILIKE \\'%%{}%%\\''.format(self.default_field, self.tokens.word)\n            if 'string' in self.tokens:\n                return '\"{}\" ~* \\'{}\\''.format(self.default_field, self.tokens.string.strip('\"'))\n            if 'regex' in self.tokens:\n                return '\"{}\" ~* \\'{}\\''.format(self.default_field, self.tokens.regex.strip('/'))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/syntax.py",
+          "lines": [
+            15,
+            18
+          ],
+          "source": null,
+          "content": "valid_word = Word(printables, excludeChars='?*:\"').setName('word')\nvalid_word.setParseAction(\n    lambda t: t[0].replace('\\\\\\\\', chr(127)).replace('\\\\', '').replace(chr(127), '\\\\')\n)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/base.py",
+          "lines": [
+            377,
+            384
+          ],
+          "source": null,
+          "content": "def get_alerts(self, query=None, page=None, page_size=None):\n        query = query or Query()\n        select = \"\"\"\n            SELECT * FROM alerts\n            WHERE {where}\n            ORDER BY {order}\n        \"\"\".format(where=query.where, order=query.sort or 'last_receive_time')\n        return self._fetchall(select, query.vars, limit=page_size, offset=(page - 1) * page_size)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Do not build SQL by string interpolation of user-controlled field names and values. Bind the search values as parameters (pass them via qvars and reference them with %(name)s placeholders), and validate/allowlist the field name against a fixed set of known columns. If a parser-based approach is kept, escape single quotes (double them) and validate identifiers, or better, generate parameterized SQL rather than repr()-based literal text.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8145,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "alerta/database/backends/postgres/utils.py",
+      "line": 22,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "alerta-query-string-parser-sqli",
+  "url": "https://github.com/alerta/alerta/pull/712",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-8prr-286p-4w7j",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "alerta/database/backends/postgres/parser.py",
+    "alerta/database/backends/postgres/utils.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

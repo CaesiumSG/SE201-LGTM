@@ -48,6 +48,8 @@ Each project is cloned locally and checked out at the exact commits. The tools r
 
 Each component has an answer key: for each input, what a correct component should output. For example, "this flagged line is a real injection, keep it" or "this line is safely parameterized, drop it".
 
+**These answer keys are drafts.** All 74 items in `benchmark/component_bench/labels/` are marked `review_state: "draft"`; none is `approved`. They were drafted with AI assistance and the team has not signed them off, so treat every score in this document as provisional.
+
 ### Scoring terms
 
 Most components make a yes/no call ("is this a real bug?"). Each call falls into one of four buckets:

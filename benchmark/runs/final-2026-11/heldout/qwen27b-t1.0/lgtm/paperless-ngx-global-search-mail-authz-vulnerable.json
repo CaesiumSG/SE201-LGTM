@@ -1,0 +1,649 @@
+{
+  "id": "paperless-ngx-global-search-mail-authz-vulnerable",
+  "repo": "paperless-ngx/paperless-ngx",
+  "pr": 6449,
+  "title": "The global search PR queried MailAccount and MailRule with plain .objects.filter() behind only a model-level has_perm check, unlike the owner-aware get_objects_for_user_owner_aware() it used for tags and correspondents, so users see other users' mail accounts and rules.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "40289cd714988d41287f1bd8bd4fd82084621be4",
+  "pr_sha": "c6e7d06bb7049367f015dc3b124bb0a3bcabcc22",
+  "files_changed": 51,
+  "python_files_changed": 4,
+  "added_lines": 337,
+  "diff_chars": 17430,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 102.8,
+  "index_seconds": 2.9,
+  "index_reused": false,
+  "index_chunks": 398,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 11,
+    "hunks_reviewed": 11,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 1
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 19,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 18,
+  "reviewer_units": 3,
+  "findings": [
+    {
+      "finding_id": "authz:serializer-relocation:1",
+      "cwe_id": "CWE-639",
+      "explanation": "SearchResultSerializer.to_representation fetches a Document by a user-controlled id (instance[\"id\"]) with Document.objects...get(id=instance[\"id\"]) and returns its full contents (content, correspondent, tags, notes) via super().to_representation(doc). The serializer itself performs no ownership/permission check. In the PR the class is relocated from views.py (where it was `class SearchResultSerializer(DocumentSerializer, PassUserMixin)`) to serialisers.py as `class SearchResultSerializer(DocumentSerializer)`. In DRF, `super().to_representation(doc)` resolves to DocumentSerializer.to_representation \u2014 NOT to PassUserMixin.to_representation, since PassUserMixin is a ViewMixin (subclass of GenericAPIView/View) that is not in the serializer's MRO. So PassUserMixin did not contribute ownership-checking to the serializer even before the change; the ownership enforcement came from the view layer. UnifiedSearchViewSet (DocumentViewSet) uses `permission_classes = (IsAuthenticated, PaperlessObjectPermissions)`, which authorizes at the request level, and PassUserMixin.get_serializer injects the `user` for the serializer. Because the authorization in this search endpoint is driven by the view's permission class rather than by the serializer's inheritance of PassUserMixin, the relocation to a serializer without that mixin is a plausible regression point: if the consuming endpoint relies on the serializer carrying user/permission context (as DocumentSerializer's permission logic does via self.user), removing PassUserMixin could let to_representation serialize a document the requester does not own. Flagging as a candidate to confirm the consuming view still enforces object-level authorization before serializing.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/documents/serialisers.py",
+          "lines": [
+            799,
+            806
+          ],
+          "source": null,
+          "content": "class SearchResultSerializer(DocumentSerializer):\n    def to_representation(self, instance):\n        doc = (\n            Document.objects.select_related(...).prefetch_related(...)\n            .get(id=instance[\"id\"])\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            205,
+            216
+          ],
+          "source": null,
+          "content": "class PassUserMixin(GenericAPIView):\n    def get_serializer(self, *args, **kwargs):\n        kwargs.setdefault(\"user\", self.request.user)\n        kwargs.setdefault(\"full_perms\", self.request.query_params.get(\"full_perms\", False))\n        return super().get_serializer(*args, **kwargs)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            316,
+            328
+          ],
+          "source": null,
+          "content": "class DocumentViewSet(PassUserMixin, RetrieveModelMixin, ...):\n    ...\n    permission_classes = (IsAuthenticated, PaperlessObjectPermissions)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/documents/views.py",
+          "lines": [
+            817,
+            827
+          ],
+          "source": null,
+          "content": "class SearchResultSerializer(DocumentSerializer, PassUserMixin):\n    def to_representation(self, instance):\n        doc = (Document.objects...get(id=instance[\"id\"]))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Keep object-level authorization at the view layer (permission_classes + ObjectOwnedOrGrantedPermissionsFilter) and verify the consuming view filters/permits the returned document before serializing. If the serializer is expected to be self-authorizing, restore per-instance ownership verification in to_representation (e.g., check that the requesting user owns the document or has view permission) rather than relying on PassUserMixin in the serializer MRO, which does not affect DRF serializer resolution.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.6076,
+      "kev_verdict": "not_real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/documents/serialisers.py",
+      "line": 799,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 780,
+                  "end_line": 835,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/serialisers.py lines=780-835]\n780:             \"tags\",\n781:             \"created\",\n782:             \"created_date\",\n783:             \"modified\",\n784:             \"added\",\n785:             \"archive_serial_number\",\n786:             \"original_file_name\",\n787:             \"archived_file_name\",\n788:             \"owner\",\n789:             \"permissions\",\n790:             \"user_can_change\",\n791:             \"is_shared_by_requester\",\n792:             \"set_permissions\",\n793:             \"notes\",\n794:             \"custom_fields\",\n795:             \"remove_inbox_tags\",\n796:         )\n797: \n798: \n799: class SavedViewFilterRuleSerializer(serializers.ModelSerializer):\n800:     class Meta:\n801:         model = SavedViewFilterRule\n802:         fields = [\"rule_type\", \"value\"]\n803: \n804: \n805: class SavedViewSerializer(OwnedObjectSerializer):\n806:     filter_rules = SavedViewFilterRuleSerializer(many=True)\n807: \n808:     class Meta:\n809:         model = SavedView\n810:         fields = [\n811:             \"id\",\n812:             \"name\",\n813:             \"show_on_dashboard\",\n814:             \"show_in_sidebar\",\n815:             \"sort_field\",\n816:             \"sort_reverse\",\n817:             \"filter_rules\",\n818:             \"page_size\",\n819:             \"display_mode\",\n820:             \"display_fields\",\n821:             \"owner\",\n822:             \"permissions\",\n823:             \"user_can_change\",\n824:             \"set_permissions\",\n825:         ]\n826: \n827:     def validate(self, attrs):\n828:         attrs = super().validate(attrs)\n829:         if \"display_fields\" in attrs and attrs[\"display_fields\"] is not None:\n830:             for field in attrs[\"display_fields\"]:\n831:                 if (\n832:                     SavedView.DisplayFields.CUSTOM_FIELD[:-2] in field\n833:                 ):  # i.e. check for 'custom_field_' prefix\n834:                     field_id = int(re.search(r\"\\d+\", field)[0])\n835:                     if not CustomField.objects.filter(id=field_id).exists():\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "PassUserMixin",
+                  "snapshot": "base",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"PassUserMixin\"]\nsrc/documents/views.py:205:class PassUserMixin(GenericAPIView):\nsrc/documents/views.py:219:class PermissionsAwareDocumentCountMixin(PassUserMixin):\nsrc/documents/views.py:317:    PassUserMixin,\nsrc/documents/views.py:816:class SearchResultSerializer(DocumentSerializer, PassUserMixin):\nsrc/documents/views.py:938:class SavedViewViewSet(ModelViewSet, PassUserMixin):\nsrc/documents/views.py:958:class BulkEditView(PassUserMixin):\nsrc/documents/views.py:1485:class ShareLinkViewSet(ModelViewSet, PassUserMixin):\nsrc/documents/views.py:1554:class BulkEditObjectsView(PassUserMixin):\nsrc/documents/views.py:1686:class SystemStatusView(PassUserMixin):\nsrc/paperless_mail/views.py:12:from documents.views import PassUserMixin\nsrc/paperless_mail/views.py:23:class MailAccountViewSet(ModelViewSet, PassUserMixin):\nsrc/paperless_mail/views.py:33:class MailRuleViewSet(ModelViewSet, PassUserMixin):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 200,
+                  "end_line": 230,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=200-230]\n200:             f\"frontend/{self.get_frontend_language()}/apple-touch-icon.png\"\n201:         )\n202:         return context\n203: \n204: \n205: class PassUserMixin(GenericAPIView):\n206:     \"\"\"\n207:     Pass a user object to serializer\n208:     \"\"\"\n209: \n210:     def get_serializer(self, *args, **kwargs):\n211:         kwargs.setdefault(\"user\", self.request.user)\n212:         kwargs.setdefault(\n213:             \"full_perms\",\n214:             self.request.query_params.get(\"full_perms\", False),\n215:         )\n216:         return super().get_serializer(*args, **kwargs)\n217: \n218: \n219: class PermissionsAwareDocumentCountMixin(PassUserMixin):\n220:     \"\"\"\n221:     Mixin to add document count to queryset, permissions-aware if needed\n222:     \"\"\"\n223: \n224:     def get_queryset(self):\n225:         filter = (\n226:             None\n227:             if self.request.user is None or self.request.user.is_superuser\n228:             else (\n229:                 Q(\n230:                     documents__id__in=get_objects_for_user_owner_aware(\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "PassUserMixin",
+                  "snapshot": "pr",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 pattern=\"PassUserMixin\"]\nsrc/documents/views.py:213:class PassUserMixin(GenericAPIView):\nsrc/documents/views.py:227:class PermissionsAwareDocumentCountMixin(PassUserMixin):\nsrc/documents/views.py:325:    PassUserMixin,\nsrc/documents/views.py:918:class SavedViewViewSet(ModelViewSet, PassUserMixin):\nsrc/documents/views.py:938:class BulkEditView(PassUserMixin):\nsrc/documents/views.py:1141:class GlobalSearchView(PassUserMixin):\nsrc/documents/views.py:1648:class ShareLinkViewSet(ModelViewSet, PassUserMixin):\nsrc/documents/views.py:1717:class BulkEditObjectsView(PassUserMixin):\nsrc/documents/views.py:1849:class SystemStatusView(PassUserMixin):\nsrc/paperless_mail/views.py:12:from documents.views import PassUserMixin\nsrc/paperless_mail/views.py:23:class MailAccountViewSet(ModelViewSet, PassUserMixin):\nsrc/paperless_mail/views.py:33:class MailRuleViewSet(ModelViewSet, PassUserMixin):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 1141,
+                  "end_line": 1330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/views.py lines=1141-1330]\n1141: class GlobalSearchView(PassUserMixin):\n1142:     permission_classes = (IsAuthenticated,)\n1143:     serializer_class = SearchResultSerializer\n1144: \n1145:     def get(self, request, *args, **kwargs):\n1146:         query = request.query_params.get(\"query\", None)\n1147:         if query is None:\n1148:             return HttpResponseBadRequest(\"Query required\")\n1149:         elif len(query) < 3:\n1150:             return HttpResponseBadRequest(\"Query must be at least 3 characters\")\n1151: \n1152:         db_only = request.query_params.get(\"db_only\", False)\n1153: \n1154:         OBJECT_LIMIT = 3\n1155:         docs = []\n1156:         if request.user.has_perm(\"documents.view_document\"):\n1157:             all_docs = get_objects_for_user_owner_aware(\n1158:                 request.user,\n1159:                 \"view_document\",\n1160:                 Document,\n1161:             )\n1162:             # First search by title\n1163:             docs = all_docs.filter(title__icontains=query)[:OBJECT_LIMIT]\n1164:             if not db_only and len(docs) < OBJECT_LIMIT:\n1165:                 # If we don't have enough results, search by content\n1166:                 from documents import index\n1167: \n1168:                 with index.open_index_searcher() as s:\n1169:                     q, _ = index.DelayedFullTextQuery(\n1170:                         s,\n1171:                         request.query_params,\n1172:                         10,\n1173:                         request.user,\n1174:                     )._get_query()\n1175:                     results = s.search(q, limit=OBJECT_LIMIT)\n1176:                     docs = docs | all_docs.filter(id__in=[r[\"id\"] for r in results])\n1177:         saved_views = (\n1178:             SavedView.objects.filter(owner=request.user, name__icontains=query)[\n1179:                 :OBJECT_LIMIT\n1180:             ]\n1181:             if request.user.has_perm(\"documents.view_savedview\")\n1182:             else []\n1183:         )\n1184:         tags = (\n1185:             get_objects_for_user_owner_aware(request.user, \"view_tag\", Tag).filter(\n1186:                 name__icontains=query,\n1187:             )[:OBJECT_LIMIT]\n1188:             if request.user.has_perm(\"documents.view_tag\")\n1189:             else []\n1190:         )\n1191:         correspondents = (\n1192:             get_objects_for_user_owner_aware(\n1193:                 request.user,\n1194:                 \"view_correspondent\",\n1195:                 Correspondent,\n1196:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1197:             if request.user.has_perm(\"documents.view_correspondent\")\n1198:             else []\n1199:         )\n1200:         document_types = (\n1201:             get_objects_for_user_owner_aware(\n1202:                 request.user,\n1203:                 \"view_documenttype\",\n1204:                 DocumentType,\n1205:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1206:             if request.user.has_perm(\"documents.view_documenttype\")\n1207:             else []\n1208:         )\n1209:         storage_paths = (\n1210:             get_objects_for_user_owner_aware(\n1211:                 request.user,\n1212:                 \"view_storagepath\",\n1213:                 StoragePath,\n1214:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1215:             if request.user.has_perm(\"documents.view_storagepath\")\n1216:             else []\n1217:         )\n1218:         users = (\n1219:             User.objects.filter(username__icontains=query)[:OBJECT_LIMIT]\n1220:             if request.user.has_perm(\"auth.view_user\")\n1221:             else []\n1222:         )\n1223:         groups = (\n1224:             Group.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1225:             if request.user.has_perm(\"auth.view_group\")\n1226:             else []\n1227:         )\n1228:         mail_rules = (\n1229:             MailRule.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1230:             if request.user.has_perm(\"paperless_mail.view_mailrule\")\n1231:             else []\n1232:         )\n1233:         mail_accounts = (\n1234:             MailAccount.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1235:             if request.user.has_perm(\"paperless_mail.view_mailaccount\")\n1236:             else []\n1237:         )\n1238:         workflows = (\n1239:             Workflow.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1240:             if request.user.has_perm(\"documents.view_workflow\")\n1241:             else []\n1242:         )\n1243:         custom_fields = (\n1244:             CustomField.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1245:             if request.user.has_perm(\"documents.view_customfield\")\n1246:             else []\n1247:         )\n1248: \n1249:         context = {\n1250:             \"request\": request,\n1251:         }\n1252: \n1253:         docs_serializer = DocumentSerializer(docs, many=True, context=context)\n1254:         saved_views_serializer = SavedViewSerializer(\n1255:             saved_views,\n1256:             many=True,\n1257:             context=context,\n1258:         )\n1259:         tags_serializer = TagSerializer(tags, many=True, context=context)\n1260:         correspondents_serializer = CorrespondentSerializer(\n1261:             correspondents,\n1262:             many=True,\n1263:             context=context,\n1264:         )\n1265:         document_types_serializer = DocumentTypeSerializer(\n1266:             document_types,\n1267:             many=True,\n1268:             context=context,\n1269:         )\n1270:         storage_paths_serializer = StoragePathSerializer(\n1271:             storage_paths,\n1272:             many=True,\n1273:             context=context,\n1274:         )\n1275:         users_serializer = UserSerializer(users, many=True, context=context)\n1276:         groups_serializer = GroupSerializer(groups, many=True, context=context)\n1277:         mail_rules_serializer = MailRuleSerializer(\n1278:             mail_rules,\n1279:             many=True,\n1280:             context=context,\n1281:         )\n1282:         mail_accounts_serializer = MailAccountSerializer(\n1283:             mail_accounts,\n1284:             many=True,\n1285:             context=context,\n1286:         )\n1287:         workflows_serializer = WorkflowSerializer(workflows, many=True, context=context)\n1288:         custom_fields_serializer = CustomFieldSerializer(\n1289:             custom_fields,\n1290:             many=True,\n1291:             context=context,\n1292:         )\n1293: \n1294:         return Response(\n1295:             {\n1296:                 \"total\": len(docs)\n1297:                 + len(saved_views)\n1298:                 + len(tags)\n1299:                 + len(correspondents)\n1300:                 + len(document_types)\n1301:                 + len(storage_paths)\n1302:                 + len(users)\n1303:                 + len(groups)\n1304:                 + len(mail_rules)\n1305:                 + len(mail_accounts)\n1306:                 + len(workflows)\n1307:                 + len(custom_fields),\n1308:                 \"documents\": docs_serializer.data,\n1309:                 \"saved_views\": saved_views_serializer.data,\n1310:                 \"tags\": tags_serializer.data,\n1311:                 \"correspondents\": correspondents_serializer.data,\n1312:                 \"document_types\": document_types_serializer.data,\n1313:                 \"storage_paths\": storage_paths_serializer.data,\n1314:                 \"users\": users_serializer.data,\n1315:                 \"groups\": groups_serializer.data,\n1316:                 \"mail_rules\": mail_rules_serializer.data,\n1317:                 \"mail_accounts\": mail_accounts_serializer.data,\n1318:                 \"workflows\": workflows_serializer.data,\n1319:                 \"custom_fields\": custom_fields_serializer.data,\n1320:             },\n1321:         )\n1322: \n1323: \n1324: class StatisticsView(APIView\n[TRUNCATED]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 795,
+                  "end_line": 830,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/serialisers.py lines=795-830]\n795:             \"remove_inbox_tags\",\n796:         )\n797: \n798: \n799: class SearchResultSerializer(DocumentSerializer):\n800:     def to_representation(self, instance):\n801:         doc = (\n802:             Document.objects.select_related(\n803:                 \"correspondent\",\n804:                 \"storage_path\",\n805:                 \"document_type\",\n806:                 \"owner\",\n807:             )\n808:             .prefetch_related(\"tags\", \"custom_fields\", \"notes\")\n809:             .get(id=instance[\"id\"])\n810:         )\n811:         notes = \",\".join(\n812:             [str(c.note) for c in doc.notes.all()],\n813:         )\n814:         r = super().to_representation(doc)\n815:         r[\"__search_hit__\"] = {\n816:             \"score\": instance.score,\n817:             \"highlights\": instance.highlights(\"content\", text=doc.content),\n818:             \"note_highlights\": (\n819:                 instance.highlights(\"notes\", text=notes) if doc else None\n820:             ),\n821:             \"rank\": instance.rank,\n822:         }\n823: \n824:         return r\n825: \n826: \n827: class SavedViewFilterRuleSerializer(serializers.ModelSerializer):\n828:     class Meta:\n829:         model = SavedViewFilterRule\n830:         fields = [\"rule_type\", \"value\"]\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class SearchAutoCompleteView",
+                  "snapshot": "base",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"class SearchAutoCompleteView\"]\nsrc/documents/views.py:1129:class SearchAutoCompleteView(APIView):\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/paperless/urls.py",
+                  "start_line": 80,
+                  "end_line": 105,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/paperless/urls.py lines=80-105]\n80:         r\"^api/\",\n81:         include(\n82:             [\n83:                 re_path(\n84:                     \"^auth/\",\n85:                     include(\n86:                         (\"rest_framework.urls\", \"rest_framework\"),\n87:                         namespace=\"rest_framework\",\n88:                     ),\n89:                 ),\n90:                 re_path(\n91:                     \"^search/autocomplete/\",\n92:                     SearchAutoCompleteView.as_view(),\n93:                     name=\"autocomplete\",\n94:                 ),\n95:                 re_path(\n96:                     \"^search/\",\n97:                     GlobalSearchView.as_view(),\n98:                     name=\"global_search\",\n99:                 ),\n100:                 re_path(\"^statistics/\", StatisticsView.as_view(), name=\"statistics\"),\n101:                 re_path(\n102:                     \"^documents/post_document/\",\n103:                     PostDocumentView.as_view(),\n104:                     name=\"post_document\",\n105:                 ),\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 1129,
+                  "end_line": 1160,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=1129-1160]\n1129: class SearchAutoCompleteView(APIView):\n1130:     permission_classes = (IsAuthenticated,)\n1131: \n1132:     def get(self, request, format=None):\n1133:         user = self.request.user if hasattr(self.request, \"user\") else None\n1134: \n1135:         if \"term\" in request.query_params:\n1136:             term = request.query_params[\"term\"]\n1137:         else:\n1138:             return HttpResponseBadRequest(\"Term required\")\n1139: \n1140:         if \"limit\" in request.query_params:\n1141:             limit = int(request.query_params[\"limit\"])\n1142:             if limit <= 0:\n1143:                 return HttpResponseBadRequest(\"Invalid limit\")\n1144:         else:\n1145:             limit = 10\n1146: \n1147:         from documents import index\n1148: \n1149:         ix = index.open_index()\n1150: \n1151:         return Response(\n1152:             index.autocomplete(\n1153:                 ix,\n1154:                 term,\n1155:                 limit,\n1156:                 user,\n1157:             ),\n1158:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 813,
+                  "end_line": 855,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=813-855]\n813:         return Response(sorted(entries, key=lambda x: x[\"timestamp\"], reverse=True))\n814: \n815: \n816: class SearchResultSerializer(DocumentSerializer, PassUserMixin):\n817:     def to_representation(self, instance):\n818:         doc = (\n819:             Document.objects.select_related(\n820:                 \"correspondent\",\n821:                 \"storage_path\",\n822:                 \"document_type\",\n823:                 \"owner\",\n824:             )\n825:             .prefetch_related(\"tags\", \"custom_fields\", \"notes\")\n826:             .get(id=instance[\"id\"])\n827:         )\n828:         notes = \",\".join(\n829:             [str(c.note) for c in doc.notes.all()],\n830:         )\n831:         r = super().to_representation(doc)\n832:         r[\"__search_hit__\"] = {\n833:             \"score\": instance.score,\n834:             \"highlights\": instance.highlights(\"content\", text=doc.content),\n835:             \"note_highlights\": (\n836:                 instance.highlights(\"notes\", text=notes) if doc else None\n837:             ),\n838:             \"rank\": instance.rank,\n839:         }\n840: \n841:         return r\n842: \n843: \n844: class UnifiedSearchViewSet(DocumentViewSet):\n845:     def __init__(self, *args, **kwargs):\n846:         super().__init__(*args, **kwargs)\n847:         self.searcher = None\n848: \n849:     def get_serializer_class(self):\n850:         if self._is_search_request():\n851:             return SearchResultSerializer\n852:         else:\n853:             return DocumentSerializer\n854: \n855:     def _is_search_request(self):\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/tests/test_api_search.py",
+                  "start_line": 1155,
+                  "end_line": 1270,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/tests/test_api_search.py lines=1155-1267]\n1155:             [d1.id, d2.id, d3.id],\n1156:         )\n1157:         self.assertListEqual(\n1158:             search_query(\"&ordering=-owner\"),\n1159:             [d3.id, d2.id, d1.id],\n1160:         )\n1161: \n1162:     def test_global_search(self):\n1163:         \"\"\"\n1164:         GIVEN:\n1165:             - Multiple documents and objects\n1166:         WHEN:\n1167:             - Global search query is made\n1168:         THEN:\n1169:             - Appropriately filtered results are returned\n1170:         \"\"\"\n1171:         d1 = Document.objects.create(\n1172:             title=\"invoice doc1\",\n1173:             content=\"the thing i bought at a shop and paid with bank account\",\n1174:             checksum=\"A\",\n1175:             pk=1,\n1176:         )\n1177:         d2 = Document.objects.create(\n1178:             title=\"bank statement doc2\",\n1179:             content=\"things i paid for in august\",\n1180:             checksum=\"B\",\n1181:             pk=2,\n1182:         )\n1183:         d3 = Document.objects.create(\n1184:             title=\"tax bill doc3\",\n1185:             content=\"no b word\",\n1186:             checksum=\"C\",\n1187:             pk=3,\n1188:         )\n1189: \n1190:         with index.open_index_writer() as writer:\n1191:             index.update_document(writer, d1)\n1192:             index.update_document(writer, d2)\n1193:             index.update_document(writer, d3)\n1194: \n1195:         correspondent1 = Correspondent.objects.create(name=\"bank correspondent 1\")\n1196:         Correspondent.objects.create(name=\"correspondent 2\")\n1197:         document_type1 = DocumentType.objects.create(name=\"bank invoice\")\n1198:         DocumentType.objects.create(name=\"invoice\")\n1199:         storage_path1 = StoragePath.objects.create(name=\"bank path 1\", path=\"path1\")\n1200:         StoragePath.objects.create(name=\"path 2\", path=\"path2\")\n1201:         tag1 = Tag.objects.create(name=\"bank tag1\")\n1202:         Tag.objects.create(name=\"tag2\")\n1203:         user1 = User.objects.create_superuser(\"bank user1\")\n1204:         User.objects.create_user(\"user2\")\n1205:         group1 = Group.objects.create(name=\"bank group1\")\n1206:         Group.objects.create(name=\"group2\")\n1207:         SavedView.objects.create(\n1208:             name=\"bank view\",\n1209:             show_on_dashboard=True,\n1210:             show_in_sidebar=True,\n1211:             sort_field=\"\",\n1212:             owner=user1,\n1213:         )\n1214:         mail_account1 = MailAccount.objects.create(name=\"bank mail account 1\")\n1215:         mail_account2 = MailAccount.objects.create(name=\"mail account 2\")\n1216:         mail_rule1 = MailRule.objects.create(\n1217:             name=\"bank mail rule 1\",\n1218:             account=mail_account1,\n1219:             action=MailRule.MailAction.MOVE,\n1220:         )\n1221:         MailRule.objects.create(\n1222:             name=\"mail rule 2\",\n1223:             account=mail_account2,\n1224:             action=MailRule.MailAction.MOVE,\n1225:         )\n1226:         custom_field1 = CustomField.objects.create(\n1227:             name=\"bank custom field 1\",\n1228:             data_type=CustomField.FieldDataType.STRING,\n1229:         )\n1230:         CustomField.objects.create(\n1231:             name=\"custom field 2\",\n1232:             data_type=CustomField.FieldDataType.INT,\n1233:         )\n1234:         workflow1 = Workflow.objects.create(name=\"bank workflow 1\")\n1235:         Workflow.objects.create(name=\"workflow 2\")\n1236: \n1237:         self.client.force_authenticate(user1)\n1238: \n1239:         response = self.client.get(\"/api/search/?query=bank\")\n1240:         self.assertEqual(response.status_code, status.HTTP_200_OK)\n1241:         results = response.data\n1242:         self.assertEqual(len(results[\"documents\"]), 2)\n1243:         self.assertEqual(len(results[\"saved_views\"]), 1)\n1244:         self.assertNotEqual(results[\"documents\"][0][\"id\"], d3.id)\n1245:         self.assertNotEqual(results[\"documents\"][1][\"id\"], d3.id)\n1246:         self.assertEqual(results[\"correspondents\"][0][\"id\"], correspondent1.id)\n1247:         self.assertEqual(results[\"document_types\"][0][\"id\"], document_type1.id)\n1248:         self.assertEqual(results[\"storage_paths\"][0][\"id\"], storage_path1.id)\n1249:         self.assertEqual(results[\"tags\"][0][\"id\"], tag1.id)\n1250:         self.assertEqual(results[\"users\"][0][\"id\"], user1.id)\n1251:         self.assertEqual(results[\"groups\"][0][\"id\"], group1.id)\n1252:         self.assertEqual(results[\"mail_accounts\"][0][\"id\"], mail_account1.id)\n1253:         self.assertEqual(results[\"mail_rules\"][0][\"id\"], mail_rule1.id)\n1254:         self.assertEqual(results[\"custom_fields\"][0][\"id\"], custom_field1.id)\n1255:         self.assertEqual(results[\"workflows\"][0][\"id\"], workflow1.id)\n1256: \n1257:     def test_global_search_bad_request(self):\n1258:         \"\"\"\n1259:         WHEN:\n1260:             - Global search query is made without or with query < 3 characters\n1261:         THEN:\n1262:             - Error is returned\n1263:         \"\"\"\n1264:         response = self.client.get(\"/api/search/\")\n1265:         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)\n1266:         response = self.client.get(\"/api/search/?query=no\")\n1267:         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def get_objects_for_user_owner_aware",
+                  "snapshot": "base",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"def get_objects_for_user_owner_aware\"]\nsrc/documents/permissions.py:126:def get_objects_for_user_owner_aware(user, perms, Model) -> QuerySet:\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 1,
+                  "end_line": 30,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/views.py lines=1-30]\n1: import itertools\n2: import json\n3: import logging\n4: import os\n5: import platform\n6: import re\n7: import tempfile\n8: import urllib\n9: import zipfile\n10: from datetime import datetime\n11: from pathlib import Path\n12: from time import mktime\n13: from unicodedata import normalize\n14: from urllib.parse import quote\n15: from urllib.parse import urlparse\n16: \n17: import pathvalidate\n18: from django.apps import apps\n19: from django.conf import settings\n20: from django.contrib.auth.models import Group\n21: from django.contrib.auth.models import User\n22: from django.contrib.contenttypes.models import ContentType\n23: from django.db import connections\n24: from django.db.migrations.loader import MigrationLoader\n25: from django.db.migrations.recorder import MigrationRecorder\n26: from django.db.models import Case\n27: from django.db.models import Count\n28: from django.db.models import IntegerField\n29: from django.db.models import Max\n30: from django.db.models import Q\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "SearchResultSerializer",
+                  "snapshot": "pr",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 pattern=\"SearchResultSerializer\"]\nsrc/documents/serialisers.py:799:class SearchResultSerializer(DocumentSerializer):\nsrc/documents/views.py:141:from documents.serialisers import SearchResultSerializer\nsrc/documents/views.py:831:            return SearchResultSerializer\nsrc/documents/views.py:1143:    serializer_class = SearchResultSerializer\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 1,
+                  "end_line": 40,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/serialisers.py lines=1-40]\n1: import datetime\n2: import math\n3: import re\n4: import zoneinfo\n5: from decimal import Decimal\n6: \n7: import magic\n8: from auditlog.context import set_actor\n9: from celery import states\n10: from django.conf import settings\n11: from django.contrib.auth.models import Group\n12: from django.contrib.auth.models import User\n13: from django.contrib.contenttypes.models import ContentType\n14: from django.core.validators import DecimalValidator\n15: from django.core.validators import MaxLengthValidator\n16: from django.core.validators import RegexValidator\n17: from django.core.validators import integer_validator\n18: from django.utils import timezone\n19: from django.utils.crypto import get_random_string\n20: from django.utils.text import slugify\n21: from django.utils.translation import gettext as _\n22: from drf_writable_nested.serializers import NestedUpdateMixin\n23: from guardian.core import ObjectPermissionChecker\n24: from guardian.shortcuts import get_users_with_perms\n25: from guardian.utils import get_group_obj_perms_model\n26: from guardian.utils import get_user_obj_perms_model\n27: from rest_framework import fields\n28: from rest_framework import serializers\n29: from rest_framework.fields import SerializerMethodField\n30: \n31: from documents import bulk_edit\n32: from documents.data_models import DocumentSource\n33: from documents.models import Correspondent\n34: from documents.models import CustomField\n35: from documents.models import CustomFieldInstance\n36: from documents.models import Document\n37: from documents.models import DocumentType\n38: from documents.models import MatchingModel\n39: from documents.models import PaperlessTask\n40: from documents.models import SavedView\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 650,
+                  "end_line": 700,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/serialisers.py lines=650-700]\n650:     OwnedObjectSerializer,\n651:     NestedUpdateMixin,\n652:     DynamicFieldsModelSerializer,\n653: ):\n654:     correspondent = CorrespondentField(allow_null=True)\n655:     tags = TagsField(many=True)\n656:     document_type = DocumentTypeField(allow_null=True)\n657:     storage_path = StoragePathField(allow_null=True)\n658: \n659:     original_file_name = SerializerMethodField()\n660:     archived_file_name = SerializerMethodField()\n661:     created_date = serializers.DateField(required=False)\n662: \n663:     custom_fields = CustomFieldInstanceSerializer(\n664:         many=True,\n665:         allow_null=False,\n666:         required=False,\n667:     )\n668: \n669:     owner = serializers.PrimaryKeyRelatedField(\n670:         queryset=User.objects.all(),\n671:         required=False,\n672:         allow_null=True,\n673:     )\n674: \n675:     remove_inbox_tags = serializers.BooleanField(\n676:         default=False,\n677:         write_only=True,\n678:         allow_null=True,\n679:         required=False,\n680:     )\n681: \n682:     def get_original_file_name(self, obj):\n683:         return obj.original_filename\n684: \n685:     def get_archived_file_name(self, obj):\n686:         if obj.has_archive_version:\n687:             return obj.get_public_filename(archive=True)\n688:         else:\n689:             return None\n690: \n691:     def to_representation(self, instance):\n692:         doc = super().to_representation(instance)\n693:         if self.truncate_content and \"content\" in self.fields:\n694:             doc[\"content\"] = doc.get(\"content\")[0:550]\n695:         return doc\n696: \n697:     def update(self, instance: Document, validated_data):\n698:         if \"created_date\" in validated_data and \"created\" not in validated_data:\n699:             new_datetime = datetime.datetime.combine(\n700:                 validated_data.get(\"created_date\"),\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class DocumentSerializer",
+                  "snapshot": "pr",
+                  "file_glob": "*.py"
+                },
+                "result": "[GREP snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 pattern=\"class DocumentSerializer\"]\nsrc/documents/serialisers.py:649:class DocumentSerializer(\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 550,
+                  "end_line": 650,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/serialisers.py lines=550-650]\n550:                         regex=r\"^[A-Z]{3}-?\\d+(\\.\\d{2,2})$\",\n551:                         message=\"Must be a two-decimal number with optional currency code e.g. GBP123.45\",\n552:                     )(data[\"value\"])\n553:             elif field.data_type == CustomField.FieldDataType.STRING:\n554:                 MaxLengthValidator(limit_value=128)(data[\"value\"])\n555: \n556:         return data\n557: \n558:     def reflect_doclinks(\n559:         self,\n560:         document: Document,\n561:         field: CustomField,\n562:         target_doc_ids: list[int],\n563:     ):\n564:         \"\"\"\n565:         Add or remove 'symmetrical' links to `document` on all `target_doc_ids`\n566:         \"\"\"\n567: \n568:         if target_doc_ids is None:\n569:             target_doc_ids = []\n570: \n571:         # Check if any documents are going to be removed from the current list of links and remove the symmetrical links\n572:         current_field_instance = CustomFieldInstance.objects.filter(\n573:             field=field,\n574:             document=document,\n575:         ).first()\n576:         if (\n577:             current_field_instance is not None\n578:             and current_field_instance.value is not None\n579:         ):\n580:             for doc_id in current_field_instance.value:\n581:                 if doc_id not in target_doc_ids:\n582:                     self.remove_doclink(document, field, doc_id)\n583: \n584:         # Create an instance if target doc doesn't have this field or append it to an existing one\n585:         existing_custom_field_instances = {\n586:             custom_field.document_id: custom_field\n587:             for custom_field in CustomFieldInstance.objects.filter(\n588:                 field=field,\n589:                 document_id__in=target_doc_ids,\n590:             )\n591:         }\n592:         custom_field_instances_to_create = []\n593:         custom_field_instances_to_update = []\n594:         for target_doc_id in target_doc_ids:\n595:             target_doc_field_instance = existing_custom_field_instances.get(\n596:                 target_doc_id,\n597:             )\n598:             if target_doc_field_instance is None:\n599:                 custom_field_instances_to_create.append(\n600:                     CustomFieldInstance(\n601:                         document_id=target_doc_id,\n602:                         field=field,\n603:                         value_document_ids=[document.id],\n604:                     ),\n605:                 )\n606:             elif target_doc_field_instance.value is None:\n607:                 target_doc_field_instance.value_document_ids = [document.id]\n608:                 custom_field_instances_to_update.append(target_doc_field_instance)\n609:             elif document.id not in target_doc_field_instance.value:\n610:                 target_doc_field_instance.value_document_ids.append(document.id)\n611:                 custom_field_instances_to_update.append(target_doc_field_instance)\n612: \n613:         CustomFieldInstance.objects.bulk_create(custom_field_instances_to_create)\n614:         CustomFieldInstance.objects.bulk_update(\n615:             custom_field_instances_to_update,\n616:             [\"value_document_ids\"],\n617:         )\n618:         Document.objects.filter(id__in=target_doc_ids).update(modified=timezone.now())\n619: \n620:     @staticmethod\n621:     def remove_doclink(\n622:         document: Document,\n623:         field: CustomField,\n624:         target_doc_id: int,\n625:     ):\n626:         \"\"\"\n627:         Removes a 'symmetrical' link to `document` from the target document's existing custom field instance\n628:         \"\"\"\n629:         target_doc_field_instance = CustomFieldInstance.objects.filter(\n630:             document_id=target_doc_id,\n631:             field=field,\n632:         ).first()\n633:         if (\n634:             target_doc_field_instance is not None\n635:             and document.id in target_doc_field_instance.value\n636:         ):\n637:             target_doc_field_instance.value.remove(document.id)\n638:             target_doc_field_instance.save()\n639:         Document.objects.filter(id=target_doc_id).update(modified=timezone.now())\n640: \n641:     class Meta:\n642:         model = CustomFieldInstance\n643:         fields = [\n644:             \"value\",\n645:             \"field\",\n646:         ]\n647: \n648: \n649: class DocumentSerializer(\n650:     OwnedObjectSerializer,\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class OwnedObjectSerializer",
+                  "snapshot": "pr",
+                  "file_glob": "*.py"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"global-search-view\",\"title\":\"Add authenticated, permission-filtered global search endpoint and its import wiring\",\"rationale\":\"These hunks add the new GlobalSearchView route, its import, and the per-object has_perm / get_objects_for_user_owner_aware authorization checks (including the non-object-permission User/Group/MailRule/MailAccount/Workflow/CustomField branches) that gate which objects are returned.\",\"hunks\":[\"src/documents/views.py#0\",\"src/documents/views.py#2\",\"src/documents/views.py#4\",\"src/paperless/urls.py#0\",\"src/paperless/urls.py#1\"],\"context\":[{\"path\":\"src/documents/views.py\",\"symbol\":\"PassUserMixin\",\"start_line\":213,\"end_line\":225,\"snapshot\":\"pr\",\"why\":\"Base class GlobalSearchView inherits from; defines get_serializer user injection\"},{\"path\":\"src/documents/permissions.py\",\"symbol\":\"get_objects_for_user_owner_aware\",\"start_line\":126,\"end_line\":126,\"snapshot\":\"base\",\"why\":\"Object-permission helper used to restrict docs/tags/correspondents/etc. per user\"},{\"path\":\"src/documents/views.py\",\"symbol\":\"SearchAutoCompleteView\",\"start_line\":1129,\"end_line\":1158,\"snapshot\":\"base\",\"why\":\"Sibling authenticated endpoint used as permission pattern for the new route\"}]},{\"id\":\"serializer-relocation\",\"title\":\"Move SearchResultSerializer from views.py into serialisers.py without the PassUserMixin base\",\"rationale\":\"These hunks delete the old views.py SearchResultSerializer (which mixed in PassUserMixin to pass request.user) and re-add it as a plain DocumentSerializer subclass in serialisers.py, so the serializer no longer relies on request-user context for ownership filtering.\",\"hunks\":[\"src/documents/views.py#1\",\"src/documents/views.py#3\",\"src/documents/serialisers.py#0\"],\"context\":[{\"path\":\"src/documents/serialisers.py\",\"symbol\":\"DocumentSerializer\",\"start_line\":649,\"end_line\":696,\"snapshot\":\"pr\",\"why\":\"Base of the relocated SearchResultSerializer; provides to_representation and ownership fields\"},{\"path\":\"src/documents/views.py\",\"symbol\":\"UnifiedSearchViewSet.get_serializer_class\",\"start_line\":829,\"end_line\":831,\"snapshot\":\"pr\",\"why\":\"Consumer of SearchResultSerializer that must now import it from serialisers\"}]},{\"id\":\"global-search-tests\",\"title\":\"Add tests exercising the new global search endpoint and its input validation\",\"rationale\":\"These hunks import the required auth/mail/workflow models and add test_global_search (asserts permission-filtered results for a superuser) and test_global_search_bad_request (asserts 400 for missing/short query) against the new /api/search/ route.\",\"hunks\":[\"src/documents/tests/test_api_search.py#0\",\"src/documents/tests/test_api_search.py#1\",\"src/documents/tests/test_api_search.py#2\"],\"context\":[{\"path\":\"src/documents/views.py\",\"symbol\":\"GlobalSearchView\",\"start_line\":1141,\"end_line\":1321,\"snapshot\":\"pr\",\"why\":\"Endpoint under test\"},{\"path\":\"src/paperless/urls.py\",\"symbol\":\"global_search\",\"start_line\":95,\"end_line\":99,\"snapshot\":\"pr\",\"why\":\"Route the tests hit at /api/search/\"}]}]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"global-search-view\",\"title\":\"Add authenticated permission-filtered global search endpoint\",\"rationale\":\"These hunks add GlobalSearchView, its import, and the /api/search/ route with per-object has_perm and get_objects_for_user_owner_aware checks that gate returned objects.\",\"hunks\":[\"src/documents/views.py#0\",\"src/documents/views.py#2\",\"src/documents/views.py#4\",\"src/paperless/urls.py#0\",\"src/paperless/urls.py#1\"],\"context\":[{\"path\":\"src/documents/views.py\",\"symbol\":\"PassUserMixin\",\"start_line\":213,\"end_line\":225,\"snapshot\":\"pr\",\"why\":\"Base class of GlobalSearchView\"},{\"path\":\"src/documents/permissions.py\",\"symbol\":\"get_objects_for_user_owner_aware\",\"start_line\":126,\"end_line\":126,\"snapshot\":\"base\",\"why\":\"Object-permission helper restricting returned objects\"},{\"path\":\"src/documents/views.py\",\"symbol\":\"SearchAutoCompleteView\",\"start_line\":1129,\"end_line\":1158,\"snapshot\":\"base\",\"why\":\"Sibling authenticated endpoint pattern\"}]},{\"id\":\"serializer-relocation\",\"title\":\"Move SearchResultSerializer into serialisers.py dropping PassUserMixin\",\"rationale\":\"Deletes the old views.py serializer (mixed in PassUserMixin) and re-adds it in serialisers.py as a plain DocumentSerializer subclass, decoupling it from request-user context.\",\"hunks\":[\"src/documents/views.py#1\",\"src/documents/views.py#3\",\"src/documents/serialisers.py#0\"],\"context\":[{\"path\":\"src/documents/serialisers.py\",\"symbol\":\"DocumentSerializer\",\"start_line\":649,\"end_line\":696,\"snapshot\":\"pr\",\"why\":\"Base of the relocated serializer\"},{\"path\":\"src/documents/views.py\",\"symbol\":\"UnifiedSearchViewSet\",\"start_line\":829,\"end_line\":831,\"snapshot\":\"pr\",\"why\":\"Consumes SearchResultSerializer\"}]},{\"id\":\"global-search-tests\",\"title\":\"Add tests for the new global search endpoint and validation\",\"rationale\":\"Imports required models and adds test_global_search (permission-filtered results) and test_global_search_bad_request (400 for missing/short query).\",\"hunks\":[\"src/documents/tests/test_api_search.py#0\",\"src/documents/tests/test_api_search.py#1\",\"src/documents/tests/test_api_search.py#2\"],\"context\":[{\"path\":\"src/documents/views.py\",\"symbol\":\"GlobalSearchView\",\"start_line\":1141,\"end_line\":1321,\"snapshot\":\"pr\",\"why\":\"Endpoint under test\"},{\"path\":\"src/paperless/urls.py\",\"symbol\":\"global_search\",\"start_line\":95,\"end_line\":99,\"snapshot\":\"pr\",\"why\":\"Route hit by tests\"}]}]}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "global-search-view",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 135,
+                  "path": "src/documents/permissions.py",
+                  "snapshot": "base",
+                  "start_line": 100
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/permissions.py lines=100-135]\n100:         groups_to_add = Group.objects.filter(id__in=permissions[action][\"groups\"])\n101:         groups_to_remove = (\n102:             get_groups_with_only_permission(\n103:                 object,\n104:                 permission,\n105:             )\n106:             if not merge\n107:             else Group.objects.none()\n108:         )\n109:         if len(groups_to_add) > 0 and len(groups_to_remove) > 0:\n110:             groups_to_remove = groups_to_remove.exclude(id__in=groups_to_add)\n111:         if len(groups_to_remove) > 0:\n112:             for group in groups_to_remove:\n113:                 remove_perm(permission, group, object)\n114:         if len(groups_to_add) > 0:\n115:             for group in groups_to_add:\n116:                 assign_perm(permission, group, object)\n117:                 if action == \"change\":\n118:                     # change gives view too\n119:                     assign_perm(\n120:                         f\"view_{object.__class__.__name__.lower()}\",\n121:                         group,\n122:                         object,\n123:                     )\n124: \n125: \n126: def get_objects_for_user_owner_aware(user, perms, Model) -> QuerySet:\n127:     objects_owned = Model.objects.filter(owner=user)\n128:     objects_unowned = Model.objects.filter(owner__isnull=True)\n129:     objects_with_perms = get_objects_for_user(\n130:         user=user,\n131:         perms=perms,\n132:         klass=Model,\n133:         accept_global_perms=False,\n134:     )\n135:     return objects_owned | objects_unowned | objects_with_perms\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 1160,
+                  "path": "src/documents/views.py",
+                  "snapshot": "base",
+                  "start_line": 1120
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=1120-1160]\n1120:                     {\"id\": t.id, \"document_count\": t.document_count}\n1121:                     for t in custom_fields\n1122:                 ],\n1123:             },\n1124:         )\n1125: \n1126:         return r\n1127: \n1128: \n1129: class SearchAutoCompleteView(APIView):\n1130:     permission_classes = (IsAuthenticated,)\n1131: \n1132:     def get(self, request, format=None):\n1133:         user = self.request.user if hasattr(self.request, \"user\") else None\n1134: \n1135:         if \"term\" in request.query_params:\n1136:             term = request.query_params[\"term\"]\n1137:         else:\n1138:             return HttpResponseBadRequest(\"Term required\")\n1139: \n1140:         if \"limit\" in request.query_params:\n1141:             limit = int(request.query_params[\"limit\"])\n1142:             if limit <= 0:\n1143:                 return HttpResponseBadRequest(\"Invalid limit\")\n1144:         else:\n1145:             limit = 10\n1146: \n1147:         from documents import index\n1148: \n1149:         ix = index.open_index()\n1150: \n1151:         return Response(\n1152:             index.autocomplete(\n1153:                 ix,\n1154:                 term,\n1155:                 limit,\n1156:                 user,\n1157:             ),\n1158:         )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "object-level permissions which objects a user can view access control rules per object owner"
+                },
+                "result": "[docs/api.md:305-373] (relevance 0.62)\nAll objects (documents, tags, etc.) allow setting object-level permissions\nwith optional `owner` and / or a `set_permissions` parameters which are of\nthe form:\n\n```\n\"owner\": ...,\n\"set_permissions\": {\n    \"view\": {\n        \"users\": [...],\n        \"groups\": [...],\n    },\n    \"change\": {\n        \"users\": [...],\n        \"groups\": [...],\n    },\n}\n```\n\n!!! note\n\n    Arrays should contain user or group ID numbers.\n\nIf these parameters are supplied the object's permissions will be overwritten,\nassuming the authenticated user has permission to do so (the user must be\nthe object owner or a superuser).\n\n### Retrieving full permissions\n\nBy default, the API will return a truncated version of object-level\npermissions, returning `user_can_change` indicating whether the current user\ncan edit the object (either because they are the object owner or have permissions\ngranted). You can pass the parameter `full_perms=true` to API calls to view the\nfull permissions of objects in a format that mirrors the `set_permissions`\nparameter above.\n\n## Bulk Editing\n\nThe API supports various bulk-editing operations which are executed asynchronously.\n\n### Documents\n\nFor bulk operations on documents, use the endpoint `/api/documents/bulk_edit/` which accepts\na json payload of the format:\n\n```json\n{\n  \"documents\": [LIST_OF_DOCUMENT_IDS],\n  \"method\": METHOD, // see below\n  \"parameters\": args // see below\n}\n```\n\nThe following methods are supported:\n\n- `set_correspondent`\n  - Requires `parameters`: `{ \"correspondent\": CORRESPONDENT_ID }`\n- `set_document_type`\n  - Requires `parameters`: `{ \"document_type\": DOCUMENT_TYPE_ID }`\n- `set_storage_path`\n  - Requires `parameters`: `{ \"storage_path\": STORAGE_PATH_ID }`\n- `add_tag`\n  - Requires `parameters`: `{ \"tag\": TAG_ID }`\n- `remove_tag`\n  - Requires `parameters`: `{ \"tag\": TAG_ID }`\n- `modify_tags`\n  - Requires `parameters`: `{ \"add_tags\": [LIST_OF_TAG_IDS] }` and / or `{ \"remove_tags\": [LIST_OF_TAG_IDS] }`\n- `delete`\n  - No `parameters` required\n- `redo_ocr`\n\n---\n\n[docs/usage.md:267-278] (relevance 0.48)\n| SavedView     | Grants global permissions to add, edit, delete or view Saved Views.                                                                                                                                 |\n| ShareLink     | Grants global permissions to add, delete or view Share Links.                                                                                                                                       |\n| StoragePath   | Grants global permissions to add, edit, delete or view Storage Paths.                                                                                                                               |\n| Tag           | Grants global permissions to add, edit, delete or view Tags.                                                                                                                                        |\n| UISettings    | Grants global permissions to add, edit, delete or view the UI settings that are used by the web app.<br/>Users expected to access the web UI should usually be granted at least _View_ permissions. |\n| User          | Grants global permissions to add, edit, delete or view Users.                                                                                                                                       |\n| Workflow      | Grants global permissions to add, edit, delete or view Workflows.<br/>Note that Workflows are global, in other words all users who can access workflows have access to the same set of them.        |\n\n#### Detailed Explanation of Object Permissions {#object-permissions}\n\n| Type  | Details                                                                                                                                                                                                                                                                                                                                  |\n| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n\n---\n\n[docs/usage.md:229-258] (relevance 0.44)\nas owner and no extra permissions, but you can explicitly set these under Settings > Permissions.\n\nDocuments consumed via the consumption directory do not have an owner or additional permissions set by default, but again, can be controlled with [Workflows](#workflows).\n\n### Users and Groups\n\nPaperless-ngx supports editing users and groups via the 'frontend' UI, which can be found under\nSettings > Users & Groups, assuming the user has access. If a user is designated\nas a member of a group those permissions will be inherited and this is reflected in the UI. Explicit\npermissions can be granted to limit access to certain parts of the UI (and corresponding API endpoints).\n\n!!! note\n\n    Superusers can access all parts of the front and backend application as well as any and all objects.\n\n#### Admin Status\n\nAdmin status (Django 'staff status') grants access to viewing the paperless logs and the system status dialog\nas well as accessing the Django backend.\n\n#### Detailed Explanation of Global Permissions {#global-permissions}\n\nGlobal permissions define what areas of the app and API endpoints the user can access. For example, they\ndetermine if a user can create, edit, delete or view _any_ documents, but individual documents themselves\nstill have \"object-level\" permissions.\n\n| Type          | Details                                                                                                                                                                                             |\n| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n| AppConfig     | _Change_ or higher permissions grants access to the \"Application Configuration\" area.                                                                                                               |\n| Correspondent | Grants global permissions to add, edit, delete or view Correspondents.                                                                                                                              |\n\n---\n\n[docs/usage.md:258-267] (relevance 0.42)\n| Correspondent | Grants global permissions to add, edit, delete or view Correspondents.                                                                                                                              |\n| CustomField   | Grants global permissions to add, edit, delete or view Custom Fields.                                                                                                                               |\n| Document      | Grants global permissions to add, edit, delete or view Documents.                                                                                                                                   |\n| DocumentType  | Grants global permissions to add, edit, delete or view Document Types.                                                                                                                              |\n| Group         | Grants global permissions to add, edit, delete or view Groups.                                                                                                                                      |\n| MailAccount   | Grants global permissions to add, edit, delete or view Mail Accounts.                                                                                                                               |\n| MailRule      | Grants global permissions to add, edit, delete or view Mail Rules.                        "
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 1300,
+                  "path": "src/documents/views.py",
+                  "snapshot": "pr",
+                  "start_line": 1180
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/views.py lines=1180-1300]\n1180:             ]\n1181:             if request.user.has_perm(\"documents.view_savedview\")\n1182:             else []\n1183:         )\n1184:         tags = (\n1185:             get_objects_for_user_owner_aware(request.user, \"view_tag\", Tag).filter(\n1186:                 name__icontains=query,\n1187:             )[:OBJECT_LIMIT]\n1188:             if request.user.has_perm(\"documents.view_tag\")\n1189:             else []\n1190:         )\n1191:         correspondents = (\n1192:             get_objects_for_user_owner_aware(\n1193:                 request.user,\n1194:                 \"view_correspondent\",\n1195:                 Correspondent,\n1196:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1197:             if request.user.has_perm(\"documents.view_correspondent\")\n1198:             else []\n1199:         )\n1200:         document_types = (\n1201:             get_objects_for_user_owner_aware(\n1202:                 request.user,\n1203:                 \"view_documenttype\",\n1204:                 DocumentType,\n1205:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1206:             if request.user.has_perm(\"documents.view_documenttype\")\n1207:             else []\n1208:         )\n1209:         storage_paths = (\n1210:             get_objects_for_user_owner_aware(\n1211:                 request.user,\n1212:                 \"view_storagepath\",\n1213:                 StoragePath,\n1214:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1215:             if request.user.has_perm(\"documents.view_storagepath\")\n1216:             else []\n1217:         )\n1218:         users = (\n1219:             User.objects.filter(username__icontains=query)[:OBJECT_LIMIT]\n1220:             if request.user.has_perm(\"auth.view_user\")\n1221:             else []\n1222:         )\n1223:         groups = (\n1224:             Group.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1225:             if request.user.has_perm(\"auth.view_group\")\n1226:             else []\n1227:         )\n1228:         mail_rules = (\n1229:             MailRule.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1230:             if request.user.has_perm(\"paperless_mail.view_mailrule\")\n1231:             else []\n1232:         )\n1233:         mail_accounts = (\n1234:             MailAccount.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1235:             if request.user.has_perm(\"paperless_mail.view_mailaccount\")\n1236:             else []\n1237:         )\n1238:         workflows = (\n1239:             Workflow.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1240:             if request.user.has_perm(\"documents.view_workflow\")\n1241:             else []\n1242:         )\n1243:         custom_fields = (\n1244:             CustomField.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1245:             if request.user.has_perm(\"documents.view_customfield\")\n1246:             else []\n1247:         )\n1248: \n1249:         context = {\n1250:             \"request\": request,\n1251:         }\n1252: \n1253:         docs_serializer = DocumentSerializer(docs, many=True, context=context)\n1254:         saved_views_serializer = SavedViewSerializer(\n1255:             saved_views,\n1256:             many=True,\n1257:             context=context,\n1258:         )\n1259:         tags_serializer = TagSerializer(tags, many=True, context=context)\n1260:         correspondents_serializer = CorrespondentSerializer(\n1261:             correspondents,\n1262:             many=True,\n1263:             context=context,\n1264:         )\n1265:         document_types_serializer = DocumentTypeSerializer(\n1266:             document_types,\n1267:             many=True,\n1268:             context=context,\n1269:         )\n1270:         storage_paths_serializer = StoragePathSerializer(\n1271:             storage_paths,\n1272:             many=True,\n1273:             context=context,\n1274:         )\n1275:         users_serializer = UserSerializer(users, many=True, context=context)\n1276:         groups_serializer = GroupSerializer(groups, many=True, context=context)\n1277:         mail_rules_serializer = MailRuleSerializer(\n1278:             mail_rules,\n1279:             many=True,\n1280:             context=context,\n1281:         )\n1282:         mail_accounts_serializer = MailAccountSerializer(\n1283:             mail_accounts,\n1284:             many=True,\n1285:             context=context,\n1286:         )\n1287:         workflows_serializer = WorkflowSerializer(workflows, many=True, context=context)\n1288:         custom_fields_serializer = CustomFieldSerializer(\n1289:             custom_fields,\n1290:             many=True,\n1291:             context=context,\n1292:         )\n1293: \n1294:         return Response(\n1295:             {\n1296:                 \"total\": len(docs)\n1297:                 + len(saved_views)\n1298:                 + len(tags)\n1299:                 + len(correspondents)\n1300:                 + len(document_types)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 1180,
+                  "path": "src/documents/views.py",
+                  "snapshot": "pr",
+                  "start_line": 1138
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/views.py lines=1138-1180]\n1138:         )\n1139: \n1140: \n1141: class GlobalSearchView(PassUserMixin):\n1142:     permission_classes = (IsAuthenticated,)\n1143:     serializer_class = SearchResultSerializer\n1144: \n1145:     def get(self, request, *args, **kwargs):\n1146:         query = request.query_params.get(\"query\", None)\n1147:         if query is None:\n1148:             return HttpResponseBadRequest(\"Query required\")\n1149:         elif len(query) < 3:\n1150:             return HttpResponseBadRequest(\"Query must be at least 3 characters\")\n1151: \n1152:         db_only = request.query_params.get(\"db_only\", False)\n1153: \n1154:         OBJECT_LIMIT = 3\n1155:         docs = []\n1156:         if request.user.has_perm(\"documents.view_document\"):\n1157:             all_docs = get_objects_for_user_owner_aware(\n1158:                 request.user,\n1159:                 \"view_document\",\n1160:                 Document,\n1161:             )\n1162:             # First search by title\n1163:             docs = all_docs.filter(title__icontains=query)[:OBJECT_LIMIT]\n1164:             if not db_only and len(docs) < OBJECT_LIMIT:\n1165:                 # If we don't have enough results, search by content\n1166:                 from documents import index\n1167: \n1168:                 with index.open_index_searcher() as s:\n1169:                     q, _ = index.DelayedFullTextQuery(\n1170:                         s,\n1171:                         request.query_params,\n1172:                         10,\n1173:                         request.user,\n1174:                     )._get_query()\n1175:                     results = s.search(q, limit=OBJECT_LIMIT)\n1176:                     docs = docs | all_docs.filter(id__in=[r[\"id\"] for r in results])\n1177:         saved_views = (\n1178:             SavedView.objects.filter(owner=request.user, name__icontains=query)[\n1179:                 :OBJECT_LIMIT\n1180:             ]\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 100,
+                  "path": "src/documents/permissions.py",
+                  "snapshot": "base",
+                  "start_line": 1
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis, the `GlobalSearchView` follows the established object-level authorization pattern. For objects that support object-level permissions (Document, Tag, Correspondent, DocumentType, StoragePath), the code uses `get_objects_for_user_owner_aware`, which restricts results to objects the user owns, owns no owner (shared), or has explicit perms on. For each such type, a global `has_perm` gate is also applied.\n\nFor types that are inherently global (Users, Groups, MailRule, MailAccount, Workflow, CustomField), the code queries the model directly but gates them with a global `has_perm` check, consistent with the policy that \"global permissions determine if a user can view any\" of those types and that Workflows \"are global... all users who can access workflows have access to the same set.\" SavedViews are restricted to `owner=request.user`.\n\nI could not confirm a violation with cited evidence \u2014 no policy rule is explicitly broken by the changed lines, and the authorization checks (IsAuthenticated + per-type `has_perm` + object-level filtering) are present and consistent with the documented model.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "serializer-relocation",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class PassUserMixin"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"class PassUserMixin\"]\nsrc/documents/views.py:205:class PassUserMixin(GenericAPIView):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "PassUserMixin|def get_queryset|DocumentPermission|owner",
+                  "file_glob": "src/documents/serialisers.py"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"PassUserMixin|def get_queryset|DocumentPermission|owner\"]\nsrc/documents/serialisers.py:91:        owner = (\nsrc/documents/serialisers.py:92:            data[\"owner\"]\nsrc/documents/serialisers.py:93:            if \"owner\" in data\nsrc/documents/serialisers.py:97:        if (\"name\" in data or \"owner\" in data) and self.Meta.model.objects.filter(\nsrc/documents/serialisers.py:99:            owner=owner,\nsrc/documents/serialisers.py:102:                {\"error\": \"Object violates owner / name unique constraint\"},\nsrc/documents/serialisers.py:223:            obj.owner is None\nsrc/documents/serialisers.py:224:            or obj.owner == self.user\nsrc/documents/serialisers.py:235:        return obj.owner == self.user and (\nsrc/documents/serialisers.py:262:        if \"owner\" not in validated_data and self.user:\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 195,
+                  "end_line": 225,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=195-225]\n195:         context[\"main_js\"] = f\"frontend/{self.get_frontend_language()}/main.js\"\n196:         context[\"webmanifest\"] = (\n197:             f\"frontend/{self.get_frontend_language()}/manifest.webmanifest\"\n198:         )\n199:         context[\"apple_touch_icon\"] = (\n200:             f\"frontend/{self.get_frontend_language()}/apple-touch-icon.png\"\n201:         )\n202:         return context\n203: \n204: \n205: class PassUserMixin(GenericAPIView):\n206:     \"\"\"\n207:     Pass a user object to serializer\n208:     \"\"\"\n209: \n210:     def get_serializer(self, *args, **kwargs):\n211:         kwargs.setdefault(\"user\", self.request.user)\n212:         kwargs.setdefault(\n213:             \"full_perms\",\n214:             self.request.query_params.get(\"full_perms\", False),\n215:         )\n216:         return super().get_serializer(*args, **kwargs)\n217: \n218: \n219: class PermissionsAwareDocumentCountMixin(PassUserMixin):\n220:     \"\"\"\n221:     Mixin to add document count to queryset, permissions-aware if needed\n222:     \"\"\"\n223: \n224:     def get_queryset(self):\n225:         filter = (\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "PassUserMixin|self.user|get_object|get_queryset|get_permissions|get_serializer_context",
+                  "file_glob": "src/documents/views.py"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"PassUserMixin|self.user|get_object|get_queryset|get_permissions|get_serializer_c\"]\nsrc/documents/views.py:39:from django.shortcuts import get_object_or_404\nsrc/documents/views.py:126:from documents.permissions import get_objects_for_user_owner_aware\nsrc/documents/views.py:205:class PassUserMixin(GenericAPIView):\nsrc/documents/views.py:219:class PermissionsAwareDocumentCountMixin(PassUserMixin):\nsrc/documents/views.py:224:    def get_queryset(self):\nsrc/documents/views.py:230:                    documents__id__in=get_objects_for_user_owner_aware(\nsrc/documents/views.py:240:            .get_queryset()\nsrc/documents/views.py:317:    PassUserMixin,\nsrc/documents/views.py:350:    def get_queryset(self):\nsrc/documents/views.py:362:        kwargs.setdefault(\"context\", self.get_serializer_context())\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 315,
+                  "end_line": 375,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 path=src/documents/views.py lines=315-375]\n315: \n316: class DocumentViewSet(\n317:     PassUserMixin,\n318:     RetrieveModelMixin,\n319:     UpdateModelMixin,\n320:     DestroyModelMixin,\n321:     ListModelMixin,\n322:     GenericViewSet,\n323: ):\n324:     model = Document\n325:     queryset = Document.objects.annotate(num_notes=Count(\"notes\"))\n326:     serializer_class = DocumentSerializer\n327:     pagination_class = StandardPagination\n328:     permission_classes = (IsAuthenticated, PaperlessObjectPermissions)\n329:     filter_backends = (\n330:         DjangoFilterBackend,\n331:         SearchFilter,\n332:         OrderingFilter,\n333:         ObjectOwnedOrGrantedPermissionsFilter,\n334:     )\n335:     filterset_class = DocumentFilterSet\n336:     search_fields = (\"title\", \"correspondent__name\", \"content\")\n337:     ordering_fields = (\n338:         \"id\",\n339:         \"title\",\n340:         \"correspondent__name\",\n341:         \"document_type__name\",\n342:         \"created\",\n343:         \"modified\",\n344:         \"added\",\n345:         \"archive_serial_number\",\n346:         \"num_notes\",\n347:         \"owner\",\n348:     )\n349: \n350:     def get_queryset(self):\n351:         return (\n352:             Document.objects.distinct()\n353:             .annotate(num_notes=Count(\"notes\"))\n354:             .select_related(\"correspondent\", \"storage_path\", \"document_type\", \"owner\")\n355:             .prefetch_related(\"tags\", \"custom_fields\", \"notes\")\n356:         )\n357: \n358:     def get_serializer(self, *args, **kwargs):\n359:         fields_param = self.request.query_params.get(\"fields\", None)\n360:         fields = fields_param.split(\",\") if fields_param else None\n361:         truncate_content = self.request.query_params.get(\"truncate_content\", \"False\")\n362:         kwargs.setdefault(\"context\", self.get_serializer_context())\n363:         kwargs.setdefault(\"fields\", fields)\n364:         kwargs.setdefault(\"truncate_content\", truncate_content.lower() in [\"true\", \"1\"])\n365:         kwargs.setdefault(\n366:             \"full_perms\",\n367:             self.request.query_params.get(\"full_perms\", False),\n368:         )\n369:         return super().get_serializer(*args, **kwargs)\n370: \n371:     def update(self, request, *args, **kwargs):\n372:         response = super().update(request, *args, **kwargs)\n373:         from documents import index\n374: \n375:         index.add_or_update_document(self.get_object())\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/serialisers.py",
+                  "start_line": 210,
+                  "end_line": 270,
+                  "snapshot": "base"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"SearchResultSerializer.to_representation fetches a Document by a user-controlled id (instance[\\\"id\\\"]) with Document.objects...get(id=instance[\\\"id\\\"]) and returns its full contents (content, correspondent, tags, notes) via super().to_representation(doc). The serializer itself performs no ownership/permission check. In the PR the class is relocated from views.py (where it was `class SearchResultSerializer(DocumentSerializer, PassUserMixin)`) to serialisers.py as `class SearchResultSerializer(DocumentSerializer)`. In DRF, `super().to_representation(doc)` resolves to DocumentSerializer.to_representation \u2014 NOT to PassUserMixin.to_representation, since PassUserMixin is a ViewMixin (subclass of GenericAPIView/View) that is not in the serializer's MRO. So PassUserMixin did not contribute ownership-checking to the serializer even before the change; the ownership enforcement came from the view layer. UnifiedSearchViewSet (DocumentViewSet) uses `permission_classes = (IsAuthenticated, PaperlessObjectPermissions)`, which authorizes at the request level, and PassUserMixin.get_serializer injects the `user` for the serializer. Because the authorization in this search endpoint is driven by the view's permission class rather than by the serializer's inheritance of PassUserMixin, the relocation to a serializer without that mixin is a plausible regression point: if the consuming endpoint relies on the serializer carrying user/permission context (as DocumentSerializer's permission logic does via self.user), removing PassUserMixin could let to_representation serialize a document the requester does not own. Flagging as a candidate to confirm the consuming view still enforces object-level authorization before serializing.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"src/documents/serialisers.py\", \"lines\": [799, 806], \"content\": \"class SearchResultSerializer(DocumentSerializer):\\n    def to_representation(self, instance):\\n        doc = (\\n            Document.objects.select_related(...).prefetch_related(...)\\n            .get(id=instance[\\\"id\\\"])\\n        )\"},\n        {\"type\": \"code\", \"file\": \"src/documents/views.py\", \"lines\": [205, 216], \"content\": \"class PassUserMixin(GenericAPIView):\\n    def get_serializer(self, *args, **kwargs):\\n        kwargs.setdefault(\\\"user\\\", self.request.user)\\n        kwargs.setdefault(\\\"full_perms\\\", self.request.query_params.get(\\\"full_perms\\\", False))\\n        return super().get_serializer(*args, **kwargs)\"},\n        {\"type\": \"code\", \"file\": \"src/documents/views.py\", \"lines\": [316, 328], \"content\": \"class DocumentViewSet(PassUserMixin, RetrieveModelMixin, ...):\\n    ...\\n    permission_classes = (IsAuthenticated, PaperlessObjectPermissions)\"},\n        {\"type\": \"code\", \"file\": \"src/documents/views.py\", \"lines\": [817, 827], \"content\": \"class SearchResultSerializer(DocumentSerializer, PassUserMixin):\\n    def to_representation(self, instance):\\n        doc = (Document.objects...get(id=instance[\\\"id\\\"]))\"}\n      ],\n      \"suggested_fix\": \"Keep object-level authorization at the view layer (permission_classes + ObjectOwnedOrGrantedPermissionsFilter) and verify the consuming view filters/permits the returned document before serializing. If the serializer is expected to be self-authorizing, restore per-instance ownership verification in to_representation (e.g., check that the requesting user owns the document or has view permission) rather than relying on PassUserMixin in the serializer MRO, which does not affect DRF serializer resolution.\",\n      \"file\": \"src/documents/serialisers.py\",\n      \"line\": 799\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "global-search-tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/documents/views.py",
+                  "start_line": 1141,
+                  "end_line": 1321,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/documents/views.py lines=1141-1321]\n1141: class GlobalSearchView(PassUserMixin):\n1142:     permission_classes = (IsAuthenticated,)\n1143:     serializer_class = SearchResultSerializer\n1144: \n1145:     def get(self, request, *args, **kwargs):\n1146:         query = request.query_params.get(\"query\", None)\n1147:         if query is None:\n1148:             return HttpResponseBadRequest(\"Query required\")\n1149:         elif len(query) < 3:\n1150:             return HttpResponseBadRequest(\"Query must be at least 3 characters\")\n1151: \n1152:         db_only = request.query_params.get(\"db_only\", False)\n1153: \n1154:         OBJECT_LIMIT = 3\n1155:         docs = []\n1156:         if request.user.has_perm(\"documents.view_document\"):\n1157:             all_docs = get_objects_for_user_owner_aware(\n1158:                 request.user,\n1159:                 \"view_document\",\n1160:                 Document,\n1161:             )\n1162:             # First search by title\n1163:             docs = all_docs.filter(title__icontains=query)[:OBJECT_LIMIT]\n1164:             if not db_only and len(docs) < OBJECT_LIMIT:\n1165:                 # If we don't have enough results, search by content\n1166:                 from documents import index\n1167: \n1168:                 with index.open_index_searcher() as s:\n1169:                     q, _ = index.DelayedFullTextQuery(\n1170:                         s,\n1171:                         request.query_params,\n1172:                         10,\n1173:                         request.user,\n1174:                     )._get_query()\n1175:                     results = s.search(q, limit=OBJECT_LIMIT)\n1176:                     docs = docs | all_docs.filter(id__in=[r[\"id\"] for r in results])\n1177:         saved_views = (\n1178:             SavedView.objects.filter(owner=request.user, name__icontains=query)[\n1179:                 :OBJECT_LIMIT\n1180:             ]\n1181:             if request.user.has_perm(\"documents.view_savedview\")\n1182:             else []\n1183:         )\n1184:         tags = (\n1185:             get_objects_for_user_owner_aware(request.user, \"view_tag\", Tag).filter(\n1186:                 name__icontains=query,\n1187:             )[:OBJECT_LIMIT]\n1188:             if request.user.has_perm(\"documents.view_tag\")\n1189:             else []\n1190:         )\n1191:         correspondents = (\n1192:             get_objects_for_user_owner_aware(\n1193:                 request.user,\n1194:                 \"view_correspondent\",\n1195:                 Correspondent,\n1196:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1197:             if request.user.has_perm(\"documents.view_correspondent\")\n1198:             else []\n1199:         )\n1200:         document_types = (\n1201:             get_objects_for_user_owner_aware(\n1202:                 request.user,\n1203:                 \"view_documenttype\",\n1204:                 DocumentType,\n1205:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1206:             if request.user.has_perm(\"documents.view_documenttype\")\n1207:             else []\n1208:         )\n1209:         storage_paths = (\n1210:             get_objects_for_user_owner_aware(\n1211:                 request.user,\n1212:                 \"view_storagepath\",\n1213:                 StoragePath,\n1214:             ).filter(name__icontains=query)[:OBJECT_LIMIT]\n1215:             if request.user.has_perm(\"documents.view_storagepath\")\n1216:             else []\n1217:         )\n1218:         users = (\n1219:             User.objects.filter(username__icontains=query)[:OBJECT_LIMIT]\n1220:             if request.user.has_perm(\"auth.view_user\")\n1221:             else []\n1222:         )\n1223:         groups = (\n1224:             Group.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1225:             if request.user.has_perm(\"auth.view_group\")\n1226:             else []\n1227:         )\n1228:         mail_rules = (\n1229:             MailRule.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1230:             if request.user.has_perm(\"paperless_mail.view_mailrule\")\n1231:             else []\n1232:         )\n1233:         mail_accounts = (\n1234:             MailAccount.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1235:             if request.user.has_perm(\"paperless_mail.view_mailaccount\")\n1236:             else []\n1237:         )\n1238:         workflows = (\n1239:             Workflow.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1240:             if request.user.has_perm(\"documents.view_workflow\")\n1241:             else []\n1242:         )\n1243:         custom_fields = (\n1244:             CustomField.objects.filter(name__icontains=query)[:OBJECT_LIMIT]\n1245:             if request.user.has_perm(\"documents.view_customfield\")\n1246:             else []\n1247:         )\n1248: \n1249:         context = {\n1250:             \"request\": request,\n1251:         }\n1252: \n1253:         docs_serializer = DocumentSerializer(docs, many=True, context=context)\n1254:         saved_views_serializer = SavedViewSerializer(\n1255:             saved_views,\n1256:             many=True,\n1257:             context=context,\n1258:         )\n1259:         tags_serializer = TagSerializer(tags, many=True, context=context)\n1260:         correspondents_serializer = CorrespondentSerializer(\n1261:             correspondents,\n1262:             many=True,\n1263:             context=context,\n1264:         )\n1265:         document_types_serializer = DocumentTypeSerializer(\n1266:             document_types,\n1267:             many=True,\n1268:             context=context,\n1269:         )\n1270:         storage_paths_serializer = StoragePathSerializer(\n1271:             storage_paths,\n1272:             many=True,\n1273:             context=context,\n1274:         )\n1275:         users_serializer = UserSerializer(users, many=True, context=context)\n1276:         groups_serializer = GroupSerializer(groups, many=True, context=context)\n1277:         mail_rules_serializer = MailRuleSerializer(\n1278:             mail_rules,\n1279:             many=True,\n1280:             context=context,\n1281:         )\n1282:         mail_accounts_serializer = MailAccountSerializer(\n1283:             mail_accounts,\n1284:             many=True,\n1285:             context=context,\n1286:         )\n1287:         workflows_serializer = WorkflowSerializer(workflows, many=True, context=context)\n1288:         custom_fields_serializer = CustomFieldSerializer(\n1289:             custom_fields,\n1290:             many=True,\n1291:             context=context,\n1292:         )\n1293: \n1294:         return Response(\n1295:             {\n1296:                 \"total\": len(docs)\n1297:                 + len(saved_views)\n1298:                 + len(tags)\n1299:                 + len(correspondents)\n1300:                 + len(document_types)\n1301:                 + len(storage_paths)\n1302:                 + len(users)\n1303:                 + len(groups)\n1304:                 + len(mail_rules)\n1305:                 + len(mail_accounts)\n1306:                 + len(workflows)\n1307:                 + len(custom_fields),\n1308:                 \"documents\": docs_serializer.data,\n1309:                 \"saved_views\": saved_views_serializer.data,\n1310:                 \"tags\": tags_serializer.data,\n1311:                 \"correspondents\": correspondents_serializer.data,\n1312:                 \"document_types\": document_types_serializer.data,\n1313:                 \"storage_paths\": storage_paths_serializer.data,\n1314:                 \"users\": users_serializer.data,\n1315:                 \"groups\": groups_serializer.data,\n1316:                 \"mail_rules\": mail_rules_serializer.data,\n1317:                 \"mail_accounts\": mail_accounts_serializer.data,\n1318:                 \"workflows\": workflows_serializer.data,\n1319:                 \"custom_fields\": custom_fields_serializer.data,\n1320:             },\n1321:         )\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "global search API endpoint authentication permission requirements search endpoint"
+                },
+                "result": "[docs/api.md:305-373] (relevance 0.36)\nAll objects (documents, tags, etc.) allow setting object-level permissions\nwith optional `owner` and / or a `set_permissions` parameters which are of\nthe form:\n\n```\n\"owner\": ...,\n\"set_permissions\": {\n    \"view\": {\n        \"users\": [...],\n        \"groups\": [...],\n    },\n    \"change\": {\n        \"users\": [...],\n        \"groups\": [...],\n    },\n}\n```\n\n!!! note\n\n    Arrays should contain user or group ID numbers.\n\nIf these parameters are supplied the object's permissions will be overwritten,\nassuming the authenticated user has permission to do so (the user must be\nthe object owner or a superuser).\n\n### Retrieving full permissions\n\nBy default, the API will return a truncated version of object-level\npermissions, returning `user_can_change` indicating whether the current user\ncan edit the object (either because they are the object owner or have permissions\ngranted). You can pass the parameter `full_perms=true` to API calls to view the\nfull permissions of objects in a format that mirrors the `set_permissions`\nparameter above.\n\n## Bulk Editing\n\nThe API supports various bulk-editing operations which are executed asynchronously.\n\n### Documents\n\nFor bulk operations on documents, use the endpoint `/api/documents/bulk_edit/` which accepts\na json payload of the format:\n\n```json\n{\n  \"documents\": [LIST_OF_DOCUMENT_IDS],\n  \"method\": METHOD, // see below\n  \"parameters\": args // see below\n}\n```\n\nThe following methods are supported:\n\n- `set_correspondent`\n  - Requires `parameters`: `{ \"correspondent\": CORRESPONDENT_ID }`\n- `set_document_type`\n  - Requires `parameters`: `{ \"document_type\": DOCUMENT_TYPE_ID }`\n- `set_storage_path`\n  - Requires `parameters`: `{ \"storage_path\": STORAGE_PATH_ID }`\n- `add_tag`\n  - Requires `parameters`: `{ \"tag\": TAG_ID }`\n- `remove_tag`\n  - Requires `parameters`: `{ \"tag\": TAG_ID }`\n- `modify_tags`\n  - Requires `parameters`: `{ \"add_tags\": [LIST_OF_TAG_IDS] }` and / or `{ \"remove_tags\": [LIST_OF_TAG_IDS] }`\n- `delete`\n  - No `parameters` required\n- `redo_ocr`\n\n---\n\n[docs/api.md:198-271] (relevance 0.35)\nusing a full text query. For details on the syntax, see [Basic Usage - Searching](usage.md#basic-usage_searching).\n- `/api/documents/?more_like_id=1234`: Search for documents similar to\n  the document with id 1234.\n\nPagination works exactly the same as it does for normal requests on this\nendpoint.\n\nCertain limitations apply to full text queries:\n\n- Results are always sorted by search score. The results matching the\n  query best will show up first.\n- Only a small subset of filtering parameters are supported.\n\nFurthermore, each returned document has an additional `__search_hit__`\nattribute with various information about the search results:\n\n```\n{\n    \"count\": 31,\n    \"next\": \"http://localhost:8000/api/documents/?page=2&query=test\",\n    \"previous\": null,\n    \"results\": [\n\n        ...\n\n        {\n            \"id\": 123,\n            \"title\": \"title\",\n            \"content\": \"content\",\n\n            ...\n\n            \"__search_hit__\": {\n                \"score\": 0.343,\n                \"highlights\": \"text <span class=\"match\">Test</span> text\",\n                \"rank\": 23\n            }\n        },\n\n        ...\n\n    ]\n}\n```\n\n- `score` is an indication how well this document matches the query\n  relative to the other search results.\n- `highlights` is an excerpt from the document content and highlights\n  the search terms with `<span>` tags as shown above.\n- `rank` is the index of the search results. The first result will\n  have rank 0.\n\n### `/api/search/autocomplete/`\n\nGet auto completions for a partial search term.\n\nQuery parameters:\n\n- `term`: The incomplete term.\n- `limit`: Amount of results. Defaults to 10.\n\nResults returned by the endpoint are ordered by importance of the term\nin the document index. The first result is the term that has the highest\n[Tf/Idf](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) score in the index.\n\n```json\n[\"term1\", \"term3\", \"term6\", \"term4\"]\n```\n\n## POSTing documents {#file-uploads}\n\nThe API provides a special endpoint for file uploads:\n\n`/api/documents/post_document/`\n\n---\n\n[docs/changelog.md:1316-1339] (relevance 0.31)\n- Enhancement: disable / hide some UI buttons / elements if insufficient permissions, show errors [@shamoon](https://github.com/shamoon) ([#4014](https://github.com/paperless-ngx/paperless-ngx/pull/4014))\n- Fix: Allow adding an SSL certificate for IMAP SSL context [@stumpylog](https://github.com/stumpylog) ([#4048](https://github.com/paperless-ngx/paperless-ngx/pull/4048))\n- Fix: tag creation sometimes retained search text [@shamoon](https://github.com/shamoon) ([#4038](https://github.com/paperless-ngx/paperless-ngx/pull/4038))\n- Fix: enforce permissions on bulk_edit operations [@shamoon](https://github.com/shamoon) ([#4007](https://github.com/paperless-ngx/paperless-ngx/pull/4007))\n- Enhancement: Allow to set a prefix for keys and channels in redis [@amo13](https://github.com/amo13) ([#3993](https://github.com/paperless-ngx/paperless-ngx/pull/3993))\n</details>\n\n## paperless-ngx 1.17.1\n\n### Features\n\n- Fix / Enhancement: restrict status messages by owner if set \\& improve 404 page [@shamoon](https://github.com/shamoon) ([#3959](https://github.com/paperless-ngx/paperless-ngx/pull/3959))\n- Feature: Add Ukrainian translation [@shamoon](https://github.com/shamoon) ([#3941](https://github.com/paperless-ngx/paperless-ngx/pull/3941))\n\n### Bug Fixes\n\n- Fix: handle ASN = 0 on frontend cards [@shamoon](https://github.com/shamoon) ([#3988](https://github.com/paperless-ngx/paperless-ngx/pull/3988))\n- Fix: improve light color filled primary button text legibility [@shamoon](https://github.com/shamoon) ([#3980](https://github.com/paperless-ngx/paperless-ngx/pull/3980))\n- Fix / Enhancement: restrict status messages by owner if set \\& improve 404 page [@shamoon](https://github.com/shamoon) ([#3959](https://github.com/paperless-ngx/paperless-ngx/pull/3959))\n- Fix: handle very old date strings in correspondent list [@shamoon](https://github.com/shamoon) ([#3953](https://github.com/paperless-ngx/paperless-ngx/pull/3953))\n\n### Documentation\n\n- docs(bare-metal): add new dependency [@bin101](https://github.com/bin101) ([#3931](https://github.com/paperless-ngx/paperless-ngx/pull/3931))\n\n---\n\n[docs/changelog.md:447-477] (relevance 0.31)\n- Chore(deps-dev): Bump [@<!---->types/node from 20.10.6 to 20.11.16 in /src-ui @dependabot](https://github.com/<!---->types/node from 20.10.6 to 20.11.16 in /src-ui @dependabot) ([#5635](https://github.com/paperless-ngx/paperless-ngx/pull/5635))\n- Enhancement: mergeable bulk edit permissions [@shamoon](https://github.com/shamoon) ([#5508](https://github.com/paperless-ngx/paperless-ngx/pull/5508))\n- Enhancement: re-implement remote user auth for unsafe API requests as opt-in [@shamoon](https://github.com/shamoon) ([#5561](https://github.com/paperless-ngx/paperless-ngx/pull/5561))\n- Enhancement: Respect PDF cropbox for thumbnail generation [@henningBunk](https://github.com/henningBunk) ([#5531](https://github.com/paperless-ngx/paperless-ngx/pull/5531))\n- Fix: Don't attempt to retrieve object types user doesn't have permissions to [@shamoon](https://github.com/shamoon) ([#5612](https://github.com/paperless-ngx/paperless-ngx/pull/5612))\n</details>\n\n## paperless-ngx 2.4.3\n\n### Bug Fixes\n\n- Fix: Ensure the scratch directory exists before consuming via the folder [@stumpylog](https://github.com/stumpylog) ([#5579](https://github.com/paperless-ngx/paperless-ngx/pull/5579))\n\n### All App Changes\n\n- Fix: Ensure the scratch directory exists before consuming via the folder [@stumpylog](https://github.com/stumpylog) ([#5579](https://github.com/paperless-ngx/paperless-ngx/pull/5579))\n\n## paperless-ngx 2.4.2\n\n### Bug Fixes\n\n- Fix: improve one of the date matching regexes [@shamoon](https://github.com/shamoon) ([#5540](https://github.com/paperless-ngx/paperless-ngx/pull/5540))\n- Fix: tweak doc detail component behavior while awaiting metadata [@shamoon](https://github.com/shamoon) ([#"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/paperless/urls.py",
+                  "start_line": 90,
+                  "end_line": 105,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 path=src/paperless/urls.py lines=90-105]\n90:                 re_path(\n91:                     \"^search/autocomplete/\",\n92:                     SearchAutoCompleteView.as_view(),\n93:                     name=\"autocomplete\",\n94:                 ),\n95:                 re_path(\n96:                     \"^search/\",\n97:                     GlobalSearchView.as_view(),\n98:                     name=\"global_search\",\n99:                 ),\n100:                 re_path(\"^statistics/\", StatisticsView.as_view(), name=\"statistics\"),\n101:                 re_path(\n102:                     \"^documents/post_document/\",\n103:                     PostDocumentView.as_view(),\n104:                     name=\"post_document\",\n105:                 ),\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "global_search|api/search",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=40289cd714988d41287f1bd8bd4fd82084621be4 pattern=\"global_search|api/search\"]\ndocs/api.md:250:### `/api/search/autocomplete/`\nsrc/documents/tests/test_api_permissions.py:70:            self.client.get(\"/api/search/autocomplete/\").status_code,\nsrc/documents/tests/test_api_search.py:497:        response = self.client.get(\"/api/search/autocomplete/?term=test\")\nsrc/documents/tests/test_api_search.py:501:        response = self.client.get(\"/api/search/autocomplete/?term=test&limit=20\")\nsrc/documents/tests/test_api_search.py:505:        response = self.client.get(\"/api/search/autocomplete/?term=test&limit=-1\")\nsrc/documents/tests/test_api_search.py:508:        response = self.client.get(\"/api/search/autocomplete/\")\nsrc/documents/tests/test_api_search.py:511:        response = self.client.get(\"/api/search/autocomplete/?term=\")\nsrc/documents/tests/test_api_search.py:553:        response = self.client.get(\"/api/search/autocomplete/?term=app\")\nsrc/documents/tests/test_api_search.py:562:        response = self.client.get(\"/api/search/autocomplete/?term=app\")\nsrc/documents/tests/test_api_search.py:571:        response = self.client.get(\"/api/search/autocomplete/?term=app\")\nsrc/documents/tests/test_api_search.py:594:        response = self.client.get(\"/api/search/autocomplete/?term=created:2023\")\nsrc/documents/tests/test_api_search.py:616:        response = self.client.get(\"/api/search/autocomplete/?term=auto\")\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class PassUserMixin",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=c6e7d06bb7049367f015dc3b124bb0a3bcabcc22 pattern=\"class PassUserMixin\"]\nsrc/documents/views.py:213:class PassUserMixin(GenericAPIView):\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "api/search/|global search",
+                  "file_glob": "docs/api.md",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:serializer-relocation:1",
+        "judged": true,
+        "kev_verdict": "not_real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.6076,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "paperless-ngx-global-search-mail-authz",
+  "url": "https://github.com/paperless-ngx/paperless-ngx/pull/6449",
+  "category": "authz",
+  "cwe": "CWE-863",
+  "ghsa": "GHSA-96jx-fj7m-qh6x",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/documents/views.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

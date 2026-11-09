@@ -1,0 +1,489 @@
+{
+  "id": "sentry-rule-snooze-idor-fixed",
+  "repo": "getsentry/sentry",
+  "pr": 77016,
+  "title": "PR #47050 added the project-scoped rule snooze (mute) endpoint, which loads the issue/metric alert rule by id alone without scoping it to the project in the URL, so a user can mute alert rules in other organizations.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "ca59242c563d2e006686a8b56e372d7f7ab0ae7e",
+  "pr_sha": "e8e71708758e1f9f56ce815ace73fe60d9e608dc",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 58,
+  "diff_chars": 7651,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 120.5,
+  "index_seconds": 3.5,
+  "index_reused": false,
+  "index_chunks": 462,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:rule-scope:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/sentry/api/endpoints/rule_snooze.py",
+      "line": 180,
+      "cwe_id": "CWE-862",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The delete method unconditionally deletes the requester's 'me' snooze (my_snooze.delete() at line 180) for the user without any authorization check, unlike the shared 'everyone' snooze which is guarded by can_edit_alert_rule(project.organization, request). Although ProjectAlertRulePermission enforces a project scope, can_edit_alert_rule also performs an organization-membership check (OrganizationM"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 15,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 9,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "authz:rule-scope:1",
+      "cwe_id": "CWE-862",
+      "explanation": "The delete method unconditionally deletes the requester's 'me' snooze (my_snooze.delete() at line 180) for the user without any authorization check, unlike the shared 'everyone' snooze which is guarded by can_edit_alert_rule(project.organization, request). Although ProjectAlertRulePermission enforces a project scope, can_edit_alert_rule also performs an organization-membership check (OrganizationMember exists for the user) for user tokens; the self-snooze deletion path bypasses that check, so a request with only a project scope (and no organization membership) could delete a RuleSnooze owned by a different user if it could enumerate that user's snooze, or at minimum a missing authorization check is applied to a protected operation. This is a newly reachable code path because the PR refactored rule resolution into convert_args and changed the delete signature from (project, rule_id) to (project, rule).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            172,
+            183
+          ],
+          "source": null,
+          "content": "        # next check if there is a mute for me that I can remove\n        kwargs = {self.rule_field: rule, \"user_id\": request.user.id}\n        my_snooze = None\n        try:\n            my_snooze = RuleSnooze.objects.get(**kwargs)\n        except RuleSnooze.DoesNotExist:\n            pass\n        else:\n            my_snooze.delete()\n            # everyone takes priority over me\n            if not deletion_type:\n                deletion_type = \"me\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            167,
+            170
+          ],
+          "source": null,
+          "content": "        # if user can edit then delete it\n        if shared_snooze and can_edit_alert_rule(project.organization, request):\n            shared_snooze.delete()\n            deletion_type = \"everyone\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            44,
+            72
+          ],
+          "source": null,
+          "content": "def can_edit_alert_rule(organization, request):\n    mute_for_user = request.data.get(\"target\") == \"me\"\n    user = request.user\n    # Skip scope and user validation if using token authentication...\n    if request.auth and (isinstance(user, AnonymousUser) or user.is_sentry_app):\n        if mute_for_user:\n            raise BadRequest(...)\n        return True\n    # Ensure that the user has the 'alerts:write' scope.\n    try:\n        org_member = OrganizationMember.objects.get(organization=organization, user_id=user.id)\n        if \"alerts:write\" not in org_member.get_scopes():\n            return False\n    except OrganizationMember.DoesNotExist:\n        pass\n    # if the goal is to mute the rule just for the user, ensure they belong to the organization\n    if mute_for_user:\n        return organization in Organization.objects.get_for_user(user)\n    # if the rule is owned by a team, allow edit (same permission as delete)\n    # if the rule is unassigned, anyone can edit it\n    return True",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Guard the my_snooze deletion with the same authorization check used for shared snoozes (e.g., `if my_snooze and can_edit_alert_rule(project.organization, request):`), or require organization membership / target=='me' validation before deleting a user-owned snooze. Alternatively, verify that `request.user` is the owner of the snooze being deleted (owner_id == request.user.id or user_id == request.user.id) before performing my_snooze.delete().",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7748,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/sentry/api/endpoints/rule_snooze.py",
+      "line": 180,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/api/endpoints/rule_snooze.py lines=1-220]\n1: import datetime\n2: \n3: from django.contrib.auth.models import AnonymousUser\n4: from rest_framework import serializers, status\n5: from rest_framework.exceptions import PermissionDenied\n6: from rest_framework.request import Request\n7: from rest_framework.response import Response\n8: \n9: from sentry import analytics, audit_log\n10: from sentry.api.api_owners import ApiOwner\n11: from sentry.api.api_publish_status import ApiPublishStatus\n12: from sentry.api.base import region_silo_endpoint\n13: from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint\n14: from sentry.api.exceptions import BadRequest\n15: from sentry.api.serializers import Serializer, register, serialize\n16: from sentry.api.serializers.rest_framework.base import CamelSnakeSerializer\n17: from sentry.incidents.models.alert_rule import AlertRule\n18: from sentry.models.organization import Organization\n19: from sentry.models.organizationmember import OrganizationMember\n20: from sentry.models.project import Project\n21: from sentry.models.rule import Rule\n22: from sentry.models.rulesnooze import RuleSnooze\n23: \n24: \n25: class RuleSnoozeValidator(CamelSnakeSerializer):\n26:     target = serializers.CharField(required=True, allow_null=False)\n27:     until = serializers.DateTimeField(required=False, allow_null=True)\n28: \n29: \n30: @register(RuleSnooze)\n31: class RuleSnoozeSerializer(Serializer):\n32:     def serialize(self, obj, attrs, user, **kwargs):\n33:         result = {\n34:             \"ownerId\": obj.owner_id,\n35:             \"userId\": obj.user_id or \"everyone\",\n36:             \"until\": obj.until or \"forever\",\n37:             \"dateAdded\": obj.date_added,\n38:             \"ruleId\": obj.rule_id,\n39:             \"alertRuleId\": obj.alert_rule_id,\n40:         }\n41:         return result\n42: \n43: \n44: def can_edit_alert_rule(organization, request):\n45:     mute_for_user = request.data.get(\"target\") == \"me\"\n46:     user = request.user\n47: \n48:     # Skip scope and user validation if using token authentication, excluding\n49:     # user tokens.\n50:     if request.auth and (isinstance(user, AnonymousUser) or user.is_sentry_app):\n51:         # Raise an exception if the user is anonymous, but the request is to mute for the user.\n52:         if mute_for_user:\n53:             raise BadRequest(\n54:                 {\n55:                     \"detail\": \"Cannot mute for the request user because the user is anonymous.\",\n56:                 }\n57:             )\n58:         return True\n59: \n60:     # Ensure that the user has the 'alerts:write' scope.\n61:     try:\n62:         org_member = OrganizationMember.objects.get(organization=organization, user_id=user.id)\n63:         if \"alerts:write\" not in org_member.get_scopes():\n64:             return False\n65:     except OrganizationMember.DoesNotExist:\n66:         pass\n67:     # if the goal is to mute the rule just for the user, ensure they belong to the organization\n68:     if mute_for_user:\n69:         return organization in Organization.objects.get_for_user(user)\n70:     # if the rule is owned by a team, allow edit (same permission as delete)\n71:     # if the rule is unassigned, anyone can edit it\n72:     return True\n73: \n74: \n75: @region_silo_endpoint\n76: class BaseRuleSnoozeEndpoint(ProjectEndpoint):\n77:     permission_classes = (ProjectAlertRulePermission,)\n78: \n79:     def get_rule(self, rule_id):\n80:         try:\n81:             rule = self.rule_model.objects.get(id=rule_id)\n82:         except self.rule_model.DoesNotExist:\n83:             raise serializers.ValidationError(\"Rule does not exist\")\n84: \n85:         return rule\n86: \n87:     def post(self, request: Request, project: Project, rule_id) -> Response:\n88:         serializer = RuleSnoozeValidator(data=request.data)\n89:         if not serializer.is_valid():\n90:             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\n91: \n92:         data = serializer.validated_data\n93:         rule = self.get_rule(rule_id)\n94: \n95:         if not can_edit_alert_rule(project.organization, request):\n96:             raise PermissionDenied(\n97:                 detail=\"Requesting user cannot mute this rule.\", code=status.HTTP_403_FORBIDDEN\n98:             )\n99: \n100:         kwargs = {self.rule_field: rule}\n101: \n102:         user_id = request.user.id if data.get(\"target\") == \"me\" else None\n103:         rule_snooze, created = RuleSnooze.objects.get_or_create(\n104:             user_id=user_id,\n105:             defaults={\n106:                 \"owner_id\": request.user.id,\n107:                 \"until\": data.get(\"until\"),\n108:                 \"date_added\": datetime.datetime.now(datetime.UTC),\n109:             },\n110:             **kwargs,\n111:         )\n112:         # don't allow editing of a rulesnooze object for a given rule and user (or no user)\n113:         if not created:\n114:             return Response(\n115:                 {\"detail\": \"RuleSnooze already exists for this rule and scope.\"},\n116:                 status=status.HTTP_410_GONE,\n117:             )\n118: \n119:         if not user_id:\n120:             # create an audit log entry if the rule is snoozed for everyone\n121:             audit_log_event = \"RULE_SNOOZE\" if self.rule_model == Rule else \"ALERT_RULE_SNOOZE\"\n122: \n123:             self.create_audit_entry(\n124:                 request=request,\n125:                 organization=project.organization,\n126:                 target_object=rule.id,\n127:                 event=audit_log.get_event_id(audit_log_event),\n128:                 data=rule.get_audit_log_data(),\n129:             )\n130: \n131:         analytics.record(\n132:             \"rule.snoozed\",\n133:             user_id=request.user.id,\n134:             organization_id=project.organization_id,\n135:             project_id=project.id,\n136:             rule_id=rule_id,\n137:             rule_type=self.rule_field,\n138:             target=data.get(\"target\"),\n139:             until=data.get(\"until\"),\n140:         )\n141: \n142:         return Response(\n143:             serialize(rule_snooze, request.user, RuleSnoozeSerializer()),\n144:             status=status.HTTP_201_CREATED,\n145:         )\n146: \n147:     def delete(self, request: Request, project: Project, rule_id) -> Response:\n148:         rule = self.get_rule(rule_id)\n149: \n150:         # find if there is a mute for all that I can remove\n151:         shared_snooze = None\n152:         deletion_type = None\n153:         kwargs = {self.rule_field: rule, \"user_id\": None}\n154:         try:\n155:             shared_snooze = RuleSnooze.objects.get(**kwargs)\n156:         except RuleSnooze.DoesNotExist:\n157:             pass\n158: \n159:         # if user can edit then delete it\n160:         if shared_snooze and can_edit_alert_rule(project.organization, request):\n161:             shared_snooze.delete()\n162:             deletion_type = \"everyone\"\n163: \n164:         # next check if there is a mute for me that I can remove\n165:         kwargs = {self.rule_field: rule, \"user_id\": request.user.id}\n166:         my_snooze = None\n167:         try:\n168:             my_snooze = RuleSnooze.objects.get(**kwargs)\n169:         except RuleSnooze.DoesNotExist:\n170:             pass\n171:         else:\n172:             my_snooze.delete()\n173:             # everyone takes priority over me\n174:             if not deletion_type:\n175:                 deletion_type = \"me\"\n176: \n177:         if deletion_type:\n178:             analytics.record(\n179:                 \"rule.unsnoozed\",\n180:                 user_id=request.user.id,\n181:                 organization_id=project.organization_id,\n182:                 project_id=project.id,\n183:                 rule_id=rule_id,\n184:                 rule_type=self.rule_field,\n185:                 target=deletion_type,\n186:             )\n187:             return Response(status=status.HTTP_204_NO_CONTENT)\n188: \n189:         # didn't find a ma\n[TRUNCATED]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "ProjectAlertRulePermission class definition and how it checks access to alert rules"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e status=ok truncated=true incomplete=true query=\"ProjectAlertRulePermission class definition and how it checks access to alert ru\"]\n**Exploration: ProjectAlertRulePermission class definition and how it checks access to alert rules**\n\nFound 62 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `Rule` (static/app/views/alerts/rules/issue/ruleNode.tsx:615) \u2014 4 callers in `static/app/views/settings/components/dataScrubbing/modals/edit.tsx`, `static/app/views/alerts/rules/issue/ruleNode.tsx`, `static/app/views/settings/components/dataScrubbing/modals/add.tsx`, `static/app/views/settings/components/dataScrubbing/types.tsx`; tested via callers: `static/app/views/alerts/rules/issue/ruleNode.spec.tsx`\n- `Rules` (static/app/views/settings/components/dataScrubbing/rules.tsx:21) \u2014 4 callers in `static/app/views/settings/components/dataScrubbing/index.tsx`, `static/app/views/settings/components/dataScrubbing/organizationRules.tsx`, `static/app/components/group/assignedTo.tsx`; tested via callers: `static/app/views/settings/components/dataScrubbing/index.spec.tsx`\n- `Rule` (src/sentry/dynamic_sampling/rules/utils.py:93) \u2014 1 caller in `src/sentry/dynamic_sampling/rules/biases/boost_low_volume_transactions_bias.py`; tested via callers: `tests/sentry/dynamic_sampling/rules/biases/test_boost_low_volume_transactions_bias.py`\n- `IntegrationAlertRules` (static/app/views/settings/organizationIntegrations/integrationAlertRules.tsx:14) \u2014 2 callers in `static/app/views/settings/organizationIntegrations/configureIntegration.tsx`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- RuleSnooze \u2192 Model\n- Model \u2192 BaseModel\n- DecayingRule \u2192 Rule\n- AssistantActivity \u2192 Model\n- DashboardWidgetQueryOnDemand \u2192 Model\n- GroupHash \u2192 Model\n- GroupHashMetadata \u2192 Model\n- GroupHistory \u2192 Model\n- GroupShare \u2192 Model\n- GroupSubscription \u2192 Model\n- OrganizationMemberMapping \u2192 Model\n- ProjectBookmark \u2192 Model\n- User \u2192 Model\n\n**calls:**\n- Edit \u2192 Rule\n- RuleNode \u2192 Rule\n- Add \u2192 Rule\n- Edit \u2192 ModalManager\n- Edit \u2192 gettext\n- DataScrubbing \u2192 Edit\n- RuleNode \u2192 TicketRuleModal\n- RuleNode \u2192 ExternalLink\n- RuleNode \u2192 RuleRow\n- RuleNode \u2192 RuleRowContainer\n- RuleNode \u2192 DeleteButton\n- RuleNode \u2192 MarginlessAlert\n- RuleNode \u2192 IconDelete\n- RuleNode \u2192 gettext\n- RuleNode \u2192 conditionallyRenderHelpfulBanner\n- ... and 163 more\n\n**references:**\n- Errors \u2192 Rule\n- Edit \u2192 handleGetNewRules\n- RuleNode \u2192 handleDelete\n- findMatchedRules \u2192 Rules\n- EventOwners \u2192 Rules\n- write \u2192 RuleSet\n- read \u2192 RuleSet\n- get_redis_rules \u2192 RuleSet\n- get_rules \u2192 RuleSet\n- read \u2192 RuleSet\n- write \u2192 RuleSet\n- __init__ \u2192 RuleSet\n- write \u2192 RuleSet\n- _sort \u2192 RuleSet\n- read \u2192 RuleSet\n- ... and 21 more\n\n**decorates:**\n- RuleSnooze \u2192 region_silo_model\n\n**instantiates:**\n- RuleSnooze \u2192 HybridCloudForeignKey\n- RuleSnooze \u2192 RuleSnoozeManager\n- RuleSnooze \u2192 FlexibleForeignKey\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`static/app/views/alerts/rules/issue/ruleNode.tsx`** \u2014 gettext(calls), renderRow(calls), renderRow(function), renderIntegrationButton(calls), renderIntegrationButton(function), updateParentFromTicketRule(function), updateParentFromTicketRule(references), updateParentFromSentryAppRule(function), updateParentFromSentryAppRule(references), conditionallyRenderHelpfulBanner(calls), conditionallyRenderHelpfulBanner(function), renderIncompatibleRuleBanner(calls), renderIncompatibleRuleBanner(function), calls(calls), references(references), +20 more\n\n```tsx\n236\t  node?: IssueAlertConfiguration[keyof IssueAlertConfiguration][number] | null;\n237\t}\n238\t\n239\tfunction RuleNode({\n240\t  index,\n241\t  data,\n242\t  node,\n243\t  organization,\n244\t  project,\n245\t  disabled,\n246\t  onDelete,\n247\t  onPropertyChange,\n248\t  onReset,\n249\t  incompatibleRule,\n250\t  incompatibleBanner,\n251\t}: Props) {\n252\t  const handleDelete = useCallback(() => {\n253\t    onDelete(index);\n254\t  }, [index, onDelete]);\n255\t\n256\t  const handleMemberTeamChange = useCallback(\n257\t    ({targetType, targetIdentifier}: IssueAlertRuleAction | IssueAlertRuleCondition) => {\n258\t      onPropertyChange(index, 'targetType', `${targetType}`);\n259\t      onPropertyChange(index, 'targetIdentifier', `${targetIdentifier}`);\n260\t    },\n261\t    [index, onPropertyChange]\n262\t  );\n263\t\n264\t  function getField(name: string, fieldConfig: FormField) {\n265\t    const fieldProps: FieldProps = {\n266\t      index,\n267\t      name,\n268\t      fieldConfig,\n269\t      data,\n270\t      organization,\n271\t      project,\n272\t      disabled,\n273\t      onMemberTeamChange: handleMemberTeamChange,\n274\t      onPropertyChange,\n275\t      onReset,\n276\t    };\n277\t\n278\t    if (name === 'environment') {\n279\t      return (\n280\t        <ChoiceField\n281\t          {...merge(fieldProps, {\n282\t            fieldConfig: {choices: project.environments.map(env => [env, env])},\n283\t          })}\n284\t        />\n285\t      );\n286\t    }\n287\t\n288\t    switch (fieldConfig.type) {\n289\t      case 'choice':\n290\t        return <ChoiceField {...fieldProps} />;\n291\t      case 'number':\n292\t        return <NumberField {...fieldProps} />;\n293\t      case 'string':\n294\t        return <TextField {...fieldProps} />;\n295\t      case 'mailAction':\n296\t        return <MailActionFields {...fieldProps} />;\n297\t      case 'assignee':\n298\t        return <AssigneeFilterFields {...fieldProps} />;\n299\t      default:\n\n... (gap) ...\n\n599\t  padding-bottom: ${space(0.5)};\n600\t`;\n601\t\n602\tconst RuleRow = styled('div')`\n603\t  display: flex;\n60\n[TRUNCATED omitted_chars=19358]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "AlertRule.objects.fetch_for_project definition and Rule.objects filter by project"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e status=ok truncated=true incomplete=true query=\"AlertRule.objects.fetch_for_project definition and Rule.objects filter by projec\"]\n**Exploration: AlertRule.objects.fetch_for_project definition and Rule.objects filter by project**\n\nFound 30 symbols across 4 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `ProjectAlertRuleIndexEndpoint` (src/sentry/incidents/endpoints/project_alert_rule_index.py:14) \u2014 2 callers in `src/sentry/api/urls.py`; tested via callers: `src/sentry/testutils/helpers/apigateway.py`\n- `BulkFilter` (static/app/views/settings/project/projectFilters/projectFiltersSettings.tsx:664) \u2014 1 caller in `static/app/views/settings/project/projectFilters/projectFiltersSettings.tsx`; no tests found within 3 caller hops\n- `CustomFilters` (static/app/views/settings/project/projectFilters/projectFiltersSettings.tsx:325) \u2014 1 caller in `static/app/views/settings/project/projectFilters/projectFiltersSettings.tsx`; tested via callers: `static/app/views/settings/project/projectFilters/index.spec.tsx`\n- `getFilterStats` (static/app/views/settings/project/projectFilters/projectFiltersChart.tsx:90) \u2014 1 caller in `static/app/views/settings/project/projectFilters/projectFiltersChart.tsx`; no tests found within 3 caller hops\n\n**Relationships**\n\n**extends:**\n- ProjectAlertRuleIndexEndpoint \u2192 ProjectEndpoint\n- ProjectEndpoint \u2192 Endpoint\n- ProjectAlertRuleIndexEndpoint \u2192 AlertRuleIndexMixin\n- AlertRuleIndexMixin \u2192 Endpoint\n- ProjectCodeOwnersEndpoint \u2192 ProjectEndpoint\n- ProjectFilterDetailsEndpoint \u2192 ProjectEndpoint\n- ProjectServiceHooksEndpoint \u2192 ProjectEndpoint\n- GroupingConfigsEndpoint \u2192 Endpoint\n- RelocationAbortEndpoint \u2192 Endpoint\n\n**decorates:**\n- ProjectAlertRuleIndexEndpoint \u2192 region_silo_endpoint\n- GroupingConfigsEndpoint \u2192 region_silo_endpoint\n- OrganizationReleaseMetaEndpoint \u2192 region_silo_endpoint\n- GroupEventDetailsEndpoint \u2192 region_silo_endpoint\n- ProjectServiceHooksEndpoint \u2192 region_silo_endpoint\n- RelocationAbortEndpoint \u2192 region_silo_endpoint\n- KeyTransactionEndpoint \u2192 region_silo_endpoint\n- ProjectCodeOwnersEndpoint \u2192 region_silo_endpoint\n- TeamReleaseCountEndpoint \u2192 region_silo_endpoint\n- OrganizationOnboardingContinuationEmail \u2192 region_silo_endpoint\n- ProjectFilterDetailsEndpoint \u2192 region_silo_endpoint\n- OrganizationSessionsEndpoint \u2192 region_silo_endpoint\n- OrganizationProjectsSentFirstEventEndpoint \u2192 region_silo_endpoint\n- OrganizationMemberIndexEndpoint \u2192 region_silo_endpoint\n- TeamMembersEndpoint \u2192 region_silo_endpoint\n- ... and 1 more\n\n**references:**\n- ^(?P<organization_id_or_slug>[^\\/]+)/(?P<project_id_or_slug>[^\\/]+)/alert-rules/$ \u2192 ProjectAlertRuleIndexEndpoint\n- render \u2192 LEGACY_BROWSER_SUBFILTERS\n- CustomFilters \u2192 Project\n- render \u2192 fetchData\n- formatData \u2192 STAT_OPS\n- formatData \u2192 UsageSeries\n- constructor \u2192 LEGACY_BROWSER_SUBFILTERS\n- handleToggleSubfilters \u2192 LEGACY_BROWSER_SUBFILTERS\n- ProjectFilters \u2192 SUPPORTED_TAGS\n- ProjectFilters \u2192 getTagValues\n- getTagValues \u2192 Tag\n- NotificationSettings \u2192 renderOneSetting\n- onKeyDown \u2192 cursorPosition\n- findTokensAtCursor \u2192 cursorPosition\n- updateAutoCompleteFromAst \u2192 cursorPosition\n- ... and 5 more\n\n**calls:**\n- get \u2192 fetch_metric_alert\n- post \u2192 create_metric_alert\n- render \u2192 BulkFilter\n- render \u2192 FieldHelp\n- render \u2192 FieldLabel\n- render \u2192 FilterGrid\n- render \u2192 FilterDescription\n- render \u2192 FilterGridIcon\n- render \u2192 FilterGridItem\n- render \u2192 FilterTitle\n- render \u2192 gettext\n- render \u2192 Switch\n- render \u2192 ButtonBar\n- handleToggleSubfilters \u2192 render\n- ProjectFiltersSettings \u2192 LegacyBrowserFilterRow\n- ... and 145 more\n\n**instantiates:**\n- region_silo_endpoint \u2192 EndpointSiloLimit\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`static/app/views/settings/project/projectFilters/projectFiltersSettings.tsx`** \u2014 references(references), trackAnalytics(calls), ProjectsStore(calls), handleLegacyChange(calls), handleLegacyChange(function), gettext(calls), calls(calls), FieldFromConfig(calls), BulkFilter(calls), BulkFilter(component), ButtonBar(calls), constructor(method), customFilterFields(calls), CustomFilters(calls), CustomFilters(function), +32 more\n\n```tsx\n78\t  },\n79\t};\n80\t\n81\tconst LEGACY_BROWSER_SUBFILTERS = {\n82\t  chrome: {\n83\t    icon: iconChrome,\n84\t    title: 'Chrome',\n85\t    helpText: 'Version 62 and lower',\n86\t    legacy: false,\n87\t  },\n88\t  safari: {\n89\t    icon: iconSafari,\n90\t    title: 'Safari',\n91\t    helpText: 'Version 11 and lower',\n92\t    legacy: false,\n93\t  },\n94\t  safari_pre_6: {\n95\t    icon: iconSafari,\n96\t    helpText: '(Deprecated) Version 5 and lower',\n97\t    title: 'Safari',\n98\t    legacy: true,\n99\t  },\n100\t  firefox: {\n101\t    icon: iconFirefox,\n102\t    title: 'Firefox',\n103\t    helpText: 'Version 66 and lower',\n104\t    legacy: false,\n105\t  },\n106\t  android: {\n107\t    icon: iconAndroid,\n108\t    title: 'Android',\n109\t    helpText: 'Version 3 and lower',\n110\t    legacy: false,\n111\t  },\n112\t  android_pre_4: {\n113\t    icon: iconAndroid,\n114\t    helpText: '(Deprecated) Version 3 and lower',\n115\t    title: 'Android',\n116\t    legacy: true,\n117\t  },\n118\t  edge: {\n119\t    icon: iconEdgeLegacy,\n120\t    title: 'Edge',\n121\t    helpText: 'Version 78 and lower',\n122\t    legacy: false,\n123\t  },\n124\t  edge_pre_79: {\n125\t    icon: iconEdgeLegacy,\n126\t    helpText: '(Deprecated) Version 18 and lower',\n127\t    title: 'Edge (Legacy)',\n128\t    legacy: true,\n129\t  },\n130\t  ie: {\n131\t    icon: iconIe,\n132\t    title: 'Internet Explorer',\n133\t    helpText: 'Verison 11 and lower',\n134\t    legac\n[TRUNCATED omitted_chars=19304]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def fetch_for_project",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e pattern=\"def fetch_for_project\"]\nsrc/sentry/incidents/models/alert_rule.py:135:    def fetch_for_project(self, project: Project) -> BaseQuerySet[AlertRule]:\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class ProjectAlertRulePermission",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e pattern=\"class ProjectAlertRulePermission\"]\nsrc/sentry/api/bases/project.py:89:class ProjectAlertRulePermission(ProjectPermission):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/incidents/models/alert_rule.py",
+                  "start_line": 120,
+                  "end_line": 160,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/incidents/models/alert_rule.py lines=120-160]\n120: \n121:     CACHE_SUBSCRIPTION_KEY = \"alert_rule:subscription:%s\"\n122: \n123:     def get_queryset(self) -> BaseQuerySet[AlertRule]:\n124:         return super().get_queryset().exclude(status=AlertRuleStatus.SNAPSHOT.value)\n125: \n126:     def fetch_for_organization(\n127:         self, organization: Organization, projects: Collection[Project] | None = None\n128:     ):\n129:         queryset = self.filter(organization=organization)\n130:         if projects is not None:\n131:             queryset = queryset.filter(projects__in=projects).distinct()\n132: \n133:         return queryset\n134: \n135:     def fetch_for_project(self, project: Project) -> BaseQuerySet[AlertRule]:\n136:         return self.filter(projects=project).distinct()\n137: \n138:     @classmethod\n139:     def __build_subscription_cache_key(cls, subscription_id: int) -> str:\n140:         return cls.CACHE_SUBSCRIPTION_KEY % subscription_id\n141: \n142:     def get_for_subscription(self, subscription: Model) -> AlertRule:\n143:         \"\"\"\n144:         Fetches the AlertRule associated with a Subscription. Attempts to fetch from\n145:         cache then hits the database\n146:         \"\"\"\n147:         cache_key = self.__build_subscription_cache_key(subscription.id)\n148:         alert_rule = cache.get(cache_key)\n149:         if alert_rule is None:\n150:             alert_rule = AlertRule.objects.get(snuba_query__subscriptions=subscription)\n151:             cache.set(cache_key, alert_rule, 3600)\n152: \n153:         return alert_rule\n154: \n155:     @classmethod\n156:     def clear_subscription_cache(cls, instance, **kwargs: Any) -> None:\n157:         cache.delete(cls.__build_subscription_cache_key(instance.id))\n158:         assert cache.get(cls.__build_subscription_cache_key(instance.id)) is None\n159: \n160:     @classmethod\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/api/bases/project.py",
+                  "start_line": 60,
+                  "end_line": 140,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/api/bases/project.py lines=60-140]\n60: \n61: \n62: class ProjectReleasePermission(ProjectPermission):\n63:     scope_map = {\n64:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n65:         \"POST\": [\"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n66:         \"PUT\": [\"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n67:         \"DELETE\": [\"project:admin\", \"project:releases\"],\n68:     }\n69: \n70: \n71: class ProjectEventPermission(ProjectPermission):\n72:     scope_map = {\n73:         \"GET\": [\"event:read\", \"event:write\", \"event:admin\"],\n74:         \"POST\": [\"event:write\", \"event:admin\"],\n75:         \"PUT\": [\"event:write\", \"event:admin\"],\n76:         \"DELETE\": [\"event:admin\"],\n77:     }\n78: \n79: \n80: class ProjectSettingPermission(ProjectPermission):\n81:     scope_map = {\n82:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n83:         \"POST\": [\"project:write\", \"project:admin\"],\n84:         \"PUT\": [\"project:write\", \"project:admin\"],\n85:         \"DELETE\": [\"project:write\", \"project:admin\"],\n86:     }\n87: \n88: \n89: class ProjectAlertRulePermission(ProjectPermission):\n90:     scope_map = {\n91:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\", \"alerts:read\", \"alerts:write\"],\n92:         \"POST\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n93:         \"PUT\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n94:         \"DELETE\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n95:     }\n96: \n97: \n98: class ProjectOwnershipPermission(ProjectPermission):\n99:     scope_map = {\n100:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n101:         \"POST\": [\"project:write\", \"project:admin\"],\n102:         \"PUT\": [\"project:read\", \"project:write\", \"project:admin\"],\n103:         \"DELETE\": [\"project:admin\"],\n104:     }\n105: \n106: \n107: class ProjectMetricsExtractionRulesPermission(ProjectPermission):\n108:     scope_map = {\n109:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n110:         \"POST\": [\"project:read\", \"project:write\", \"project:admin\"],\n111:         \"PUT\": [\"project:read\", \"project:write\", \"project:admin\"],\n112:         \"DELETE\": [\"project:read\", \"project:write\", \"project:admin\"],\n113:     }\n114: \n115: \n116: class ProjectEndpoint(Endpoint):\n117:     permission_classes: tuple[type[BasePermission], ...] = (ProjectPermission,)\n118: \n119:     def convert_args(\n120:         self,\n121:         request: Request,\n122:         *args,\n123:         **kwargs,\n124:     ):\n125:         if args and args[0] is not None:\n126:             organization_id_or_slug: int | str = args[0]\n127:             # Required so it behaves like the original convert_args, where organization_id_or_slug was another parameter\n128:             # TODO: Remove this once we remove the old `organization_slug` parameter from getsentry\n129:             args = args[1:]\n130:         else:\n131:             organization_id_or_slug = kwargs.pop(\"organization_id_or_slug\", None) or kwargs.pop(\n132:                 \"organization_slug\"\n133:             )\n134: \n135:         if args and args[0] is not None:\n136:             project_id_or_slug: int | str = args[0]\n137:             # Required so it behaves like the original convert_args, where project_id_or_slug was another parameter\n138:             args = args[1:]\n139:         else:\n140:             project_id_or_slug = kwargs.pop(\"project_id_or_slug\", None) or kwargs.pop(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 1,
+                  "end_line": 80,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=tests/sentry/api/endpoints/test_rule_snooze.py lines=1-80]\n1: from __future__ import annotations\n2: \n3: from datetime import datetime, timedelta, timezone\n4: from typing import Any\n5: \n6: from sentry import audit_log\n7: from sentry.audit_log.services.log.service import log_rpc_service\n8: from sentry.models.rule import Rule\n9: from sentry.models.rulesnooze import RuleSnooze\n10: from sentry.testutils.cases import APITestCase\n11: from sentry.testutils.outbox import outbox_runner\n12: from sentry.types.actor import Actor\n13: \n14: \n15: class BaseRuleSnoozeTest(APITestCase):\n16:     def setUp(self):\n17:         self.issue_alert_rule = Rule.objects.create(\n18:             label=\"test rule\",\n19:             project=self.project,\n20:             owner_team_id=self.team.id,\n21:         )\n22:         self.metric_alert_rule = self.create_alert_rule(\n23:             organization=self.project.organization, projects=[self.project]\n24:         )\n25:         self.until = datetime.now(timezone.utc) + timedelta(days=10)\n26:         self.login_as(user=self.user)\n27: \n28: \n29: class PostRuleSnoozeTest(BaseRuleSnoozeTest):\n30:     endpoint = \"sentry-api-0-rule-snooze\"\n31:     method = \"post\"\n32: \n33:     def test_cannot_mute_unowned_alert(self):\n34:         user2 = self.create_user(\"foo@example.com\")\n35:         org2 = self.create_organization(name=\"Other Org\", owner=user2)\n36:         project2 = self.create_project(organization=org2, name=\"Other Project\")\n37:         self.login_as(user2)\n38:         response = self.get_error_response(\n39:             org2.slug,\n40:             project2.slug,\n41:             self.issue_alert_rule.id,\n42:             target=\"everyone\",\n43:             status_code=404,\n44:         )\n45:         assert response.data[\"detail\"] == \"Rule does not exist\"\n46: \n47:     def test_mute_issue_alert_user_forever(self):\n48:         \"\"\"Test that a user can mute an issue alert rule for themselves forever\"\"\"\n49:         response = self.get_success_response(\n50:             self.organization.slug,\n51:             self.project.slug,\n52:             self.issue_alert_rule.id,\n53:             target=\"me\",\n54:             status_code=201,\n55:         )\n56:         assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()\n57:         assert len(response.data) == 6\n58:         assert response.data[\"ownerId\"] == self.user.id\n59:         assert response.data[\"userId\"] == self.user.id\n60:         assert response.data[\"ruleId\"] == self.issue_alert_rule.id\n61:         assert response.data[\"alertRuleId\"] is None\n62:         assert response.data[\"until\"] == \"forever\"\n63: \n64:     def test_mute_issue_alert_user_until(self):\n65:         \"\"\"Test that a user can mute an issue alert rule for themselves a period of time\"\"\"\n66:         data = {\"target\": \"me\", \"until\": self.until}\n67:         response = self.get_success_response(\n68:             self.organization.slug,\n69:             self.project.slug,\n70:             self.issue_alert_rule.id,\n71:             **data,\n72:             status_code=201,\n73:         )\n74:         assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()\n75:         assert len(response.data) == 6\n76:         assert response.data[\"ownerId\"] == self.user.id\n77:         assert response.data[\"userId\"] == self.user.id\n78:         assert response.data[\"ruleId\"] == self.issue_alert_rule.id\n79:         assert response.data[\"alertRuleId\"] is None\n80:         assert response.data[\"until\"] == self.until\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "start_line": 190,
+                  "end_line": 235,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=src/sentry/api/endpoints/rule_snooze.py lines=190-228]\n190:                 project_id=project.id,\n191:                 rule_id=rule.id,\n192:                 rule_type=self.rule_field,\n193:                 target=deletion_type,\n194:             )\n195:             return Response(status=status.HTTP_204_NO_CONTENT)\n196: \n197:         # didn't find a match but there is a shared snooze\n198:         if shared_snooze:\n199:             raise PermissionDenied(\n200:                 detail=\"Requesting user cannot unmute this rule.\", code=status.HTTP_403_FORBIDDEN\n201:             )\n202:         # no snooze at all found\n203:         return Response(\n204:             {\"detail\": \"This rulesnooze object doesn't exist.\"},\n205:             status=status.HTTP_404_NOT_FOUND,\n206:         )\n207: \n208: \n209: @region_silo_endpoint\n210: class RuleSnoozeEndpoint(BaseRuleSnoozeEndpoint):\n211:     owner = ApiOwner.ISSUES\n212:     publish_status = {\n213:         \"DELETE\": ApiPublishStatus.UNKNOWN,\n214:         \"POST\": ApiPublishStatus.UNKNOWN,\n215:     }\n216:     rule_model = Rule\n217:     rule_field = \"rule\"\n218: \n219: \n220: @region_silo_endpoint\n221: class MetricRuleSnoozeEndpoint(BaseRuleSnoozeEndpoint):\n222:     owner = ApiOwner.ISSUES\n223:     publish_status = {\n224:         \"DELETE\": ApiPublishStatus.UNKNOWN,\n225:         \"POST\": ApiPublishStatus.UNKNOWN,\n226:     }\n227:     rule_model = AlertRule\n228:     rule_field = \"alert_rule\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 280,
+                  "end_line": 330,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=tests/sentry/api/endpoints/test_rule_snooze.py lines=280-330]\n280:             project=self.project,\n281:         )\n282:         self.get_success_response(\n283:             self.organization.slug,\n284:             self.project.slug,\n285:             other_issue_alert_rule.id,\n286:             target=\"me\",\n287:             status_code=201,\n288:         )\n289:         assert RuleSnooze.objects.filter(rule=other_issue_alert_rule.id).exists()\n290: \n291:     def test_no_issue_alert(self):\n292:         \"\"\"Test that we throw an error when an issue alert rule doesn't exist\"\"\"\n293:         response = self.get_error_response(\n294:             self.organization.slug, self.project.slug, 777, target=\"me\", status_code=404\n295:         )\n296:         assert not RuleSnooze.objects.filter(alert_rule=self.issue_alert_rule.id).exists()\n297:         assert response.data[\"detail\"] == \"Rule does not exist\"\n298: \n299:     def test_invalid_data_issue_alert(self):\n300:         \"\"\"Test that we throw an error when passed invalid data\"\"\"\n301:         data = {\"target\": \"me\", \"until\": 123}\n302:         response = self.get_error_response(\n303:             self.organization.slug,\n304:             self.project.slug,\n305:             self.issue_alert_rule.id,\n306:             **data,\n307:             status_code=400,\n308:         )\n309:         assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()\n310:         assert \"Datetime has wrong format.\" in response.data[\"until\"][0]\n311: \n312: \n313: class DeleteRuleSnoozeTest(BaseRuleSnoozeTest):\n314:     endpoint = \"sentry-api-0-rule-snooze\"\n315:     method = \"delete\"\n316: \n317:     def test_delete_issue_alert_rule_mute_myself(self):\n318:         \"\"\"Test that a user can unsnooze a rule they've snoozed for just themselves\"\"\"\n319:         self.snooze_rule(user_id=self.user.id, owner_id=self.user.id, rule=self.issue_alert_rule)\n320: \n321:         self.get_success_response(\n322:             self.organization.slug,\n323:             self.project.slug,\n324:             self.issue_alert_rule.id,\n325:             target=\"me\",\n326:             status_code=204,\n327:         )\n328:         assert not RuleSnooze.objects.filter(\n329:             rule=self.issue_alert_rule.id, user_id=self.user.id\n330:         ).exists()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 565,
+                  "end_line": 605,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=tests/sentry/api/endpoints/test_rule_snooze.py lines=565-605]\n565:             self.project.slug,\n566:             other_metric_alert_rule.id,\n567:             target=\"me\",\n568:             status_code=201,\n569:         )\n570:         assert RuleSnooze.objects.filter(alert_rule=other_metric_alert_rule).exists()\n571: \n572:     def test_user_can_mute_unassigned_metric_alert(self):\n573:         \"\"\"Test that if a metric alert rule's owner is unassigned, the user can mute it.\"\"\"\n574:         other_metric_alert_rule = self.create_alert_rule(\n575:             organization=self.project.organization, projects=[self.project], owner=None\n576:         )\n577:         self.get_success_response(\n578:             self.organization.slug,\n579:             self.project.slug,\n580:             other_metric_alert_rule.id,\n581:             target=\"me\",\n582:             status_code=201,\n583:         )\n584:         assert RuleSnooze.objects.filter(alert_rule=other_metric_alert_rule.id).exists()\n585: \n586:     def test_no_metric_alert(self):\n587:         \"\"\"Test that we throw an error when a metric alert rule doesn't exist\"\"\"\n588:         response = self.get_error_response(\n589:             self.organization.slug, self.project.slug, 777, target=\"me\", status_code=404\n590:         )\n591:         assert not RuleSnooze.objects.filter(alert_rule=self.metric_alert_rule.id).exists()\n592:         assert response.data[\"detail\"] == \"Rule does not exist\"\n593: \n594: \n595: class DeleteMetricRuleSnoozeTest(BaseRuleSnoozeTest):\n596:     endpoint = \"sentry-api-0-metric-rule-snooze\"\n597:     method = \"delete\"\n598: \n599:     def test_delete_metric_alert_rule_mute_myself(self):\n600:         \"\"\"Test that a user can unsnooze a metric alert rule they've snoozed for just themselves\"\"\"\n601:         self.snooze_rule(\n602:             user_id=self.user.id, owner_id=self.user.id, alert_rule=self.metric_alert_rule\n603:         )\n604:         self.get_success_response(\n605:             self.organization.slug, self.project.slug, self.metric_alert_rule.id, status_code=204\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "start_line": 24,
+                  "end_line": 110,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=src/sentry/api/endpoints/rule_snooze.py lines=24-110]\n24: \n25: \n26: def can_edit_alert_rule(organization, request):\n27:     mute_for_user = request.data.get(\"target\") == \"me\"\n28:     user = request.user\n29: \n30:     # Skip scope and user validation if using token authentication, excluding\n31:     # user tokens.\n32:     if request.auth and (isinstance(user, AnonymousUser) or user.is_sentry_app):\n33:         # Raise an exception if the user is anonymous, but the request is to mute for the user.\n34:         if mute_for_user:\n35:             raise BadRequest(\n36:                 {\n37:                     \"detail\": \"Cannot mute for the request user because the user is anonymous.\",\n38:                 }\n39:             )\n40:         return True\n41: \n42:     # Ensure that the user has the 'alerts:write' scope.\n43:     try:\n44:         org_member = OrganizationMember.objects.get(organization=organization, user_id=user.id)\n45:         if \"alerts:write\" not in org_member.get_scopes():\n46:             return False\n47:     except OrganizationMember.DoesNotExist:\n48:         pass\n49:     # if the goal is to mute the rule just for the user, ensure they belong to the organization\n50:     if mute_for_user:\n51:         return organization in Organization.objects.get_for_user(user)\n52:     # if the rule is owned by a team, allow edit (same permission as delete)\n53:     # if the rule is unassigned, anyone can edit it\n54:     return True\n55: \n56: \n57: class RuleSnoozeValidator(CamelSnakeSerializer):\n58:     target = serializers.CharField(required=True, allow_null=False)\n59:     until = serializers.DateTimeField(required=False, allow_null=True)\n60: \n61: \n62: @register(RuleSnooze)\n63: class RuleSnoozeSerializer(Serializer):\n64:     def serialize(self, obj, attrs, user, **kwargs):\n65:         result = {\n66:             \"ownerId\": obj.owner_id,\n67:             \"userId\": obj.user_id or \"everyone\",\n68:             \"until\": obj.until or \"forever\",\n69:             \"dateAdded\": obj.date_added,\n70:             \"ruleId\": obj.rule_id,\n71:             \"alertRuleId\": obj.alert_rule_id,\n72:         }\n73:         return result\n74: \n75: \n76: @region_silo_endpoint\n77: class BaseRuleSnoozeEndpoint(ProjectEndpoint):\n78:     permission_classes = (ProjectAlertRulePermission,)\n79:     rule_model = type[Rule] | type[AlertRule]\n80:     rule_field = Literal[\"rule\", \"alert_rule\"]\n81: \n82:     def convert_args(self, request: Request, rule_id: int, *args, **kwargs):\n83:         (args, kwargs) = super().convert_args(request, *args, **kwargs)\n84:         project = kwargs[\"project\"]\n85:         try:\n86:             if self.rule_model is AlertRule:\n87:                 queryset = self.rule_model.objects.fetch_for_project(project)\n88:             else:\n89:                 queryset = self.rule_model.objects.filter(project=project)\n90:             rule = queryset.get(id=rule_id)\n91:         except self.rule_model.DoesNotExist:\n92:             raise NotFound(detail=\"Rule does not exist\")\n93: \n94:         kwargs[\"rule\"] = rule\n95: \n96:         return (args, kwargs)\n97: \n98:     def post(self, request: Request, project: Project, rule: Rule | AlertRule) -> Response:\n99:         serializer = RuleSnoozeValidator(data=request.data)\n100:         if not serializer.is_valid():\n101:             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\n102: \n103:         data = serializer.validated_data\n104: \n105:         if not can_edit_alert_rule(project.organization, request):\n106:             raise PermissionDenied(\n107:                 detail=\"Requesting user cannot mute this rule.\", code=status.HTTP_403_FORBIDDEN\n108:             )\n109: \n110:         kwargs = {self.rule_field: rule}\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 1,
+                  "end_line": 55,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=tests/sentry/api/endpoints/test_rule_snooze.py lines=1-55]\n1: from __future__ import annotations\n2: \n3: from datetime import datetime, timedelta, timezone\n4: from typing import Any\n5: \n6: from sentry import audit_log\n7: from sentry.audit_log.services.log.service import log_rpc_service\n8: from sentry.models.rule import Rule\n9: from sentry.models.rulesnooze import RuleSnooze\n10: from sentry.testutils.cases import APITestCase\n11: from sentry.testutils.outbox import outbox_runner\n12: from sentry.types.actor import Actor\n13: \n14: \n15: class BaseRuleSnoozeTest(APITestCase):\n16:     def setUp(self):\n17:         self.issue_alert_rule = Rule.objects.create(\n18:             label=\"test rule\",\n19:             project=self.project,\n20:             owner_team_id=self.team.id,\n21:         )\n22:         self.metric_alert_rule = self.create_alert_rule(\n23:             organization=self.project.organization, projects=[self.project]\n24:         )\n25:         self.until = datetime.now(timezone.utc) + timedelta(days=10)\n26:         self.login_as(user=self.user)\n27: \n28: \n29: class PostRuleSnoozeTest(BaseRuleSnoozeTest):\n30:     endpoint = \"sentry-api-0-rule-snooze\"\n31:     method = \"post\"\n32: \n33:     def test_mute_issue_alert_user_forever(self):\n34:         \"\"\"Test that a user can mute an issue alert rule for themselves forever\"\"\"\n35:         response = self.get_success_response(\n36:             self.organization.slug,\n37:             self.project.slug,\n38:             self.issue_alert_rule.id,\n39:             target=\"me\",\n40:             status_code=201,\n41:         )\n42:         assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()\n43:         assert len(response.data) == 6\n44:         assert response.data[\"ownerId\"] == self.user.id\n45:         assert response.data[\"userId\"] == self.user.id\n46:         assert response.data[\"ruleId\"] == self.issue_alert_rule.id\n47:         assert response.data[\"alertRuleId\"] is None\n48:         assert response.data[\"until\"] == \"forever\"\n49: \n50:     def test_mute_issue_alert_user_until(self):\n51:         \"\"\"Test that a user can mute an issue alert rule for themselves a period of time\"\"\"\n52:         data = {\"target\": \"me\", \"until\": self.until}\n53:         response = self.get_success_response(\n54:             self.organization.slug,\n55:             self.project.slug,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 265,
+                  "end_line": 305,
+                  "snapshot": "base"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"rule-scope\",\n      \"title\": \"Scope rule lookup to the request project (fix cross-project rule snooze)\",\n      \"rationale\": \"All changed lines in rule_snooze.py move rule resolution from a bare id lookup into a project-scoped queryset in convert_args and update post/delete to consume the resolved rule, collectively changing the authorization boundary for snoozing/unsnoozing rules.\",\n      \"hunks\": [\n        \"src/sentry/api/endpoints/rule_snooze.py#0\",\n        \"src/sentry/api/endpoints/rule_snooze.py#1\",\n        \"src/sentry/api/endpoints/rule_snooze.py#2\",\n        \"src/sentry/api/endpoints/rule_snooze.py#3\",\n        \"src/sentry/api/endpoints/rule_snooze.py#4\",\n        \"src/sentry/api/endpoints/rule_snooze.py#5\"\n      ],\n      \"context\": [\n        {\"path\": \"src/sentry/incidents/models/alert_rule.py\", \"symbol\": \"AlertRuleManager.fetch_for_project\", \"start_line\": 135, \"end_line\": 136, \"snapshot\": \"base\", \"why\": \"Confirms fetch_for_project filters alert rules to the request project, the access-control boundary the PR relies on\"},\n        {\"path\": \"src/sentry/api/bases/project.py\", \"symbol\": \"ProjectAlertRulePermission\", \"start_line\": 89, \"end_line\": 95, \"snapshot\": \"base\", \"why\": \"Confirms the endpoint's permission class gates by project scope, so the rule must belong to that project\"}\n      ]\n    },\n    {\n      \"id\": \"tests\",\n      \"title\": \"Tests for project-scoped rule snooze and 404 behavior\",\n      \"rationale\": \"The added cross-project 404 test and the updated no-rule / invalid-data assertions all verify the same project-scoping and status-code change.\",\n      \"hunks\": [\n        \"tests/sentry/api/endpoints/test_rule_snooze.py#0\",\n        \"tests/sentry/api/endpoints/test_rule_snooze.py#1\",\n        \"tests/sentry/api/endpoints/test_rule_snooze.py#2\",\n        \"tests/sentry/api/endpoints/test_rule_snooze.py#3\"\n      ],\n      \"context\": [\n        {\"path\": \"tests/sentry/api/endpoints/test_rule_snooze.py\", \"symbol\": \"BaseRuleSnoozeTest.setUp\", \"start_line\": 16, \"end_line\": 26, \"snapshot\": \"base\", \"why\": \"Shows setUp creates rules bound to the test project, which the cross-project test asserts must 404\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "rule-scope",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 120,
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "snapshot": "base",
+                  "start_line": 1
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/api/endpoints/rule_snooze.py lines=1-120]\n1: import datetime\n2: \n3: from django.contrib.auth.models import AnonymousUser\n4: from rest_framework import serializers, status\n5: from rest_framework.exceptions import PermissionDenied\n6: from rest_framework.request import Request\n7: from rest_framework.response import Response\n8: \n9: from sentry import analytics, audit_log\n10: from sentry.api.api_owners import ApiOwner\n11: from sentry.api.api_publish_status import ApiPublishStatus\n12: from sentry.api.base import region_silo_endpoint\n13: from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint\n14: from sentry.api.exceptions import BadRequest\n15: from sentry.api.serializers import Serializer, register, serialize\n16: from sentry.api.serializers.rest_framework.base import CamelSnakeSerializer\n17: from sentry.incidents.models.alert_rule import AlertRule\n18: from sentry.models.organization import Organization\n19: from sentry.models.organizationmember import OrganizationMember\n20: from sentry.models.project import Project\n21: from sentry.models.rule import Rule\n22: from sentry.models.rulesnooze import RuleSnooze\n23: \n24: \n25: class RuleSnoozeValidator(CamelSnakeSerializer):\n26:     target = serializers.CharField(required=True, allow_null=False)\n27:     until = serializers.DateTimeField(required=False, allow_null=True)\n28: \n29: \n30: @register(RuleSnooze)\n31: class RuleSnoozeSerializer(Serializer):\n32:     def serialize(self, obj, attrs, user, **kwargs):\n33:         result = {\n34:             \"ownerId\": obj.owner_id,\n35:             \"userId\": obj.user_id or \"everyone\",\n36:             \"until\": obj.until or \"forever\",\n37:             \"dateAdded\": obj.date_added,\n38:             \"ruleId\": obj.rule_id,\n39:             \"alertRuleId\": obj.alert_rule_id,\n40:         }\n41:         return result\n42: \n43: \n44: def can_edit_alert_rule(organization, request):\n45:     mute_for_user = request.data.get(\"target\") == \"me\"\n46:     user = request.user\n47: \n48:     # Skip scope and user validation if using token authentication, excluding\n49:     # user tokens.\n50:     if request.auth and (isinstance(user, AnonymousUser) or user.is_sentry_app):\n51:         # Raise an exception if the user is anonymous, but the request is to mute for the user.\n52:         if mute_for_user:\n53:             raise BadRequest(\n54:                 {\n55:                     \"detail\": \"Cannot mute for the request user because the user is anonymous.\",\n56:                 }\n57:             )\n58:         return True\n59: \n60:     # Ensure that the user has the 'alerts:write' scope.\n61:     try:\n62:         org_member = OrganizationMember.objects.get(organization=organization, user_id=user.id)\n63:         if \"alerts:write\" not in org_member.get_scopes():\n64:             return False\n65:     except OrganizationMember.DoesNotExist:\n66:         pass\n67:     # if the goal is to mute the rule just for the user, ensure they belong to the organization\n68:     if mute_for_user:\n69:         return organization in Organization.objects.get_for_user(user)\n70:     # if the rule is owned by a team, allow edit (same permission as delete)\n71:     # if the rule is unassigned, anyone can edit it\n72:     return True\n73: \n74: \n75: @region_silo_endpoint\n76: class BaseRuleSnoozeEndpoint(ProjectEndpoint):\n77:     permission_classes = (ProjectAlertRulePermission,)\n78: \n79:     def get_rule(self, rule_id):\n80:         try:\n81:             rule = self.rule_model.objects.get(id=rule_id)\n82:         except self.rule_model.DoesNotExist:\n83:             raise serializers.ValidationError(\"Rule does not exist\")\n84: \n85:         return rule\n86: \n87:     def post(self, request: Request, project: Project, rule_id) -> Response:\n88:         serializer = RuleSnoozeValidator(data=request.data)\n89:         if not serializer.is_valid():\n90:             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\n91: \n92:         data = serializer.validated_data\n93:         rule = self.get_rule(rule_id)\n94: \n95:         if not can_edit_alert_rule(project.organization, request):\n96:             raise PermissionDenied(\n97:                 detail=\"Requesting user cannot mute this rule.\", code=status.HTTP_403_FORBIDDEN\n98:             )\n99: \n100:         kwargs = {self.rule_field: rule}\n101: \n102:         user_id = request.user.id if data.get(\"target\") == \"me\" else None\n103:         rule_snooze, created = RuleSnooze.objects.get_or_create(\n104:             user_id=user_id,\n105:             defaults={\n106:                 \"owner_id\": request.user.id,\n107:                 \"until\": data.get(\"until\"),\n108:                 \"date_added\": datetime.datetime.now(datetime.UTC),\n109:             },\n110:             **kwargs,\n111:         )\n112:         # don't allow editing of a rulesnooze object for a given rule and user (or no user)\n113:         if not created:\n114:             return Response(\n115:                 {\"detail\": \"RuleSnooze already exists for this rule and scope.\"},\n116:                 status=status.HTTP_410_GONE,\n117:             )\n118: \n119:         if not user_id:\n120:             # create an audit log entry if the rule is snoozed for everyone\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 145,
+                  "path": "src/sentry/incidents/models/alert_rule.py",
+                  "snapshot": "base",
+                  "start_line": 115
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/incidents/models/alert_rule.py lines=115-145]\n115: \n116: class AlertRuleManager(BaseManager[\"AlertRule\"]):\n117:     \"\"\"\n118:     A manager that excludes all rows that are snapshots.\n119:     \"\"\"\n120: \n121:     CACHE_SUBSCRIPTION_KEY = \"alert_rule:subscription:%s\"\n122: \n123:     def get_queryset(self) -> BaseQuerySet[AlertRule]:\n124:         return super().get_queryset().exclude(status=AlertRuleStatus.SNAPSHOT.value)\n125: \n126:     def fetch_for_organization(\n127:         self, organization: Organization, projects: Collection[Project] | None = None\n128:     ):\n129:         queryset = self.filter(organization=organization)\n130:         if projects is not None:\n131:             queryset = queryset.filter(projects__in=projects).distinct()\n132: \n133:         return queryset\n134: \n135:     def fetch_for_project(self, project: Project) -> BaseQuerySet[AlertRule]:\n136:         return self.filter(projects=project).distinct()\n137: \n138:     @classmethod\n139:     def __build_subscription_cache_key(cls, subscription_id: int) -> str:\n140:         return cls.CACHE_SUBSCRIPTION_KEY % subscription_id\n141: \n142:     def get_for_subscription(self, subscription: Model) -> AlertRule:\n143:         \"\"\"\n144:         Fetches the AlertRule associated with a Subscription. Attempts to fetch from\n145:         cache then hits the database\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 110,
+                  "path": "src/sentry/api/bases/project.py",
+                  "snapshot": "base",
+                  "start_line": 60
+                },
+                "result": "[READ snapshot=base sha=ca59242c563d2e006686a8b56e372d7f7ab0ae7e path=src/sentry/api/bases/project.py lines=60-110]\n60: \n61: \n62: class ProjectReleasePermission(ProjectPermission):\n63:     scope_map = {\n64:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n65:         \"POST\": [\"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n66:         \"PUT\": [\"project:write\", \"project:admin\", \"project:releases\", \"org:ci\"],\n67:         \"DELETE\": [\"project:admin\", \"project:releases\"],\n68:     }\n69: \n70: \n71: class ProjectEventPermission(ProjectPermission):\n72:     scope_map = {\n73:         \"GET\": [\"event:read\", \"event:write\", \"event:admin\"],\n74:         \"POST\": [\"event:write\", \"event:admin\"],\n75:         \"PUT\": [\"event:write\", \"event:admin\"],\n76:         \"DELETE\": [\"event:admin\"],\n77:     }\n78: \n79: \n80: class ProjectSettingPermission(ProjectPermission):\n81:     scope_map = {\n82:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n83:         \"POST\": [\"project:write\", \"project:admin\"],\n84:         \"PUT\": [\"project:write\", \"project:admin\"],\n85:         \"DELETE\": [\"project:write\", \"project:admin\"],\n86:     }\n87: \n88: \n89: class ProjectAlertRulePermission(ProjectPermission):\n90:     scope_map = {\n91:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\", \"alerts:read\", \"alerts:write\"],\n92:         \"POST\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n93:         \"PUT\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n94:         \"DELETE\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n95:     }\n96: \n97: \n98: class ProjectOwnershipPermission(ProjectPermission):\n99:     scope_map = {\n100:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n101:         \"POST\": [\"project:write\", \"project:admin\"],\n102:         \"PUT\": [\"project:read\", \"project:write\", \"project:admin\"],\n103:         \"DELETE\": [\"project:admin\"],\n104:     }\n105: \n106: \n107: class ProjectMetricsExtractionRulesPermission(ProjectPermission):\n108:     scope_map = {\n109:         \"GET\": [\"project:read\", \"project:write\", \"project:admin\"],\n110:         \"POST\": [\"project:read\", \"project:write\", \"project:admin\"],\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "file_glob": "src/sentry/api/endpoints/rule_snooze.py",
+                  "pattern": "rule_snooze|AlertRuleSnooze|ProjectRuleSnoozeEndpoint",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc pattern=\"rule_snooze|AlertRuleSnooze|ProjectRuleSnoozeEndpoint\"]\nsrc/sentry/api/endpoints/rule_snooze.py:113:        rule_snooze, created = RuleSnooze.objects.get_or_create(\nsrc/sentry/api/endpoints/rule_snooze.py:153:            serialize(rule_snooze, request.user, RuleSnoozeSerializer()),\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 220,
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "snapshot": "pr",
+                  "start_line": 155
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=src/sentry/api/endpoints/rule_snooze.py lines=155-220]\n155:         )\n156: \n157:     def delete(self, request: Request, project: Project, rule: Rule | AlertRule) -> Response:\n158:         # find if there is a mute for all that I can remove\n159:         shared_snooze = None\n160:         deletion_type = None\n161:         kwargs = {self.rule_field: rule, \"user_id\": None}\n162:         try:\n163:             shared_snooze = RuleSnooze.objects.get(**kwargs)\n164:         except RuleSnooze.DoesNotExist:\n165:             pass\n166: \n167:         # if user can edit then delete it\n168:         if shared_snooze and can_edit_alert_rule(project.organization, request):\n169:             shared_snooze.delete()\n170:             deletion_type = \"everyone\"\n171: \n172:         # next check if there is a mute for me that I can remove\n173:         kwargs = {self.rule_field: rule, \"user_id\": request.user.id}\n174:         my_snooze = None\n175:         try:\n176:             my_snooze = RuleSnooze.objects.get(**kwargs)\n177:         except RuleSnooze.DoesNotExist:\n178:             pass\n179:         else:\n180:             my_snooze.delete()\n181:             # everyone takes priority over me\n182:             if not deletion_type:\n183:                 deletion_type = \"me\"\n184: \n185:         if deletion_type:\n186:             analytics.record(\n187:                 \"rule.unsnoozed\",\n188:                 user_id=request.user.id,\n189:                 organization_id=project.organization_id,\n190:                 project_id=project.id,\n191:                 rule_id=rule.id,\n192:                 rule_type=self.rule_field,\n193:                 target=deletion_type,\n194:             )\n195:             return Response(status=status.HTTP_204_NO_CONTENT)\n196: \n197:         # didn't find a match but there is a shared snooze\n198:         if shared_snooze:\n199:             raise PermissionDenied(\n200:                 detail=\"Requesting user cannot unmute this rule.\", code=status.HTTP_403_FORBIDDEN\n201:             )\n202:         # no snooze at all found\n203:         return Response(\n204:             {\"detail\": \"This rulesnooze object doesn't exist.\"},\n205:             status=status.HTTP_404_NOT_FOUND,\n206:         )\n207: \n208: \n209: @region_silo_endpoint\n210: class RuleSnoozeEndpoint(BaseRuleSnoozeEndpoint):\n211:     owner = ApiOwner.ISSUES\n212:     publish_status = {\n213:         \"DELETE\": ApiPublishStatus.UNKNOWN,\n214:         \"POST\": ApiPublishStatus.UNKNOWN,\n215:     }\n216:     rule_model = Rule\n217:     rule_field = \"rule\"\n218: \n219: \n220: @region_silo_endpoint\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "file_glob": "*.py",
+                  "pattern": "BaseRuleSnoozeEndpoint|class.*RuleSnooze.*Endpoint",
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-862\",\n      \"explanation\": \"The delete method unconditionally deletes the requester's 'me' snooze (my_snooze.delete() at line 180) for the user without any authorization check, unlike the shared 'everyone' snooze which is guarded by can_edit_alert_rule(project.organization, request). Although ProjectAlertRulePermission enforces a project scope, can_edit_alert_rule also performs an organization-membership check (OrganizationMember exists for the user) for user tokens; the self-snooze deletion path bypasses that check, so a request with only a project scope (and no organization membership) could delete a RuleSnooze owned by a different user if it could enumerate that user's snooze, or at minimum a missing authorization check is applied to a protected operation. This is a newly reachable code path because the PR refactored rule resolution into convert_args and changed the delete signature from (project, rule_id) to (project, rule).\",\n      \"evidence\": [\n        {\n          \"type\": \"code\",\n          \"file\": \"src/sentry/api/endpoints/rule_snooze.py\",\n          \"lines\": [172, 183],\n          \"content\": \"        # next check if there is a mute for me that I can remove\\n        kwargs = {self.rule_field: rule, \\\"user_id\\\": request.user.id}\\n        my_snooze = None\\n        try:\\n            my_snooze = RuleSnooze.objects.get(**kwargs)\\n        except RuleSnooze.DoesNotExist:\\n            pass\\n        else:\\n            my_snooze.delete()\\n            # everyone takes priority over me\\n            if not deletion_type:\\n                deletion_type = \\\"me\\\"\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"src/sentry/api/endpoints/rule_snooze.py\",\n          \"lines\": [167, 170],\n          \"content\": \"        # if user can edit then delete it\\n        if shared_snooze and can_edit_alert_rule(project.organization, request):\\n            shared_snooze.delete()\\n            deletion_type = \\\"everyone\\\"\"\n        },\n        {\n          \"type\": \"code\",\n          \"file\": \"src/sentry/api/endpoints/rule_snooze.py\",\n          \"lines\": [44, 72],\n          \"content\": \"def can_edit_alert_rule(organization, request):\\n    mute_for_user = request.data.get(\\\"target\\\") == \\\"me\\\"\\n    user = request.user\\n    # Skip scope and user validation if using token authentication...\\n    if request.auth and (isinstance(user, AnonymousUser) or user.is_sentry_app):\\n        if mute_for_user:\\n            raise BadRequest(...)\\n        return True\\n    # Ensure that the user has the 'alerts:write' scope.\\n    try:\\n        org_member = OrganizationMember.objects.get(organization=organization, user_id=user.id)\\n        if \\\"alerts:write\\\" not in org_member.get_scopes():\\n            return False\\n    except OrganizationMember.DoesNotExist:\\n        pass\\n    # if the goal is to mute the rule just for the user, ensure they belong to the organization\\n    if mute_for_user:\\n        return organization in Organization.objects.get_for_user(user)\\n    # if the rule is owned by a team, allow edit (same permission as delete)\\n    # if the rule is unassigned, anyone can edit it\\n    return True\"\n        }\n      ],\n      \"suggested_fix\": \"Guard the my_snooze deletion with the same authorization check used for shared snoozes (e.g., `if my_snooze and can_edit_alert_rule(project.organization, request):`), or require organization membership / target=='me' validation before deleting a user-owned snooze. Alternatively, verify that `request.user` is the owner of the snooze being deleted (owner_id == request.user.id or user_id == request.user.id) before performing my_snooze.delete().\",\n      \"file\": \"src/sentry/api/endpoints/rule_snooze.py\",\n      \"line\": 180\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "tests",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "tests/sentry/api/endpoints/test_rule_snooze.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=tests/sentry/api/endpoints/test_rule_snooze.py lines=1-60]\n1: from __future__ import annotations\n2: \n3: from datetime import datetime, timedelta, timezone\n4: from typing import Any\n5: \n6: from sentry import audit_log\n7: from sentry.audit_log.services.log.service import log_rpc_service\n8: from sentry.models.rule import Rule\n9: from sentry.models.rulesnooze import RuleSnooze\n10: from sentry.testutils.cases import APITestCase\n11: from sentry.testutils.outbox import outbox_runner\n12: from sentry.types.actor import Actor\n13: \n14: \n15: class BaseRuleSnoozeTest(APITestCase):\n16:     def setUp(self):\n17:         self.issue_alert_rule = Rule.objects.create(\n18:             label=\"test rule\",\n19:             project=self.project,\n20:             owner_team_id=self.team.id,\n21:         )\n22:         self.metric_alert_rule = self.create_alert_rule(\n23:             organization=self.project.organization, projects=[self.project]\n24:         )\n25:         self.until = datetime.now(timezone.utc) + timedelta(days=10)\n26:         self.login_as(user=self.user)\n27: \n28: \n29: class PostRuleSnoozeTest(BaseRuleSnoozeTest):\n30:     endpoint = \"sentry-api-0-rule-snooze\"\n31:     method = \"post\"\n32: \n33:     def test_cannot_mute_unowned_alert(self):\n34:         user2 = self.create_user(\"foo@example.com\")\n35:         org2 = self.create_organization(name=\"Other Org\", owner=user2)\n36:         project2 = self.create_project(organization=org2, name=\"Other Project\")\n37:         self.login_as(user2)\n38:         response = self.get_error_response(\n39:             org2.slug,\n40:             project2.slug,\n41:             self.issue_alert_rule.id,\n42:             target=\"everyone\",\n43:             status_code=404,\n44:         )\n45:         assert response.data[\"detail\"] == \"Rule does not exist\"\n46: \n47:     def test_mute_issue_alert_user_forever(self):\n48:         \"\"\"Test that a user can mute an issue alert rule for themselves forever\"\"\"\n49:         response = self.get_success_response(\n50:             self.organization.slug,\n51:             self.project.slug,\n52:             self.issue_alert_rule.id,\n53:             target=\"me\",\n54:             status_code=201,\n55:         )\n56:         assert RuleSnooze.objects.filter(rule=self.issue_alert_rule.id).exists()\n57:         assert len(response.data) == 6\n58:         assert response.data[\"ownerId\"] == self.user.id\n59:         assert response.data[\"userId\"] == self.user.id\n60:         assert response.data[\"ruleId\"] == self.issue_alert_rule.id\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Rule does not exist",
+                  "file_glob": "*snooze*",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc pattern=\"Rule does not exist\"]\nsrc/sentry/api/endpoints/rule_snooze.py:92:            raise NotFound(detail=\"Rule does not exist\")\ntests/sentry/api/endpoints/test_rule_snooze.py:45:        assert response.data[\"detail\"] == \"Rule does not exist\"\ntests/sentry/api/endpoints/test_rule_snooze.py:297:        assert response.data[\"detail\"] == \"Rule does not exist\"\ntests/sentry/api/endpoints/test_rule_snooze.py:592:        assert response.data[\"detail\"] == \"Rule does not exist\"\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "end_line": 110,
+                  "path": "src/sentry/api/endpoints/rule_snooze.py",
+                  "start_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=e8e71708758e1f9f56ce815ace73fe60d9e608dc path=src/sentry/api/endpoints/rule_snooze.py lines=60-110]\n60: \n61: \n62: @register(RuleSnooze)\n63: class RuleSnoozeSerializer(Serializer):\n64:     def serialize(self, obj, attrs, user, **kwargs):\n65:         result = {\n66:             \"ownerId\": obj.owner_id,\n67:             \"userId\": obj.user_id or \"everyone\",\n68:             \"until\": obj.until or \"forever\",\n69:             \"dateAdded\": obj.date_added,\n70:             \"ruleId\": obj.rule_id,\n71:             \"alertRuleId\": obj.alert_rule_id,\n72:         }\n73:         return result\n74: \n75: \n76: @region_silo_endpoint\n77: class BaseRuleSnoozeEndpoint(ProjectEndpoint):\n78:     permission_classes = (ProjectAlertRulePermission,)\n79:     rule_model = type[Rule] | type[AlertRule]\n80:     rule_field = Literal[\"rule\", \"alert_rule\"]\n81: \n82:     def convert_args(self, request: Request, rule_id: int, *args, **kwargs):\n83:         (args, kwargs) = super().convert_args(request, *args, **kwargs)\n84:         project = kwargs[\"project\"]\n85:         try:\n86:             if self.rule_model is AlertRule:\n87:                 queryset = self.rule_model.objects.fetch_for_project(project)\n88:             else:\n89:                 queryset = self.rule_model.objects.filter(project=project)\n90:             rule = queryset.get(id=rule_id)\n91:         except self.rule_model.DoesNotExist:\n92:             raise NotFound(detail=\"Rule does not exist\")\n93: \n94:         kwargs[\"rule\"] = rule\n95: \n96:         return (args, kwargs)\n97: \n98:     def post(self, request: Request, project: Project, rule: Rule | AlertRule) -> Response:\n99:         serializer = RuleSnoozeValidator(data=request.data)\n100:         if not serializer.is_valid():\n101:             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\n102: \n103:         data = serializer.validated_data\n104: \n105:         if not can_edit_alert_rule(project.organization, request):\n106:             raise PermissionDenied(\n107:                 detail=\"Requesting user cannot mute this rule.\", code=status.HTTP_403_FORBIDDEN\n108:             )\n109: \n110:         kwargs = {self.rule_field: rule}\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "The section under review consists solely of test code in `tests/sentry/api/endpoints/test_rule_snooze.py`, which validates existing endpoint authorization logic (404 for unowned rules, 404 for nonexistent rules). The endpoint itself (lines 76-108 in `src/sentry/api/endpoints/rule_snooze.py`) already applies project-scoped rule lookup and `ProjectAlertRulePermission` in the base \u2014 none of that code is changed here. The test changes are:\n\n1. Adding a cross-org 404 test (`test_cannot_mute_unowned_alert`) \u2014 tests existing behavior, doesn't introduce a flaw.\n2. Updating expected status from 400 to 404 for nonexistent rules \u2014 aligns tests with existing `NotFound` behavior.\n3. Fixing `metric_alert_rule.id` \u2192 `issue_alert_rule.id` in an invalid-data test \u2014 bug fix in test.\n\nNo production authorization code is changed in this section, and no policy rule was violated by the new/changed lines. No candidate authorization flaws to report.\n\n```json\n{\n  \"findings\": []\n}\n```",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:rule-scope:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.7748,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "advisory": "sentry-rule-snooze-idor",
+  "url": "https://github.com/getsentry/sentry/pull/77016",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-v345-w9f2-mpm5",
+  "expected": "safe",
+  "vulnerable_files": [
+    "src/sentry/api/endpoints/rule_snooze.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": true
+}

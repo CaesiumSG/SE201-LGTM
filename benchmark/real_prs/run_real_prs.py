@@ -123,9 +123,18 @@ def summarize(records: list[dict]) -> dict:
     }
 
 
-def write_summary(out_dir: Path, mode: str, records: list[dict], model: str) -> None:
+def write_summary(out_dir: Path, mode: str, records: list[dict], model: str, config=None) -> None:
     payload = {
         "mode": mode, "model": model if mode != "sast-only" else "none",
+        "run_config": None if config is None or mode == "sast-only" else {
+            "llm_backend": getattr(config, "llm_backend", "ollama"),
+            # Claude on Bedrock takes no temperature; gpt-oss on Bedrock and Ollama do.
+            "llm_temperature": None if (getattr(config, "llm_backend", "ollama") == "bedrock"
+                                        and not config.bedrock_model.startswith("openai.")) else config.llm_temperature,
+            "sqli_review": getattr(config, "sqli_review", None),
+            "judge_endpoint": getattr(config, "judge_endpoint", None),
+            "ollama_base_url": config.ollama_base_url,
+        },
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "git_commit": subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
                                      capture_output=True, text=True).stdout.strip() or "unknown",
@@ -152,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bedrock-budget", type=float, default=None, help="USD cap over the whole spend ledger")
     parser.add_argument("--sqli-review", action=argparse.BooleanOptionalAction, default=None,
                         help="section SQLi review (default: on; --no-sqli-review reproduces v2.0-eval)")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="reviewer sampling temperature (default: config, 0.0); ignored by the Bedrock backend")
     parser.add_argument("--judge-endpoint", default=None, help="Kev judge URL (default: config, 127.0.0.1:8008)")
     parser.add_argument("--fetch", action="store_true", help="only fetch the clones")
     parser.add_argument("--resume", action="store_true", help="skip cases with a result JSON that did not crash")
@@ -182,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         config.sqli_review = args.sqli_review
     if args.judge_endpoint:
         config.judge_endpoint = args.judge_endpoint
+    if args.temperature is not None:
+        config.llm_temperature = args.temperature
     if args.bedrock_model:
         # --gpu-model may still be given: Kev is served from the same GPU job.
         config.llm_backend = "bedrock"
@@ -222,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             records.append(record)
             print(f"  -> {record['outcome']}{' (on target)' if record.get('on_target') else ''}, "
                   f"{record.get('n_findings', 0)} findings, {record.get('latency_seconds')} s", flush=True)
-        write_summary(out_dir, mode, records, config.ollama_model)
+        write_summary(out_dir, mode, records, config.ollama_model, config)
         s = summarize(records)["overall"]
         print(f"[{mode}] TP {s['tp']} FP {s['fp']} FN {s['fn']} TN {s['tn']} errors {s['errors']}")
     return 0

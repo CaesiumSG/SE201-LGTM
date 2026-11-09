@@ -1,0 +1,236 @@
+{
+  "id": "ormar-aggregate-minmax-sqli-fixed",
+  "repo": "collerek/ormar",
+  "pr": 1557,
+  "title": "Adding min()/max()/sum()/avg() aggregates wrapped the caller-supplied column name in sqlalchemy.text() with no check that it is a real model field, so a crafted column string injects SQL into the aggregate query.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "ef95d3214daf9ccfd5591ae51d8b2fbe4b66c633",
+  "pr_sha": "a03bae14fe01358d3eaf7e319fcd5db2e4956b16",
+  "files_changed": 5,
+  "python_files_changed": 3,
+  "added_lines": 75,
+  "diff_chars": 3851,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 83.6,
+  "index_seconds": 2.1,
+  "index_reused": false,
+  "index_chunks": 256,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 2,
+    "hunks_reviewed": 2,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 1,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 1,
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "sqli:aggr-column-validation:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "ormar/queryset/actions/select_action.py",
+      "line": 43,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new validation in _query_aggr_function (queryset.py:709) checks `x.field_name not in x.target_model.model_fields`, but `field_name` is derived by splitting the user-supplied column string on '__' and taking the last part (select_action.py:29-32). For a related column like 'category__1 + 1', field_name becomes '1 + 1', which is not a key in the related model's model_fields, so the check raises "
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 5,
+  "sast_triage_units": 1,
+  "reviewer_tool_calls": 12,
+  "reviewer_units": 2,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:tests/test_vulnerabilities/test_aggregated_functions.py:67",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line is a hardcoded string literal inside a test function (test_schema_extraction), not user-controlled input. It is passed to Item.objects.min(column), which routes to _query_aggr_function (ormar/queryset/queryset.py:699-715). There the column string is wrapped in a SelectAction and applied via SQLAlchemy's func (select_actions.apply_func), so the value is treated as a column/expression identifier, not bound as a data parameter. The test explicitly asserts that this input is rejected: it is wrapped in `with pytest.raises(ormar.exceptions.QueryDefinitionError)` (test file lines 67-69), and the library raises QueryDefinitionError for invalid column definitions (e.g. queryset.py:706). Because the value is a static literal in a test, no external/user input can reach the query, and the library is designed to reject such arbitrary SQL expressions rather than execute them. This is a security regression test verifying the ORM blocks SQL injection, not a vulnerable sink.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "tests/test_vulnerabilities/test_aggregated_functions.py",
+          "lines": [
+            67,
+            69
+          ],
+          "source": null,
+          "content": "column = \"(SELECT GROUP_CONCAT(name) FROM sqlite_master WHERE type='table')\"\n            with pytest.raises(ormar.exceptions.QueryDefinitionError):\n                await Item.objects.min(column)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            699,
+            715
+          ],
+          "source": null,
+          "content": "async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n        func = getattr(sqlalchemy.func, func_name)\n        select_actions = [\n            SelectAction(select_str=column, model_cls=self.model) for column in columns\n        ]\n        if func_name in [\"sum\", \"avg\"]:\n            if any(not x.is_numeric for x in select_actions):\n                raise QueryDefinitionError(\n                    \"You can use sum and svg only with\" \"numeric types of columns\"\n                )\n        select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n        expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n        expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore\n        async with self.model_config.database.get_query_executor() as executor:\n            result = await executor.fetch_one(expr)  # type: ignore\n        return dict(result) if len(result) > 1 else result[columns[0]]  # type: ignore",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            729,
+            739
+          ],
+          "source": null,
+          "content": "async def min(self, columns: Union[str, List[str]]) -> Any:  # noqa: A003\n        ...\n        if not isinstance(columns, list):\n            columns = [columns]\n        return await self._query_aggr_function(func_name=\"min\", columns=columns)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "No code change required for the test itself; it is a valid regression test asserting that arbitrary SQL expressions passed to aggregate functions are rejected with QueryDefinitionError. If the library does not currently raise for this input, the fix belongs in the ORM: validate the column argument against the model's known column names (whitelist) in _query_aggr_function/SelectAction and raise QueryDefinitionError for anything that is not a recognized column, rather than interpolating it into the SQL expression. Mark this Semgrep finding as a false positive since the value is a static literal in a test and no user-controlled input reaches the query.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.6436,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "tests/test_vulnerabilities/test_aggregated_functions.py",
+      "line": 67,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:aggr-column-validation:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The new validation in _query_aggr_function (queryset.py:709) checks `x.field_name not in x.target_model.model_fields`, but `field_name` is derived by splitting the user-supplied column string on '__' and taking the last part (select_action.py:29-32). For a related column like 'category__1 + 1', field_name becomes '1 + 1', which is not a key in the related model's model_fields, so the check raises and blocks it. However, the check only validates the LAST '__' segment; the related_parts (e.g. 'category') are never validated against the model's actual relations, and more importantly the guard is a membership test on a dict whose keys are the model's declared field names. If an attacker can supply a column string whose last '__' segment happens to be a valid field name but the string as a whole is crafted (e.g. a field name that is itself a valid identifier but the surrounding context is manipulated), the value still flows unbound into sqlalchemy.text(f\"{alias}{self.field_name}\") at select_action.py:43 and is executed via apply_func -> func(self.get_text_clause()) at select_action.py:48. The validation is a partial allowlist that does not guarantee the full identifier is a single safe token; the sink at select_action.py:43 builds raw SQL text from user-controlled field_name without parameterization or strict identifier quoting, and the new check does not fully close this because it only inspects the last segment and relies on dict membership rather than a strict identifier allowlist.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            29,
+            32
+          ],
+          "source": null,
+          "content": "    def _split_value_into_parts(self, order_str: str) -> None:\n        parts = order_str.split(\"__\")\n        self.field_name = parts[-1]\n        self.related_parts = parts[:-1]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            41,
+            43
+          ],
+          "source": null,
+          "content": "    def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n        alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n        return sqlalchemy.text(f\"{alias}{self.field_name}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            45,
+            52
+          ],
+          "source": null,
+          "content": "    def apply_func(\n        self, func: Callable, use_label: bool = True\n    ) -> sqlalchemy.sql.expression.TextClause:\n        result = func(self.get_text_clause())\n        if use_label:\n            rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n            result = result.label(f\"{rel_prefix}{self.field_name}\")\n        return result",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            709,
+            713
+          ],
+          "source": null,
+          "content": "        if any(x.field_name not in x.target_model.model_fields for x in select_actions):\n            raise QueryDefinitionError(\n                \"You can use aggregate functions only on \"\n                \"existing columns of the target model\"\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            714,
+            716
+          ],
+          "source": null,
+          "content": "        select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n        expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n        expr = sqlalchemy.select(*select_columns).select_from(expr)  # type: ignore",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Replace the raw sqlalchemy.text(f\"{alias}{self.field_name}\") construction with a properly quoted identifier (e.g. sqlalchemy.sql.quoted_name or the model's column object via target_model.ormar_config.table.columns[aliased_name]), and validate the full column path (all related_parts plus field_name) against the model's declared fields and relations using a strict allowlist rather than a dict-membership check on only the last segment.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8292,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "ormar/queryset/actions/select_action.py",
+      "line": 43,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "ormar-aggregate-minmax-sqli",
+  "url": "https://github.com/collerek/ormar/pull/1557",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xxh2-68g9-8jqr",
+  "expected": "safe",
+  "vulnerable_files": [
+    "ormar/queryset/actions/select_action.py",
+    "ormar/queryset/queryset.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": true
+}

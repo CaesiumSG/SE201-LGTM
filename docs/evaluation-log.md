@@ -17,7 +17,11 @@ recorded as carefully as successes.
   recording and score UNKNOWN if rescored; their committed summaries are the
   reported numbers.
 
-## Headline (final, 13 Oct)
+**Final results (6–7 Nov) are in [Round 11](#round-11-final-evaluation-67-nov)
+and [`benchmark/runs/final-2026-11/RESULTS.md`](../benchmark/runs/final-2026-11/RESULTS.md).**
+The headline below is the checkpoint-era result, kept as history.
+
+## Headline (checkpoint era, 13 Oct)
 
 Archived runs (`qwen2.5-coder:7b`, earlier conditions), scored under the
 earlier rules. The current runs are in the Shoply run folder under
@@ -88,7 +92,7 @@ LGTM looked slightly *worse* than the LLM-only baseline.
 Semgrep, no RAG and no tools. The old setup is kept as an *ablation*,
 `lgtm-no-sast`. Also fixed problem 1.2 (scorer) and added grounded and
 off-category metrics (1.6, 1.7). The round 1 rows below are the re-scored
-numbers in `benchmark/runs/archive/run1-original/summary.json`, scored under
+numbers in `benchmark/runs/archive/run1-original/<mode>/summary.json`, scored under
 the earlier rules.
 
 | Mode | P | R | F1 | SQLi F1 | Authz F1 | FP rate (safe) | Grounded F1 |
@@ -464,6 +468,87 @@ Injection suite, mitigations on: attack success rate **0% (0/6)** (was
 
 ---
 
+## Round 10: real PRs expose the SQL injection blind spot (4–5 Nov)
+
+**Change of benchmark:** the real-world CVE set's vulnerable cases are
+synthetic reverts of a fix, and Shoply was written by us. To test the
+question the project exists for, we built a set of the **real pull requests
+that introduced published advisories** (13 development advisories, then 17
+held-out), each reviewed together with its fix commit. Write-up:
+[`real-prs-eval.md`](real-prs-eval.md).
+
+**Failure found (development set, v2.0 = `main` at 66839a2):** Semgrep matched
+nothing in any of the 13 diffs, and v2.0's only SQL injection path triages
+Semgrep hits, so it caught 0 of 4 SQLi advisories as SQLi (its two "catches"
+were authorization findings in the right file). The SQL was built in helpers,
+template filters and `str.format` calls no rule covers.
+
+**Change:** a section **SQLi reviewer** (`sqli_reviewer`, on by default;
+`--no-sqli-review` reproduces v2.0) reviews every changed section for
+injection, not only Semgrep's lines. It was built and checked on the
+development set only; the held-out set was chosen afterwards and run once.
+
+| Held-out (17) | v2.1 (SQLi reviewer) | v2.0 | Plain LLM |
+|---|---|---|---|
+| Caught / exact | **15 / 14** | 12 / 10 | 7 / 7 |
+| SQLi exact | **7/8** | 3/8 | 4/8 |
+| Authz exact | 7/9 | 7/9 | 3/9 |
+| False alarms on fixes | 1/17 | 0/17 | 2/17 |
+
+### Learning
+
+> **A benchmark you wrote yourself tests what you thought of.** Shoply's SQLi
+> cases all used patterns our Semgrep rules match, so v2.0 looked complete.
+> The first set of real introducing PRs found the gap at once.
+
+## Round 11: final evaluation (6–7 Nov)
+
+**Setup:** every benchmark on one commit (`af878ce`, all open PRs at the time
+merged), Qwen3.8 27B reviewer and Kev-4B judge on two L40S GPUs, 33 runs, 0
+errored cases. Run log: [`RUNLOG.md`](../benchmark/runs/final-2026-11/RUNLOG.md);
+results: [`RESULTS.md`](../benchmark/runs/final-2026-11/RESULTS.md); figures on
+the slides traced in [`deck-numbers.md`](deck-numbers.md).
+
+| Benchmark | lgtm | Plain LLM (same model) | Semgrep only |
+|---|---|---|---|
+| Real PRs, held-out (17): caught / false alarms on fixes | **15 / 1** (3 runs, identical) | 7 / 2 | 3 / 2 |
+| Real PRs, development (13) | 13 / 2 | 7 / 0 | 0 / 0 |
+| Shoply (52) F1 | 1.00 | 0.94 | not run |
+| Real-world CVEs (9 in scope) F1 | 0.91 | 1.00 | not run |
+| Prompt injection: attacks succeeded | 0/6 | 0/6 | n/a |
+| Field trial (12 ordinary PRs): crashes / flagged | 0 / 1 | 0 / 1 | n/a |
+
+Extra runs on the held-out set: without Semgrep 14/17 caught with 3 false
+alarms; at T=0.5 15/17, at T=1.0 14/17; with gpt-oss 120B, Claude Haiku 4.5 and
+Claude Sonnet 4.6 as the reviewer 15–17 caught but 3–11 false alarms per run,
+and gpt-oss 20B 7/17. Bedrock cost USD 101.72.
+
+### What worked / what didn't
+
+- ✅ On real PRs we did not tune on, the agent pipeline caught twice as many
+  advisories as the same model reading the diff, with fewer false alarms.
+- ✅ Fully repeatable at T=0: all 17 per-advisory outcomes identical in three
+  runs, and identical to the 5 Nov run.
+- ✅ The Kev judge removed 5 findings on fix commits that would otherwise
+  have been false alarms (rucio-oracle 3, piccolo 2).
+- ⚠️ On the tuned and synthetic sets (Shoply, real-world CVEs) the plain LLM
+  is as good or better: those sets no longer separate the conditions.
+- ⚠️ Two advisories are missed by every Qwen run at T=0 (django order_by and
+  readthedocs), both flaws that live in framework semantics, not in a
+  missing check.
+- ⚠️ The pipeline takes about 2 minutes per diff against 7 seconds for the
+  plain LLM; six sections in run 1 returned no parsable answer even after
+  re-asks (all four affected advisories were still caught).
+
+### Learning
+
+> **Bigger models did not make a better reviewer here; the pipeline did.**
+> Swapping Qwen 27B for larger cloud models bought at most two more
+> catches and 3 to 11 false alarms per run. The context the agents gather, and
+> the judge that filters their findings, mattered more than the model.
+
+---
+
 ## Cross-cutting lessons
 
 1. **Audit the evaluator before trusting the system.** Our first headline
@@ -505,6 +590,12 @@ Injection suite, mitigations on: attack success rate **0% (0/6)** (was
    real-world (CVE-linked) PRs, and add prompt-injection cases.
 
 ## Open problems (not fixed)
+
+Recorded on 13 Oct. Since then the section pipeline (round 8) replaced the
+per-endpoint review, and the Kev judge now filters findings before they are
+reported; the final evaluation's remaining failures are listed under
+[Round 11](#round-11-final-evaluation-67-nov) and in
+[`real-prs-eval.md`](real-prs-eval.md) (threats to validity).
 
 | Problem | Why not fixed yet | Idea |
 |---|---|---|

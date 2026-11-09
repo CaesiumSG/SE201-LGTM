@@ -1,0 +1,945 @@
+{
+  "id": "langflow_authz_vulnerable",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 75.64,
+  "case_seconds": 82.44,
+  "est_tokens": 891,
+  "findings": [
+    {
+      "finding_id": "authz:remove-ownership-check:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the ownership gate from delete_api_key (base crud.py:49-51 enforced `api_key.user_id != user_id`) and the route no longer passes the authenticated user's id. The new route (api_key.py:44-53) authenticates only via `get_current_active_user`, which (auth/utils.py:261-264) merely checks `is_active` and returns the user without any ownership or superuser check. The handler then calls `delete_api_key(db, api_key_id)` with only the user-controlled `api_key_id` and no owner verification, so any active user can delete any other user's API key by supplying its UUID. This is a newly introduced IDOR: the base code prevented it, the PR removes the check.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            49
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/api/v1/api_key.py",
+          "lines": [
+            44,
+            53
+          ],
+          "source": null,
+          "content": "@router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\nasync def delete_api_key_route(\n    api_key_id: UUID,\n    db: DbSession,\n):\n    try:\n        await delete_api_key(db, api_key_id)\n    except Exception as e:\n        raise HTTPException(status_code=400, detail=str(e)) from e\n    return {\"detail\": \"API Key deleted\"}",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/auth/utils.py",
+          "lines": [
+            261,
+            264
+          ],
+          "source": null,
+          "content": "async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\n    if not current_user.is_active:\n        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n    return current_user",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "lines": [
+            44,
+            52
+          ],
+          "source": null,
+          "content": "async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n    api_key = await session.get(ApiKey, api_key_id)\n    if api_key is None:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    if api_key.user_id != user_id:\n        msg = \"API Key not found\"\n        raise ValueError(msg)\n    await session.delete(api_key)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Restore the ownership check: keep the `user_id` parameter in delete_api_key and enforce `api_key.user_id == user_id` (or require superuser), and pass `current_user.id` from the route. Alternatively, add a superuser/ownership authorization check in the route before deleting.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8451,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "line": 50,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1171
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "delete_api_key function definition and callers in api_key crud"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "auth_utils get_current_active_user definition"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/api/v1/api_key.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "start_line": 40,
+            "end_line": 55,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/api/v1/api_key.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/__main__.py",
+            "start_line": 875,
+            "end_line": 900,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 255,
+            "end_line": 300,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/api/utils/core.py",
+            "start_line": 30,
+            "end_line": 45,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "delete_api_key",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/tests/unit/api/v1/test_api_key.py",
+            "start_line": 30,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/tests/unit/test_api_key.py",
+            "start_line": 35,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key deletion authorization ownership superuser privilege"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/__main__.py",
+            "start_line": 840,
+            "end_line": 895,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 180,
+            "end_line": 260,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 100,
+            "end_line": 180,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 48,
+            "end_line": 100,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "start_line": 52,
+            "end_line": 110,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "is_superuser",
+            "file_glob": "*.py",
+            "snapshot": "base"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"remove-ownership-check\",\n      \"title\": \"Remove per-user ownership check from delete_api_key and rely on route-level auth\",\n      \"rationale\": \"The CRUD function, the HTTP route, and the CLI caller are all changed together to drop the user_id ownership check, so the authorization concern (who may delete any API key) must be reviewed as one unit.\",\n      \"hunks\": [\n        \"src/backend/base/langflow/services/database/models/api_key/crud.py#0\",\n        \"src/backend/base/langflow/api/v1/api_key.py#0\",\n        \"src/backend/base/langflow/api/v1/api_key.py#1\",\n        \"src/backend/base/langflow/__main__.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"src/backend/base/langflow/services/auth/utils.py\", \"symbol\": \"get_current_active_user\", \"start_line\": 261, \"end_line\": 264, \"snapshot\": \"base\", \"why\": \"Route now depends on this; it only checks is_active, not superuser or ownership, so any active user can delete any key\"},\n        {\"path\": \"src/backend/base/langflow/api/utils/core.py\", \"symbol\": \"CurrentActiveUser\", \"start_line\": 37, \"end_line\": 37, \"snapshot\": \"base\", \"why\": \"Shows the prior CurrentActiveUser dependency also only enforced active-user auth, not ownership\"},\n        {\"path\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"symbol\": \"delete_api_key\", \"start_line\": 44, \"end_line\": 52, \"snapshot\": \"base\", \"why\": \"Base version enforced api_key.user_id == user_id; PR removes this ownership gate\"},\n        {\"path\": \"src/backend/base/langflow/__main__.py\", \"symbol\": \"aapi_key\", \"start_line\": 865, \"end_line\": 893, \"snapshot\": \"pr\", \"why\": \"CLI caller deletes the superuser's key without a user_id, relying on the removed check\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "remove-ownership-check",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 240,
+            "end_line": 290,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "start_line": 30,
+            "end_line": 60,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "API key deletion ownership authorization user can only delete their own API key"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/api/v1/api_key.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "start_line": 40,
+            "end_line": 55,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removes the ownership gate from delete_api_key (base crud.py:49-51 enforced `api_key.user_id != user_id`) and the route no longer passes the authenticated user's id. The new route (api_key.py:44-53) authenticates only via `get_current_active_user`, which (auth/utils.py:261-264) merely checks `is_active` and returns the user without any ownership or superuser check. The handler then calls `delete_api_key(db, api_key_id)` with only the user-controlled `api_key_id` and no owner verification, so any active user can delete any other user's API key by supplying its UUID. This is a newly introduced IDOR: the base code prevented it, the PR removes the check.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"lines\": [44, 49], \"content\": \"async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\\n    api_key = await session.get(ApiKey, api_key_id)\\n    if api_key is None:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    await session.delete(api_key)\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/api/v1/api_key.py\", \"lines\": [44, 53], \"content\": \"@router.delete(\\\"/{api_key_id}\\\", dependencies=[Depends(auth_utils.get_current_active_user)])\\nasync def delete_api_key_route(\\n    api_key_id: UUID,\\n    db: DbSession,\\n):\\n    try:\\n        await delete_api_key(db, api_key_id)\\n    except Exception as e:\\n        raise HTTPException(status_code=400, detail=str(e)) from e\\n    return {\\\"detail\\\": \\\"API Key deleted\\\"}\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/auth/utils.py\", \"lines\": [261, 264], \"content\": \"async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\\n    if not current_user.is_active:\\n        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\\\"Inactive user\\\")\\n    return current_user\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"lines\": [44, 52], \"content\": \"async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\\n    api_key = await session.get(ApiKey, api_key_id)\\n    if api_key is None:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    if api_key.user_id != user_id:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    await session.delete(api_key)\"}\n      ],\n      \"suggested_fix\": \"Restore the ownership check: keep the `user_id` parameter in delete_api_key and enforce `api_key.user_id == user_id` (or require superuser), and pass `current_user.id` from the route. Alternatively, add a superuser/ownership authorization check in the route before deleting.\",\n      \"file\": \"src/backend/base/langflow/api/v1/api_key.py\",\n      \"line\": 50\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:remove-ownership-check",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "start_line": 1,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/api/v1/api_key.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/base/langflow/services/auth/utils.py",
+            "start_line": 250,
+            "end_line": 275,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "delete_api_key",
+            "file_glob": "",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/backend/tests/unit/api/v1/test_api_key.py",
+            "start_line": 30,
+            "end_line": 60,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "Based on my analysis, this section does not build or execute any SQL from attacker-influenced text. The `delete_api_key` function uses SQLAlchemy's ORM `session.get(ApiKey, api_key_id)` and `session.delete(api_key)`, where `api_key_id` is a bound parameter (a UUID), not concatenated into SQL text. The `__main__.py` CLI code uses `select(...).where(...)` with bound parameters. There is no raw-SQL API, no string concatenation/formatting into SQL, and no unallowlisted identifier insertion.\n\nThe PR does introduce a privilege-escalation / broken-access-control issue (removing the `api_key.user_id == user_id` ownership check so any active user can delete any key), but that is CWE-639, not SQL injection (CWE-89). Since this review is scoped strictly to SQL injection, there is no candidate flaw here.\n\n{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "delete_api_key function definition and callers in api_key crud"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d status=ok truncated=true incomplete=true query=\"delete_api_key function definition and callers in api_key crud\"]\n**Flow (call path among the symbols you queried)**\n\n1. api_key (src/backend/base/langflow/__main__.py:852)\n   \u2193 calls\n2. aapi_key (src/backend/base/langflow/__main__.py:865)\n   \u2193 calls (when auth_settings.AUTO_LOGIN && superuser && api_key)\n3. delete_api_key (src/backend/base/langflow/services/database/models/api_key/crud.py:44)\n\n> Full source for these symbols is below \u2014 the call flow among them, followed by their bodies.\n**Exploration: delete_api_key function definition and callers in api_key crud**\n\nFound 55 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `delete_api_key` (src/backend/base/langflow/services/database/models/api_key/crud.py:44) \u2014 3 callers in `src/backend/base/langflow/__main__.py`, `src/backend/base/langflow/api/v1/api_key.py`; tested via callers: `src/backend/tests/unit/api/v1/test_mcp_utils.py`\n- `delete_api_key_route` (src/backend/base/langflow/api/v1/api_key.py:45) \u2014 1 caller in `src/backend/base/langflow/api/v1/api_key.py`; no tests found within 3 caller hops\n- `api` (src/frontend/src/controllers/API/api.tsx:25) \u2014 140 callers in `src/frontend/src/controllers/API/queries/folders/use-get-folders.ts`, `src/frontend/src/controllers/API/queries/messages/use-delete-sessions.ts`, `src/frontend/src/controllers/API/index.ts`, `src/frontend/src/controllers/API/queries/mcp/use-delete-mcp-server.ts` +84 more; tests: `src/frontend/src/controllers/API/queries/auth/__tests__/use-post-refresh-access.test.ts`, `src/frontend/src/hooks/__tests__/use-refresh-model-inputs.test.ts`\n- `delete` (src/backend/base/langflow/services/cache/base.py:50) \u2014 2 callers in `src/backend/base/langflow/services/session/service.py`, `src/backend/base/langflow/services/chat/service.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**calls:**\n- aapi_key \u2192 delete_api_key\n- delete_api_key_route \u2192 delete_api_key\n- aapi_key \u2192 initialize_services\n- aapi_key \u2192 get_settings_service\n- aapi_key \u2192 create_api_key\n- aapi_key \u2192 session_scope\n- aapi_key \u2192 exec\n- api_key \u2192 aapi_key\n- api_key \u2192 api_key_banner\n- api_key \u2192 configure\n- ... and 78 more\n\n**references:**\n- delete_api_key \u2192 ApiKey\n- DELETE /api_key/{api_key_id} \u2192 delete_api_key_route\n- created_api_key \u2192 ApiKey\n- s3_files_created_api_key \u2192 ApiKey\n- files_created_api_key \u2192 ApiKey\n- get_api_keys \u2192 ApiKey\n- user_two \u2192 ApiKey\n- _check_key_from_db \u2192 ApiKey\n- created_user_two_api_key \u2192 ApiKey\n- files_created_api_key \u2192 ApiKey\n- ... and 35 more\n\n**instantiates:**\n- aapi_key \u2192 ApiKeyCreate\n- created_api_key \u2192 ApiKey\n- s3_files_created_api_key \u2192 ApiKey\n- files_created_api_key \u2192 ApiKey\n- create_api_key \u2192 ApiKey\n- created_user_two_api_key \u2192 ApiKey\n- files_created_api_key \u2192 ApiKey\n\n**extends:**\n- ApiKey \u2192 ApiKeyBase\n- CacheService \u2192 Service\n- ThreadingInMemoryCache \u2192 CacheService\n- AsyncBaseCacheService \u2192 Service\n- AsyncInMemoryCache \u2192 AsyncBaseCacheService\n- ExternalAsyncBaseCacheService \u2192 AsyncBaseCacheService\n- AsyncDiskCache \u2192 AsyncBaseCacheService\n- TransactionService \u2192 Service\n- AuthService \u2192 Service\n- DatabaseVariableService \u2192 Service\n- ... and 7 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`src/backend/base/langflow/services/database/models/api_key/crud.py`** \u2014 delete_api_key(function), create_api_key(function), get_api_keys(function), _check_key_from_db(function)\n\n```python\n1\timport datetime\n2\timport os\n3\timport secrets\n4\tfrom typing import TYPE_CHECKING\n5\tfrom uuid import UUID\n6\t\n7\tfrom sqlalchemy.orm import selectinload\n8\tfrom sqlmodel import select\n9\tfrom sqlmodel.ext.asyncio.session import AsyncSession\n10\t\n11\tfrom langflow.services.database.models.api_key.model import ApiKey, ApiKeyCreate, ApiKeyRead, UnmaskedApiKeyRead\n12\tfrom langflow.services.database.models.user.model import User\n13\tfrom langflow.services.deps import get_settings_service\n14\t\n15\tif TYPE_CHECKING:\n16\t    from sqlmodel.sql.expression import SelectOfScalar\n17\t\n18\t\n19\tasync def get_api_keys(session: AsyncSession, user_id: UUID) -> list[ApiKeyRead]:\n20\t    query: SelectOfScalar = select(ApiKey).where(ApiKey.user_id == user_id)\n21\t    api_keys = (await session.exec(query)).all()\n22\t    return [ApiKeyRead.model_validate(api_key) for api_key in api_keys]\n23\t\n24\t\n25\tasync def create_api_key(session: AsyncSession, api_key_create: ApiKeyCreate, user_id: UUID) -> UnmaskedApiKeyRead:\n26\t    # Generate a random API key with 32 bytes of randomness\n27\t    generated_api_key = f\"sk-{secrets.token_urlsafe(32)}\"\n28\t\n29\t    api_key = ApiKey(\n30\t        api_key=generated_api_key,\n31\t        name=api_key_create.name,\n32\t        user_id=user_id,\n33\t        created_at=api_key_create.created_at or datetime.datetime.now(datetime.timezone.utc),\n34\t    )\n35\t\n36\t    session.add(api_key)\n37\t    await session.flush()\n38\t    await session.refresh(api_key)\n39\t    unmasked = UnmaskedApiKeyRead.model_validate(api_key, from_attributes=True)\n40\t    unmasked.api_key = generated_api_key\n41\t    return unmasked\n42\t\n43\t\n44\tasync def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n45\t    api_key = await session.get(ApiKey, api_key_id)\n46\t    if api_key is None:\n47\t        msg = \"API Key not found\"\n48\t        raise ValueError(msg)\n49\t    if api_key.user_id != user_id:\n50\t        msg = \"API Key not found\"\n51\t        raise ValueError(msg)\n52\t    await session.delete(api_key)\n53\t\n54\t\n55\tasync def check_key(se\n[TRUNCATED omitted_chars=18953]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "auth_utils get_current_active_user definition"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d status=ok truncated=true incomplete=true query=\"auth_utils get_current_active_user definition\"]\n**Exploration: auth_utils get_current_active_user definition**\n\nFound 49 symbols across 5 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get_current_active_user` (src/backend/base/langflow/services/auth/utils.py:261) \u2014 10 callers in `src/backend/base/langflow/api/log_router.py`, `src/backend/base/langflow/api/utils/core.py`, `src/backend/base/langflow/api/v1/chat.py`, `src/backend/base/langflow/api/v1/endpoints.py` +5 more; tested via callers: `src/backend/tests/unit/api/v2/test_registration.py`\n- `get` (src/frontend/src/utils/cookie-manager.ts:28) \u2014 11 callers in `src/frontend/src/stores/flowStore.ts`, `src/frontend/src/stores/alertStore.ts`, `src/frontend/src/stores/messagesStore.ts`; no tests found within 3 caller hops\n- `get_current_active_user_mcp` (src/backend/base/langflow/services/auth/utils.py:664) \u2014 2 callers in `src/backend/base/langflow/api/utils/core.py`; tested via callers: `src/backend/tests/unit/api/test_api_utils.py`, `src/backend/tests/unit/api/v1/test_mcp_projects.py` +1\n- `CurrentActiveUser` (src/backend/base/langflow/api/utils/core.py:37) \u2014 17 callers in `src/backend/base/langflow/api/build.py`, `src/backend/base/langflow/api/utils/__init__.py`, `src/backend/base/langflow/api/v1/api_key.py`, `src/backend/base/langflow/api/v1/chat.py` +13 more; tested via callers: `src/backend/tests/unit/api/test_api_utils.py`, `src/backend/tests/unit/api/v1/test_flows_path_validation.py` +2\n\n**Relationships**\n\n**references:**\n- CurrentActiveUser \u2192 get_current_active_user\n- getInstance \u2192 CookieManager\n- CurrentActiveMCPUser \u2192 get_current_active_user_mcp\n- get_current_user \u2192 api_key_header\n- get_current_user \u2192 api_key_query\n- get_current_user \u2192 oauth2_login\n- get_current_user_by_jwt \u2192 ACCESS_TOKEN_TYPE\n- api_key_security \u2192 User\n- api_key_security \u2192 api_key_header\n- api_key_security \u2192 AUTO_LOGIN_WARNING\n- ... and 38 more\n\n**calls:**\n- updateBuildStatus \u2192 get\n- addDataToFlowPool \u2192 get\n- addDismissedNodesLegacy \u2192 get\n- addNotificationToTempList \u2192 get\n- addNotificationToHistory \u2192 get\n- addDismissedNodes \u2192 get\n- updateFlowPool \u2192 get\n- handleBuildUpdate \u2192 get\n- revertBuiltStatusFromBuilding \u2192 get\n- addMessage \u2192 get\n- ... and 63 more\n\n**instantiates:**\n- getInstance \u2192 CookieManager\n- User \u2192 UserOptin\n- test_user \u2192 User\n- s3_files_active_user \u2192 User\n- files_active_user \u2192 User\n- test_teardown_superuser_removes_default_if_never_logged \u2192 User\n- deactivated_user \u2192 User\n- test_teardown_superuser_preserves_logged_in_default \u2192 User\n- active_user \u2192 User\n- mock_user \u2192 User\n- ... and 16 more\n\n**extends:**\n- CacheService \u2192 Service\n- ThreadingInMemoryCache \u2192 CacheService\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`src/backend/base/langflow/services/auth/utils.py`** \u2014 check_key(calls), get_user_by_username(calls), User(references), crud.py(imports), check_key(imports), get_user_by_username(imports), get_user_by_id(calls), get_user_by_id(imports), User(imports), AUTO_LOGIN_ERROR(variable), +27 more\n\n```python\n1\timport base64\n2\timport random\n3\timport warnings\n4\tfrom collections.abc import Coroutine\n5\tfrom datetime import datetime, timedelta, timezone\n6\tfrom typing import TYPE_CHECKING, Annotated, Final\n7\tfrom uuid import UUID\n8\t\n9\tfrom cryptography.fernet import Fernet\n10\tfrom fastapi import Depends, HTTPException, Request, Security, WebSocketException, status\n11\tfrom fastapi.security import APIKeyHeader, APIKeyQuery, OAuth2PasswordBearer\n12\tfrom jose import JWTError, jwt\n13\tfrom lfx.log.logger import logger\n14\tfrom lfx.services.deps import injectable_session_scope, session_scope\n\n... (gap) ...\n\n24\tfrom langflow.services.deps import get_settings_service\n25\t\n26\tif TYPE_CHECKING:\n27\t    from langflow.services.database.models.api_key.model import ApiKey\n28\t\n29\toauth2_login = OAuth2PasswordBearer(tokenUrl=\"api/v1/login\", auto_error=False)\n30\t\n31\tAPI_KEY_NAME = \"x-api-key\"\n32\t\n33\tapi_key_query = APIKeyQuery(name=API_KEY_NAME, scheme_name=\"API key query\", auto_error=False)\n34\tapi_key_header = APIKeyHeader(name=API_KEY_NAME, scheme_name=\"API key header\", auto_error=False)\n35\t\n36\tMINIMUM_KEY_LENGTH = 32\n37\tAUTO_LOGIN_WARNING = \"In v2.0, LANGFLOW_SKIP_AUTH_AUTO_LOGIN will be removed. Please update your authentication method.\"\n\n... (gap) ...\n\n46\t\n47\t\n48\t# Source: https://github.com/mrtolkien/fastapi_simple_security/blob/master/fastapi_simple_security/security_api_key.py\n49\tasync def api_key_security(\n50\t    query_param: Annotated[str, Security(api_key_query)],\n51\t    header_param: Annotated[str, Security(api_key_header)],\n52\t) -> UserRead | None:\n53\t    settings_service = get_settings_service()\n54\t    result: ApiKey | User | None\n55\t\n56\t    async with session_scope() as db:\n57\t        if settings_service.auth_settings.AUTO_LOGIN:\n58\t            # Get the first user\n59\t            if not settings_service.auth_settings.SUPERUSER:\n60\t                raise HTTPException(\n61\t                    status_code=status.HTTP_400_BAD_REQUEST,\n62\t                    detail=\"Missing first superuser credentials\",\n63\t                )\n64\t            if not query_param and not header_param:\n65\t                if settings_service.auth_settings.skip_auth_auto_login:\n66\t                    result = await get_user_by_username(db, settings_service.auth_settings.SUPERUSER)\n67\t                    logger.warning(AUTO_LOGIN_WARNING)\n68\t                    return UserRead.model_validate(resul\n[TRUNCATED omitted_chars=19319]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/api/v1/api_key.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+                  "start_line": 40,
+                  "end_line": 55,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/services/database/models/api_key/crud.py lines=40-55]\n40:     unmasked.api_key = generated_api_key\n41:     return unmasked\n42: \n43: \n44: async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n45:     api_key = await session.get(ApiKey, api_key_id)\n46:     if api_key is None:\n47:         msg = \"API Key not found\"\n48:         raise ValueError(msg)\n49:     await session.delete(api_key)\n50: \n51: \n52: async def check_key(session: AsyncSession, api_key: str) -> User | None:\n53:     \"\"\"Check if the API key is valid.\n54: \n55:     Validates API keys based on the LANGFLOW_API_KEY_SOURCE setting:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/api/v1/api_key.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/api/v1/api_key.py lines=1-60]\n1: from uuid import UUID\n2: \n3: from fastapi import APIRouter, Depends, HTTPException, Response\n4: \n5: from langflow.api.utils import CurrentActiveUser, DbSession\n6: from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse\n7: from langflow.services.auth import utils as auth_utils\n8: \n9: # Assuming you have these methods in your service layer\n10: from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key, get_api_keys\n11: from langflow.services.database.models.api_key.model import ApiKeyCreate, UnmaskedApiKeyRead\n12: from langflow.services.deps import get_settings_service\n13: \n14: router = APIRouter(tags=[\"APIKey\"], prefix=\"/api_key\")\n15: \n16: \n17: @router.get(\"/\")\n18: async def get_api_keys_route(\n19:     db: DbSession,\n20:     current_user: CurrentActiveUser,\n21: ) -> ApiKeysResponse:\n22:     try:\n23:         user_id = current_user.id\n24:         keys = await get_api_keys(db, user_id)\n25: \n26:         return ApiKeysResponse(total_count=len(keys), user_id=user_id, api_keys=keys)\n27:     except Exception as exc:\n28:         raise HTTPException(status_code=400, detail=str(exc)) from exc\n29: \n30: \n31: @router.post(\"/\")\n32: async def create_api_key_route(\n33:     req: ApiKeyCreate,\n34:     current_user: CurrentActiveUser,\n35:     db: DbSession,\n36: ) -> UnmaskedApiKeyRead:\n37:     try:\n38:         user_id = current_user.id\n39:         return await create_api_key(db, req, user_id=user_id)\n40:     except Exception as e:\n41:         raise HTTPException(status_code=400, detail=str(e)) from e\n42: \n43: \n44: @router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\n45: async def delete_api_key_route(\n46:     api_key_id: UUID,\n47:     db: DbSession,\n48: ):\n49:     try:\n50:         await delete_api_key(db, api_key_id)\n51:     except Exception as e:\n52:         raise HTTPException(status_code=400, detail=str(e)) from e\n53:     return {\"detail\": \"API Key deleted\"}\n54: \n55: \n56: @router.post(\"/store\")\n57: async def save_store_api_key(\n58:     api_key_request: ApiKeyCreateRequest,\n59:     response: Response,\n60:     current_user: CurrentActiveUser,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/__main__.py",
+                  "start_line": 875,
+                  "end_line": 900,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/__main__.py lines=875-900]\n875:             from langflow.services.database.models.user.model import User\n876: \n877:             stmt = select(User).where(User.username == DEFAULT_SUPERUSER)\n878:             superuser = (await session.exec(stmt)).first()\n879:             if not superuser:\n880:                 typer.echo(\n881:                     \"Default superuser not found. This command requires a superuser and AUTO_LOGIN to be enabled.\"\n882:                 )\n883:                 return None\n884:             from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key\n885:             from langflow.services.database.models.api_key.model import ApiKey, ApiKeyCreate\n886: \n887:             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)\n888:             api_key = (await session.exec(stmt)).first()\n889:             if api_key:\n890:                 await delete_api_key(session, api_key.id)\n891: \n892:             api_key_create = ApiKeyCreate(name=\"CLI\")\n893:             return await create_api_key(session, api_key_create, user_id=superuser.id)\n894: \n895:     unmasked_api_key = asyncio.run(aapi_key())\n896:     # Create a banner to display the API key and tell the user it won't be shown again\n897:     if unmasked_api_key:\n898:         api_key_banner(unmasked_api_key)\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 255,
+                  "end_line": 300,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=255-300]\n255: \n256:     raise WebSocketException(\n257:         code=status.WS_1008_POLICY_VIOLATION, reason=\"Missing or invalid credentials (cookie, token or API key).\"\n258:     )\n259: \n260: \n261: async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\n262:     if not current_user.is_active:\n263:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n264:     return current_user\n265: \n266: \n267: async def get_current_active_superuser(current_user: Annotated[User, Depends(get_current_user)]) -> User:\n268:     if not current_user.is_active:\n269:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n270:     if not current_user.is_superuser:\n271:         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=\"The user doesn't have enough privileges\")\n272:     return current_user\n273: \n274: \n275: async def get_webhook_user(flow_id: str, request: Request) -> UserRead:\n276:     \"\"\"Get the user for webhook execution.\n277: \n278:     When WEBHOOK_AUTH_ENABLE=false, allows execution as the flow owner without API key.\n279:     When WEBHOOK_AUTH_ENABLE=true, requires API key authentication and validates flow ownership.\n280: \n281:     Args:\n282:         flow_id: The ID of the flow being executed\n283:         request: The FastAPI request object\n284: \n285:     Returns:\n286:         UserRead: The user to execute the webhook as\n287: \n288:     Raises:\n289:         HTTPException: If authentication fails or user doesn't have permission\n290:     \"\"\"\n291:     settings_service = get_settings_service()\n292: \n293:     if not settings_service.auth_settings.WEBHOOK_AUTH_ENABLE:\n294:         # When webhook auth is disabled, run webhook as the flow owner without requiring API key\n295:         try:\n296:             flow_owner = await get_user_by_flow_id_or_endpoint_name(flow_id)\n297:             if flow_owner is None:\n298:                 raise HTTPException(status_code=404, detail=\"Flow not found\")\n299:             return flow_owner  # noqa: TRY300\n300:         except HTTPException:\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/api/utils/core.py",
+                  "start_line": 30,
+                  "end_line": 45,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/api/utils/core.py lines=30-45]\n30: \n31: \n32: API_WORDS = [\"api\", \"key\", \"token\"]\n33: \n34: MAX_PAGE_SIZE = 50\n35: MIN_PAGE_SIZE = 1\n36: \n37: CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]\n38: CurrentActiveMCPUser = Annotated[User, Depends(get_current_active_user_mcp)]\n39: # DbSession with auto-commit for write operations\n40: DbSession = Annotated[AsyncSession, Depends(injectable_session_scope)]\n41: # DbSessionReadOnly for read-only operations (no auto-commit, reduces lock contention)\n42: DbSessionReadOnly = Annotated[AsyncSession, Depends(injectable_session_scope_readonly)]\n43: \n44: # Message to raise if we're in an Astra cloud environment and a component or endpoint is not supported\n45: disable_endpoint_in_astra_cloud_msg = \"This endpoint is not supported in Astra cloud environment.\"\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "delete_api_key",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 pattern=\"delete_api_key\"]\nsrc/backend/base/langflow/__main__.py:884:            from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key\nsrc/backend/base/langflow/__main__.py:890:                await delete_api_key(session, api_key.id)\nsrc/backend/base/langflow/api/v1/api_key.py:10:from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key, get_api_keys\nsrc/backend/base/langflow/api/v1/api_key.py:45:async def delete_api_key_route(\nsrc/backend/base/langflow/api/v1/api_key.py:50:        await delete_api_key(db, api_key_id)\nsrc/backend/base/langflow/services/database/models/api_key/crud.py:44:async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\nsrc/backend/tests/unit/api/v1/test_api_key.py:38:async def test_delete_api_key_route(client: AsyncClient, logged_in_headers, active_user):\nsrc/backend/tests/unit/test_api_key.py:43:async def test_delete_api_key(client, logged_in_headers, api_key):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/tests/unit/api/v1/test_api_key.py",
+                  "start_line": 30,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/tests/unit/api/v1/test_api_key.py lines=30-60]\n30:     assert \"id\" in result, \"The dictionary must contain a key called 'id'\"\n31:     assert \"is_active\" in result, \"The dictionary must contain a key called 'is_active'\"\n32:     assert \"last_used_at\" in result, \"The dictionary must contain a key called 'last_used_at'\"\n33:     assert \"name\" in result, \"The dictionary must contain a key called 'name'\"\n34:     assert \"total_uses\" in result, \"The dictionary must contain a key called 'total_uses'\"\n35:     assert \"user_id\" in result, \"The dictionary must contain a key called 'user_id'\"\n36: \n37: \n38: async def test_delete_api_key_route(client: AsyncClient, logged_in_headers, active_user):\n39:     basic_case = {\n40:         \"name\": \"string\",\n41:         \"total_uses\": 0,\n42:         \"is_active\": True,\n43:         \"api_key\": \"string\",\n44:         \"user_id\": str(active_user.id),\n45:     }\n46:     response_ = await client.post(\"api/v1/api_key/\", json=basic_case, headers=logged_in_headers)\n47:     id_ = response_.json()[\"id\"]\n48: \n49:     response = await client.delete(f\"api/v1/api_key/{id_}\", headers=logged_in_headers)\n50:     result = response.json()\n51: \n52:     assert response.status_code == status.HTTP_200_OK\n53:     assert isinstance(result, dict), \"The result must be a dictionary\"\n54:     assert \"detail\" in result, \"The dictionary must contain a key called 'detail'\"\n55: \n56: \n57: async def test_save_store_api_key(client: AsyncClient, logged_in_headers):\n58:     basic_case = {\"api_key\": \"string\"}\n59:     response = await client.post(\"api/v1/api_key/store\", json=basic_case, headers=logged_in_headers)\n60:     result = response.json()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/tests/unit/test_api_key.py",
+                  "start_line": 35,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/tests/unit/test_api_key.py lines=35-49]\n35:     data = response.json()\n36:     assert \"name\" in data\n37:     assert data[\"name\"] == api_key_name\n38:     assert \"api_key\" in data\n39:     assert \"**\" not in data[\"api_key\"]\n40: \n41: \n42: @pytest.mark.usefixtures(\"active_user\")\n43: async def test_delete_api_key(client, logged_in_headers, api_key):\n44:     api_key_id = api_key[\"id\"]\n45:     response = await client.delete(f\"api/v1/api_key/{api_key_id}\", headers=logged_in_headers)\n46:     assert response.status_code == 200\n47:     data = response.json()\n48:     assert data[\"detail\"] == \"API Key deleted\"\n49:     # Optionally, add a follow-up check to ensure that the key is actually removed from the database\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "API key deletion authorization ownership superuser privilege"
+                },
+                "result": "[SECURITY.md:110-142] (relevance 0.37)\nFor more information, see [API keys and authentication](https://docs.langflow.org/api-keys-and-authentication).\n\n## Security Configuration Guidelines\n\n### Superuser Creation Security\n\nThe `langflow superuser` CLI command can present a privilege escalation risk if not properly secured.\n\n#### Security Measures\n\n1. **Authentication Required in Production**\n   - When `LANGFLOW_AUTO_LOGIN=false`, superuser creation requires authentication\n   - Use `--auth-token` parameter with a valid superuser API key or JWT token\n\n2. **Disable CLI Superuser Creation**\n   - Set `LANGFLOW_ENABLE_SUPERUSER_CLI=false` to disable the command entirely\n   - Strongly recommended for production environments\n\n3. **Secure AUTO_LOGIN Setting**\n   - Default is `true` for <=1.5. This may change in a future release.\n   - When `true`, creates default superuser `langflow/langflow` - **ONLY USE IN DEVELOPMENT**\n\n#### Production Security Configuration\n\n```bash\n# Recommended production settings\nexport LANGFLOW_AUTO_LOGIN=false\nexport LANGFLOW_ENABLE_SUPERUSER_CLI=false\nexport LANGFLOW_SUPERUSER=\"<your-superuser-username>\"\nexport LANGFLOW_SUPERUSER_PASSWORD=\"<your-superuser-password>\"\nexport LANGFLOW_DATABASE_URL=\"<your-production-database-url>\" # e.g. \"postgresql+psycopg://langflow:secure_pass@db.internal:5432/langflow\"\nexport LANGFLOW_SECRET_KEY=\"your-strong-random-secret-key\"\n```\n\n---\n\n[SECURITY.md:89-118] (relevance 0.29)\nThis means an attacker could send malicious code to the endpoint and have it executed on the server\u2014leading to full system compromise, including data theft, remote shell access, or lateral movement within the network.\n\n**CVE**: [CVE-2025-3248](https://nvd.nist.gov/vuln/detail/CVE-2025-3248)\n**Fixed in**: Langflow >= 1.3.0\n\n### Privilege Escalation via CLI Superuser Creation (Fixed in 1.5.1)\n\nA privilege escalation vulnerability exists in Langflow containers where an authenticated user with RCE access can invoke the internal CLI command `langflow superuser` to create a new administrative user. This results in full superuser access, even if the user initially registered through the UI as a regular (non-admin) account.\n\n**CVE**: [CVE-2025-57760](https://github.com/langflow-ai/langflow/security/advisories/GHSA-4gv9-mp8m-592r)\n**Fixed in**: Langflow >= 1.5.1\n\n### No API key required if running Langflow with `LANGFLOW_AUTO_LOGIN=true` and `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true`\n\nIn Langflow versions earlier than 1.5, if `LANGFLOW_AUTO_LOGIN=true`, then Langflow automatically logs users in as a superuser without requiring authentication. In this case, API requests don't require a Langflow API key.\n\nIn Langflow version 1.5, a Langflow API key is required to authenticate requests.\nSetting `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` and `LANGFLOW_AUTO_LOGIN=true` skips authentication for API requests. However, the `LANGFLOW_SKIP_AUTH_AUTO_LOGIN` option will be removed in v1.6.\n\n`LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` is the default behavior, so users do not need to change existing workflows in 1.5. To update your workflows to require authentication, set `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=false`.\n\nFor more information, see [API keys and authentication](https://docs.langflow.org/api-keys-and-authentication).\n\n## Security Configuration Guidelines\n\n### Superuser Creation Security\n\nThe `langflow superuser` CLI command can present a privilege escalation risk if not properly secured.\n\n#### Security Measures\n\n---\n\n[scripts/aws/README.ja.md:43-57] (relevance 0.21)\nLangflowAppStack.frontendURLXXXXXX = https://XXXXXXXXXXX.cloudfront.net\n   ```\n1. \u30b5\u30a4\u30f3\u30a4\u30f3\u753b\u9762\u3067\u30e6\u30fc\u30b6\u30fc\u540d\u3068\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u5165\u529b\u3057\u307e\u3059\u3002`.env`\u30d5\u30a1\u30a4\u30eb\u3067\u30e6\u30fc\u30b6\u30fc\u540d\u3068\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u8a2d\u5b9a\u3057\u3066\u3044\u306a\u3044\u5834\u5408\u3001\u30e6\u30fc\u30b6\u30fc\u540d\u306f`admin`\u3001\u30d1\u30b9\u30ef\u30fc\u30c9\u306f`123456`\u3067\u8a2d\u5b9a\u3055\u308c\u307e\u3059\u3002\n   ![make-cloud9](./img/langflow-signin.png)\n\n# \u74b0\u5883\u306e\u524a\u9664\n\n1. `Cloud9` \u3067\u4ee5\u4e0b\u306e\u30b3\u30de\u30f3\u30c9\u3092\u5b9f\u884c\u3057\u307e\u3059\u3002\n\n   ```shell\n   bash delete-resources.sh\n   ```\n\n1. [AWS CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/getting-started)\u3092\u958b\u304d\u3001`aws-cloud9-cloud9-for-prototyping-XXXX` \u3092\u9078\u629e\u3057\u3066\u524a\u9664\u3057\u307e\u3059\u3002\n   ![delete-cfn](./img/langflow-cfn.png)\n\n---\n\n[SECURITY.md:63-89] (relevance 0.20)\n- Authenticated arbitrary file write (within server permission scope): Risk of corrupting configuration/log/task files, disrupting application behavior, and tampering with files read by other components\n- Both absolute and relative paths are allowed, enabling base directory traversal\n- Risk of overwriting system files increases in environments with root privileges or weak mount/permission settings\n- File content is limited to Flow JSON, but impact is severe if the target file is parsed by a JSON parser or subject to subsequent processing\n\n**CVE**: [CVE-2025-68478](https://nvd.nist.gov/vuln/detail/CVE-2025-68478)\n**GitHub Advisory**: [GHSA-f43r-cc68-gpx4](https://github.com/langflow-ai/langflow/security/advisories/GHSA-f43r-cc68-gpx4)\n**Fixed in**: Langflow >= 1.7.1\n\n### Environment Variable Loading Bug (Fixed in 1.6.4)\n\nLangflow versions `1.6.0` through `1.6.3` have a critical bug where environment variables from `.env` files are not being read. This affects all deployments using environment variables for configuration, including security settings.\n\n**Potential security impact:**\n- Environment variables from `.env` files are not read.\n- Security configurations like `AUTO_LOGIN=false` may not be applied, potentially allowing users to log in as the default superuser.\n- Database credentials, API keys, and other sensitive configuration may not be loaded.\n\n**DO NOT** upgrade to Langflow versions `1.6.0` through `1.6.3` if you use `.env` files for configuration. Instead, upgrade to version `1.6.4`, which includes a fix for this bug.\n\n**Fixed in**: Langflow >= 1.6.4\n\n### Code Execution Vulnerability (Fixed in 1.3.0)\n\nLangflow allows users to define and run **custom code components** through endpoints like `/api/v1/validate/code`. In versions < 1.3.0, this endpoint did not enforce authentication or proper sandboxing, allowing **unauthenticated arbitrary code execution**.\n\nThis means an attacker could send malicious code to the endpoint and have it executed on the server\u2014leading to full system compromise, including data theft, remote shell access, or lateral movement within the network.\n\n---\n\n[SECURITY.md:39-64] (relevance 0.18)\n- Details about Langflow employees, contractors, or partners\n\nWe appreciate your efforts in helping us maintain a secure platform and look forward to working together to resolve any issues responsibly.\n\n## Known Vulnerabilities\n\n### Server-Side Request Forgery (SSRF) in API Request Component (Fixed in 1.7.1)\n\nLangflow's [API Request component](https://docs.langflow.org/api-request) allows arbitrary HTTP requests within a flow. In versions < 1.7.1, this component did not block private IP ranges (`127.0.0.1`, `10/172/192` ranges) or cloud metadata endpoints (`169.254.169.254`), enabling Server-Side Request Forgery (SSRF) attacks.\n\n**Potential security impact:**\n- Attackers with API key access can access internal administrative endpoints, metadata services, and internal databases/services\n- Foothold for attacking internal services by abusing inter-service trust\n- Non-blind SSRF: Response bodies are returned to the client, enabling immediate data exfiltration\n\n**CVE**: [CVE-2025-68477](https://nvd.nist.gov/vuln/detail/CVE-2025-68477)\n**GitHub Advisory**: [GHSA-5993-7p27-66g5](https://github.com/langflow-ai/langflow/security/advisories/GHSA-5993-7p27-66g5)\n**Fixed in**: Langflow >= 1.7.1\n\n### External Control of File Name or Path (Fixed in 1.7.1)\n\nWhen creating a flow through the [`/api/v1/flows/`](https://docs.langflow.org/api-flows) endpoint, if an arbitrary path is specified in the request body's `fs_path`, the server serializes the flow object into JSON and creates/overwrites a file at that path. In versions < 1.7.1, there is no path restriction, normalization, or allowed directory enforcement, so absolute paths (e.g., `/etc/poc.txt`) are interpreted as-is.\n\n**Potential security impact:**\n- Authenticated arbitrary file write (with"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/__main__.py",
+                  "start_line": 840,
+                  "end_line": 895,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/__main__.py lines=840-895]\n840:     ),\n841: ) -> None:\n842:     \"\"\"Run or test migrations.\"\"\"\n843:     if fix and not typer.confirm(\n844:         \"This will delete all data necessary to fix migrations. Are you sure you want to continue?\"\n845:     ):\n846:         raise typer.Abort\n847: \n848:     asyncio.run(_migration(test=test, fix=fix))\n849: \n850: \n851: @app.command()\n852: def api_key(\n853:     log_level: str = typer.Option(\"error\", help=\"Logging level.\"),\n854: ) -> None:\n855:     \"\"\"Creates an API key for the default superuser if AUTO_LOGIN is enabled.\n856: \n857:     Args:\n858:         log_level (str, optional): Logging level. Defaults to \"error\".\n859: \n860:     Returns:\n861:         None\n862:     \"\"\"\n863:     configure(log_level=log_level)\n864: \n865:     async def aapi_key():\n866:         await initialize_services()\n867:         settings_service = get_settings_service()\n868:         auth_settings = settings_service.auth_settings\n869:         if not auth_settings.AUTO_LOGIN:\n870:             # TODO: Allow non-auto-login users to create API keys via CLI\n871:             typer.echo(\"Auto login is disabled. API keys cannot be created through the CLI.\")\n872:             return None\n873: \n874:         async with session_scope() as session:\n875:             from langflow.services.database.models.user.model import User\n876: \n877:             stmt = select(User).where(User.username == DEFAULT_SUPERUSER)\n878:             superuser = (await session.exec(stmt)).first()\n879:             if not superuser:\n880:                 typer.echo(\n881:                     \"Default superuser not found. This command requires a superuser and AUTO_LOGIN to be enabled.\"\n882:                 )\n883:                 return None\n884:             from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key\n885:             from langflow.services.database.models.api_key.model import ApiKey, ApiKeyCreate\n886: \n887:             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)\n888:             api_key = (await session.exec(stmt)).first()\n889:             if api_key:\n890:                 await delete_api_key(session, api_key.id)\n891: \n892:             api_key_create = ApiKeyCreate(name=\"CLI\")\n893:             return await create_api_key(session, api_key_create, user_id=superuser.id)\n894: \n895:     unmasked_api_key = asyncio.run(aapi_key())\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 180,
+                  "end_line": 260,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=180-260]\n180:             # Careful not to leak sensitive information\n181:             detail=\"Authentication failure: Verify authentication settings.\",\n182:             headers={\"WWW-Authenticate\": \"Bearer\"},\n183:         )\n184: \n185:     try:\n186:         with warnings.catch_warnings():\n187:             warnings.simplefilter(\"ignore\")\n188:             payload = jwt.decode(token, secret_key, algorithms=[settings_service.auth_settings.ALGORITHM])\n189:         user_id: UUID = payload.get(\"sub\")  # type: ignore[assignment]\n190:         token_type: str = payload.get(\"type\")  # type: ignore[assignment]\n191: \n192:         if token_type != ACCESS_TOKEN_TYPE:\n193:             logger.error(f\"Token type is invalid: {token_type}. Expected: {ACCESS_TOKEN_TYPE}.\")\n194:             raise HTTPException(\n195:                 status_code=status.HTTP_401_UNAUTHORIZED,\n196:                 detail=\"Token is invalid.\",\n197:                 headers={\"WWW-Authenticate\": \"Bearer\"},\n198:             )\n199:         if expires := payload.get(\"exp\", None):\n200:             expires_datetime = datetime.fromtimestamp(expires, timezone.utc)\n201:             if datetime.now(timezone.utc) > expires_datetime:\n202:                 logger.info(\"Token expired for user\")\n203:                 raise HTTPException(\n204:                     status_code=status.HTTP_401_UNAUTHORIZED,\n205:                     detail=\"Token has expired.\",\n206:                     headers={\"WWW-Authenticate\": \"Bearer\"},\n207:                 )\n208: \n209:         if user_id is None or token_type is None:\n210:             logger.info(f\"Invalid token payload. Token type: {token_type}\")\n211:             raise HTTPException(\n212:                 status_code=status.HTTP_401_UNAUTHORIZED,\n213:                 detail=\"Invalid token details.\",\n214:                 headers={\"WWW-Authenticate\": \"Bearer\"},\n215:             )\n216:     except JWTError as e:\n217:         logger.debug(\"JWT validation failed: Invalid token format or signature\")\n218:         raise HTTPException(\n219:             status_code=status.HTTP_401_UNAUTHORIZED,\n220:             detail=\"Could not validate credentials\",\n221:             headers={\"WWW-Authenticate\": \"Bearer\"},\n222:         ) from e\n223: \n224:     user = await get_user_by_id(db, user_id)\n225:     if user is None or not user.is_active:\n226:         logger.info(\"User not found or inactive.\")\n227:         raise HTTPException(\n228:             status_code=status.HTTP_401_UNAUTHORIZED,\n229:             detail=\"User not found or is inactive.\",\n230:             headers={\"WWW-Authenticate\": \"Bearer\"},\n231:         )\n232:     return user\n233: \n234: \n235: async def get_current_user_for_websocket(\n236:     websocket: WebSocket,\n237:     db: AsyncSession,\n238: ) -> User | UserRead:\n239:     token = websocket.cookies.get(\"access_token_lf\") or websocket.query_params.get(\"token\")\n240:     if token:\n241:         user = await get_current_user_by_jwt(token, db)\n242:         if user:\n243:             return user\n244: \n245:     api_key = (\n246:         websocket.query_params.get(\"x-api-key\")\n247:         or websocket.query_params.get(\"api_key\")\n248:         or websocket.headers.get(\"x-api-key\")\n249:         or websocket.headers.get(\"api_key\")\n250:     )\n251:     if api_key:\n252:         user_read = await ws_api_key_security(api_key)\n253:         if user_read:\n254:             return user_read\n255: \n256:     raise WebSocketException(\n257:         code=status.WS_1008_POLICY_VIOLATION, reason=\"Missing or invalid credentials (cookie, token or API key).\"\n258:     )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 100,
+                  "end_line": 180,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=100-180]\n100:     settings = get_settings_service()\n101:     async with session_scope() as db:\n102:         if settings.auth_settings.AUTO_LOGIN:\n103:             if not settings.auth_settings.SUPERUSER:\n104:                 # internal server misconfiguration\n105:                 raise WebSocketException(\n106:                     code=status.WS_1011_INTERNAL_ERROR,\n107:                     reason=\"Missing first superuser credentials\",\n108:                 )\n109:             if not api_key:\n110:                 if settings.auth_settings.skip_auth_auto_login:\n111:                     result = await get_user_by_username(db, settings.auth_settings.SUPERUSER)\n112:                     logger.warning(AUTO_LOGIN_WARNING)\n113:                 else:\n114:                     raise WebSocketException(\n115:                         code=status.WS_1008_POLICY_VIOLATION,\n116:                         reason=AUTO_LOGIN_ERROR,\n117:                     )\n118:             else:\n119:                 result = await check_key(db, api_key)\n120: \n121:         # normal path: must provide an API key\n122:         else:\n123:             if not api_key:\n124:                 raise WebSocketException(\n125:                     code=status.WS_1008_POLICY_VIOLATION,\n126:                     reason=\"An API key must be passed as query or header\",\n127:                 )\n128:             result = await check_key(db, api_key)\n129: \n130:         # key was invalid or missing\n131:         if not result:\n132:             raise WebSocketException(\n133:                 code=status.WS_1008_POLICY_VIOLATION,\n134:                 reason=\"Invalid or missing API key\",\n135:             )\n136: \n137:         # convert SQL-model User \u2192 pydantic UserRead\n138:         if isinstance(result, User):\n139:             return UserRead.model_validate(result, from_attributes=True)\n140: \n141:     # fallback: something unexpected happened\n142:     raise WebSocketException(\n143:         code=status.WS_1011_INTERNAL_ERROR,\n144:         reason=\"Authentication subsystem error\",\n145:     )\n146: \n147: \n148: async def get_current_user(\n149:     token: Annotated[str, Security(oauth2_login)],\n150:     query_param: Annotated[str, Security(api_key_query)],\n151:     header_param: Annotated[str, Security(api_key_header)],\n152:     db: Annotated[AsyncSession, Depends(injectable_session_scope)],\n153: ) -> User:\n154:     if token:\n155:         return await get_current_user_by_jwt(token, db)\n156:     user = await api_key_security(query_param, header_param)\n157:     if user:\n158:         return user\n159: \n160:     raise HTTPException(\n161:         status_code=status.HTTP_403_FORBIDDEN,\n162:         detail=\"Invalid or missing API key\",\n163:     )\n164: \n165: \n166: async def get_current_user_by_jwt(\n167:     token: str,\n168:     db: AsyncSession,\n169: ) -> User:\n170:     settings_service = get_settings_service()\n171: \n172:     if isinstance(token, Coroutine):\n173:         token = await token\n174: \n175:     secret_key = settings_service.auth_settings.SECRET_KEY.get_secret_value()\n176:     if secret_key is None:\n177:         logger.error(\"Secret key is not set in settings.\")\n178:         raise HTTPException(\n179:             status_code=status.HTTP_401_UNAUTHORIZED,\n180:             # Careful not to leak sensitive information\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 48,
+                  "end_line": 100,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=48-100]\n48: # Source: https://github.com/mrtolkien/fastapi_simple_security/blob/master/fastapi_simple_security/security_api_key.py\n49: async def api_key_security(\n50:     query_param: Annotated[str, Security(api_key_query)],\n51:     header_param: Annotated[str, Security(api_key_header)],\n52: ) -> UserRead | None:\n53:     settings_service = get_settings_service()\n54:     result: ApiKey | User | None\n55: \n56:     async with session_scope() as db:\n57:         if settings_service.auth_settings.AUTO_LOGIN:\n58:             # Get the first user\n59:             if not settings_service.auth_settings.SUPERUSER:\n60:                 raise HTTPException(\n61:                     status_code=status.HTTP_400_BAD_REQUEST,\n62:                     detail=\"Missing first superuser credentials\",\n63:                 )\n64:             if not query_param and not header_param:\n65:                 if settings_service.auth_settings.skip_auth_auto_login:\n66:                     result = await get_user_by_username(db, settings_service.auth_settings.SUPERUSER)\n67:                     logger.warning(AUTO_LOGIN_WARNING)\n68:                     return UserRead.model_validate(result, from_attributes=True)\n69:                 raise HTTPException(\n70:                     status_code=status.HTTP_403_FORBIDDEN,\n71:                     detail=AUTO_LOGIN_ERROR,\n72:                 )\n73:             result = await check_key(db, query_param or header_param)\n74: \n75:         elif not query_param and not header_param:\n76:             raise HTTPException(\n77:                 status_code=status.HTTP_403_FORBIDDEN,\n78:                 detail=\"An API key must be passed as query or header\",\n79:             )\n80: \n81:         else:\n82:             result = await check_key(db, query_param or header_param)\n83: \n84:         if not result:\n85:             raise HTTPException(\n86:                 status_code=status.HTTP_403_FORBIDDEN,\n87:                 detail=\"Invalid or missing API key\",\n88:             )\n89: \n90:         if isinstance(result, User):\n91:             return UserRead.model_validate(result, from_attributes=True)\n92: \n93:     msg = \"Invalid result type\"\n94:     raise ValueError(msg)\n95: \n96: \n97: async def ws_api_key_security(\n98:     api_key: str | None,\n99: ) -> UserRead:\n100:     settings = get_settings_service()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+                  "start_line": 52,
+                  "end_line": 110,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/database/models/api_key/crud.py lines=52-109]\n52:     await session.delete(api_key)\n53: \n54: \n55: async def check_key(session: AsyncSession, api_key: str) -> User | None:\n56:     \"\"\"Check if the API key is valid.\n57: \n58:     Validates API keys based on the LANGFLOW_API_KEY_SOURCE setting:\n59:     - 'db': Validates against database-stored API keys (default)\n60:     - 'env': Validates against the LANGFLOW_API_KEY environment variable,\n61:              falls back to database if env validation fails\n62:     \"\"\"\n63:     settings_service = get_settings_service()\n64:     api_key_source = settings_service.auth_settings.API_KEY_SOURCE\n65: \n66:     if api_key_source == \"env\":\n67:         user = await _check_key_from_env(session, api_key, settings_service)\n68:         if user is not None:\n69:             return user\n70:         # Fallback to database if env validation fails\n71:     return await _check_key_from_db(session, api_key, settings_service)\n72: \n73: \n74: async def _check_key_from_db(session: AsyncSession, api_key: str, settings_service) -> User | None:\n75:     \"\"\"Validate API key against the database.\"\"\"\n76:     query: SelectOfScalar = select(ApiKey).options(selectinload(ApiKey.user)).where(ApiKey.api_key == api_key)\n77:     api_key_object: ApiKey | None = (await session.exec(query)).first()\n78:     if api_key_object is not None:\n79:         if settings_service.settings.disable_track_apikey_usage is not True:\n80:             api_key_object.total_uses += 1\n81:             api_key_object.last_used_at = datetime.datetime.now(datetime.timezone.utc)\n82:             session.add(api_key_object)\n83:             await session.flush()\n84:         return api_key_object.user\n85:     return None\n86: \n87: \n88: async def _check_key_from_env(session: AsyncSession, api_key: str, settings_service) -> User | None:\n89:     \"\"\"Validate API key against the environment variable.\n90: \n91:     When API_KEY_SOURCE='env', the x-api-key header is validated against\n92:     LANGFLOW_API_KEY environment variable. If valid, returns the superuser for authorization.\n93:     \"\"\"\n94:     from langflow.services.database.models.user.crud import get_user_by_username\n95: \n96:     env_api_key = os.getenv(\"LANGFLOW_API_KEY\")\n97:     if not env_api_key:\n98:         return None\n99: \n100:     # Compare the provided API key with the environment variable\n101:     if api_key != env_api_key:\n102:         return None\n103: \n104:     # Return the superuser for authorization purposes\n105:     superuser_username = settings_service.auth_settings.SUPERUSER\n106:     user = await get_user_by_username(session, superuser_username)\n107:     if user and user.is_active:\n108:         return user\n109:     return None\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "is_superuser",
+                  "file_glob": "*.py",
+                  "snapshot": "base"
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"remove-ownership-check\",\n      \"title\": \"Remove per-user ownership check from delete_api_key and rely on route-level auth\",\n      \"rationale\": \"The CRUD function, the HTTP route, and the CLI caller are all changed together to drop the user_id ownership check, so the authorization concern (who may delete any API key) must be reviewed as one unit.\",\n      \"hunks\": [\n        \"src/backend/base/langflow/services/database/models/api_key/crud.py#0\",\n        \"src/backend/base/langflow/api/v1/api_key.py#0\",\n        \"src/backend/base/langflow/api/v1/api_key.py#1\",\n        \"src/backend/base/langflow/__main__.py#0\"\n      ],\n      \"context\": [\n        {\"path\": \"src/backend/base/langflow/services/auth/utils.py\", \"symbol\": \"get_current_active_user\", \"start_line\": 261, \"end_line\": 264, \"snapshot\": \"base\", \"why\": \"Route now depends on this; it only checks is_active, not superuser or ownership, so any active user can delete any key\"},\n        {\"path\": \"src/backend/base/langflow/api/utils/core.py\", \"symbol\": \"CurrentActiveUser\", \"start_line\": 37, \"end_line\": 37, \"snapshot\": \"base\", \"why\": \"Shows the prior CurrentActiveUser dependency also only enforced active-user auth, not ownership\"},\n        {\"path\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"symbol\": \"delete_api_key\", \"start_line\": 44, \"end_line\": 52, \"snapshot\": \"base\", \"why\": \"Base version enforced api_key.user_id == user_id; PR removes this ownership gate\"},\n        {\"path\": \"src/backend/base/langflow/__main__.py\", \"symbol\": \"aapi_key\", \"start_line\": 865, \"end_line\": 893, \"snapshot\": \"pr\", \"why\": \"CLI caller deletes the superuser's key without a user_id, relying on the removed check\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "remove-ownership-check",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 240,
+                  "end_line": 290,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=240-290]\n240:     if token:\n241:         user = await get_current_user_by_jwt(token, db)\n242:         if user:\n243:             return user\n244: \n245:     api_key = (\n246:         websocket.query_params.get(\"x-api-key\")\n247:         or websocket.query_params.get(\"api_key\")\n248:         or websocket.headers.get(\"x-api-key\")\n249:         or websocket.headers.get(\"api_key\")\n250:     )\n251:     if api_key:\n252:         user_read = await ws_api_key_security(api_key)\n253:         if user_read:\n254:             return user_read\n255: \n256:     raise WebSocketException(\n257:         code=status.WS_1008_POLICY_VIOLATION, reason=\"Missing or invalid credentials (cookie, token or API key).\"\n258:     )\n259: \n260: \n261: async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\n262:     if not current_user.is_active:\n263:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n264:     return current_user\n265: \n266: \n267: async def get_current_active_superuser(current_user: Annotated[User, Depends(get_current_user)]) -> User:\n268:     if not current_user.is_active:\n269:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n270:     if not current_user.is_superuser:\n271:         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=\"The user doesn't have enough privileges\")\n272:     return current_user\n273: \n274: \n275: async def get_webhook_user(flow_id: str, request: Request) -> UserRead:\n276:     \"\"\"Get the user for webhook execution.\n277: \n278:     When WEBHOOK_AUTH_ENABLE=false, allows execution as the flow owner without API key.\n279:     When WEBHOOK_AUTH_ENABLE=true, requires API key authentication and validates flow ownership.\n280: \n281:     Args:\n282:         flow_id: The ID of the flow being executed\n283:         request: The FastAPI request object\n284: \n285:     Returns:\n286:         UserRead: The user to execute the webhook as\n287: \n288:     Raises:\n289:         HTTPException: If authentication fails or user doesn't have permission\n290:     \"\"\"\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+                  "start_line": 30,
+                  "end_line": 60,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/database/models/api_key/crud.py lines=30-60]\n30:         api_key=generated_api_key,\n31:         name=api_key_create.name,\n32:         user_id=user_id,\n33:         created_at=api_key_create.created_at or datetime.datetime.now(datetime.timezone.utc),\n34:     )\n35: \n36:     session.add(api_key)\n37:     await session.flush()\n38:     await session.refresh(api_key)\n39:     unmasked = UnmaskedApiKeyRead.model_validate(api_key, from_attributes=True)\n40:     unmasked.api_key = generated_api_key\n41:     return unmasked\n42: \n43: \n44: async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\n45:     api_key = await session.get(ApiKey, api_key_id)\n46:     if api_key is None:\n47:         msg = \"API Key not found\"\n48:         raise ValueError(msg)\n49:     if api_key.user_id != user_id:\n50:         msg = \"API Key not found\"\n51:         raise ValueError(msg)\n52:     await session.delete(api_key)\n53: \n54: \n55: async def check_key(session: AsyncSession, api_key: str) -> User | None:\n56:     \"\"\"Check if the API key is valid.\n57: \n58:     Validates API keys based on the LANGFLOW_API_KEY_SOURCE setting:\n59:     - 'db': Validates against database-stored API keys (default)\n60:     - 'env': Validates against the LANGFLOW_API_KEY environment variable,\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "API key deletion ownership authorization user can only delete their own API key"
+                },
+                "result": "[SECURITY.md:110-142] (relevance 0.27)\nFor more information, see [API keys and authentication](https://docs.langflow.org/api-keys-and-authentication).\n\n## Security Configuration Guidelines\n\n### Superuser Creation Security\n\nThe `langflow superuser` CLI command can present a privilege escalation risk if not properly secured.\n\n#### Security Measures\n\n1. **Authentication Required in Production**\n   - When `LANGFLOW_AUTO_LOGIN=false`, superuser creation requires authentication\n   - Use `--auth-token` parameter with a valid superuser API key or JWT token\n\n2. **Disable CLI Superuser Creation**\n   - Set `LANGFLOW_ENABLE_SUPERUSER_CLI=false` to disable the command entirely\n   - Strongly recommended for production environments\n\n3. **Secure AUTO_LOGIN Setting**\n   - Default is `true` for <=1.5. This may change in a future release.\n   - When `true`, creates default superuser `langflow/langflow` - **ONLY USE IN DEVELOPMENT**\n\n#### Production Security Configuration\n\n```bash\n# Recommended production settings\nexport LANGFLOW_AUTO_LOGIN=false\nexport LANGFLOW_ENABLE_SUPERUSER_CLI=false\nexport LANGFLOW_SUPERUSER=\"<your-superuser-username>\"\nexport LANGFLOW_SUPERUSER_PASSWORD=\"<your-superuser-password>\"\nexport LANGFLOW_DATABASE_URL=\"<your-production-database-url>\" # e.g. \"postgresql+psycopg://langflow:secure_pass@db.internal:5432/langflow\"\nexport LANGFLOW_SECRET_KEY=\"your-strong-random-secret-key\"\n```\n\n---\n\n[SECURITY.md:89-118] (relevance 0.20)\nThis means an attacker could send malicious code to the endpoint and have it executed on the server\u2014leading to full system compromise, including data theft, remote shell access, or lateral movement within the network.\n\n**CVE**: [CVE-2025-3248](https://nvd.nist.gov/vuln/detail/CVE-2025-3248)\n**Fixed in**: Langflow >= 1.3.0\n\n### Privilege Escalation via CLI Superuser Creation (Fixed in 1.5.1)\n\nA privilege escalation vulnerability exists in Langflow containers where an authenticated user with RCE access can invoke the internal CLI command `langflow superuser` to create a new administrative user. This results in full superuser access, even if the user initially registered through the UI as a regular (non-admin) account.\n\n**CVE**: [CVE-2025-57760](https://github.com/langflow-ai/langflow/security/advisories/GHSA-4gv9-mp8m-592r)\n**Fixed in**: Langflow >= 1.5.1\n\n### No API key required if running Langflow with `LANGFLOW_AUTO_LOGIN=true` and `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true`\n\nIn Langflow versions earlier than 1.5, if `LANGFLOW_AUTO_LOGIN=true`, then Langflow automatically logs users in as a superuser without requiring authentication. In this case, API requests don't require a Langflow API key.\n\nIn Langflow version 1.5, a Langflow API key is required to authenticate requests.\nSetting `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` and `LANGFLOW_AUTO_LOGIN=true` skips authentication for API requests. However, the `LANGFLOW_SKIP_AUTH_AUTO_LOGIN` option will be removed in v1.6.\n\n`LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true` is the default behavior, so users do not need to change existing workflows in 1.5. To update your workflows to require authentication, set `LANGFLOW_SKIP_AUTH_AUTO_LOGIN=false`.\n\nFor more information, see [API keys and authentication](https://docs.langflow.org/api-keys-and-authentication).\n\n## Security Configuration Guidelines\n\n### Superuser Creation Security\n\nThe `langflow superuser` CLI command can present a privilege escalation risk if not properly secured.\n\n#### Security Measures\n\n---\n\n[src/backend/tests/integration/components/apify/apify_actor.md:1-13] (relevance 0.20)\n# Apify Actors component tests\n\nThis component was tested manually with various Apify Actors. The component was tested with manual runs and with an AI Agent as a tool.\n\n## Test cases\n\n### Run Apify Actors manually\nApify Actor input was manually configured and the component was run to retrieve data.\nWhen invalid input was provided, the component returned an error message with details.\n\n### Run Apify Actors with AI Agent\nMultiple Apify Actors components with different Actors were connected to an AI Agent.\nThe agent was given a task that required running multiple Apify Actors to complete.\n\n---\n\n[scripts/aws/README.ja.md:43-57] (relevance 0.18)\nLangflowAppStack.frontendURLXXXXXX = https://XXXXXXXXXXX.cloudfront.net\n   ```\n1. \u30b5\u30a4\u30f3\u30a4\u30f3\u753b\u9762\u3067\u30e6\u30fc\u30b6\u30fc\u540d\u3068\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u5165\u529b\u3057\u307e\u3059\u3002`.env`\u30d5\u30a1\u30a4\u30eb\u3067\u30e6\u30fc\u30b6\u30fc\u540d\u3068\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u8a2d\u5b9a\u3057\u3066\u3044\u306a\u3044\u5834\u5408\u3001\u30e6\u30fc\u30b6\u30fc\u540d\u306f`admin`\u3001\u30d1\u30b9\u30ef\u30fc\u30c9\u306f`123456`\u3067\u8a2d\u5b9a\u3055\u308c\u307e\u3059\u3002\n   ![make-cloud9](./img/langflow-signin.png)\n\n# \u74b0\u5883\u306e\u524a\u9664\n\n1. `Cloud9` \u3067\u4ee5\u4e0b\u306e\u30b3\u30de\u30f3\u30c9\u3092\u5b9f\u884c\u3057\u307e\u3059\u3002\n\n   ```shell\n   bash delete-resources.sh\n   ```\n\n1. [AWS CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/getting-started)\u3092\u958b\u304d\u3001`aws-cloud9-cloud9-for-prototyping-XXXX` \u3092\u9078\u629e\u3057\u3066\u524a\u9664\u3057\u307e\u3059\u3002\n   ![delete-cfn](./img/langflow-cfn.png)\n\n---\n\n[SECURITY.md:63-89] (relevance 0.17)\n- Authenticated arbitrary file write (within server permission scope): Risk of corrupting configuration/log/task files, disrupting application behavior, and tampering with files read by other components\n- Both absolute and relative paths are allowed, enabling base directory traversal\n- Risk of overwriting system files increases in environments with root privileges or weak mount/permission settings\n- File content is limited to Flow JSON, but impact is severe if the target file is parsed by a JSON parser or subject to subsequent processing\n\n**CVE**: [CVE-2025-68478](https://nvd.nist.gov/vuln/detail/CVE-2025-68478)\n**GitHub Advisory**: [GHSA-f43r-cc68-gpx4](https://github.com/langflow-ai/langflow/security/advisories/GHSA-f43r-cc68-gpx4)\n**Fixed in**: Langflow >= 1.7.1\n\n### Environment Variable Loading Bug (Fixed in 1.6.4)\n\nLangflow versions `1.6.0` through `1.6.3` have a critical bug where environment variables from `.env` files are not being read. This affects all deployments using environment variables for configuration, including security settings.\n\n**Potential security impact:**\n- Environment variables from `.env` files are not read.\n- Security configurations like `AUTO_LOGIN=false` may not be applied, potentially allowing users to log in as the default superuser.\n- Database credentials, API keys, and other sensitive configuration may not be loaded.\n\n**DO NOT** upgrade to Langflow versions `1.6.0` through `1.6.3` if you use `.env` files for configuration. Instead, upgrade to version `1.6.4`, which includes a fix for this bug.\n\n**Fixed in**: Langflow >= 1.6.4\n\n### Code Execution Vulnerability (Fixed in 1.3.0)\n\nLangflow allows users to define and run **custom code components** through endpoints like `/api/v1/validate/code`. In versions < 1.3.0, this endpoint did not enforce authentication or proper sandboxing, allowing **unauthenticated arbitrary code execution**.\n\nThis means an attacker could send malicious code to the endpoint and have it executed on the server\u2014leading to full system compromise, including data theft, remote shell access, or lateral movement within the network."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/api/v1/api_key.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/api/v1/api_key.py lines=1-60]\n1: from uuid import UUID\n2: \n3: from fastapi import APIRouter, Depends, HTTPException, Response\n4: \n5: from langflow.api.utils import CurrentActiveUser, DbSession\n6: from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse\n7: from langflow.services.auth import utils as auth_utils\n8: \n9: # Assuming you have these methods in your service layer\n10: from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key, get_api_keys\n11: from langflow.services.database.models.api_key.model import ApiKeyCreate, UnmaskedApiKeyRead\n12: from langflow.services.deps import get_settings_service\n13: \n14: router = APIRouter(tags=[\"APIKey\"], prefix=\"/api_key\")\n15: \n16: \n17: @router.get(\"/\")\n18: async def get_api_keys_route(\n19:     db: DbSession,\n20:     current_user: CurrentActiveUser,\n21: ) -> ApiKeysResponse:\n22:     try:\n23:         user_id = current_user.id\n24:         keys = await get_api_keys(db, user_id)\n25: \n26:         return ApiKeysResponse(total_count=len(keys), user_id=user_id, api_keys=keys)\n27:     except Exception as exc:\n28:         raise HTTPException(status_code=400, detail=str(exc)) from exc\n29: \n30: \n31: @router.post(\"/\")\n32: async def create_api_key_route(\n33:     req: ApiKeyCreate,\n34:     current_user: CurrentActiveUser,\n35:     db: DbSession,\n36: ) -> UnmaskedApiKeyRead:\n37:     try:\n38:         user_id = current_user.id\n39:         return await create_api_key(db, req, user_id=user_id)\n40:     except Exception as e:\n41:         raise HTTPException(status_code=400, detail=str(e)) from e\n42: \n43: \n44: @router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\n45: async def delete_api_key_route(\n46:     api_key_id: UUID,\n47:     db: DbSession,\n48: ):\n49:     try:\n50:         await delete_api_key(db, api_key_id)\n51:     except Exception as e:\n52:         raise HTTPException(status_code=400, detail=str(e)) from e\n53:     return {\"detail\": \"API Key deleted\"}\n54: \n55: \n56: @router.post(\"/store\")\n57: async def save_store_api_key(\n58:     api_key_request: ApiKeyCreateRequest,\n59:     response: Response,\n60:     current_user: CurrentActiveUser,\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+                  "start_line": 40,
+                  "end_line": 55,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/services/database/models/api_key/crud.py lines=40-55]\n40:     unmasked.api_key = generated_api_key\n41:     return unmasked\n42: \n43: \n44: async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n45:     api_key = await session.get(ApiKey, api_key_id)\n46:     if api_key is None:\n47:         msg = \"API Key not found\"\n48:         raise ValueError(msg)\n49:     await session.delete(api_key)\n50: \n51: \n52: async def check_key(session: AsyncSession, api_key: str) -> User | None:\n53:     \"\"\"Check if the API key is valid.\n54: \n55:     Validates API keys based on the LANGFLOW_API_KEY_SOURCE setting:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removes the ownership gate from delete_api_key (base crud.py:49-51 enforced `api_key.user_id != user_id`) and the route no longer passes the authenticated user's id. The new route (api_key.py:44-53) authenticates only via `get_current_active_user`, which (auth/utils.py:261-264) merely checks `is_active` and returns the user without any ownership or superuser check. The handler then calls `delete_api_key(db, api_key_id)` with only the user-controlled `api_key_id` and no owner verification, so any active user can delete any other user's API key by supplying its UUID. This is a newly introduced IDOR: the base code prevented it, the PR removes the check.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"lines\": [44, 49], \"content\": \"async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\\n    api_key = await session.get(ApiKey, api_key_id)\\n    if api_key is None:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    await session.delete(api_key)\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/api/v1/api_key.py\", \"lines\": [44, 53], \"content\": \"@router.delete(\\\"/{api_key_id}\\\", dependencies=[Depends(auth_utils.get_current_active_user)])\\nasync def delete_api_key_route(\\n    api_key_id: UUID,\\n    db: DbSession,\\n):\\n    try:\\n        await delete_api_key(db, api_key_id)\\n    except Exception as e:\\n        raise HTTPException(status_code=400, detail=str(e)) from e\\n    return {\\\"detail\\\": \\\"API Key deleted\\\"}\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/auth/utils.py\", \"lines\": [261, 264], \"content\": \"async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\\n    if not current_user.is_active:\\n        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\\\"Inactive user\\\")\\n    return current_user\"},\n        {\"type\": \"code\", \"file\": \"src/backend/base/langflow/services/database/models/api_key/crud.py\", \"lines\": [44, 52], \"content\": \"async def delete_api_key(session: AsyncSession, api_key_id: UUID, user_id: UUID) -> None:\\n    api_key = await session.get(ApiKey, api_key_id)\\n    if api_key is None:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    if api_key.user_id != user_id:\\n        msg = \\\"API Key not found\\\"\\n        raise ValueError(msg)\\n    await session.delete(api_key)\"}\n      ],\n      \"suggested_fix\": \"Restore the ownership check: keep the `user_id` parameter in delete_api_key and enforce `api_key.user_id == user_id` (or require superuser), and pass `current_user.id` from the route. Alternatively, add a superuser/ownership authorization check in the route before deleting.\",\n      \"file\": \"src/backend/base/langflow/api/v1/api_key.py\",\n      \"line\": 50\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:remove-ownership-check",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+                  "start_line": 1,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/services/database/models/api_key/crud.py lines=1-60]\n1: import datetime\n2: import os\n3: import secrets\n4: from typing import TYPE_CHECKING\n5: from uuid import UUID\n6: \n7: from sqlalchemy.orm import selectinload\n8: from sqlmodel import select\n9: from sqlmodel.ext.asyncio.session import AsyncSession\n10: \n11: from langflow.services.database.models.api_key.model import ApiKey, ApiKeyCreate, ApiKeyRead, UnmaskedApiKeyRead\n12: from langflow.services.database.models.user.model import User\n13: from langflow.services.deps import get_settings_service\n14: \n15: if TYPE_CHECKING:\n16:     from sqlmodel.sql.expression import SelectOfScalar\n17: \n18: \n19: async def get_api_keys(session: AsyncSession, user_id: UUID) -> list[ApiKeyRead]:\n20:     query: SelectOfScalar = select(ApiKey).where(ApiKey.user_id == user_id)\n21:     api_keys = (await session.exec(query)).all()\n22:     return [ApiKeyRead.model_validate(api_key) for api_key in api_keys]\n23: \n24: \n25: async def create_api_key(session: AsyncSession, api_key_create: ApiKeyCreate, user_id: UUID) -> UnmaskedApiKeyRead:\n26:     # Generate a random API key with 32 bytes of randomness\n27:     generated_api_key = f\"sk-{secrets.token_urlsafe(32)}\"\n28: \n29:     api_key = ApiKey(\n30:         api_key=generated_api_key,\n31:         name=api_key_create.name,\n32:         user_id=user_id,\n33:         created_at=api_key_create.created_at or datetime.datetime.now(datetime.timezone.utc),\n34:     )\n35: \n36:     session.add(api_key)\n37:     await session.flush()\n38:     await session.refresh(api_key)\n39:     unmasked = UnmaskedApiKeyRead.model_validate(api_key, from_attributes=True)\n40:     unmasked.api_key = generated_api_key\n41:     return unmasked\n42: \n43: \n44: async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\n45:     api_key = await session.get(ApiKey, api_key_id)\n46:     if api_key is None:\n47:         msg = \"API Key not found\"\n48:         raise ValueError(msg)\n49:     await session.delete(api_key)\n50: \n51: \n52: async def check_key(session: AsyncSession, api_key: str) -> User | None:\n53:     \"\"\"Check if the API key is valid.\n54: \n55:     Validates API keys based on the LANGFLOW_API_KEY_SOURCE setting:\n56:     - 'db': Validates against database-stored API keys (default)\n57:     - 'env': Validates against the LANGFLOW_API_KEY environment variable,\n58:              falls back to database if env validation fails\n59:     \"\"\"\n60:     settings_service = get_settings_service()\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/api/v1/api_key.py",
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/base/langflow/api/v1/api_key.py lines=1-88]\n1: from uuid import UUID\n2: \n3: from fastapi import APIRouter, Depends, HTTPException, Response\n4: \n5: from langflow.api.utils import CurrentActiveUser, DbSession\n6: from langflow.api.v1.schemas import ApiKeyCreateRequest, ApiKeysResponse\n7: from langflow.services.auth import utils as auth_utils\n8: \n9: # Assuming you have these methods in your service layer\n10: from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key, get_api_keys\n11: from langflow.services.database.models.api_key.model import ApiKeyCreate, UnmaskedApiKeyRead\n12: from langflow.services.deps import get_settings_service\n13: \n14: router = APIRouter(tags=[\"APIKey\"], prefix=\"/api_key\")\n15: \n16: \n17: @router.get(\"/\")\n18: async def get_api_keys_route(\n19:     db: DbSession,\n20:     current_user: CurrentActiveUser,\n21: ) -> ApiKeysResponse:\n22:     try:\n23:         user_id = current_user.id\n24:         keys = await get_api_keys(db, user_id)\n25: \n26:         return ApiKeysResponse(total_count=len(keys), user_id=user_id, api_keys=keys)\n27:     except Exception as exc:\n28:         raise HTTPException(status_code=400, detail=str(exc)) from exc\n29: \n30: \n31: @router.post(\"/\")\n32: async def create_api_key_route(\n33:     req: ApiKeyCreate,\n34:     current_user: CurrentActiveUser,\n35:     db: DbSession,\n36: ) -> UnmaskedApiKeyRead:\n37:     try:\n38:         user_id = current_user.id\n39:         return await create_api_key(db, req, user_id=user_id)\n40:     except Exception as e:\n41:         raise HTTPException(status_code=400, detail=str(e)) from e\n42: \n43: \n44: @router.delete(\"/{api_key_id}\", dependencies=[Depends(auth_utils.get_current_active_user)])\n45: async def delete_api_key_route(\n46:     api_key_id: UUID,\n47:     db: DbSession,\n48: ):\n49:     try:\n50:         await delete_api_key(db, api_key_id)\n51:     except Exception as e:\n52:         raise HTTPException(status_code=400, detail=str(e)) from e\n53:     return {\"detail\": \"API Key deleted\"}\n54: \n55: \n56: @router.post(\"/store\")\n57: async def save_store_api_key(\n58:     api_key_request: ApiKeyCreateRequest,\n59:     response: Response,\n60:     current_user: CurrentActiveUser,\n61:     db: DbSession,\n62: ):\n63:     settings_service = get_settings_service()\n64:     auth_settings = settings_service.auth_settings\n65: \n66:     try:\n67:         api_key = api_key_request.api_key\n68: \n69:         # Encrypt the API key\n70:         encrypted = auth_utils.encrypt_api_key(api_key, settings_service=settings_service)\n71:         current_user.store_api_key = encrypted\n72:         db.add(current_user)\n73:         await db.commit()\n74: \n75:         response.set_cookie(\n76:             \"apikey_tkn_lflw\",\n77:             encrypted,\n78:             httponly=auth_settings.ACCESS_HTTPONLY,\n79:             samesite=auth_settings.ACCESS_SAME_SITE,\n80:             secure=auth_settings.ACCESS_SECURE,\n81:             expires=None,  # Set to None to make it a session cookie\n82:             domain=auth_settings.COOKIE_DOMAIN,\n83:         )\n84: \n85:     except Exception as e:\n86:         raise HTTPException(status_code=400, detail=str(e)) from e\n87: \n88:     return {\"detail\": \"API Key saved\"}\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/base/langflow/services/auth/utils.py",
+                  "start_line": 250,
+                  "end_line": 275,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=a68a50cf53e5db26e648a6596b3f8bf0f25e192d path=src/backend/base/langflow/services/auth/utils.py lines=250-275]\n250:     )\n251:     if api_key:\n252:         user_read = await ws_api_key_security(api_key)\n253:         if user_read:\n254:             return user_read\n255: \n256:     raise WebSocketException(\n257:         code=status.WS_1008_POLICY_VIOLATION, reason=\"Missing or invalid credentials (cookie, token or API key).\"\n258:     )\n259: \n260: \n261: async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):\n262:     if not current_user.is_active:\n263:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n264:     return current_user\n265: \n266: \n267: async def get_current_active_superuser(current_user: Annotated[User, Depends(get_current_user)]) -> User:\n268:     if not current_user.is_active:\n269:         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=\"Inactive user\")\n270:     if not current_user.is_superuser:\n271:         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=\"The user doesn't have enough privileges\")\n272:     return current_user\n273: \n274: \n275: async def get_webhook_user(flow_id: str, request: Request) -> UserRead:\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "delete_api_key",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 pattern=\"delete_api_key\"]\ndocs/openapi/openapi.json:3054:        \"operationId\": \"delete_api_key_route_api_v1_api_key__api_key_id__delete\",\ndocs/openapi/openapi.yaml:1831:      operationId: delete_api_key_route_api_v1_api_key__api_key_id__delete\nsrc/backend/base/langflow/__main__.py:884:            from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key\nsrc/backend/base/langflow/__main__.py:890:                await delete_api_key(session, api_key.id)\nsrc/backend/base/langflow/api/v1/api_key.py:10:from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key, get_api_keys\nsrc/backend/base/langflow/api/v1/api_key.py:45:async def delete_api_key_route(\nsrc/backend/base/langflow/api/v1/api_key.py:50:        await delete_api_key(db, api_key_id)\nsrc/backend/base/langflow/services/database/models/api_key/crud.py:44:async def delete_api_key(session: AsyncSession, api_key_id: UUID) -> None:\nsrc/backend/tests/.test_durations:74:    \"src/backend/tests/unit/api/v1/test_api_key.py::test_delete_api_key_route\": 2.4513380830176175,\nsrc/backend/tests/.test_durations:1739:    \"src/backend/tests/unit/test_api_key.py::test_delete_api_key\": 2.7562009589746594,\nsrc/backend/tests/unit/api/v1/test_api_key.py:38:async def test_delete_api_key_route(client: AsyncClient, logged_in_headers, active_user):\nsrc/backend/tests/unit/test_api_key.py:43:async def test_delete_api_key(client, logged_in_headers, api_key):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "src/backend/tests/unit/api/v1/test_api_key.py",
+                  "start_line": 30,
+                  "end_line": 60,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=2f6f62635a8fd537bf81ce25d2b7f09f020d6331 path=src/backend/tests/unit/api/v1/test_api_key.py lines=30-60]\n30:     assert \"id\" in result, \"The dictionary must contain a key called 'id'\"\n31:     assert \"is_active\" in result, \"The dictionary must contain a key called 'is_active'\"\n32:     assert \"last_used_at\" in result, \"The dictionary must contain a key called 'last_used_at'\"\n33:     assert \"name\" in result, \"The dictionary must contain a key called 'name'\"\n34:     assert \"total_uses\" in result, \"The dictionary must contain a key called 'total_uses'\"\n35:     assert \"user_id\" in result, \"The dictionary must contain a key called 'user_id'\"\n36: \n37: \n38: async def test_delete_api_key_route(client: AsyncClient, logged_in_headers, active_user):\n39:     basic_case = {\n40:         \"name\": \"string\",\n41:         \"total_uses\": 0,\n42:         \"is_active\": True,\n43:         \"api_key\": \"string\",\n44:         \"user_id\": str(active_user.id),\n45:     }\n46:     response_ = await client.post(\"api/v1/api_key/\", json=basic_case, headers=logged_in_headers)\n47:     id_ = response_.json()[\"id\"]\n48: \n49:     response = await client.delete(f\"api/v1/api_key/{id_}\", headers=logged_in_headers)\n50:     result = response.json()\n51: \n52:     assert response.status_code == status.HTTP_200_OK\n53:     assert isinstance(result, dict), \"The result must be a dictionary\"\n54:     assert \"detail\" in result, \"The dictionary must contain a key called 'detail'\"\n55: \n56: \n57: async def test_save_store_api_key(client: AsyncClient, logged_in_headers):\n58:     basic_case = {\"api_key\": \"string\"}\n59:     response = await client.post(\"api/v1/api_key/store\", json=basic_case, headers=logged_in_headers)\n60:     result = response.json()\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "Based on my analysis, this section does not build or execute any SQL from attacker-influenced text. The `delete_api_key` function uses SQLAlchemy's ORM `session.get(ApiKey, api_key_id)` and `session.delete(api_key)`, where `api_key_id` is a bound parameter (a UUID), not concatenated into SQL text. The `__main__.py` CLI code uses `select(...).where(...)` with bound parameters. There is no raw-SQL API, no string concatenation/formatting into SQL, and no unallowlisted identifier insertion.\n\nThe PR does introduce a privilege-escalation / broken-access-control issue (removing the `api_key.user_id == user_id` ownership check so any active user can delete any key), but that is CWE-639, not SQL injection (CWE-89). Since this review is scoped strictly to SQL injection, there is no candidate flaw here.\n\n{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:remove-ownership-check:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.8451,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "project": "langflow",
+  "mode": "lgtm",
+  "case_scope": "in",
+  "file": "src/backend/base/langflow/api/v1/api_key.py",
+  "vulnerable_locations": [
+    {
+      "file": "src/backend/base/langflow/api/v1/api_key.py",
+      "old_range": [
+        44,
+        51
+      ],
+      "new_range": [
+        44,
+        50
+      ]
+    },
+    {
+      "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+      "old_range": [
+        44,
+        51
+      ],
+      "new_range": [
+        44,
+        49
+      ]
+    }
+  ],
+  "diff_files": 3,
+  "diff_added": 5,
+  "diff_deleted": 9,
+  "diff_py_chars": 2299,
+  "diff_max_file_chars": 1023,
+  "index_seconds": 0.68,
+  "index_chunks": 71,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "a68a50cf53e5db26e648a6596b3f8bf0f25e192d",
+    "pr_sha": "2f6f62635a8fd537bf81ce25d2b7f09f020d6331",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "semgrep_findings_in_diff": 0,
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 18,
+    "files_total": 3,
+    "files_in_scope": 3,
+    "hunks_total": 4,
+    "hunks_assigned": 4,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 4,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "remove-ownership-check",
+        "origin": "investigator",
+        "title": "Remove per-user ownership check from delete_api_key and rely on route-level auth",
+        "files": [
+          "src/backend/base/langflow/services/database/models/api_key/crud.py",
+          "src/backend/base/langflow/api/v1/api_key.py",
+          "src/backend/base/langflow/__main__.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "src/backend/base/langflow/services/database/models/api_key/crud.py#0",
+            "file": "src/backend/base/langflow/services/database/models/api_key/crud.py",
+            "old_start": 41,
+            "old_count": 14,
+            "new_start": 41,
+            "new_count": 11,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#0",
+            "file": "src/backend/base/langflow/api/v1/api_key.py",
+            "old_start": 1,
+            "old_count": 6,
+            "new_start": 1,
+            "new_count": 6,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "src/backend/base/langflow/api/v1/api_key.py#1",
+            "file": "src/backend/base/langflow/api/v1/api_key.py",
+            "old_start": 41,
+            "old_count": 14,
+            "new_start": 41,
+            "new_count": 13,
+            "change": "mixed"
+          },
+          {
+            "hunk_id": "src/backend/base/langflow/__main__.py#0",
+            "file": "src/backend/base/langflow/__main__.py",
+            "old_start": 887,
+            "old_count": 7,
+            "new_start": 887,
+            "new_count": 7,
+            "change": "mixed"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:remove-ownership-check:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "coverage_summary": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 18,
+    "files_total": 3,
+    "files_in_scope": 3,
+    "hunks_total": 4,
+    "hunks_assigned": 4,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 4,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions_total": 0
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 6.69,
+  "base_sha": "a68a50cf53e5db26e648a6596b3f8bf0f25e192d",
+  "pr_sha": "2f6f62635a8fd537bf81ce25d2b7f09f020d6331",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "remove-ownership-check"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

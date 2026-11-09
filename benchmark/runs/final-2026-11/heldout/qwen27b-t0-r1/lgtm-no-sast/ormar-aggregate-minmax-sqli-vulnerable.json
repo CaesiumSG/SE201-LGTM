@@ -1,0 +1,324 @@
+{
+  "id": "ormar-aggregate-minmax-sqli-vulnerable",
+  "repo": "collerek/ormar",
+  "pr": 130,
+  "title": "Adding min()/max()/sum()/avg() aggregates wrapped the caller-supplied column name in sqlalchemy.text() with no check that it is a real model field, so a crafted column string injects SQL into the aggregate query.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "e306eecc2c37d6a83849ab027f236f4ef0f66a26",
+  "pr_sha": "61c456a01f32e3875a4b881cf07a8e0334b2e21d",
+  "files_changed": 39,
+  "python_files_changed": 32,
+  "added_lines": 1574,
+  "diff_chars": 74768,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 458.4,
+  "index_seconds": 2.2,
+  "index_reused": false,
+  "index_chunks": 282,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 61,
+    "hunks_reviewed": 61,
+    "sections_scheduled": 15,
+    "sections_completed": 15,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 0,
+    "unsupported": 3,
+    "not_judged": 0
+  },
+  "n_findings": 3,
+  "agent_errors": [],
+  "verdicts": {
+    "safe": 3
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 15,
+  "investigator_tool_calls": 14,
+  "sast_triage_tool_calls": 15,
+  "sast_triage_units": 3,
+  "reviewer_tool_calls": 132,
+  "reviewer_units": 28,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:ormar/queryset/actions/select_action.py:17",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line 17 is a docstring comment, not executable SQL. The actual SQL construction happens in get_text_clause() (lines 41-43), which builds a sqlalchemy.text() clause from self.field_name and self.table_prefix. Tracing the data flow: SelectAction is instantiated in queryset.py line 563 with select_str=column, where columns come from the user-facing aggregation methods (max/sum/avg/min) that accept column names. The field_name is derived by splitting the column string on '__' (select_action.py lines 29-32). Critically, field_name is validated against the model's declared fields: get_target_field_type() (line 38-39) does self.target_model.Meta.model_fields[self.field_name], which raises a KeyError if the name is not a real, declared model field. This acts as a whitelist \u2014 only valid, developer-defined column names can reach the text() clause. The table_prefix is derived internally from the model's relationship graph (query_action.py line 83-93, get_relationship_alias_model_and_str), not from raw user input. Therefore the dynamic parts are constrained to a whitelist of known column/alias names, and no arbitrary user-controlled string can be injected into the SQL. This is a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            41,
+            43
+          ],
+          "source": null,
+          "content": "def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n        alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n        return sqlalchemy.text(f\"{alias}{self.field_name}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            38,
+            39
+          ],
+          "source": null,
+          "content": "def get_target_field_type(self) -> Any:\n        return self.target_model.Meta.model_fields[self.field_name].__type__",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            29,
+            32
+          ],
+          "source": null,
+          "content": "def _split_value_into_parts(self, order_str: str) -> None:\n        parts = order_str.split(\"__\")\n        self.field_name = parts[-1]\n        self.related_parts = parts[:-1]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            560,
+            570
+          ],
+          "source": null,
+          "content": "async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n        func = getattr(sqlalchemy.func, func_name)\n        select_actions = [\n            SelectAction(select_str=column, model_cls=self.model) for column in columns\n        ]\n        if func_name in [\"sum\", \"avg\"]:\n            if any(not x.is_numeric for x in select_actions):\n                raise QueryDefinitionError(\n                    \"You can use sum and svg only with\" \"numeric types of columns\"\n                )\n        select_columns = [x.apply_func(func, use_label=True) for x in select_actions]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/query_action.py",
+          "lines": [
+            83,
+            93
+          ],
+          "source": null,
+          "content": "def _determine_filter_target_table(self) -> None:\n        \"\"\"\n        Walks the relation to retrieve the actual model on which the clause should be\n        constructed, extracts alias based on last relation leading to target model.\n        \"\"\"\n        (\n            self.table_prefix,\n            self.target_model,\n            self.related_str,\n            self.is_through,\n        ) = get_relationship_alias_model_and_str(self.source_model, self.related_parts)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            41,
+            43
+          ],
+          "source": null,
+          "content": "    def get_text_clause(self) -> sqlalchemy.sql.expression.TextClause:\n        alias = f\"{self.table_prefix}_\" if self.table_prefix else \"\"\n        return sqlalchemy.text(f\"{alias}{self.field_name}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            45,
+            52
+          ],
+          "source": null,
+          "content": "    def apply_func(\n        self, func: Callable, use_label: bool = True\n    ) -> sqlalchemy.sql.expression.TextClause:\n        result = func(self.get_text_clause())\n        if use_label:\n            rel_prefix = f\"{self.related_str}__\" if self.related_str else \"\"\n            result = result.label(f\"{rel_prefix}{self.field_name}\")\n        return result",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/queryset.py",
+          "lines": [
+            560,
+            575
+          ],
+          "source": null,
+          "content": "    async def _query_aggr_function(self, func_name: str, columns: List) -> Any:\n        func = getattr(sqlalchemy.func, func_name)\n        select_actions = [\n            SelectAction(select_str=column, model_cls=self.model) for column in columns\n        ]\n        if func_name in [\"sum\", \"avg\"]:\n            if any(not x.is_numeric for x in select_actions):\n                raise QueryDefinitionError(\n                    \"You can use sum and svg only with\" \"numeric types of columns\"\n                )\n        select_columns = [x.apply_func(func, use_label=True) for x in select_actions]\n        expr = self.build_select_expression().alias(f\"subquery_for_{func_name}\")\n        expr = sqlalchemy.select(select_columns).select_from(expr)\n        result = await self.database.fetch_one(expr)\n        return dict(result) if len(result) > 1 else result[0]",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/queryset/actions/select_action.py",
+          "lines": [
+            34,
+            39
+          ],
+          "source": null,
+          "content": "    @property\n    def is_numeric(self) -> bool:\n        return self.get_target_field_type() in [int, float, decimal.Decimal]\n\n    def get_target_field_type(self) -> Any:\n        return self.target_model.Meta.model_fields[self.field_name].__type__",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "No fix required for a true vulnerability; the field_name is whitelisted via model_fields lookup and table_prefix is derived from the internal relationship graph. To harden further and silence the heuristic, validate field_name against the model's declared fields before building the text() clause (e.g., raise a QueryDefinitionError if self.field_name is not in self.target_model.Meta.model_fields), and/or use sqlalchemy column objects (self.column) instead of sqlalchemy.text() to avoid string-based SQL construction entirely.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.3923,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "ormar/queryset/actions/select_action.py",
+      "line": 17,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:tests/test_default_relation_order.py:55",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line 55 (`name: str = ormar.Text(default=\"\")`) is a declarative ORM field definition on the `Human` model, not a SQL statement. It merely declares a column type with a default value; it does not construct or execute any SQL. A grep of the entire file for SQL execution patterns (`execute`, `raw`, `text(`, `.query(`) returned no matches, confirming no raw SQL is built or run in this test file. All database access in the file goes through the ormar ORM API (e.g., `Author(...).save()`, `Book.objects.order_by(...).select_related(...).all()`, `metadata.create_all(engine)`), which the ormar documentation describes as an ORM layer that builds SQLAlchemy queries internally. No user-controlled input is concatenated into any SQL string, and no string-formatted SQL is present. This is a false positive from a heuristic that matched the word 'Text' / a field declaration as a SQL sink.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "tests/test_default_relation_order.py",
+          "lines": [
+            50,
+            61
+          ],
+          "source": null,
+          "content": "class Human(ormar.Model):\n    class Meta(BaseMeta):\n        tablename = \"humans\"\n\n    id: UUID = ormar.UUID(primary_key=True, default=uuid4)\n    name: str = ormar.Text(default=\"\")\n    pets: List[Animal] = ormar.ManyToMany(\n        Animal,\n        related_name=\"care_takers\",\n        orders_by=[\"specie\", \"-name\"],\n        related_orders_by=[\"name\"],\n    )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "tests/test_default_relation_order.py",
+          "lines": [
+            82,
+            96
+          ],
+          "source": null,
+          "content": "async def test_default_orders_is_applied_from_reverse_relation():\n    async with database:\n        tolkien = await Author(name=\"J.R.R. Tolkien\").save()\n        hobbit = await Book(author=tolkien, title=\"The Hobbit\", year=1933).save()\n        ...\n        tolkien = await Author.objects.select_related(\"books\").get()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/queries/index.md",
+          "content": "Each Model is auto registered with a `QuerySet` that represents the underlying query, and it's options. ... QuerySet ... handles Through models instances for m2m relations, while delegating actual queries to `QuerySet`",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "No fix required for this line; it is a declarative ORM field definition, not a SQL sink. If the heuristic keeps flagging ORM field declarations, suppress the rule for ormar/SQLAlchemy model definitions or refine the rule to only match actual SQL string construction/execution (e.g., `execute`, `text()`, f-string SQL). Ensure any future raw SQL uses bound parameters (placeholders) rather than string interpolation.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.4198,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "tests/test_default_relation_order.py",
+      "line": 55,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:tests/test_default_through_relation_order.py:27",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line `name: str = ormar.Text(default=\"\")` is an ORM model field declaration, not a SQL statement. `ormar.Text` is a field factory (ormar/fields/model_fields.py:230) whose `get_column_type` (lines 252-262) simply returns `sqlalchemy.Text()` \u2014 a SQLAlchemy column type object. No SQL string is constructed or executed here; the `default=\"\"` argument is a Python default value for the field, not a SQL fragment. This is a test file defining an ORM model, and the line contains no user-controlled input, no string concatenation, and no query execution. The Semgrep heuristic misfired on the word 'Text'/'default' near a database context. This is a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "tests/test_default_through_relation_order.py",
+          "lines": [
+            22,
+            27
+          ],
+          "source": null,
+          "content": "class Animal(ormar.Model):\n    class Meta(BaseMeta):\n        tablename = \"animals\"\n\n    id: UUID = ormar.UUID(primary_key=True, default=uuid4)\n    name: str = ormar.Text(default=\"\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "ormar/fields/model_fields.py",
+          "lines": [
+            230,
+            262
+          ],
+          "source": null,
+          "content": "class Text(ModelFieldFactory, str):\n    ...\n    @classmethod\n    def get_column_type(cls, **kwargs: Any) -> Any:\n        ...\n        return sqlalchemy.Text()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "No fix required \u2014 this is a false positive. The line is an ORM field declaration using a SQLAlchemy column type, not a SQL query. Optionally, suppress the `lgtm-no-sast.sql-sink-heuristic` rule for ORM model field declarations (e.g., `ormar.Text(...)`, `ormar.UUID(...)`) to avoid recurring noise.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.6037,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "tests/test_default_through_relation_order.py",
+      "line": 27,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "ormar-aggregate-minmax-sqli",
+  "url": "https://github.com/collerek/ormar/pull/130",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xxh2-68g9-8jqr",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "ormar/queryset/actions/select_action.py",
+    "ormar/queryset/queryset.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

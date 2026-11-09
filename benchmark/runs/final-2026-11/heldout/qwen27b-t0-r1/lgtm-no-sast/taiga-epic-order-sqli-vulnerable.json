@@ -1,0 +1,220 @@
+{
+  "id": "taiga-epic-order-sqli-vulnerable",
+  "repo": "taigaio/taiga-back",
+  "pr": null,
+  "title": "Adding epic order to user-story listings took the ?epic= query parameter and str.format()-ed it into a raw SQL subquery passed to queryset.extra(), enabling time-based blind SQL injection.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "d461b1962d62e7fe3c8b348e830f80c7de7ad7f8",
+  "pr_sha": "e2f6245fbbca7dc5e516bb7343ce10ee8420f0d2",
+  "files_changed": 5,
+  "python_files_changed": 5,
+  "added_lines": 60,
+  "diff_chars": 6347,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 97.0,
+  "index_seconds": 0.3,
+  "index_reused": false,
+  "index_chunks": 19,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 9,
+    "hunks_reviewed": 9,
+    "sections_scheduled": 2,
+    "sections_completed": 2,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 2
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:epic-order-attach:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "taiga/projects/userstories/utils.py",
+      "line": 147,
+      "cwe_id": "CWE-639",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new `epic` query parameter is read directly from the request (api.py:107) and passed to attach_epic_order (utils.py:147), where it is interpolated via str.format into a raw SQL subquery that selects `epics_relateduserstory.order` for that epic_id. There is no verification that the requester is a member of the project that owns the referenced epic. The base queryset is restricted to viewable us"
+    },
+    {
+      "finding_id": "sqli:epic-order-attach:1",
+      "agent": "sqli_reviewer",
+      "category": "sqli",
+      "file": "taiga/projects/userstories/utils.py",
+      "line": 147,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new attach_epic_order helper builds a raw SQL subquery and interpolates the epic_id value directly into the WHERE clause via str.format (line 147), then passes it to queryset.extra(select=...). The epic_id value originates from the unvalidated request query parameter 'epic' read in UserStoryViewSet.get_queryset (api.py line 107) and forwarded through attach_extra_info (utils.py line 166) with "
+    }
+  ],
+  "tool_calls_total": 10,
+  "investigator_tool_calls": 24,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 16,
+  "reviewer_units": 3,
+  "findings": [
+    {
+      "finding_id": "authz:epic-order-attach:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The new `epic` query parameter is read directly from the request (api.py:107) and passed to attach_epic_order (utils.py:147), where it is interpolated via str.format into a raw SQL subquery that selects `epics_relateduserstory.order` for that epic_id. There is no verification that the requester is a member of the project that owns the referenced epic. The base queryset is restricted to viewable user stories via CanViewUsFilterBackend, but the epic_order subquery is scoped only by the user-controlled epic_id and the user_story_id, not by the requester's project membership. A user who can view a user story in one project could supply the epic_id of an epic in a private project they cannot access and learn the ordering relationship of that epic's user stories (and confirm the epic_id exists), leaking cross-project data. This is a newly introduced code path (attach_epic_order and the epic_id param are added by this PR).",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/api.py",
+          "lines": [
+            107,
+            111
+          ],
+          "source": null,
+          "content": "epic_id =  self.request.QUERY_PARAMS.get(\"epic\", None)\n        qs = attach_extra_info(qs, user=self.request.user,\n                               include_attachments=include_attachments,\n                               include_tasks=include_tasks,\n                               epic_id=epic_id)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/utils.py",
+          "lines": [
+            142,
+            148
+          ],
+          "source": null,
+          "content": "sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n               FROM \"epics_relateduserstory\"\n              WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n                    \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n\n    sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/api.py",
+          "lines": [
+            60,
+            62
+          ],
+          "source": null,
+          "content": "permission_classes = (permissions.UserStoryPermission,)\n    filter_backends = (base_filters.CanViewUsFilterBackend,\n                       filters.EpicsFilter,",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Validate that the epic_id belongs to a project the requester is a member of (or is public) before using it, e.g. resolve the Epic and check project membership, or scope the subquery to the requester's accessible projects. Also use a parameterized query instead of str.format interpolation to avoid SQL injection.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8268,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "taiga/projects/userstories/utils.py",
+      "line": 147,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "sqli:epic-order-attach:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The new attach_epic_order helper builds a raw SQL subquery and interpolates the epic_id value directly into the WHERE clause via str.format (line 147), then passes it to queryset.extra(select=...). The epic_id value originates from the unvalidated request query parameter 'epic' read in UserStoryViewSet.get_queryset (api.py line 107) and forwarded through attach_extra_info (utils.py line 166) with no binding, escaping, or allowlist. An attacker can supply arbitrary SQL in the ?epic= query parameter (e.g. '1 OR 1=1 --') which is concatenated into the executed SQL text, enabling SQL injection.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/utils.py",
+          "lines": [
+            141,
+            148
+          ],
+          "source": null,
+          "content": "    model = queryset.model\n    sql = \"\"\"SELECT \"epics_relateduserstory\".\"order\" AS \"epic_order\"\n               FROM \"epics_relateduserstory\"\n              WHERE \"epics_relateduserstory\".\"user_story_id\" = {tbl}.id and\n                    \"epics_relateduserstory\".\"epic_id\" = {epic_id}\"\"\"\n\n    sql = sql.format(tbl=model._meta.db_table, epic_id=epic_id)\n    queryset = queryset.extra(select={as_field: sql})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/api.py",
+          "lines": [
+            107,
+            111
+          ],
+          "source": null,
+          "content": "        epic_id =  self.request.QUERY_PARAMS.get(\"epic\", None)\n        qs = attach_extra_info(qs, user=self.request.user,\n                               include_attachments=include_attachments,\n                               include_tasks=include_tasks,\n                               epic_id=epic_id)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "taiga/projects/userstories/utils.py",
+          "lines": [
+            165,
+            167
+          ],
+          "source": null,
+          "content": "    if epic_id is not None:\n        queryset = attach_epic_order(queryset, epic_id)\n        queryset = queryset.extra(select={\"include_epic_order\": \"True\"})",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Do not interpolate epic_id into the SQL text. Validate that epic_id is an integer (e.g. int(epic_id) with a try/except raising a 400) before use, or better, avoid raw SQL entirely by using a Django ORM annotation/subquery (Subquery/OuterRef) so the value is bound as a parameter rather than concatenated into the query string.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.8595,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sqli_reviewer",
+      "file": "taiga/projects/userstories/utils.py",
+      "line": 147,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "taiga-epic-order-sqli",
+  "url": "https://github.com/taigaio/taiga-back/commit/e2f6245fbbca7dc5e516bb7343ce10ee8420f0d2",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-chm9-9wwq-xffj",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "taiga/projects/userstories/utils.py",
+    "taiga/projects/userstories/api.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

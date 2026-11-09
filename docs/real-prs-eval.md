@@ -42,9 +42,48 @@ exposed to training data).
   **v2.1** adds the section SQLi reviewer (`docs/agents.md`, `sqli_reviewer`).
 - **Plain LLM** is `llm-only`: the same model reads the diff once, no tools.
 - Semgrep alone (`sast-only`) flagged nothing on any development case (0/13),
-  so it was not re-run on the held-out set.
+  so it was not run on the held-out set for the 5 Nov results below. The
+  final evaluation did run it (next section).
 
-## Results
+## Final evaluation (6–7 Nov)
+
+The final evaluation re-ran both sets on the integrated code (commit
+`af878ce`, SQLi reviewer on, i.e. v2.1). The held-out set ran three times at
+T=0 and once each at T=0.5 and T=1.0, plus an ablation without Semgrep and
+the same pipeline with four other reviewer models; the development set ran
+once. Full tables, per-advisory outcomes and the run
+log are in
+[`benchmark/runs/final-2026-11/RESULTS.md`](../benchmark/runs/final-2026-11/RESULTS.md)
+and `RUNLOG.md` next to it; [`deck-numbers.md`](deck-numbers.md) traces each
+figure on the slides to its record.
+
+Held-out set, Qwen3.8 27B, T=0:
+
+| | lgtm (v2.1) | lgtm without Semgrep | Plain LLM | Semgrep only |
+|---|---|---|---|---|
+| Caught | **15/17** in all 3 runs | 14/17 | 7/17 in all 3 runs | 3/17 |
+| Exact | 14/17 | 13/17 | 7/17 | 3/17 |
+| SQL injection, exact | 7/8 | 6/8 | 4/8 | 3/8 |
+| Authorization, exact | 7/9 | 7/9 | 3/9 | 0/9 |
+| False alarms on fixes | 1/17 | 3/17 | 2/17 | 2/17 |
+| Median seconds per diff | 124 (runs 2–3: 107, 104) | 101 | 7 | 1 |
+
+- **The outcome of every advisory is the same as on 5 Nov** (the tables
+  below); only latency changed (191 s → 124 s median).
+- **Repeatable at T=0:** every per-advisory outcome was identical in the three
+  runs. At T=0.5 the result was the same 15/17 with one more false alarm; at
+  T=1.0, 14/17 with 3 false alarms. readthedocs, missed at T=0, was caught at
+  both higher temperatures.
+- **Semgrep earns its place** by cutting false alarms (3 → 1) and adding one
+  catch (ormar), not by finding most of the SQL injection.
+- **Larger models are not better here.** In the same pipeline gpt-oss 120B,
+  Claude Haiku 4.5 and Claude Sonnet 4.6 caught 15 to 17 but raised 3 to 11
+  false alarms per run; gpt-oss 20B caught only 7 (70 sections returned no
+  parsable answer). Bedrock cost for those runs was USD 101.72.
+- **Development set** (13 advisories, final code): lgtm 13/13 exact with 2
+  false alarms on fixes; plain LLM 7/13; Semgrep 0/13.
+
+## Results (5 Nov, v2.0 against v2.1)
 
 ### Held-out set (17 advisories)
 

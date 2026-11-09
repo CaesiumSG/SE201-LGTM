@@ -1,0 +1,814 @@
+{
+  "id": "aegra_authz_vulnerable",
+  "category": "authz",
+  "split": "real_world",
+  "expected": "vulnerable",
+  "n_findings": 1,
+  "verdicts": [
+    "vulnerable"
+  ],
+  "grounded": 1,
+  "grounding_rate": 1.0,
+  "latency_seconds": 72.38,
+  "case_seconds": 73.59,
+  "est_tokens": 1025,
+  "findings": [
+    {
+      "finding_id": "authz:remove-thread-ownership-check:1",
+      "cwe_id": "CWE-639",
+      "explanation": "The PR removes the inline thread-ownership check from all three run-creation endpoints (create_run, create_and_stream_run, wait_for_run). The removed guard verified `existing_thread.user_id != user.identity` and raised 404, preventing a user from creating a run on another user's thread. The only remaining authorization hook, `handle_event` (auth_handlers.py:62-158), is explicitly opt-in and 'allows by default' when no auth instance or handler is configured (lines 108-122), so it does not enforce ownership. The downstream shared helper `_prepare_run` (run_preparation.py:160-278) and `update_thread_metadata` (run_preparation.py:103-157) do not verify `thread.user_id` ownership \u2014 `update_thread_metadata` even auto-creates a thread with the caller's user_id and updates an existing thread's metadata without checking the existing owner. Consequently, after this change any authenticated user can act on (create runs against, and mutate metadata of) a thread owned by another user via the user-controlled `thread_id` path parameter.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+          "lines": [
+            53,
+            56
+          ],
+          "source": null,
+          "content": "    # Authorization check (create_run action on threads resource)\n    ctx = build_auth_context(user, \"threads\", \"create_run\")\n    value = {**request.model_dump(), \"thread_id\": thread_id}\n    filters = await handle_event(ctx, value)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+          "lines": [
+            95,
+            95
+          ],
+          "source": null,
+          "content": "    run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "libs/aegra-api/src/aegra_api/core/auth_handlers.py",
+          "lines": [
+            108,
+            122
+          ],
+          "source": null,
+          "content": "    auth = get_auth_instance()\n    if auth is None:\n        # No auth configured, allow by default\n        return None\n    ...\n    handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\n    if handler is None:\n        # No handler for this resource/action, allow by default\n        return None",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+          "lines": [
+            120,
+            143
+          ],
+          "source": null,
+          "content": "    thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\n    ...\n    if not thread:\n        # Auto-create thread if it doesn't exist\n        ...\n        thread_orm = ThreadORM(thread_id=thread_id, status=\"idle\", metadata_json=metadata, user_id=user_id)\n        session.add(thread_orm)\n        return",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "libs/aegra-api/tests/e2e/manual_auth_tests/README.md",
+          "content": "These tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Restore the thread-ownership verification in each endpoint (or centralize it in `_prepare_run`/`update_thread_metadata`) so that a 404/403 is raised when `existing_thread.user_id != user.identity`. Do not rely solely on the opt-in `handle_event` hook, which defaults to allow when no handler is configured.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7146,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+      "line": 53,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true,
+      "input_tokens": 1380
+    }
+  ],
+  "run_records": [
+    {
+      "section": "investigator",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 0,
+            "end_line": 0,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 280,
+            "end_line": 360,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "_prepare_run authorization check thread ownership user identity"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "start_line": 1,
+            "end_line": 160,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "investigate_base_code",
+          "args": {
+            "query": "build_auth_context handle_event authorization handler threads create_run"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/core/auth_handlers.py",
+            "start_line": 62,
+            "end_line": 160,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "existing_thread",
+            "file_glob": "*.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "user_id",
+            "file_glob": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "start_line": 248,
+            "end_line": 330,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "ThreadORM",
+            "file_glob": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "thread ownership authorization run creation user identity check"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "snapshot": "pr",
+            "start_line": 1,
+            "end_line": 100
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"sections\": [\n    {\n      \"id\": \"remove-thread-ownership-check\",\n      \"title\": \"Remove per-endpoint thread ownership (user_id) authorization checks from run-creation endpoints\",\n      \"rationale\": \"All four hunks delete the same inline `existing_thread.user_id != user.identity` guard (and its now-unused ThreadORM import) from the create/stream/wait run endpoints, so they collectively change one access-control concern: whether thread ownership is enforced before run creation.\",\n      \"hunks\": [\n        \"libs/aegra-api/src/aegra_api/api/runs.py#0\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#1\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#2\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#3\"\n      ],\n      \"context\": [\n        {\"path\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"symbol\": \"_prepare_run\", \"start_line\": 160, \"end_line\": 278, \"snapshot\": \"base\", \"why\": \"Downstream shared helper called by all three endpoints; does not itself verify thread.user_id ownership, so removing the inline check leaves no ownership enforcement on the create/stream/wait paths.\"},\n        {\"path\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"symbol\": \"update_thread_metadata\", \"start_line\": 103, \"end_line\": 157, \"snapshot\": \"base\", \"why\": \"Auto-creates or updates a thread without checking existing thread.user_id, so a removed guard would let a user act on another user's thread.\"},\n        {\"path\": \"libs/aegra-api/src/aegra_api/core/auth_handlers.py\", \"symbol\": \"handle_event\", \"start_line\": 62, \"end_line\": 158, \"snapshot\": \"base\", \"why\": \"The only remaining authorization hook (create_run on threads) is opt-in and defaults to allow when no handler is configured, so it does not substitute for the removed ownership check.\"}\n      ]\n    }\n  ]\n}",
+      "limit_hit": null
+    },
+    {
+      "section": "remove-thread-ownership-check",
+      "tool_calls": [
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "thread ownership authorization user must own thread before creating run"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "start_line": 100,
+            "end_line": 280,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/core/auth_handlers.py",
+            "start_line": 1,
+            "end_line": 170,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "search_policy",
+          "args": {
+            "query": "security policy thread ownership check user identity thread_id authorization"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 40,
+            "end_line": 130,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 300,
+            "end_line": 345,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removes the inline thread-ownership check from all three run-creation endpoints (create_run, create_and_stream_run, wait_for_run). The removed guard verified `existing_thread.user_id != user.identity` and raised 404, preventing a user from creating a run on another user's thread. The only remaining authorization hook, `handle_event` (auth_handlers.py:62-158), is explicitly opt-in and 'allows by default' when no auth instance or handler is configured (lines 108-122), so it does not enforce ownership. The downstream shared helper `_prepare_run` (run_preparation.py:160-278) and `update_thread_metadata` (run_preparation.py:103-157) do not verify `thread.user_id` ownership \u2014 `update_thread_metadata` even auto-creates a thread with the caller's user_id and updates an existing thread's metadata without checking the existing owner. Consequently, after this change any authenticated user can act on (create runs against, and mutate metadata of) a thread owned by another user via the user-controlled `thread_id` path parameter.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\", \"lines\": [53, 56], \"content\": \"    # Authorization check (create_run action on threads resource)\\n    ctx = build_auth_context(user, \\\"threads\\\", \\\"create_run\\\")\\n    value = {**request.model_dump(), \\\"thread_id\\\": thread_id}\\n    filters = await handle_event(ctx, value)\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\", \"lines\": [95, 95], \"content\": \"    run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\\\"pending\\\")\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/core/auth_handlers.py\", \"lines\": [108, 122], \"content\": \"    auth = get_auth_instance()\\n    if auth is None:\\n        # No auth configured, allow by default\\n        return None\\n    ...\\n    handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\\n    if handler is None:\\n        # No handler for this resource/action, allow by default\\n        return None\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"lines\": [120, 143], \"content\": \"    thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\\n    ...\\n    if not thread:\\n        # Auto-create thread if it doesn't exist\\n        ...\\n        thread_orm = ThreadORM(thread_id=thread_id, status=\\\"idle\\\", metadata_json=metadata, user_id=user_id)\\n        session.add(thread_orm)\\n        return\"},\n        {\"type\": \"policy\", \"source\": \"libs/aegra-api/tests/e2e/manual_auth_tests/README.md\", \"content\": \"These tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.\"}\n      ],\n      \"suggested_fix\": \"Restore the thread-ownership verification in each endpoint (or centralize it in `_prepare_run`/`update_thread_metadata`) so that a 404/403 is raised when `existing_thread.user_id != user.identity`. Do not rely solely on the opt-in `handle_event` hook, which defaults to allow when no handler is configured.\",\n      \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\",\n      \"line\": 53\n    }\n  ]\n}",
+      "limit_hit": "tool_calls"
+    },
+    {
+      "section": "sqli:remove-thread-ownership-check",
+      "tool_calls": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 40,
+            "end_line": 130,
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "start_line": 100,
+            "end_line": 280,
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "execute\\(|text\\(|raw|literal_column|\\.format\\(|f\"SELECT|f\"UPDATE|f\"DELETE|f\"INSERT",
+            "file_glob": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+            "snapshot": "base"
+          }
+        },
+        {
+          "tool": "grep_repo",
+          "args": {
+            "pattern": "user_id|identity",
+            "file_glob": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "snapshot": "pr"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "start_line": 130,
+            "end_line": 280,
+            "snapshot": "pr"
+          }
+        }
+      ],
+      "raw_answer": "{\n  \"findings\": []\n}",
+      "limit_hit": "tool_calls"
+    }
+  ],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/api/runs.py lines=1-562]\n1: \"\"\"Run endpoints for Agent Protocol\"\"\"\n2: \n3: import asyncio\n4: import contextlib\n5: from collections.abc import AsyncIterator\n6: from datetime import UTC, datetime\n7: \n8: import structlog\n9: from fastapi import APIRouter, Depends, Header, HTTPException, Query\n10: from fastapi.responses import StreamingResponse\n11: from sqlalchemy import delete, select, update\n12: from sqlalchemy.ext.asyncio import AsyncSession\n13: \n14: from aegra_api.core.active_runs import active_runs\n15: from aegra_api.core.auth_deps import auth_dependency, get_current_user\n16: from aegra_api.core.auth_handlers import build_auth_context, handle_event\n17: from aegra_api.core.orm import Run as RunORM\n18: from aegra_api.core.orm import Thread as ThreadORM\n19: from aegra_api.core.orm import _get_session_maker, get_session\n20: from aegra_api.core.sse import create_end_event, get_sse_headers\n21: from aegra_api.models import Run, RunCreate, RunStatus, User\n22: from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE\n23: from aegra_api.services.run_preparation import _prepare_run\n24: from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heartbeat_wait_body\n25: from aegra_api.services.streaming_service import streaming_service\n26: from aegra_api.settings import settings\n27: from aegra_api.utils.status_compat import validate_run_status\n28: \n29: router = APIRouter(tags=[\"Thread Runs\"], dependencies=auth_dependency)\n30: \n31: logger = structlog.getLogger(__name__)\n32: \n33: \n34: # active_runs is imported from aegra_api.core.active_runs (dependency-free module)\n35: \n36: # Default stream modes for background run execution\n37: DEFAULT_STREAM_MODES = [\"values\"]\n38: \n39: \n40: @router.post(\"/threads/{thread_id}/runs\", response_model=Run, responses={**NOT_FOUND, **CONFLICT})\n41: async def create_run(\n42:     thread_id: str,\n43:     request: RunCreate,\n44:     user: User = Depends(get_current_user),\n45:     session: AsyncSession = Depends(get_session),\n46: ) -> Run:\n47:     \"\"\"Create and execute a new run.\n48: \n49:     Starts graph execution asynchronously and returns the run record\n50:     immediately with status `pending`. Poll the run or use the stream\n51:     endpoint to follow progress. Provide either `input` or `command` (for\n52:     human-in-the-loop resumption) but not both.\n53:     \"\"\"\n54:     existing_thread = await session.scalar(\n55:         select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n56:     )\n57:     if existing_thread and existing_thread.user_id != user.identity:\n58:         raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n59: \n60:     # Authorization check (create_run action on threads resource)\n61:     ctx = build_auth_context(user, \"threads\", \"create_run\")\n62:     value = {**request.model_dump(), \"thread_id\": thread_id}\n63:     filters = await handle_event(ctx, value)\n64: \n65:     # If handler modified config/context, update request\n66:     if filters:\n67:         if \"config\" in filters and isinstance(filters[\"config\"], dict):\n68:             request.config = {**(request.config or {}), **filters[\"config\"]}\n69:         if \"context\" in filters and isinstance(filters[\"context\"], dict):\n70:             request.context = {**(request.context or {}), **filters[\"context\"]}\n71:     else:\n72:         value_config = value.get(\"config\")\n73:         if isinstance(value_config, dict):\n74:             request.config = {**(request.config or {}), **value_config}\n75: \n76:         value_context = value.get(\"context\")\n77:         if isinstance(value_context, dict):\n78:             request.context = {**(request.context or {}), **value_context}\n79: \n80:     _run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n81: \n82:     return run\n83: \n84: \n85: @router.post(\"/threads/{thread_id}/runs/stream\", responses={**SSE_RESPONSE, **NOT_FOUND, **CONFLICT})\n86: async def create_and_stream_run(\n87:     thread_id: str,\n88:     request: RunCreate,\n89:     user: User = Depends(get_current_user),\n90:     session: AsyncSession = Depends(get_session),\n91: ) -> StreamingResponse:\n92:     \"\"\"Create a new run and stream its execution via SSE.\n93: \n94:     Returns a `text/event-stream` response with Server-Sent Events. Each\n95:     event has a `type` field (e.g. `values`, `updates`, `messages`,\n96:     `metadata`, `end`) and a JSON `data` payload.\n97: \n98:     Set `on_disconnect` to `\"continue\"` if the run should keep executing\n99:     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`\n100:     to control which event types are emitted.\n101:     \"\"\"\n102:     existing_thread = await session.scalar(\n103:         select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n104:     )\n105:     if existing_thread and existing_thread.user_id != user.identity:\n106:         raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n107: \n108:     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n109: \n110:     # Default to cancel on disconnect - this matches user expectation that clicking\n111:     # \"Cancel\" in the frontend will stop the backend task. Users can explicitly\n112:     # set on_disconnect=\"continue\" if they want the task to continue.\n113:     cancel_on_disconnect = (request.on_disconnect or \"cancel\").lower() == \"cancel\"\n114: \n115:     return StreamingResponse(\n116:         streaming_service.stream_run_execution(\n117:             run,\n118:             None,\n119:             cancel_on_disconnect=cancel_on_disconnect,\n120:         ),\n121:         media_type=\"text/event-stream\",\n122:         headers={\n123:             **get_sse_headers(),\n124:             \"Location\": f\"/threads/{thread_id}/runs/{run_id}/stream\",\n125:             \"Content-Location\": f\"/threads/{thread_id}/runs/{run_id}\",\n126:         },\n127:     )\n128: \n129: \n130: @router.get(\"/threads/{thread_id}/runs/{run_id}\", response_model=Run, responses={**NOT_FOUND})\n131: async def get_run(\n132:     thread_id: str,\n133:     run_id: str,\n134:     user: User = Depends(get_current_user),\n135:     session: AsyncSession = Depends(get_session),\n136: ) -> Run:\n137:     \"\"\"Get a run by its ID.\n138: \n139:     Returns the current state of the run including its status, input, output,\n140:     and error information.\n141:     \"\"\"\n142:     # Authorization check (read action on runs resource)\n143:     ctx = build_auth_context(user, \"runs\", \"read\")\n144:     value = {\"run_id\": run_id, \"thread_id\": thread_id}\n145:     await handle_event(ctx, value)\n146: \n147:     stmt = select(RunORM).where(\n148:         RunORM.run_id == str(run_id),\n149:         RunORM.thread_id == thread_id,\n150:         RunORM.user_id == user.identity,\n151:     )\n152:     logger.info(f\"[get_run] querying DB run_id={run_id} thread_id={thread_id} user={user.identity}\")\n153:     run_orm = await session.scalar(stmt)\n154:     if not run_orm:\n155:         raise HTTPException(404, f\"Run '{run_id}' not found\")\n156: \n157:     # Refresh to ensure we have the latest data (in case background task updated it)\n158:     await session.refresh(run_orm)\n159: \n160:     logger.info(\n161:         f\"[get_run] found run status={run_orm.status} user={user.identity} thread_id={thread_id} run_id={run_id}\"\n162:     )\n163:     # Convert to Pydantic\n164:     return Run.model_validate(run_orm)\n165: \n166: \n167: @router.get(\"/threads/{thread_id}/runs\", response_model=list[Run])\n168: async def list_runs(\n169:     thread_id: str,\n170:     limit: int = Query(10, ge=1, description=\"Maximum number of runs to return\"),\n171:     offset: int = Query(0, ge=0, description=\"Number of runs to skip for pagination\"),\n172:     status: str | None = Query(\n173:         None, description=\"Filter by run status (e.g. pending, running, success, error, interrupted)\"\n174:     ),\n175:     user: User = Depends(get_current_user),\n176:     session: AsyncSession = Depe\n[TRUNCATED]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "pr"
+                },
+                "result": "NOTE: the whole-file read was not served: this file's full diff is already in the prompt. Read a line range with start_line and end_line for the surrounding code."
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "base",
+                  "start_line": 280,
+                  "end_line": 360
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/api/runs.py lines=280-360]\n280:                 RunORM.user_id == user.identity,\n281:             )\n282:         )\n283:         if not run_orm:\n284:             raise HTTPException(404, f\"Run '{run_id}' not found\")\n285: \n286:         if run_orm.status in TERMINAL_STATES:\n287:             return StreamingResponse(\n288:                 iter([encode_output(run_orm.output or {})]),\n289:                 media_type=\"application/json\",\n290:             )\n291: \n292:     return StreamingResponse(\n293:         heartbeat_wait_body(\n294:             run_id,\n295:             thread_id,\n296:             user.identity,\n297:             timeout=settings.worker.BG_JOB_TIMEOUT_SECS,\n298:         ),\n299:         media_type=\"application/json\",\n300:         headers={\n301:             \"Location\": f\"/threads/{thread_id}/runs/{run_id}/join\",\n302:             \"Content-Location\": f\"/threads/{thread_id}/runs/{run_id}\",\n303:         },\n304:     )\n305: \n306: \n307: @router.post(\"/threads/{thread_id}/runs/wait\", responses={**NOT_FOUND, **CONFLICT})\n308: async def wait_for_run(\n309:     thread_id: str,\n310:     request: RunCreate,\n311:     user: User = Depends(get_current_user),\n312: ) -> StreamingResponse:\n313:     \"\"\"Create a run, execute it, and wait for completion.\n314: \n315:     Returns a chunked ``application/json`` response with periodic ``\\\\n``\n316:     heartbeat bytes to keep the connection alive. The final chunk is the\n317:     JSON result. Uses ``BG_JOB_TIMEOUT_SECS`` (default 1 hour) as the\n318:     safety-net timeout.\n319: \n320:     Sessions are managed manually (not via ``Depends``) to avoid holding a\n321:     pool connection during the long wait.\n322:     \"\"\"\n323:     maker = _get_session_maker()\n324: \n325:     # Session block: all pre-execution DB work (validate, create run, submit)\n326:     async with maker() as session:\n327:         existing_thread = await session.scalar(\n328:             select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n329:         )\n330:         if existing_thread and existing_thread.user_id != user.identity:\n331:             raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n332: \n333:         run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n334: \n335:     # No pool connection held from here \u2014 safe for long waits\n336:     return StreamingResponse(\n337:         heartbeat_wait_body(\n338:             run_id,\n339:             thread_id,\n340:             user.identity,\n341:             timeout=settings.worker.BG_JOB_TIMEOUT_SECS,\n342:         ),\n343:         media_type=\"application/json\",\n344:         headers={\n345:             \"Location\": f\"/threads/{thread_id}/runs/{run_id}/join\",\n346:             \"Content-Location\": f\"/threads/{thread_id}/runs/{run_id}\",\n347:         },\n348:     )\n349: \n350: \n351: @router.get(\"/threads/{thread_id}/runs/{run_id}/stream\", responses={**SSE_RESPONSE, **NOT_FOUND})\n352: async def stream_run(\n353:     thread_id: str,\n354:     run_id: str,\n355:     last_event_id: str | None = Header(None, alias=\"Last-Event-ID\"),\n356:     _stream_mode: str | None = Query(None, description=\"Override the stream mode for this connection.\"),\n357:     user: User = Depends(get_current_user),\n358:     session: AsyncSession = Depends(get_session),\n359: ) -> StreamingResponse:\n360:     \"\"\"Stream an existing run's execution via SSE.\n[END READ]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "_prepare_run authorization check thread ownership user identity"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d status=ok truncated=true query=\"_prepare_run authorization check thread ownership user identity\"]\n**Exploration: _prepare_run authorization check thread ownership user identity**\n\nFound 37 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `ThreadCheckpoint` (libs/aegra-api/src/aegra_api/models/threads.py:106) \u2014 10 callers in `libs/aegra-api/src/aegra_api/api/threads.py`, `libs/aegra-api/src/aegra_api/models/__init__.py`, `libs/aegra-api/src/aegra_api/services/thread_state_service.py`; tests: `libs/aegra-api/tests/unit/test_threads/test_state_checkpoint.py`\n- `Run` (libs/aegra-api/src/aegra_api/models/runs.py:92) \u2014 21 callers in `libs/aegra-api/src/aegra_api/api/runs.py`, `libs/aegra-api/src/aegra_api/api/stateless_runs.py`, `libs/aegra-api/src/aegra_api/models/__init__.py`, `libs/aegra-api/src/aegra_api/services/run_preparation.py` +1 more; tests: `libs/aegra-api/tests/fixtures/test_helpers.py`, `libs/aegra-api/tests/unit/test_api/test_runs.py`, `libs/aegra-api/tests/unit/test_api/test_stateless_runs.py`, `libs/aegra-api/tests/unit/test_models/test_run_status_validation.py` +1\n- `run` (libs/aegra-cli/src/aegra_cli/commands/db.py:105) \u2014 1 caller in `libs/aegra-cli/src/aegra_cli/commands/db.py`; no tests found within 3 caller hops\n- `run` (libs/aegra-cli/src/aegra_cli/commands/db.py:151) \u2014 1 caller in `libs/aegra-cli/src/aegra_cli/commands/db.py`; no tests found within 3 caller hops\n- `run` (libs/aegra-cli/src/aegra_cli/commands/db.py:186) \u2014 1 caller in `libs/aegra-cli/src/aegra_cli/commands/db.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`libs/aegra-api/src/aegra_api/services/run_preparation.py`** \u2014 imports(imports), Run(imports), Run(instantiates), Thread(imports), User(imports), RunCreate(imports), +15 more\n\n```python\n157\t    )\n158\t\n159\t\n160\tasync def _prepare_run(\n161\t    session: AsyncSession,\n162\t    thread_id: str,\n163\t    request: RunCreate,\n164\t    user: User,\n165\t    *,\n166\t    initial_status: str,\n167\t) -> tuple[str, Run, RunJob]:\n168\t    \"\"\"Shared run-creation logic used by create, stream, and wait endpoints.\n169\t\n170\t    Validates inputs, resolves the assistant, persists the RunORM record,\n171\t    builds a RunJob, submits it to the executor, and returns the triple\n172\t    ``(run_id, run_model, job)``.\n173\t    \"\"\"\n174\t    await _validate_resume_command(session, thread_id, request.command)\n175\t\n176\t    run_id = str(uuid4())\n177\t    langgraph_service = get_langgraph_service()\n178\t    logger.info(\n179\t        \"Scheduling run\",\n180\t        run_id=run_id,\n181\t        thread_id=thread_id,\n182\t        user_id=user.identity,\n183\t        status=initial_status,\n184\t    )\n185\t\n186\t    # Resolve assistant / graph\n187\t    requested_id = str(request.assistant_id)\n188\t    available_graphs = langgraph_service.list_graphs()\n189\t    resolved_assistant_id = resolve_assistant_id(requested_id, available_graphs)\n190\t\n191\t    # Config / context merging\n192\t    config = request.config or {}\n193\t    context = request.context or {}\n194\t    configurable = config.get(\"configurable\", {})\n195\t    if not isinstance(configurable, dict):\n196\t        raise HTTPException(status_code=422, detail=\"`config.configurable` must be a mapping\")\n197\t\n198\t    if not context:\n199\t        context = configurable.copy()\n200\t\n201\t    assistant_stmt = select(AssistantORM).where(\n202\t        AssistantORM.assistant_id == resolved_assistant_id,\n203\t    )\n204\t    assistant = await session.scalar(assistant_stmt)\n205\t    if not assistant:\n206\t        raise HTTPException(404, f\"Assistant '{request.assistant_id}' not found\")\n207\t\n208\t    config = _merge_jsonb(assistant.config, config)\n209\t    context = _merge_jsonb(assistant.context, context)\n210\t\n211\t    # Validate the assistant's graph exists\n212\t    available_graphs = langgraph_service.list_graphs()\n213\t    if assistant.graph_id not in available_graphs:\n214\t        raise HTTPException(404, f\"Graph '{assistant.graph_id}' not found for assistant\")\n215\t\n216\t    # Mark thread as busy and update metadata\n217\t    await update_thread_metadata(\n218\t        session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input\n219\t    )\n220\t    await set_thread_status(session, thread_id, \"busy\")\n221\t\n222\t    # Build the RunJob before persisting so we can store execution_params\n223\t    job = RunJob(\n224\t        identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=assistant.graph_id),\n225\t        user=user,\n226\t        execution=RunExecution(\n227\t            input_data=request.input or {},\n228\t            config=config,\n229\t            context=context,\n230\t            stream_mode=request.stream_mode,\n231\t            checkpoint=request.checkpoint,\n232\t            command=request.command,\n233\t        ),\n234\t        behavior=RunBehavior(\n235\t            interrupt_before=request.interrupt_before,\n236\t            interrupt_after=request.interrupt_after,\n237\t            multitask_strategy=request.multitask_strategy,\n238\t            subgraphs=request.stream_subgraphs or False,\n239\t        ),\n240\t    )\n241\t\n242\t    # Persist run record with trace metadata for worker observability.\n243\t    # The correlation_id from the HTTP request is stored so workers can\n244\t    # link their logs and spans back to the original request.\n245\t    exec_params = job.to_execution_params()\n246\t    exec_params[\"trace\"] = {\n247\t        \"correlation_id\": correlation_id.get(\"\"),\n248\t        \"user_id\"\n[TRUNCATED omitted_chars=16342]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "snapshot": "base",
+                  "start_line": 1,
+                  "end_line": 160
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/services/run_preparation.py lines=1-160]\n1: \"\"\"Run preparation logic extracted from api/runs.py.\n2: \n3: Contains the shared run-creation helper, thread metadata updates,\n4: resume-command validation, and config/context merging logic.\n5: \"\"\"\n6: \n7: from datetime import UTC, datetime\n8: from typing import Any\n9: from uuid import uuid4\n10: \n11: import structlog\n12: from asgi_correlation_id import correlation_id\n13: from fastapi import HTTPException\n14: from sqlalchemy import select, update\n15: from sqlalchemy.ext.asyncio import AsyncSession\n16: \n17: from aegra_api.core.orm import Assistant as AssistantORM\n18: from aegra_api.core.orm import Run as RunORM\n19: from aegra_api.core.orm import Thread as ThreadORM\n20: from aegra_api.models import Run, RunCreate, User\n21: from aegra_api.models.run_job import RunBehavior, RunExecution, RunIdentity, RunJob\n22: from aegra_api.services.executor import executor\n23: from aegra_api.services.langgraph_service import get_langgraph_service\n24: from aegra_api.services.run_status import set_thread_status\n25: from aegra_api.utils.assistants import resolve_assistant_id\n26: from aegra_api.utils.run_utils import _merge_jsonb\n27: \n28: logger = structlog.getLogger(__name__)\n29: \n30: \n31: async def _validate_resume_command(session: AsyncSession, thread_id: str, command: dict[str, Any] | None) -> None:\n32:     \"\"\"Validate resume command requirements.\"\"\"\n33:     if command and command.get(\"resume\") is not None:\n34:         # Check if thread exists and is in interrupted state\n35:         thread_stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id)\n36:         thread = await session.scalar(thread_stmt)\n37:         if not thread:\n38:             raise HTTPException(404, f\"Thread '{thread_id}' not found\")\n39:         if thread.status != \"interrupted\":\n40:             raise HTTPException(400, \"Cannot resume: thread is not in interrupted state\")\n41: \n42: \n43: _THREAD_NAME_MAX_LENGTH = 100\n44: \n45: \n46: def _resolve_content_text(content: Any) -> str:\n47:     \"\"\"Extract plain text from a message content field.\n48: \n49:     Handles both plain strings and list-of-blocks format used by some SDKs::\n50: \n51:         [{\"type\": \"text\", \"text\": \"Hello world\"}]\n52:     \"\"\"\n53:     if isinstance(content, str):\n54:         return content\n55:     if isinstance(content, list):\n56:         parts: list[str] = []\n57:         for block in content:\n58:             if isinstance(block, dict) and block.get(\"type\") == \"text\":\n59:                 text = block.get(\"text\", \"\")\n60:                 if isinstance(text, str):\n61:                     parts.append(text)\n62:         return \" \".join(parts)\n63:     return \"\"\n64: \n65: \n66: def _extract_thread_name(input_data: dict[str, Any]) -> str:\n67:     \"\"\"Derive a thread name from the first human message in the run input.\n68: \n69:     Supports the common ``{\"messages\": [{\"role\": \"human\", \"content\": \"...\"}]}``\n70:     shape emitted by agent-chat-ui, LangGraph Studio, and the JS/Python SDKs.\n71:     Also handles list-of-blocks content from OpenAI-compatible APIs.\n72:     Returns an empty string when no suitable message is found.\n73:     \"\"\"\n74:     messages = input_data.get(\"messages\")\n75:     if not isinstance(messages, list) or not messages:\n76:         return \"\"\n77:     _HUMAN_ROLES = {\"human\", \"user\"}\n78:     for msg in messages:\n79:         raw_content: Any = None\n80:         role: str | None = None\n81:         if isinstance(msg, dict):\n82:             role_val = msg.get(\"role\")\n83:             role = role_val if isinstance(role_val, str) else None\n84:             if role is None:\n85:                 type_val = msg.get(\"type\")\n86:                 role = type_val if isinstance(type_val, str) else None\n87:             raw_content = msg.get(\"content\")\n88:         elif hasattr(msg, \"content\"):\n89:             raw_content = getattr(msg, \"content\", None)\n90:             msg_type = getattr(msg, \"type\", None)\n91:             role = msg_type if isinstance(msg_type, str) else None\n92:         if role not in _HUMAN_ROLES:\n93:             continue\n94:         text = _resolve_content_text(raw_content)\n95:         if text.strip():\n96:             name = text.strip()\n97:             if len(name) > _THREAD_NAME_MAX_LENGTH:\n98:                 return name[:_THREAD_NAME_MAX_LENGTH].rsplit(\" \", 1)[0] + \"...\"\n99:             return name\n100:     return \"\"\n101: \n102: \n103: async def update_thread_metadata(\n104:     session: AsyncSession,\n105:     thread_id: str,\n106:     assistant_id: str,\n107:     graph_id: str,\n108:     *,\n109:     user_id: str | None = None,\n110:     input_data: dict[str, Any] | None = None,\n111: ) -> None:\n112:     \"\"\"Update thread metadata with assistant and graph information (dialect agnostic).\n113: \n114:     If thread doesn't exist, auto-creates it.\n115:     When *input_data* is provided and the thread has no name yet, the first\n116:     human message content is used as ``thread_name``.\n117:     Does NOT commit \u2014 the caller controls the transaction boundary.\n118:     \"\"\"\n119:     # Read-modify-write to avoid DB-specific JSON concat operators\n120:     thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\n121: \n122:     thread_name = _extract_thread_name(input_data or {})\n123: \n124:     if not thread:\n125:         # Auto-create thread if it doesn't exist\n126:         if not user_id:\n127:             raise HTTPException(400, \"Cannot auto-create thread: user_id is required\")\n128: \n129:         metadata = {\n130:             \"owner\": user_id,\n131:             \"assistant_id\": str(assistant_id),\n132:             \"graph_id\": graph_id,\n133:             \"thread_name\": thread_name,\n134:         }\n135: \n136:         thread_orm = ThreadORM(\n137:             thread_id=thread_id,\n138:             status=\"idle\",\n139:             metadata_json=metadata,\n140:             user_id=user_id,\n141:         )\n142:         session.add(thread_orm)\n143:         return\n144: \n145:     md = dict(getattr(thread, \"metadata_json\", {}) or {})\n146:     md.update(\n147:         {\n148:             \"assistant_id\": str(assistant_id),\n149:             \"graph_id\": graph_id,\n150:         }\n151:     )\n152:     # Only set thread_name if empty and we have a name from the input\n153:     if thread_name and not md.get(\"thread_name\"):\n154:         md[\"thread_name\"] = thread_name\n155:     await session.execute(\n156:         update(ThreadORM).where(ThreadORM.thread_id == thread_id).values(metadata_json=md, updated_at=datetime.now(UTC))\n157:     )\n158: \n159: \n160: async def _prepare_run(\n[END READ]"
+              },
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "build_auth_context handle_event authorization handler threads create_run"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d status=ok truncated=true query=\"build_auth_context handle_event authorization handler threads create_run\"]\n**Exploration: build_auth_context handle_event authorization handler threads create_run**\n\nFound 38 symbols across 7 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `handle_event` (libs/aegra-api/src/aegra_api/core/auth_handlers.py:62) \u2014 49 callers in `libs/aegra-api/src/aegra_api/api/threads.py`, `libs/aegra-api/src/aegra_api/api/assistants.py`, `libs/aegra-api/src/aegra_api/api/store.py`, `libs/aegra-api/src/aegra_api/api/runs.py`; tests: `libs/aegra-api/tests/unit/test_core/test_auth_handlers.py`, `libs/aegra-api/tests/integration/test_auth_handlers_integration.py`\n- `build_auth_context` (libs/aegra-api/src/aegra_api/core/auth_handlers.py:213) \u2014 49 callers in `libs/aegra-api/src/aegra_api/api/threads.py`, `libs/aegra-api/src/aegra_api/api/assistants.py`, `libs/aegra-api/src/aegra_api/api/store.py`, `libs/aegra-api/src/aegra_api/api/runs.py`; tests: `libs/aegra-api/tests/unit/test_core/test_auth_handlers.py`, `libs/aegra-api/tests/integration/test_auth_handlers_integration.py`\n- `create_run` (libs/aegra-api/src/aegra_api/api/runs.py:41) \u2014 7 callers in `libs/aegra-api/src/aegra_api/api/stateless_runs.py`; tests: `libs/aegra-api/tests/unit/test_api/test_runs.py`\n- `Run` (libs/aegra-api/src/aegra_api/models/runs.py:92) \u2014 21 callers in `libs/aegra-api/src/aegra_api/api/runs.py`, `libs/aegra-api/src/aegra_api/api/stateless_runs.py`, `libs/aegra-api/src/aegra_api/models/__init__.py`, `libs/aegra-api/src/aegra_api/services/run_preparation.py` +1 more; tests: `libs/aegra-api/tests/fixtures/test_helpers.py`, `libs/aegra-api/tests/unit/test_api/test_runs.py`, `libs/aegra-api/tests/unit/test_api/test_stateless_runs.py`, `libs/aegra-api/tests/unit/test_models/test_run_status_validation.py` +1\n- `run` (libs/aegra-cli/src/aegra_cli/commands/db.py:105) \u2014 1 caller in `libs/aegra-cli/src/aegra_cli/commands/db.py`; no tests found within 3 caller hops\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`libs/aegra-api/src/aegra_api/core/auth_handlers.py`** \u2014 _get_handler(calls), _get_handler(function), AuthContextWrapper(class), AuthContextWrapper(instantiates), build_auth_context(function), get_auth_instance(calls), +1 more\n\n```python\n15\tfrom aegra_api.models.auth import User\n16\t\n17\t\n18\tclass AuthContextWrapper:\n19\t    \"\"\"Wrapper to convert Aegra User model to AuthContext.\n20\t\n21\t    AuthContext expects a BaseUser-compatible object. Our User model\n22\t    implements the BaseUser protocol (identity, permissions, display_name, __getitem__),\n23\t    so we can use it directly after ensuring compatibility.\n24\t    \"\"\"\n25\t\n26\t    def __init__(\n27\t        self,\n28\t        user: User,\n29\t        resource: str,\n30\t        action: str,\n31\t    ):\n32\t        \"\"\"Initialize auth context wrapper.\n33\t\n34\t        Args:\n35\t            user: Authenticated user from Aegra's User model\n36\t            resource: Resource being accessed (e.g., \"threads\", \"assistants\")\n37\t            action: Action being performed (e.g., \"create\", \"read\", \"update\")\n38\t        \"\"\"\n39\t        self.user = user\n40\t        self.resource = resource\n41\t        self.action = action\n42\t        self.permissions = user.permissions or []\n43\t\n44\t    def to_langgraph_context(self) -> LangGraphAuthContext:\n45\t        \"\"\"Convert to LangGraph AuthContext.\n46\t\n47\t        Our User model implements the BaseUser protocol (identity, permissions,\n48\t        display_name, __getitem__, __contains__, __iter__), so it's compatible\n49\t        with LangGraph's AuthContext.\n50\t\n51\t        Returns:\n52\t            AuthContext instance compatible with @auth.on handlers\n53\t        \"\"\"\n54\t        return LangGraphAuthContext(\n55\t            user=self.user,  # Our User model implements BaseUser protocol\n56\t            resource=self.resource,  # type: ignore\n57\t            action=self.action,  # type: ignore\n58\t            permissions=self.permissions,\n59\t        )\n60\t\n61\t\n62\tasync def handle_event(\n\n... (gap) ...\n\n105\t        # This allows the request to proceed normally\n106\t        return None\n107\t\n108\t    auth = get_auth_instance()\n109\t    if auth is None:\n110\t        # No auth configured, allow by default\n111\t        # This ensures raw Aegra works out-of-the-box without interruption\n\n... (gap) ...\n\n115\t    auth_ctx = ctx.to_langgraph_context()\n116\t\n117\t    # Find the most specific handler\n118\t    handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\n119\t    if handler is None:\n120\t        # No handler for this resource/action, allow by default\n121\t        # Developers can use Aegra without defining handlers - it won't break\n\n... (gap) ...\n\n158\t    )\n159\t\n160\t\n161\tdef _get_handler(\n162\t    auth: Auth,\n163\t    resource: str,\n164\t    action: str,\n165\t) -> Any | None:\n166\t    \"\"\"Find the most specific handler for resource+action.\n167\t\n168\t    Handler resolution follows this priority order (most specific first):\n169\t    1. (resource, action) - e.g., (\"threads\", \"create\")\n170\t    2. (resource, \"*\") - e.g., (\"threads\", \"*\")\n171\t    3. (\"*\", action) - e.g., (\"*\", \"create\")\n172\t    4. (\"*\", \"*\") - global handler\n173\t\n174\t    Args:\n175\t        auth: Auth instance with registered handlers\n176\t        resource: Resource name (e.g., \"threads\", \"assistants\")\n177\t        action: Action name (e.g., \"create\", \"read\", \"update\")\n178\t\n179\t    Returns:\n180\t        Handler function or None if no handler found\n181\t    \"\"\"\n182\t    # Check cache first\n183\t    key = (resource, \n[TRUNCATED omitted_chars=16011]\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/core/auth_handlers.py",
+                  "snapshot": "base",
+                  "start_line": 62,
+                  "end_line": 160
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/core/auth_handlers.py lines=62-160]\n62: async def handle_event(\n63:     ctx: AuthContextWrapper | None,\n64:     value: dict[str, Any],\n65: ) -> dict[str, Any] | None:\n66:     \"\"\"Call the appropriate @auth.on.* handler for authorization.\n67: \n68:     This function resolves the most specific handler for the given resource\n69:     and action, calls it with the auth context and value, and interprets\n70:     the result.\n71: \n72:     **Default Behavior (Non-Interruptive):**\n73:     - If no auth is configured \u2192 allows by default (returns None)\n74:     - If no handlers are defined \u2192 allows by default (returns None)\n75:     - If handler returns None/True \u2192 allows (returns None)\n76:     - If handler returns dict \u2192 allows with filters applied (returns dict)\n77:     - **Only interrupts if handler returns False or raises exception**\n78: \n79:     This ensures that developers using raw Aegra without custom authorization\n80:     handlers will have a working system out-of-the-box. Handlers are purely\n81:     additive - they can inject metadata, apply filters, or deny access, but\n82:     they don't interrupt the flow unless explicitly configured to do so.\n83: \n84:     Handler resolution priority (most specific first):\n85:     1. Resource+action specific (e.g., \"threads\", \"create\")\n86:     2. Resource-specific (e.g., \"threads\", \"*\")\n87:     3. Action-specific (e.g., \"*\", \"create\")\n88:     4. Global handler (\"*\", \"*\")\n89: \n90:     Args:\n91:         ctx: Auth context wrapper with user, resource, and action\n92:         value: The data being authorized (request body, search filters, etc.)\n93:                This dict may be modified by the handler (e.g., injecting metadata)\n94: \n95:     Returns:\n96:         None: Request allowed, no filters to apply\n97:         dict: Filter dict to apply to queries (e.g., {\"user_id\": \"123\"})\n98: \n99:     Raises:\n100:         HTTPException(403): If handler returns False or raises AssertionError\n101:         HTTPException(500): If handler raises unexpected exception or returns invalid type\n102:     \"\"\"\n103:     if ctx is None:\n104:         # No auth context means no authorization check needed\n105:         # This allows the request to proceed normally\n106:         return None\n107: \n108:     auth = get_auth_instance()\n109:     if auth is None:\n110:         # No auth configured, allow by default\n111:         # This ensures raw Aegra works out-of-the-box without interruption\n112:         return None\n113: \n114:     # Convert to AuthContext\n115:     auth_ctx = ctx.to_langgraph_context()\n116: \n117:     # Find the most specific handler\n118:     handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\n119:     if handler is None:\n120:         # No handler for this resource/action, allow by default\n121:         # Developers can use Aegra without defining handlers - it won't break\n122:         return None\n123: \n124:     try:\n125:         # Call the handler with context and value\n126:         result = await handler(ctx=auth_ctx, value=value)\n127:     except Auth.exceptions.HTTPException as e:\n128:         # Handler raised HTTP exception, convert to FastAPI HTTPException\n129:         raise HTTPException(\n130:             status_code=e.status_code,\n131:             detail=e.detail,\n132:             headers=dict(e.headers) if hasattr(e, \"headers\") and e.headers else None,\n133:         ) from e\n134:     except AssertionError as e:\n135:         # Handler used assert for authorization check\n136:         raise HTTPException(status_code=403, detail=str(e)) from e\n137:     except Exception as e:\n138:         # Unexpected error in handler\n139:         raise HTTPException(status_code=500, detail=f\"Authorization error: {str(e)}\") from e\n140: \n141:     # Interpret handler result\n142:     if result in (None, True):\n143:         # Allow request, no filters\n144:         return None\n145: \n146:     if result is False:\n147:         # Deny request\n148:         raise HTTPException(status_code=403, detail=\"Forbidden\")\n149: \n150:     if isinstance(result, dict):\n151:         # Return filter dict to apply to queries\n152:         return result\n153: \n154:     # Invalid return type\n155:     raise HTTPException(\n156:         status_code=500,\n157:         detail=f\"Auth handler returned invalid type: {type(result)}. Expected dict, None, True, or False.\",\n158:     )\n[END READ]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "existing_thread",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 pattern=\"existing_thread\"]\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:179:        existing_thread = _thread_row(\"existing-thread-id\", metadata={\"original\": True})\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:188:                    return existing_thread\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:209:        existing_thread = _thread_row(\"conflict-thread-id\")\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:213:                return existing_thread\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:227:        existing_thread = _thread_row(\"conflict-thread-id\")\nlibs/aegra-api/tests/integration/test_api/test_threads_crud.py:231:                return existing_thread\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_id",
+                  "file_glob": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d pattern=\"user_id\"]\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:109:    user_id: str | None = None,\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:126:        if not user_id:\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:127:            raise HTTPException(400, \"Cannot auto-create thread: user_id is required\")\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:130:            \"owner\": user_id,\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:140:            user_id=user_id,\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:182:        user_id=user.identity,\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:218:        session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:248:        \"user_id\": user.identity,\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:262:        user_id=user.identity,\n[END GREP]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "snapshot": "base",
+                  "start_line": 248,
+                  "end_line": 330
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/services/run_preparation.py lines=248-278]\n248:         \"user_id\": user.identity,\n249:         \"thread_id\": thread_id,\n250:         \"graph_id\": assistant.graph_id,\n251:     }\n252: \n253:     now = datetime.now(UTC)\n254:     run_orm = RunORM(\n255:         run_id=run_id,\n256:         thread_id=thread_id,\n257:         assistant_id=resolved_assistant_id,\n258:         status=initial_status,\n259:         input=request.input or {},\n260:         config=config,\n261:         context=context,\n262:         user_id=user.identity,\n263:         created_at=now,\n264:         updated_at=now,\n265:         output=None,\n266:         error_message=None,\n267:         execution_params=exec_params,\n268:     )\n269:     session.add(run_orm)\n270:     await session.commit()\n271: \n272:     run = Run.model_validate(run_orm)\n273: \n274:     # Submit to executor\n275:     await executor.submit(job)\n276:     logger.info(\"Submitted run to executor\", run_id=run_id)\n277: \n278:     return run_id, run, job\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "ThreadORM",
+                  "file_glob": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 pattern=\"ThreadORM\"]\nNo matches found.\n[END GREP]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "thread ownership authorization run creation user identity check"
+                },
+                "result": "[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:57-64] (relevance 0.27)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n- These tests use the mock JWT auth from `jwt_mock_auth_example.py`\n- Since auth is user-specific, these tests are manual and not part of CI\n\n---\n\n[libs/aegra-api/README.md:156-203] (relevance 0.26)\n|  FastAPI HTTP Layer (Agent Protocol API)                |\n|  - /assistants, /threads, /runs, /store endpoints       |\n+---------------------------------------------------------+\n|  Middleware Stack                                        |\n|  - Auth, CORS, Structured Logging, Correlation ID       |\n+---------------------------------------------------------+\n|  Service Layer (Business Logic)                          |\n|  - LangGraphService, AssistantService, StreamingService |\n+---------------------------------------------------------+\n|  LangGraph Runtime                                       |\n|  - Graph execution, state management, tool execution    |\n+---------------------------------------------------------+\n|  Database Layer (PostgreSQL)                             |\n|  - AsyncPostgresSaver (checkpoints), AsyncPostgresStore |\n+---------------------------------------------------------+\n```\n\n## Package Structure\n\n```\nlibs/aegra-api/\n\u251c\u2500\u2500 src/aegra_api/\n\u2502   \u251c\u2500\u2500 api/              # Agent Protocol endpoints\n\u2502   \u2502   \u251c\u2500\u2500 assistants.py # /assistants CRUD\n\u2502   \u2502   \u251c\u2500\u2500 threads.py    # /threads and state management\n\u2502   \u2502   \u251c\u2500\u2500 runs.py       # /runs execution and streaming\n\u2502   \u2502   \u2514\u2500\u2500 store.py      # /store vector storage\n\u2502   \u251c\u2500\u2500 services/         # Business logic layer\n\u2502   \u251c\u2500\u2500 core/             # Infrastructure (database, auth, orm)\n\u2502   \u251c\u2500\u2500 models/           # Pydantic request/response schemas\n\u2502   \u251c\u2500\u2500 middleware/       # ASGI middleware\n\u2502   \u251c\u2500\u2500 observability/    # OpenTelemetry tracing\n\u2502   \u251c\u2500\u2500 utils/            # Helper functions\n\u2502   \u251c\u2500\u2500 main.py           # FastAPI app entry point\n\u2502   \u251c\u2500\u2500 config.py         # HTTP/store config loading\n\u2502   \u2514\u2500\u2500 settings.py       # Environment settings\n\u251c\u2500\u2500 tests/                # Test suite\n\u251c\u2500\u2500 alembic/              # Database migrations\n\u2514\u2500\u2500 pyproject.toml\n```\n\n## Related Packages\n\n- **aegra-cli**: Command-line interface for project management\n\n## Documentation\n\nFor full documentation, see the [docs/](../../docs/) directory.\n\n---\n\n[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:1-62] (relevance 0.24)\n# Manual Auth Tests\n\n**\u26a0\ufe0f These tests are skipped by default and should only be run when making changes to authentication/authorization code.**\n\n## Purpose\n\nThese tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.\n\n## When to Run These Tests\n\nRun these tests when:\n- Making changes to `src/agent_server/core/auth_middleware.py`\n- Making changes to `src/agent_server/core/auth_handlers.py`\n- Making changes to `src/agent_server/core/auth_deps.py`\n- Making changes to authorization handler resolution logic\n- Adding new authentication features\n- Fixing authentication-related bugs\n\n## How to Run\n\n1. **Create an auth config file** (e.g., `my_auth_config.json`):\n   ```json\n   {\n     \"graphs\": {\n       \"agent\": \"./graphs/react_agent/graph.py:graph\"\n     },\n     \"auth\": {\n       \"path\": \"./jwt_mock_auth_example.py:auth\"\n     },\n     \"http\": {\n       \"app\": \"./custom_routes_example.py:app\",\n       \"enable_custom_route_auth\": false\n     }\n   }\n   ```\n\n2. **Start the server with auth enabled:**\n   ```bash\n   AEGRA_CONFIG=my_auth_config.json python run_server.py\n   # OR for Docker:\n   AEGRA_CONFIG=my_auth_config.json docker compose up\n   ```\n\n3. **Run the manual auth tests:**\n   ```bash\n   # Run all manual auth tests\n   pytest tests/e2e/manual_auth_tests/ -v -m manual_auth\n\n   # Run specific test file\n   pytest tests/e2e/manual_auth_tests/test_auth_e2e.py -v -m manual_auth\n   pytest tests/e2e/manual_auth_tests/test_authorization_handlers_e2e.py -v -m manual_auth\n   ```\n\n## Test Files\n\n- `test_auth_e2e.py` - Core authentication flow tests (JWT, custom routes, error handling)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n\n---\n\n[libs/aegra-api/tests/README.md:128-197] (relevance 0.20)\nevent_id = generate_event_id(\"run-123\", 1)\n    assert event_id == \"run-123_event_1\"\n```\n\n### Integration Test Example\n```python\n# tests/integration/test_services/test_assistant_service.py\nimport pytest\nfrom tests.fixtures.database import DummySessionBase\n\n@pytest.mark.integration\nasync def test_create_assistant():\n    # Test with real database interactions\n    pass\n```\n\n### E2E Test Example\n```python\n# tests/e2e/test_assistants/test_assistant_crud.py\nimport pytest\nfrom tests.e2e._utils import get_e2e_client\n\n@pytest.mark.e2e\nasync def test_full_assistant_workflow():\n    client = get_e2e_client()\n    # Test complete user workflow\n    pass\n```\n\n## CI/CD Integration\n\nTests are run in stages for optimal speed:\n\n1. **Unit Tests** (fast feedback)\n2. **Integration Tests** (if unit tests pass)\n3. **E2E Tests** (if integration tests pass)\n\nThis ensures fast failure detection and efficient resource usage.\n\n## Best Practices\n\n1. \u2705 Keep unit tests fast and isolated\n2. \u2705 Use fixtures for common setup\n3. \u2705 Name tests descriptively: `test_<what>_<condition>_<expected>`\n4. \u2705 One assertion per test when possible\n5. \u2705 Use markers to categorize tests\n6. \u2705 Mock external dependencies in unit tests\n7. \u2705 Clean up resources in test teardown\n8. \u2705 Use `pytest.mark.parametrize` for multiple test cases\n\n## Troubleshooting\n\n### Import Errors\nMake sure you're running pytest from the project root:\n```bash\ncd /path/to/aegra\npytest tests/\n```\n\n### Database Errors in Integration Tests\nEnsure Docker Compose is running:\n```bash\ndocker compose up -d\n```\n\n### Slow Tests\nRun only fast tests during development:\n```bash\npytest -m \"not slow\"\n```\n\n---\n\n[libs/aegra-api/README.md:86-159] (relevance 0.18)\nPOSTGRES_USER=aegra\nPOSTGRES_PASSWORD=aegra_secret\nPOSTGRES_HOST=localhost\nPOSTGRES_DB=aegra\n\n# Authentication\nAUTH_TYPE=noop  # Options: noop, custom\n\n# Server\nHOST=0.0.0.0\nPORT=2026\n\n# Configuration\nAEGRA_CONFIG=aegra.json\n\n# LLM (for example agents)\nOPENAI_API_KEY=sk-...\n\n# Observability (optional)\nOTEL_TARGETS=LANGFUSE,PHOENIX\n```\n\n## API Endpoints\n\n| Endpoint | Method | Description |\n|----------|--------|-------------|\n| `/assistants` | POST | Create assistant from graph_id |\n| `/assistants/search` | POST | Search assistants |\n| `/assistants/{assistant_id}` | GET | Get assistant details |\n| `/threads` | POST | Create conversation thread |\n| `/threads/{thread_id}/state` | GET | Get thread state |\n| `/threads/{thread_id}/runs` | POST | Execute graph (background) |\n| `/threads/{thread_id}/runs/stream` | POST | Execute graph (streaming) |\n| `/threads/{thread_id}/runs/{run_id}/cancel` | POST | Cancel a run |\n| `/store/items` | PUT | Save to vector store |\n| `/store/items/search` | POST | Semantic search |\n| `/store/namespaces` | POST | List store namespaces |\n| `/health` | GET | Health check |\n\n## Creating Graphs\n\nAgents are Python modules exporting a compiled `graph` variable:\n\n```python\n# graphs/my_agent/graph.py\nfrom typing import TypedDict\nfrom langgraph.graph import StateGraph, START, END\n\nclass State(TypedDict):\n    messages: list[str]\n\ndef process_node(state: State) -> State:\n    messages = state.get(\"messages\", [])\n    messages.append(\"Processed!\")\n    return {\"messages\": messages}\n\n# Build the graph\nbuilder = StateGraph(State)\nbuilder.add_node(\"process\", process_node)\nbuilder.add_edge(START, \"process\")\nbui"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "pr",
+                  "start_line": 1,
+                  "end_line": 100
+                },
+                "result": "NOTE: this call was not run: the context window has no room for another result. The final answer is requested next."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"remove-thread-ownership-check\",\n      \"title\": \"Remove per-endpoint thread ownership (user_id) authorization checks from run-creation endpoints\",\n      \"rationale\": \"All four hunks delete the same inline `existing_thread.user_id != user.identity` guard (and its now-unused ThreadORM import) from the create/stream/wait run endpoints, so they collectively change one access-control concern: whether thread ownership is enforced before run creation.\",\n      \"hunks\": [\n        \"libs/aegra-api/src/aegra_api/api/runs.py#0\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#1\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#2\",\n        \"libs/aegra-api/src/aegra_api/api/runs.py#3\"\n      ],\n      \"context\": [\n        {\"path\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"symbol\": \"_prepare_run\", \"start_line\": 160, \"end_line\": 278, \"snapshot\": \"base\", \"why\": \"Downstream shared helper called by all three endpoints; does not itself verify thread.user_id ownership, so removing the inline check leaves no ownership enforcement on the create/stream/wait paths.\"},\n        {\"path\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"symbol\": \"update_thread_metadata\", \"start_line\": 103, \"end_line\": 157, \"snapshot\": \"base\", \"why\": \"Auto-creates or updates a thread without checking existing thread.user_id, so a removed guard would let a user act on another user's thread.\"},\n        {\"path\": \"libs/aegra-api/src/aegra_api/core/auth_handlers.py\", \"symbol\": \"handle_event\", \"start_line\": 62, \"end_line\": 158, \"snapshot\": \"base\", \"why\": \"The only remaining authorization hook (create_run on threads) is opt-in and defaults to allow when no handler is configured, so it does not substitute for the removed ownership check.\"}\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "remove-thread-ownership-check",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "thread ownership authorization user must own thread before creating run"
+                },
+                "result": "[libs/aegra-api/README.md:156-203] (relevance 0.22)\n|  FastAPI HTTP Layer (Agent Protocol API)                |\n|  - /assistants, /threads, /runs, /store endpoints       |\n+---------------------------------------------------------+\n|  Middleware Stack                                        |\n|  - Auth, CORS, Structured Logging, Correlation ID       |\n+---------------------------------------------------------+\n|  Service Layer (Business Logic)                          |\n|  - LangGraphService, AssistantService, StreamingService |\n+---------------------------------------------------------+\n|  LangGraph Runtime                                       |\n|  - Graph execution, state management, tool execution    |\n+---------------------------------------------------------+\n|  Database Layer (PostgreSQL)                             |\n|  - AsyncPostgresSaver (checkpoints), AsyncPostgresStore |\n+---------------------------------------------------------+\n```\n\n## Package Structure\n\n```\nlibs/aegra-api/\n\u251c\u2500\u2500 src/aegra_api/\n\u2502   \u251c\u2500\u2500 api/              # Agent Protocol endpoints\n\u2502   \u2502   \u251c\u2500\u2500 assistants.py # /assistants CRUD\n\u2502   \u2502   \u251c\u2500\u2500 threads.py    # /threads and state management\n\u2502   \u2502   \u251c\u2500\u2500 runs.py       # /runs execution and streaming\n\u2502   \u2502   \u2514\u2500\u2500 store.py      # /store vector storage\n\u2502   \u251c\u2500\u2500 services/         # Business logic layer\n\u2502   \u251c\u2500\u2500 core/             # Infrastructure (database, auth, orm)\n\u2502   \u251c\u2500\u2500 models/           # Pydantic request/response schemas\n\u2502   \u251c\u2500\u2500 middleware/       # ASGI middleware\n\u2502   \u251c\u2500\u2500 observability/    # OpenTelemetry tracing\n\u2502   \u251c\u2500\u2500 utils/            # Helper functions\n\u2502   \u251c\u2500\u2500 main.py           # FastAPI app entry point\n\u2502   \u251c\u2500\u2500 config.py         # HTTP/store config loading\n\u2502   \u2514\u2500\u2500 settings.py       # Environment settings\n\u251c\u2500\u2500 tests/                # Test suite\n\u251c\u2500\u2500 alembic/              # Database migrations\n\u2514\u2500\u2500 pyproject.toml\n```\n\n## Related Packages\n\n- **aegra-cli**: Command-line interface for project management\n\n## Documentation\n\nFor full documentation, see the [docs/](../../docs/) directory.\n\n---\n\n[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:57-64] (relevance 0.20)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n- These tests use the mock JWT auth from `jwt_mock_auth_example.py`\n- Since auth is user-specific, these tests are manual and not part of CI\n\n---\n\n[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:1-62] (relevance 0.20)\n# Manual Auth Tests\n\n**\u26a0\ufe0f These tests are skipped by default and should only be run when making changes to authentication/authorization code.**\n\n## Purpose\n\nThese tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.\n\n## When to Run These Tests\n\nRun these tests when:\n- Making changes to `src/agent_server/core/auth_middleware.py`\n- Making changes to `src/agent_server/core/auth_handlers.py`\n- Making changes to `src/agent_server/core/auth_deps.py`\n- Making changes to authorization handler resolution logic\n- Adding new authentication features\n- Fixing authentication-related bugs\n\n## How to Run\n\n1. **Create an auth config file** (e.g., `my_auth_config.json`):\n   ```json\n   {\n     \"graphs\": {\n       \"agent\": \"./graphs/react_agent/graph.py:graph\"\n     },\n     \"auth\": {\n       \"path\": \"./jwt_mock_auth_example.py:auth\"\n     },\n     \"http\": {\n       \"app\": \"./custom_routes_example.py:app\",\n       \"enable_custom_route_auth\": false\n     }\n   }\n   ```\n\n2. **Start the server with auth enabled:**\n   ```bash\n   AEGRA_CONFIG=my_auth_config.json python run_server.py\n   # OR for Docker:\n   AEGRA_CONFIG=my_auth_config.json docker compose up\n   ```\n\n3. **Run the manual auth tests:**\n   ```bash\n   # Run all manual auth tests\n   pytest tests/e2e/manual_auth_tests/ -v -m manual_auth\n\n   # Run specific test file\n   pytest tests/e2e/manual_auth_tests/test_auth_e2e.py -v -m manual_auth\n   pytest tests/e2e/manual_auth_tests/test_authorization_handlers_e2e.py -v -m manual_auth\n   ```\n\n## Test Files\n\n- `test_auth_e2e.py` - Core authentication flow tests (JWT, custom routes, error handling)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n\n---\n\n[.github/ISSUE_TEMPLATE/bug_report.md:1-45] (relevance 0.16)\n---\nname: Bug report\nabout: Create a report to help us improve Aegra\ntitle: '[BUG] '\nlabels: bug\nassignees: ''\n---\n\n**Describe the bug**\nA clear and concise description of what the bug is.\n\n**To Reproduce**\nSteps to reproduce the behavior:\n1. Set up environment with '...'\n2. Run command '...'\n3. Send request to '...'\n4. See error\n\n**Expected behavior**\nA clear and concise description of what you expected to happen.\n\n**Actual behavior**\nWhat actually happened instead.\n\n**Environment:**\n- OS: [e.g. macOS 14.5, Ubuntu 22.04]\n- Python version: [e.g. 3.11.5]\n- Aegra version: [e.g. 0.1.0]\n- LangGraph version: [e.g. 0.6.4]\n\n**Configuration:**\n- Database: [e.g. PostgreSQL 15]\n- Auth type: [e.g. noop, jwt]\n- Deployment: [e.g. local, docker, kubernetes]\n\n**Logs/Error Messages:**\n```\nPaste relevant logs or error messages here\n```\n\n**Additional context**\nAdd any other context about the problem here.\n\n**Possible Solution**\nIf you have ideas about what might be causing this or how to fix it, please share!\n\n---\n\n[libs/aegra-api/tests/README.md:128-197] (relevance 0.15)\nevent_id = generate_event_id(\"run-123\", 1)\n    assert event_id == \"run-123_event_1\"\n```\n\n### Integration Test Example\n```python\n# tests/integration/test_services/test_assistant_service.py\nimport pytest\nfrom tests.fixtures.database import DummySessionBase\n\n@pytest.mark.integration\nasync def test_create_assistant():\n    # Test with real database interactions\n    pass\n```\n\n### E2E Test Example\n```python\n# tests/e2e/test_assistants/test_assistant_crud.py\nimport pytest\nfrom tests.e2e._utils import get_e2e_client\n\n@pytest.mark.e2e\nasync def test_full_assistant_workflow():\n    client = get_e2e_client()\n    # Test complete user workflow\n    pass\n```\n\n## CI/CD Integration\n\nTests are run in stages for optimal speed:\n\n1. **Unit Tests** (fast feedback)\n2. **Integration Tests** (if unit tests pass)\n3. **E2E Tests** (if integration tests pass)\n\nThis ensures fast failure detection and efficient resource usage.\n\n## Best Practices\n\n1. \u2705 Keep unit tests fast and isolated\n2. \u2705 Use fixtures for common setup\n3. \u2705 Name tests descriptively: `test_<what>_<condition>_<expected>`\n4. \u2705 One assertion per test when possible\n5. \u2705 Use markers to categorize tests\n6. \u2705 Mock external dependencies in unit tests\n7. \u2705 Clean up resources in test teardown\n8. \u2705 Use `pytest.mark.parametrize` for multiple test cases\n\n## Troubleshooting\n\n### Import Errors\nMake sure you're running pytest from the project root:\n```bash\ncd /path/to/aegra\npytest tests/\n```\n\n### Database Errors in Integration Tests\nEnsure Docker Compose is running:\n```bash\ndocker compose up -d\n```\n\n### Slow Tests\nRun only fast tests during development:\n```bash\npytest -m \"not slow\"\n```"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "start_line": 100,
+                  "end_line": 280,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/services/run_preparation.py lines=100-278]\n100:     return \"\"\n101: \n102: \n103: async def update_thread_metadata(\n104:     session: AsyncSession,\n105:     thread_id: str,\n106:     assistant_id: str,\n107:     graph_id: str,\n108:     *,\n109:     user_id: str | None = None,\n110:     input_data: dict[str, Any] | None = None,\n111: ) -> None:\n112:     \"\"\"Update thread metadata with assistant and graph information (dialect agnostic).\n113: \n114:     If thread doesn't exist, auto-creates it.\n115:     When *input_data* is provided and the thread has no name yet, the first\n116:     human message content is used as ``thread_name``.\n117:     Does NOT commit \u2014 the caller controls the transaction boundary.\n118:     \"\"\"\n119:     # Read-modify-write to avoid DB-specific JSON concat operators\n120:     thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\n121: \n122:     thread_name = _extract_thread_name(input_data or {})\n123: \n124:     if not thread:\n125:         # Auto-create thread if it doesn't exist\n126:         if not user_id:\n127:             raise HTTPException(400, \"Cannot auto-create thread: user_id is required\")\n128: \n129:         metadata = {\n130:             \"owner\": user_id,\n131:             \"assistant_id\": str(assistant_id),\n132:             \"graph_id\": graph_id,\n133:             \"thread_name\": thread_name,\n134:         }\n135: \n136:         thread_orm = ThreadORM(\n137:             thread_id=thread_id,\n138:             status=\"idle\",\n139:             metadata_json=metadata,\n140:             user_id=user_id,\n141:         )\n142:         session.add(thread_orm)\n143:         return\n144: \n145:     md = dict(getattr(thread, \"metadata_json\", {}) or {})\n146:     md.update(\n147:         {\n148:             \"assistant_id\": str(assistant_id),\n149:             \"graph_id\": graph_id,\n150:         }\n151:     )\n152:     # Only set thread_name if empty and we have a name from the input\n153:     if thread_name and not md.get(\"thread_name\"):\n154:         md[\"thread_name\"] = thread_name\n155:     await session.execute(\n156:         update(ThreadORM).where(ThreadORM.thread_id == thread_id).values(metadata_json=md, updated_at=datetime.now(UTC))\n157:     )\n158: \n159: \n160: async def _prepare_run(\n161:     session: AsyncSession,\n162:     thread_id: str,\n163:     request: RunCreate,\n164:     user: User,\n165:     *,\n166:     initial_status: str,\n167: ) -> tuple[str, Run, RunJob]:\n168:     \"\"\"Shared run-creation logic used by create, stream, and wait endpoints.\n169: \n170:     Validates inputs, resolves the assistant, persists the RunORM record,\n171:     builds a RunJob, submits it to the executor, and returns the triple\n172:     ``(run_id, run_model, job)``.\n173:     \"\"\"\n174:     await _validate_resume_command(session, thread_id, request.command)\n175: \n176:     run_id = str(uuid4())\n177:     langgraph_service = get_langgraph_service()\n178:     logger.info(\n179:         \"Scheduling run\",\n180:         run_id=run_id,\n181:         thread_id=thread_id,\n182:         user_id=user.identity,\n183:         status=initial_status,\n184:     )\n185: \n186:     # Resolve assistant / graph\n187:     requested_id = str(request.assistant_id)\n188:     available_graphs = langgraph_service.list_graphs()\n189:     resolved_assistant_id = resolve_assistant_id(requested_id, available_graphs)\n190: \n191:     # Config / context merging\n192:     config = request.config or {}\n193:     context = request.context or {}\n194:     configurable = config.get(\"configurable\", {})\n195:     if not isinstance(configurable, dict):\n196:         raise HTTPException(status_code=422, detail=\"`config.configurable` must be a mapping\")\n197: \n198:     if not context:\n199:         context = configurable.copy()\n200: \n201:     assistant_stmt = select(AssistantORM).where(\n202:         AssistantORM.assistant_id == resolved_assistant_id,\n203:     )\n204:     assistant = await session.scalar(assistant_stmt)\n205:     if not assistant:\n206:         raise HTTPException(404, f\"Assistant '{request.assistant_id}' not found\")\n207: \n208:     config = _merge_jsonb(assistant.config, config)\n209:     context = _merge_jsonb(assistant.context, context)\n210: \n211:     # Validate the assistant's graph exists\n212:     available_graphs = langgraph_service.list_graphs()\n213:     if assistant.graph_id not in available_graphs:\n214:         raise HTTPException(404, f\"Graph '{assistant.graph_id}' not found for assistant\")\n215: \n216:     # Mark thread as busy and update metadata\n217:     await update_thread_metadata(\n218:         session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input\n219:     )\n220:     await set_thread_status(session, thread_id, \"busy\")\n221: \n222:     # Build the RunJob before persisting so we can store execution_params\n223:     job = RunJob(\n224:         identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=assistant.graph_id),\n225:         user=user,\n226:         execution=RunExecution(\n227:             input_data=request.input or {},\n228:             config=config,\n229:             context=context,\n230:             stream_mode=request.stream_mode,\n231:             checkpoint=request.checkpoint,\n232:             command=request.command,\n233:         ),\n234:         behavior=RunBehavior(\n235:             interrupt_before=request.interrupt_before,\n236:             interrupt_after=request.interrupt_after,\n237:             multitask_strategy=request.multitask_strategy,\n238:             subgraphs=request.stream_subgraphs or False,\n239:         ),\n240:     )\n241: \n242:     # Persist run record with trace metadata for worker observability.\n243:     # The correlation_id from the HTTP request is stored so workers can\n244:     # link their logs and spans back to the original request.\n245:     exec_params = job.to_execution_params()\n246:     exec_params[\"trace\"] = {\n247:         \"correlation_id\": correlation_id.get(\"\"),\n248:         \"user_id\": user.identity,\n249:         \"thread_id\": thread_id,\n250:         \"graph_id\": assistant.graph_id,\n251:     }\n252: \n253:     now = datetime.now(UTC)\n254:     run_orm = RunORM(\n255:         run_id=run_id,\n256:         thread_id=thread_id,\n257:         assistant_id=resolved_assistant_id,\n258:         status=initial_status,\n259:         input=request.input or {},\n260:         config=config,\n261:         context=context,\n262:         user_id=user.identity,\n263:         created_at=now,\n264:         updated_at=now,\n265:         output=None,\n266:         error_message=None,\n267:         execution_params=exec_params,\n268:     )\n269:     session.add(run_orm)\n270:     await session.commit()\n271: \n272:     run = Run.model_validate(run_orm)\n273: \n274:     # Submit to executor\n275:     await executor.submit(job)\n276:     logger.info(\"Submitted run to executor\", run_id=run_id)\n277: \n278:     return run_id, run, job\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/core/auth_handlers.py",
+                  "start_line": 1,
+                  "end_line": 170,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/core/auth_handlers.py lines=1-170]\n1: \"\"\"Authorization handler support for @auth.on.* decorators.\n2: \n3: This module provides integration with authorization handlers,\n4: allowing users to define fine-grained access control rules using @auth.on.*\n5: decorators in their auth.py files.\n6: \"\"\"\n7: \n8: from typing import Any\n9: \n10: from fastapi import HTTPException\n11: from langgraph_sdk import Auth\n12: from langgraph_sdk.auth.types import AuthContext as LangGraphAuthContext\n13: \n14: from aegra_api.core.auth_middleware import get_auth_instance\n15: from aegra_api.models.auth import User\n16: \n17: \n18: class AuthContextWrapper:\n19:     \"\"\"Wrapper to convert Aegra User model to AuthContext.\n20: \n21:     AuthContext expects a BaseUser-compatible object. Our User model\n22:     implements the BaseUser protocol (identity, permissions, display_name, __getitem__),\n23:     so we can use it directly after ensuring compatibility.\n24:     \"\"\"\n25: \n26:     def __init__(\n27:         self,\n28:         user: User,\n29:         resource: str,\n30:         action: str,\n31:     ):\n32:         \"\"\"Initialize auth context wrapper.\n33: \n34:         Args:\n35:             user: Authenticated user from Aegra's User model\n36:             resource: Resource being accessed (e.g., \"threads\", \"assistants\")\n37:             action: Action being performed (e.g., \"create\", \"read\", \"update\")\n38:         \"\"\"\n39:         self.user = user\n40:         self.resource = resource\n41:         self.action = action\n42:         self.permissions = user.permissions or []\n43: \n44:     def to_langgraph_context(self) -> LangGraphAuthContext:\n45:         \"\"\"Convert to LangGraph AuthContext.\n46: \n47:         Our User model implements the BaseUser protocol (identity, permissions,\n48:         display_name, __getitem__, __contains__, __iter__), so it's compatible\n49:         with LangGraph's AuthContext.\n50: \n51:         Returns:\n52:             AuthContext instance compatible with @auth.on handlers\n53:         \"\"\"\n54:         return LangGraphAuthContext(\n55:             user=self.user,  # Our User model implements BaseUser protocol\n56:             resource=self.resource,  # type: ignore\n57:             action=self.action,  # type: ignore\n58:             permissions=self.permissions,\n59:         )\n60: \n61: \n62: async def handle_event(\n63:     ctx: AuthContextWrapper | None,\n64:     value: dict[str, Any],\n65: ) -> dict[str, Any] | None:\n66:     \"\"\"Call the appropriate @auth.on.* handler for authorization.\n67: \n68:     This function resolves the most specific handler for the given resource\n69:     and action, calls it with the auth context and value, and interprets\n70:     the result.\n71: \n72:     **Default Behavior (Non-Interruptive):**\n73:     - If no auth is configured \u2192 allows by default (returns None)\n74:     - If no handlers are defined \u2192 allows by default (returns None)\n75:     - If handler returns None/True \u2192 allows (returns None)\n76:     - If handler returns dict \u2192 allows with filters applied (returns dict)\n77:     - **Only interrupts if handler returns False or raises exception**\n78: \n79:     This ensures that developers using raw Aegra without custom authorization\n80:     handlers will have a working system out-of-the-box. Handlers are purely\n81:     additive - they can inject metadata, apply filters, or deny access, but\n82:     they don't interrupt the flow unless explicitly configured to do so.\n83: \n84:     Handler resolution priority (most specific first):\n85:     1. Resource+action specific (e.g., \"threads\", \"create\")\n86:     2. Resource-specific (e.g., \"threads\", \"*\")\n87:     3. Action-specific (e.g., \"*\", \"create\")\n88:     4. Global handler (\"*\", \"*\")\n89: \n90:     Args:\n91:         ctx: Auth context wrapper with user, resource, and action\n92:         value: The data being authorized (request body, search filters, etc.)\n93:                This dict may be modified by the handler (e.g., injecting metadata)\n94: \n95:     Returns:\n96:         None: Request allowed, no filters to apply\n97:         dict: Filter dict to apply to queries (e.g., {\"user_id\": \"123\"})\n98: \n99:     Raises:\n100:         HTTPException(403): If handler returns False or raises AssertionError\n101:         HTTPException(500): If handler raises unexpected exception or returns invalid type\n102:     \"\"\"\n103:     if ctx is None:\n104:         # No auth context means no authorization check needed\n105:         # This allows the request to proceed normally\n106:         return None\n107: \n108:     auth = get_auth_instance()\n109:     if auth is None:\n110:         # No auth configured, allow by default\n111:         # This ensures raw Aegra works out-of-the-box without interruption\n112:         return None\n113: \n114:     # Convert to AuthContext\n115:     auth_ctx = ctx.to_langgraph_context()\n116: \n117:     # Find the most specific handler\n118:     handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\n119:     if handler is None:\n120:         # No handler for this resource/action, allow by default\n121:         # Developers can use Aegra without defining handlers - it won't break\n122:         return None\n123: \n124:     try:\n125:         # Call the handler with context and value\n126:         result = await handler(ctx=auth_ctx, value=value)\n127:     except Auth.exceptions.HTTPException as e:\n128:         # Handler raised HTTP exception, convert to FastAPI HTTPException\n129:         raise HTTPException(\n130:             status_code=e.status_code,\n131:             detail=e.detail,\n132:             headers=dict(e.headers) if hasattr(e, \"headers\") and e.headers else None,\n133:         ) from e\n134:     except AssertionError as e:\n135:         # Handler used assert for authorization check\n136:         raise HTTPException(status_code=403, detail=str(e)) from e\n137:     except Exception as e:\n138:         # Unexpected error in handler\n139:         raise HTTPException(status_code=500, detail=f\"Authorization error: {str(e)}\") from e\n140: \n141:     # Interpret handler result\n142:     if result in (None, True):\n143:         # Allow request, no filters\n144:         return None\n145: \n146:     if result is False:\n147:         # Deny request\n148:         raise HTTPException(status_code=403, detail=\"Forbidden\")\n149: \n150:     if isinstance(result, dict):\n151:         # Return filter dict to apply to queries\n152:         return result\n153: \n154:     # Invalid return type\n155:     raise HTTPException(\n156:         status_code=500,\n157:         detail=f\"Auth handler returned invalid type: {type(result)}. Expected dict, None, True, or False.\",\n158:     )\n159: \n160: \n161: def _get_handler(\n162:     auth: Auth,\n163:     resource: str,\n164:     action: str,\n165: ) -> Any | None:\n166:     \"\"\"Find the most specific handler for resource+action.\n167: \n168:     Handler resolution follows this priority order (most specific first):\n169:     1. (resource, action) - e.g., (\"threads\", \"create\")\n170:     2. (resource, \"*\") - e.g., (\"threads\", \"*\")\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "security policy thread ownership check user identity thread_id authorization"
+                },
+                "result": "[libs/aegra-api/README.md:156-203] (relevance 0.29)\n|  FastAPI HTTP Layer (Agent Protocol API)                |\n|  - /assistants, /threads, /runs, /store endpoints       |\n+---------------------------------------------------------+\n|  Middleware Stack                                        |\n|  - Auth, CORS, Structured Logging, Correlation ID       |\n+---------------------------------------------------------+\n|  Service Layer (Business Logic)                          |\n|  - LangGraphService, AssistantService, StreamingService |\n+---------------------------------------------------------+\n|  LangGraph Runtime                                       |\n|  - Graph execution, state management, tool execution    |\n+---------------------------------------------------------+\n|  Database Layer (PostgreSQL)                             |\n|  - AsyncPostgresSaver (checkpoints), AsyncPostgresStore |\n+---------------------------------------------------------+\n```\n\n## Package Structure\n\n```\nlibs/aegra-api/\n\u251c\u2500\u2500 src/aegra_api/\n\u2502   \u251c\u2500\u2500 api/              # Agent Protocol endpoints\n\u2502   \u2502   \u251c\u2500\u2500 assistants.py # /assistants CRUD\n\u2502   \u2502   \u251c\u2500\u2500 threads.py    # /threads and state management\n\u2502   \u2502   \u251c\u2500\u2500 runs.py       # /runs execution and streaming\n\u2502   \u2502   \u2514\u2500\u2500 store.py      # /store vector storage\n\u2502   \u251c\u2500\u2500 services/         # Business logic layer\n\u2502   \u251c\u2500\u2500 core/             # Infrastructure (database, auth, orm)\n\u2502   \u251c\u2500\u2500 models/           # Pydantic request/response schemas\n\u2502   \u251c\u2500\u2500 middleware/       # ASGI middleware\n\u2502   \u251c\u2500\u2500 observability/    # OpenTelemetry tracing\n\u2502   \u251c\u2500\u2500 utils/            # Helper functions\n\u2502   \u251c\u2500\u2500 main.py           # FastAPI app entry point\n\u2502   \u251c\u2500\u2500 config.py         # HTTP/store config loading\n\u2502   \u2514\u2500\u2500 settings.py       # Environment settings\n\u251c\u2500\u2500 tests/                # Test suite\n\u251c\u2500\u2500 alembic/              # Database migrations\n\u2514\u2500\u2500 pyproject.toml\n```\n\n## Related Packages\n\n- **aegra-cli**: Command-line interface for project management\n\n## Documentation\n\nFor full documentation, see the [docs/](../../docs/) directory.\n\n---\n\n[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:57-64] (relevance 0.24)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n- These tests use the mock JWT auth from `jwt_mock_auth_example.py`\n- Since auth is user-specific, these tests are manual and not part of CI\n\n---\n\n[libs/aegra-api/README.md:86-159] (relevance 0.19)\nPOSTGRES_USER=aegra\nPOSTGRES_PASSWORD=aegra_secret\nPOSTGRES_HOST=localhost\nPOSTGRES_DB=aegra\n\n# Authentication\nAUTH_TYPE=noop  # Options: noop, custom\n\n# Server\nHOST=0.0.0.0\nPORT=2026\n\n# Configuration\nAEGRA_CONFIG=aegra.json\n\n# LLM (for example agents)\nOPENAI_API_KEY=sk-...\n\n# Observability (optional)\nOTEL_TARGETS=LANGFUSE,PHOENIX\n```\n\n## API Endpoints\n\n| Endpoint | Method | Description |\n|----------|--------|-------------|\n| `/assistants` | POST | Create assistant from graph_id |\n| `/assistants/search` | POST | Search assistants |\n| `/assistants/{assistant_id}` | GET | Get assistant details |\n| `/threads` | POST | Create conversation thread |\n| `/threads/{thread_id}/state` | GET | Get thread state |\n| `/threads/{thread_id}/runs` | POST | Execute graph (background) |\n| `/threads/{thread_id}/runs/stream` | POST | Execute graph (streaming) |\n| `/threads/{thread_id}/runs/{run_id}/cancel` | POST | Cancel a run |\n| `/store/items` | PUT | Save to vector store |\n| `/store/items/search` | POST | Semantic search |\n| `/store/namespaces` | POST | List store namespaces |\n| `/health` | GET | Health check |\n\n## Creating Graphs\n\nAgents are Python modules exporting a compiled `graph` variable:\n\n```python\n# graphs/my_agent/graph.py\nfrom typing import TypedDict\nfrom langgraph.graph import StateGraph, START, END\n\nclass State(TypedDict):\n    messages: list[str]\n\ndef process_node(state: State) -> State:\n    messages = state.get(\"messages\", [])\n    messages.append(\"Processed!\")\n    return {\"messages\": messages}\n\n# Build the graph\nbuilder = StateGraph(State)\nbuilder.add_node(\"process\", process_node)\nbuilder.add_edge(START, \"process\")\nbuilder.add_edge(\"process\", END)\n\n# Export as 'graph'\ngraph = builder.compile()\n```\n\n## Architecture\n\n```\n+---------------------------------------------------------+\n|  FastAPI HTTP Layer (Agent Protocol API)                |\n|  - /assistants, /threads, /runs, /store endpoints       |\n+---------------------------------------------------------+\n|  Middleware Stack                                        |\n\n---\n\n[libs/aegra-api/tests/e2e/manual_auth_tests/README.md:1-62] (relevance 0.18)\n# Manual Auth Tests\n\n**\u26a0\ufe0f These tests are skipped by default and should only be run when making changes to authentication/authorization code.**\n\n## Purpose\n\nThese tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.\n\n## When to Run These Tests\n\nRun these tests when:\n- Making changes to `src/agent_server/core/auth_middleware.py`\n- Making changes to `src/agent_server/core/auth_handlers.py`\n- Making changes to `src/agent_server/core/auth_deps.py`\n- Making changes to authorization handler resolution logic\n- Adding new authentication features\n- Fixing authentication-related bugs\n\n## How to Run\n\n1. **Create an auth config file** (e.g., `my_auth_config.json`):\n   ```json\n   {\n     \"graphs\": {\n       \"agent\": \"./graphs/react_agent/graph.py:graph\"\n     },\n     \"auth\": {\n       \"path\": \"./jwt_mock_auth_example.py:auth\"\n     },\n     \"http\": {\n       \"app\": \"./custom_routes_example.py:app\",\n       \"enable_custom_route_auth\": false\n     }\n   }\n   ```\n\n2. **Start the server with auth enabled:**\n   ```bash\n   AEGRA_CONFIG=my_auth_config.json python run_server.py\n   # OR for Docker:\n   AEGRA_CONFIG=my_auth_config.json docker compose up\n   ```\n\n3. **Run the manual auth tests:**\n   ```bash\n   # Run all manual auth tests\n   pytest tests/e2e/manual_auth_tests/ -v -m manual_auth\n\n   # Run specific test file\n   pytest tests/e2e/manual_auth_tests/test_auth_e2e.py -v -m manual_auth\n   pytest tests/e2e/manual_auth_tests/test_authorization_handlers_e2e.py -v -m manual_auth\n   ```\n\n## Test Files\n\n- `test_auth_e2e.py` - Core authentication flow tests (JWT, custom routes, error handling)\n- `test_authorization_handlers_e2e.py` - Authorization handler tests (@auth.on.* decorators)\n\n## Notes\n\n- These tests require a server running with auth enabled (create your own config file)\n- Tests will automatically skip if the server doesn't have auth enabled\n\n---\n\n[CODE_OF_CONDUCT.md:1-48] (relevance 0.16)\n# Contributor Covenant Code of Conduct\n\n## Our Pledge\n\nWe as members, contributors, and leaders pledge to make participation in our\ncommunity a harassment-free experience for everyone, regardless of age, body\nsize, visible or invisible disability, ethnicity, sex characteristics, gender\nidentity and expression, level of experience, education, socio-economic status,\nnationality, personal appearance, race, religion, or sexual identity\nand orientation.\n\nWe pledge to act and interact in ways that contribute to an open, welcoming,\ndiverse, inclusive, and healthy community.\n\n## Our Standards\n\nExamples of behavior that contributes to a positive environment for our\ncommunity include:\n\n* Demonstrating empathy and kindness toward other people\n* Being respectful of differing opinions, viewpoints, and experiences\n* Giving and gracefully accepting constructive feedback\n* Accepting responsibility and apologizing to those affected by our mistakes,\n  and learning from the experience\n* Focusing on what is best not just for us as individuals, but for the\n  overall community\n\nExamples of unacceptable behavior include:\n\n* The use of sexualized language or imagery, and sexual attention or\n  advances of any kind\n* Trolling, insulting or derogator"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "start_line": 40,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 path=libs/aegra-api/src/aegra_api/api/runs.py lines=40-130]\n40: async def create_run(\n41:     thread_id: str,\n42:     request: RunCreate,\n43:     user: User = Depends(get_current_user),\n44:     session: AsyncSession = Depends(get_session),\n45: ) -> Run:\n46:     \"\"\"Create and execute a new run.\n47: \n48:     Starts graph execution asynchronously and returns the run record\n49:     immediately with status `pending`. Poll the run or use the stream\n50:     endpoint to follow progress. Provide either `input` or `command` (for\n51:     human-in-the-loop resumption) but not both.\n52:     \"\"\"\n53:     # Authorization check (create_run action on threads resource)\n54:     ctx = build_auth_context(user, \"threads\", \"create_run\")\n55:     value = {**request.model_dump(), \"thread_id\": thread_id}\n56:     filters = await handle_event(ctx, value)\n57: \n58:     # If handler modified config/context, update request\n59:     if filters:\n60:         if \"config\" in filters and isinstance(filters[\"config\"], dict):\n61:             request.config = {**(request.config or {}), **filters[\"config\"]}\n62:         if \"context\" in filters and isinstance(filters[\"context\"], dict):\n63:             request.context = {**(request.context or {}), **filters[\"context\"]}\n64:     else:\n65:         value_config = value.get(\"config\")\n66:         if isinstance(value_config, dict):\n67:             request.config = {**(request.config or {}), **value_config}\n68: \n69:         value_context = value.get(\"context\")\n70:         if isinstance(value_context, dict):\n71:             request.context = {**(request.context or {}), **value_context}\n72: \n73:     _run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n74: \n75:     return run\n76: \n77: \n78: @router.post(\"/threads/{thread_id}/runs/stream\", responses={**SSE_RESPONSE, **NOT_FOUND, **CONFLICT})\n79: async def create_and_stream_run(\n80:     thread_id: str,\n81:     request: RunCreate,\n82:     user: User = Depends(get_current_user),\n83:     session: AsyncSession = Depends(get_session),\n84: ) -> StreamingResponse:\n85:     \"\"\"Create a new run and stream its execution via SSE.\n86: \n87:     Returns a `text/event-stream` response with Server-Sent Events. Each\n88:     event has a `type` field (e.g. `values`, `updates`, `messages`,\n89:     `metadata`, `end`) and a JSON `data` payload.\n90: \n91:     Set `on_disconnect` to `\"continue\"` if the run should keep executing\n92:     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`\n93:     to control which event types are emitted.\n94:     \"\"\"\n95:     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n96: \n97:     # Default to cancel on disconnect - this matches user expectation that clicking\n98:     # \"Cancel\" in the frontend will stop the backend task. Users can explicitly\n99:     # set on_disconnect=\"continue\" if they want the task to continue.\n100:     cancel_on_disconnect = (request.on_disconnect or \"cancel\").lower() == \"cancel\"\n101: \n102:     return StreamingResponse(\n103:         streaming_service.stream_run_execution(\n104:             run,\n105:             None,\n106:             cancel_on_disconnect=cancel_on_disconnect,\n107:         ),\n108:         media_type=\"text/event-stream\",\n109:         headers={\n110:             **get_sse_headers(),\n111:             \"Location\": f\"/threads/{thread_id}/runs/{run_id}/stream\",\n112:             \"Content-Location\": f\"/threads/{thread_id}/runs/{run_id}\",\n113:         },\n114:     )\n115: \n116: \n117: @router.get(\"/threads/{thread_id}/runs/{run_id}\", response_model=Run, responses={**NOT_FOUND})\n118: async def get_run(\n119:     thread_id: str,\n120:     run_id: str,\n121:     user: User = Depends(get_current_user),\n122:     session: AsyncSession = Depends(get_session),\n123: ) -> Run:\n124:     \"\"\"Get a run by its ID.\n125: \n126:     Returns the current state of the run including its status, input, output,\n127:     and error information.\n128:     \"\"\"\n129:     # Authorization check (read action on runs resource)\n130:     ctx = build_auth_context(user, \"runs\", \"read\")\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "start_line": 300,
+                  "end_line": 345,
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": [\n    {\n      \"cwe_id\": \"CWE-639\",\n      \"explanation\": \"The PR removes the inline thread-ownership check from all three run-creation endpoints (create_run, create_and_stream_run, wait_for_run). The removed guard verified `existing_thread.user_id != user.identity` and raised 404, preventing a user from creating a run on another user's thread. The only remaining authorization hook, `handle_event` (auth_handlers.py:62-158), is explicitly opt-in and 'allows by default' when no auth instance or handler is configured (lines 108-122), so it does not enforce ownership. The downstream shared helper `_prepare_run` (run_preparation.py:160-278) and `update_thread_metadata` (run_preparation.py:103-157) do not verify `thread.user_id` ownership \u2014 `update_thread_metadata` even auto-creates a thread with the caller's user_id and updates an existing thread's metadata without checking the existing owner. Consequently, after this change any authenticated user can act on (create runs against, and mutate metadata of) a thread owned by another user via the user-controlled `thread_id` path parameter.\",\n      \"evidence\": [\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\", \"lines\": [53, 56], \"content\": \"    # Authorization check (create_run action on threads resource)\\n    ctx = build_auth_context(user, \\\"threads\\\", \\\"create_run\\\")\\n    value = {**request.model_dump(), \\\"thread_id\\\": thread_id}\\n    filters = await handle_event(ctx, value)\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\", \"lines\": [95, 95], \"content\": \"    run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\\\"pending\\\")\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/core/auth_handlers.py\", \"lines\": [108, 122], \"content\": \"    auth = get_auth_instance()\\n    if auth is None:\\n        # No auth configured, allow by default\\n        return None\\n    ...\\n    handler = _get_handler(auth, auth_ctx.resource, auth_ctx.action)\\n    if handler is None:\\n        # No handler for this resource/action, allow by default\\n        return None\"},\n        {\"type\": \"code\", \"file\": \"libs/aegra-api/src/aegra_api/services/run_preparation.py\", \"lines\": [120, 143], \"content\": \"    thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\\n    ...\\n    if not thread:\\n        # Auto-create thread if it doesn't exist\\n        ...\\n        thread_orm = ThreadORM(thread_id=thread_id, status=\\\"idle\\\", metadata_json=metadata, user_id=user_id)\\n        session.add(thread_orm)\\n        return\"},\n        {\"type\": \"policy\", \"source\": \"libs/aegra-api/tests/e2e/manual_auth_tests/README.md\", \"content\": \"These tests verify the authentication and authorization functionality of Aegra. Since Aegra is designed to be a package where users implement their own auth, these tests are not part of the regular test suite.\"}\n      ],\n      \"suggested_fix\": \"Restore the thread-ownership verification in each endpoint (or centralize it in `_prepare_run`/`update_thread_metadata`) so that a 404/403 is raised when `existing_thread.user_id != user.identity`. Do not rely solely on the opt-in `handle_event` hook, which defaults to allow when no handler is configured.\",\n      \"file\": \"libs/aegra-api/src/aegra_api/api/runs.py\",\n      \"line\": 53\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sqli:remove-thread-ownership-check",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "start_line": 40,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 path=libs/aegra-api/src/aegra_api/api/runs.py lines=40-130]\n40: async def create_run(\n41:     thread_id: str,\n42:     request: RunCreate,\n43:     user: User = Depends(get_current_user),\n44:     session: AsyncSession = Depends(get_session),\n45: ) -> Run:\n46:     \"\"\"Create and execute a new run.\n47: \n48:     Starts graph execution asynchronously and returns the run record\n49:     immediately with status `pending`. Poll the run or use the stream\n50:     endpoint to follow progress. Provide either `input` or `command` (for\n51:     human-in-the-loop resumption) but not both.\n52:     \"\"\"\n53:     # Authorization check (create_run action on threads resource)\n54:     ctx = build_auth_context(user, \"threads\", \"create_run\")\n55:     value = {**request.model_dump(), \"thread_id\": thread_id}\n56:     filters = await handle_event(ctx, value)\n57: \n58:     # If handler modified config/context, update request\n59:     if filters:\n60:         if \"config\" in filters and isinstance(filters[\"config\"], dict):\n61:             request.config = {**(request.config or {}), **filters[\"config\"]}\n62:         if \"context\" in filters and isinstance(filters[\"context\"], dict):\n63:             request.context = {**(request.context or {}), **filters[\"context\"]}\n64:     else:\n65:         value_config = value.get(\"config\")\n66:         if isinstance(value_config, dict):\n67:             request.config = {**(request.config or {}), **value_config}\n68: \n69:         value_context = value.get(\"context\")\n70:         if isinstance(value_context, dict):\n71:             request.context = {**(request.context or {}), **value_context}\n72: \n73:     _run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n74: \n75:     return run\n76: \n77: \n78: @router.post(\"/threads/{thread_id}/runs/stream\", responses={**SSE_RESPONSE, **NOT_FOUND, **CONFLICT})\n79: async def create_and_stream_run(\n80:     thread_id: str,\n81:     request: RunCreate,\n82:     user: User = Depends(get_current_user),\n83:     session: AsyncSession = Depends(get_session),\n84: ) -> StreamingResponse:\n85:     \"\"\"Create a new run and stream its execution via SSE.\n86: \n87:     Returns a `text/event-stream` response with Server-Sent Events. Each\n88:     event has a `type` field (e.g. `values`, `updates`, `messages`,\n89:     `metadata`, `end`) and a JSON `data` payload.\n90: \n91:     Set `on_disconnect` to `\"continue\"` if the run should keep executing\n92:     after the client disconnects (default is `\"cancel\"`). Use `stream_mode`\n93:     to control which event types are emitted.\n94:     \"\"\"\n95:     run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status=\"pending\")\n96: \n97:     # Default to cancel on disconnect - this matches user expectation that clicking\n98:     # \"Cancel\" in the frontend will stop the backend task. Users can explicitly\n99:     # set on_disconnect=\"continue\" if they want the task to continue.\n100:     cancel_on_disconnect = (request.on_disconnect or \"cancel\").lower() == \"cancel\"\n101: \n102:     return StreamingResponse(\n103:         streaming_service.stream_run_execution(\n104:             run,\n105:             None,\n106:             cancel_on_disconnect=cancel_on_disconnect,\n107:         ),\n108:         media_type=\"text/event-stream\",\n109:         headers={\n110:             **get_sse_headers(),\n111:             \"Location\": f\"/threads/{thread_id}/runs/{run_id}/stream\",\n112:             \"Content-Location\": f\"/threads/{thread_id}/runs/{run_id}\",\n113:         },\n114:     )\n115: \n116: \n117: @router.get(\"/threads/{thread_id}/runs/{run_id}\", response_model=Run, responses={**NOT_FOUND})\n118: async def get_run(\n119:     thread_id: str,\n120:     run_id: str,\n121:     user: User = Depends(get_current_user),\n122:     session: AsyncSession = Depends(get_session),\n123: ) -> Run:\n124:     \"\"\"Get a run by its ID.\n125: \n126:     Returns the current state of the run including its status, input, output,\n127:     and error information.\n128:     \"\"\"\n129:     # Authorization check (read action on runs resource)\n130:     ctx = build_auth_context(user, \"runs\", \"read\")\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "start_line": 100,
+                  "end_line": 280,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d path=libs/aegra-api/src/aegra_api/services/run_preparation.py lines=100-278]\n100:     return \"\"\n101: \n102: \n103: async def update_thread_metadata(\n104:     session: AsyncSession,\n105:     thread_id: str,\n106:     assistant_id: str,\n107:     graph_id: str,\n108:     *,\n109:     user_id: str | None = None,\n110:     input_data: dict[str, Any] | None = None,\n111: ) -> None:\n112:     \"\"\"Update thread metadata with assistant and graph information (dialect agnostic).\n113: \n114:     If thread doesn't exist, auto-creates it.\n115:     When *input_data* is provided and the thread has no name yet, the first\n116:     human message content is used as ``thread_name``.\n117:     Does NOT commit \u2014 the caller controls the transaction boundary.\n118:     \"\"\"\n119:     # Read-modify-write to avoid DB-specific JSON concat operators\n120:     thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))\n121: \n122:     thread_name = _extract_thread_name(input_data or {})\n123: \n124:     if not thread:\n125:         # Auto-create thread if it doesn't exist\n126:         if not user_id:\n127:             raise HTTPException(400, \"Cannot auto-create thread: user_id is required\")\n128: \n129:         metadata = {\n130:             \"owner\": user_id,\n131:             \"assistant_id\": str(assistant_id),\n132:             \"graph_id\": graph_id,\n133:             \"thread_name\": thread_name,\n134:         }\n135: \n136:         thread_orm = ThreadORM(\n137:             thread_id=thread_id,\n138:             status=\"idle\",\n139:             metadata_json=metadata,\n140:             user_id=user_id,\n141:         )\n142:         session.add(thread_orm)\n143:         return\n144: \n145:     md = dict(getattr(thread, \"metadata_json\", {}) or {})\n146:     md.update(\n147:         {\n148:             \"assistant_id\": str(assistant_id),\n149:             \"graph_id\": graph_id,\n150:         }\n151:     )\n152:     # Only set thread_name if empty and we have a name from the input\n153:     if thread_name and not md.get(\"thread_name\"):\n154:         md[\"thread_name\"] = thread_name\n155:     await session.execute(\n156:         update(ThreadORM).where(ThreadORM.thread_id == thread_id).values(metadata_json=md, updated_at=datetime.now(UTC))\n157:     )\n158: \n159: \n160: async def _prepare_run(\n161:     session: AsyncSession,\n162:     thread_id: str,\n163:     request: RunCreate,\n164:     user: User,\n165:     *,\n166:     initial_status: str,\n167: ) -> tuple[str, Run, RunJob]:\n168:     \"\"\"Shared run-creation logic used by create, stream, and wait endpoints.\n169: \n170:     Validates inputs, resolves the assistant, persists the RunORM record,\n171:     builds a RunJob, submits it to the executor, and returns the triple\n172:     ``(run_id, run_model, job)``.\n173:     \"\"\"\n174:     await _validate_resume_command(session, thread_id, request.command)\n175: \n176:     run_id = str(uuid4())\n177:     langgraph_service = get_langgraph_service()\n178:     logger.info(\n179:         \"Scheduling run\",\n180:         run_id=run_id,\n181:         thread_id=thread_id,\n182:         user_id=user.identity,\n183:         status=initial_status,\n184:     )\n185: \n186:     # Resolve assistant / graph\n187:     requested_id = str(request.assistant_id)\n188:     available_graphs = langgraph_service.list_graphs()\n189:     resolved_assistant_id = resolve_assistant_id(requested_id, available_graphs)\n190: \n191:     # Config / context merging\n192:     config = request.config or {}\n193:     context = request.context or {}\n194:     configurable = config.get(\"configurable\", {})\n195:     if not isinstance(configurable, dict):\n196:         raise HTTPException(status_code=422, detail=\"`config.configurable` must be a mapping\")\n197: \n198:     if not context:\n199:         context = configurable.copy()\n200: \n201:     assistant_stmt = select(AssistantORM).where(\n202:         AssistantORM.assistant_id == resolved_assistant_id,\n203:     )\n204:     assistant = await session.scalar(assistant_stmt)\n205:     if not assistant:\n206:         raise HTTPException(404, f\"Assistant '{request.assistant_id}' not found\")\n207: \n208:     config = _merge_jsonb(assistant.config, config)\n209:     context = _merge_jsonb(assistant.context, context)\n210: \n211:     # Validate the assistant's graph exists\n212:     available_graphs = langgraph_service.list_graphs()\n213:     if assistant.graph_id not in available_graphs:\n214:         raise HTTPException(404, f\"Graph '{assistant.graph_id}' not found for assistant\")\n215: \n216:     # Mark thread as busy and update metadata\n217:     await update_thread_metadata(\n218:         session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input\n219:     )\n220:     await set_thread_status(session, thread_id, \"busy\")\n221: \n222:     # Build the RunJob before persisting so we can store execution_params\n223:     job = RunJob(\n224:         identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=assistant.graph_id),\n225:         user=user,\n226:         execution=RunExecution(\n227:             input_data=request.input or {},\n228:             config=config,\n229:             context=context,\n230:             stream_mode=request.stream_mode,\n231:             checkpoint=request.checkpoint,\n232:             command=request.command,\n233:         ),\n234:         behavior=RunBehavior(\n235:             interrupt_before=request.interrupt_before,\n236:             interrupt_after=request.interrupt_after,\n237:             multitask_strategy=request.multitask_strategy,\n238:             subgraphs=request.stream_subgraphs or False,\n239:         ),\n240:     )\n241: \n242:     # Persist run record with trace metadata for worker observability.\n243:     # The correlation_id from the HTTP request is stored so workers can\n244:     # link their logs and spans back to the original request.\n245:     exec_params = job.to_execution_params()\n246:     exec_params[\"trace\"] = {\n247:         \"correlation_id\": correlation_id.get(\"\"),\n248:         \"user_id\": user.identity,\n249:         \"thread_id\": thread_id,\n250:         \"graph_id\": assistant.graph_id,\n251:     }\n252: \n253:     now = datetime.now(UTC)\n254:     run_orm = RunORM(\n255:         run_id=run_id,\n256:         thread_id=thread_id,\n257:         assistant_id=resolved_assistant_id,\n258:         status=initial_status,\n259:         input=request.input or {},\n260:         config=config,\n261:         context=context,\n262:         user_id=user.identity,\n263:         created_at=now,\n264:         updated_at=now,\n265:         output=None,\n266:         error_message=None,\n267:         execution_params=exec_params,\n268:     )\n269:     session.add(run_orm)\n270:     await session.commit()\n271: \n272:     run = Run.model_validate(run_orm)\n273: \n274:     # Submit to executor\n275:     await executor.submit(job)\n276:     logger.info(\"Submitted run to executor\", run_id=run_id)\n277: \n278:     return run_id, run, job\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "execute\\(|text\\(|raw|literal_column|\\.format\\(|f\"SELECT|f\"UPDATE|f\"DELETE|f\"INSERT",
+                  "file_glob": "libs/aegra-api/src/aegra_api/services/run_preparation.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=59abec7019b7c8bcb739917d2f7acef7ca48cf2d pattern=\"execute\\(|text\\(|raw|literal_column|\\.format\\(|f'SELECT|f'UPDATE|f'DELETE|f'INSE\"]\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:46:def _resolve_content_text(content: Any) -> str:\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:79:        raw_content: Any = None\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:87:            raw_content = msg.get(\"content\")\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:89:            raw_content = getattr(msg, \"content\", None)\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:94:        text = _resolve_content_text(raw_content)\nlibs/aegra-api/src/aegra_api/services/run_preparation.py:155:    await session.execute(\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "user_id|identity",
+                  "file_glob": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 pattern=\"user_id|identity\"]\nlibs/aegra-api/src/aegra_api/api/runs.py:137:        RunORM.user_id == user.identity,\nlibs/aegra-api/src/aegra_api/api/runs.py:139:    logger.info(f\"[get_run] querying DB run_id={run_id} thread_id={thread_id} user={user.identity}\")\nlibs/aegra-api/src/aegra_api/api/runs.py:148:        f\"[get_run] found run status={run_orm.status} user={user.identity} thread_id={thread_id} run_id={run_id}\"\nlibs/aegra-api/src/aegra_api/api/runs.py:174:            RunORM.user_id == user.identity,\nlibs/aegra-api/src/aegra_api/api/runs.py:181:    logger.info(f\"[list_runs] querying DB thread_id={thread_id} user={user.identity}\")\nlibs/aegra-api/src/aegra_api/api/runs.py:185:    logger.info(f\"[list_runs] total={len(runs)} user={user.identity} thread_id={thread_id}\")\nlibs/aegra-api/src/aegra_api/api/runs.py:202:    logger.info(f\"[update_run] fetch for update run_id={run_id} thread_id={thread_id} user={user.identity}\")\nlibs/aegra-api/src/aegra_api/api/runs.py:207:            RunORM.user_id == user.identity,\nlibs/aegra-api/src/aegra_api/api/runs.py:218:        logger.info(f\"[update_run] cancelling/interrupting run_id={run_id} user={user.identity} thread_id={thread_id}\")\nlibs/aegra-api/src/aegra_api/api/runs.py:267:                RunORM.user_id == user.identity,\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "libs/aegra-api/src/aegra_api/api/runs.py",
+                  "start_line": 130,
+                  "end_line": 280,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=d9d89ca8a799720a3a2681409cafed105e72e916 path=libs/aegra-api/src/aegra_api/api/runs.py lines=130-280]\n130:     ctx = build_auth_context(user, \"runs\", \"read\")\n131:     value = {\"run_id\": run_id, \"thread_id\": thread_id}\n132:     await handle_event(ctx, value)\n133: \n134:     stmt = select(RunORM).where(\n135:         RunORM.run_id == str(run_id),\n136:         RunORM.thread_id == thread_id,\n137:         RunORM.user_id == user.identity,\n138:     )\n139:     logger.info(f\"[get_run] querying DB run_id={run_id} thread_id={thread_id} user={user.identity}\")\n140:     run_orm = await session.scalar(stmt)\n141:     if not run_orm:\n142:         raise HTTPException(404, f\"Run '{run_id}' not found\")\n143: \n144:     # Refresh to ensure we have the latest data (in case background task updated it)\n145:     await session.refresh(run_orm)\n146: \n147:     logger.info(\n148:         f\"[get_run] found run status={run_orm.status} user={user.identity} thread_id={thread_id} run_id={run_id}\"\n149:     )\n150:     # Convert to Pydantic\n151:     return Run.model_validate(run_orm)\n152: \n153: \n154: @router.get(\"/threads/{thread_id}/runs\", response_model=list[Run])\n155: async def list_runs(\n156:     thread_id: str,\n157:     limit: int = Query(10, ge=1, description=\"Maximum number of runs to return\"),\n158:     offset: int = Query(0, ge=0, description=\"Number of runs to skip for pagination\"),\n159:     status: str | None = Query(\n160:         None, description=\"Filter by run status (e.g. pending, running, success, error, interrupted)\"\n161:     ),\n162:     user: User = Depends(get_current_user),\n163:     session: AsyncSession = Depends(get_session),\n164: ) -> list[Run]:\n165:     \"\"\"List runs for a thread.\n166: \n167:     Returns runs ordered by creation time (newest first). Use `status` to\n168:     filter and `limit`/`offset` to paginate.\n169:     \"\"\"\n170:     stmt = (\n171:         select(RunORM)\n172:         .where(\n173:             RunORM.thread_id == thread_id,\n174:             RunORM.user_id == user.identity,\n175:             *([RunORM.status == status] if status else []),\n176:         )\n177:         .limit(limit)\n178:         .offset(offset)\n179:         .order_by(RunORM.created_at.desc())\n180:     )\n181:     logger.info(f\"[list_runs] querying DB thread_id={thread_id} user={user.identity}\")\n182:     result = await session.scalars(stmt)\n183:     rows = result.all()\n184:     runs = [Run.model_validate(r) for r in rows]\n185:     logger.info(f\"[list_runs] total={len(runs)} user={user.identity} thread_id={thread_id}\")\n186:     return runs\n187: \n188: \n189: @router.patch(\"/threads/{thread_id}/runs/{run_id}\", response_model=Run, responses={**NOT_FOUND})\n190: async def update_run(\n191:     thread_id: str,\n192:     run_id: str,\n193:     request: RunStatus,\n194:     user: User = Depends(get_current_user),\n195:     session: AsyncSession = Depends(get_session),\n196: ) -> Run:\n197:     \"\"\"Update a run's status.\n198: \n199:     Primarily used to interrupt a running execution. Set `status` to\n200:     `\"interrupted\"` to cooperatively stop the run.\n201:     \"\"\"\n202:     logger.info(f\"[update_run] fetch for update run_id={run_id} thread_id={thread_id} user={user.identity}\")\n203:     run_orm = await session.scalar(\n204:         select(RunORM).where(\n205:             RunORM.run_id == str(run_id),\n206:             RunORM.thread_id == thread_id,\n207:             RunORM.user_id == user.identity,\n208:         )\n209:     )\n210:     if not run_orm:\n211:         raise HTTPException(404, f\"Run '{run_id}' not found\")\n212: \n213:     # Handle interruption/cancellation\n214:     # Validate status conforms to API specification\n215:     validated_status = validate_run_status(request.status)\n216: \n217:     if validated_status == \"interrupted\":\n218:         logger.info(f\"[update_run] cancelling/interrupting run_id={run_id} user={user.identity} thread_id={thread_id}\")\n219:         # Handle interruption - use interrupt_run for cooperative interruption\n220:         await streaming_service.interrupt_run(run_id)\n221:         logger.info(f\"[update_run] set DB status=interrupted run_id={run_id}\")\n222:         await session.execute(\n223:             update(RunORM)\n224:             .where(RunORM.run_id == str(run_id))\n225:             .values(status=\"interrupted\", updated_at=datetime.now(UTC))\n226:         )\n227:         await session.commit()\n228:         logger.info(f\"[update_run] commit done (interrupted) run_id={run_id}\")\n229: \n230:     # Return final run state\n231:     run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))\n232:     if not run_orm:\n233:         raise HTTPException(404, f\"Run '{run_id}' not found\")\n234:     # Refresh to ensure we have the latest data after our own update\n235:     await session.refresh(run_orm)\n236:     return Run.model_validate(run_orm)\n237: \n238: \n239: @router.get(\"/threads/{thread_id}/runs/{run_id}/join\", responses={**NOT_FOUND})\n240: async def join_run(\n241:     thread_id: str,\n242:     run_id: str,\n243:     user: User = Depends(get_current_user),\n244: ) -> StreamingResponse:\n245:     \"\"\"Wait for a run to complete and return its output.\n246: \n247:     Returns a chunked ``application/json`` response. While the run is still\n248:     executing, the server sends periodic ``\\\\n`` heartbeat bytes to keep the\n249:     connection alive through proxies and load balancers (AWS ALB, Cloudflare,\n250:     etc.). The final chunk is the JSON result. Leading whitespace is ignored\n251:     by JSON parsers, so clients can parse the concatenated body normally.\n252: \n253:     If the run is already in a terminal state, the output is returned\n254:     immediately with no heartbeat overhead.\n255: \n256:     Sessions are managed manually (not via ``Depends``) to avoid holding a\n257:     pool connection during the long wait.\n258:     \"\"\"\n259:     maker = _get_session_maker()\n260: \n261:     # Short-lived session: validate run exists and check terminal state\n262:     async with maker() as session:\n263:         run_orm = await session.scalar(\n264:             select(RunORM).where(\n265:                 RunORM.run_id == str(run_id),\n266:                 RunORM.thread_id == thread_id,\n267:                 RunORM.user_id == user.identity,\n268:             )\n269:         )\n270:         if not run_orm:\n271:             raise HTTPException(404, f\"Run '{run_id}' not found\")\n272: \n273:         if run_orm.status in TERMINAL_STATES:\n274:             return StreamingResponse(\n275:                 iter([encode_output(run_orm.output or {})]),\n276:                 media_type=\"application/json\",\n277:             )\n278: \n279:     return StreamingResponse(\n280:         heartbeat_wait_body(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": [
+      {
+        "finding_id": "authz:remove-thread-ownership-check:1",
+        "judged": true,
+        "kev_verdict": "real",
+        "kev_severity": "high",
+        "supported": true,
+        "provenance_confidence": 0.7146,
+        "not_judged_reason": ""
+      }
+    ]
+  },
+  "project": "aegra",
+  "mode": "lgtm",
+  "case_scope": "in",
+  "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+  "diff_files": 1,
+  "diff_added": 0,
+  "diff_deleted": 19,
+  "diff_py_chars": 2477,
+  "diff_max_file_chars": 2477,
+  "index_seconds": 0.38,
+  "index_chunks": 41,
+  "index_reused": false,
+  "index_skipped": false,
+  "index_skip_reason": "",
+  "pin": {
+    "model": "qwen3.8:27b",
+    "code_sha": "af878ce46af7d57419d8237931aa1c8100a8d6a3",
+    "code_dirty": true,
+    "base_sha": "59abec7019b7c8bcb739917d2f7acef7ca48cf2d",
+    "pr_sha": "d9d89ca8a799720a3a2681409cafed105e72e916",
+    "sampling": {
+      "llm_temperature": 0.0,
+      "reasoning": false
+    },
+    "budgets": {
+      "max_tool_calls": 5,
+      "max_agent_iterations": 8,
+      "investigator_max_tool_calls": 24,
+      "investigator_max_iterations": 32,
+      "investigator_diff_chars": 30000,
+      "investigator_max_sections": 12,
+      "section_max_chars": 12000,
+      "max_sections": 24
+    },
+    "flags": {
+      "mode": "lgtm",
+      "static_facts": false,
+      "authz_role_guidance": false,
+      "strip_comments": true,
+      "detect_prompt_injection": true,
+      "require_tool_use": false
+    }
+  },
+  "semgrep_findings_in_diff": 0,
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 13,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 4,
+    "hunks_assigned": 4,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 4,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions": [],
+    "invalid_refs": [],
+    "sections": [
+      {
+        "section_id": "remove-thread-ownership-check",
+        "origin": "investigator",
+        "title": "Remove per-endpoint thread ownership (user_id) authorization checks from run-creation endpoints",
+        "files": [
+          "libs/aegra-api/src/aegra_api/api/runs.py"
+        ],
+        "split": false,
+        "partial_hunk": false,
+        "hunks": [
+          {
+            "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#0",
+            "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "old_start": 15,
+            "old_count": 7,
+            "new_start": 15,
+            "new_count": 6,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#1",
+            "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "old_start": 51,
+            "old_count": 12,
+            "new_start": 50,
+            "new_count": 6,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#2",
+            "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "old_start": 99,
+            "old_count": 12,
+            "new_start": 92,
+            "new_count": 6,
+            "change": "delete"
+          },
+          {
+            "hunk_id": "libs/aegra-api/src/aegra_api/api/runs.py#3",
+            "file": "libs/aegra-api/src/aegra_api/api/runs.py",
+            "old_start": 324,
+            "old_count": 12,
+            "new_start": 311,
+            "new_count": 6,
+            "change": "delete"
+          }
+        ],
+        "status": "completed",
+        "supported": [
+          true
+        ],
+        "finding_ids": [
+          "authz:remove-thread-ownership-check:1"
+        ],
+        "error": null
+      }
+    ]
+  },
+  "coverage_summary": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "investigator_error": null,
+    "investigator_input": "full",
+    "investigator_tool_calls": 13,
+    "files_total": 1,
+    "files_in_scope": 1,
+    "hunks_total": 4,
+    "hunks_assigned": 4,
+    "hunks_leftover": 0,
+    "hunks_gated": 0,
+    "hunks_reviewed": 4,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "sections_coalesced": 0,
+    "complete": true,
+    "exclusions_total": 0
+  },
+  "graph_state": "ok",
+  "graph_index_seconds": 1.12,
+  "base_sha": "59abec7019b7c8bcb739917d2f7acef7ca48cf2d",
+  "pr_sha": "d9d89ca8a799720a3a2681409cafed105e72e916",
+  "sast_error": null,
+  "semgrep_findings_total": 0,
+  "triage_errors": 0,
+  "infra_failures": 0,
+  "infra_failure_ids": [],
+  "case_label": "detected_vulnerability",
+  "case_label_grounded": "detected_vulnerability",
+  "target_sections": [
+    "remove-thread-ownership-check"
+  ],
+  "coverage_gap": false,
+  "alarms_outside_target": [],
+  "predicted": "vulnerable",
+  "predicted_grounded": "vulnerable",
+  "outcome": "TP",
+  "outcome_grounded": "TP",
+  "correct": true,
+  "scope": "in",
+  "off_category": []
+}

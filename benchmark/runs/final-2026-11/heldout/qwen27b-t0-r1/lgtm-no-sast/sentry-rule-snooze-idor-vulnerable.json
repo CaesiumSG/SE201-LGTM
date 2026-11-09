@@ -1,0 +1,182 @@
+{
+  "id": "sentry-rule-snooze-idor-vulnerable",
+  "repo": "getsentry/sentry",
+  "pr": 47050,
+  "title": "PR #47050 added the project-scoped rule snooze (mute) endpoint, which loads the issue/metric alert rule by id alone without scoping it to the project in the URL, so a user can mute alert rules in other organizations.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "1a73480a57434fb2ab351b7819a586534ab76eaf",
+  "pr_sha": "213be646f4dbfc78657bf4bfccacd696dfb3f9fd",
+  "files_changed": 7,
+  "python_files_changed": 7,
+  "added_lines": 587,
+  "diff_chars": 32268,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 137.8,
+  "index_seconds": 3.3,
+  "index_reused": false,
+  "index_chunks": 417,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 5,
+    "sections_completed": 5,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 1,
+    "unsupported": 0,
+    "not_judged": 0
+  },
+  "n_findings": 1,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "authz:rule-snooze-endpoint.1:1",
+      "agent": "authz_reviewer",
+      "category": "authz",
+      "file": "src/sentry/api/endpoints/rule_snooze.py",
+      "line": 49,
+      "cwe_id": "CWE-863",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The new RuleSnoozeEndpoint allows an org-wide snooze (user_id=None, which mutes the rule for ALL users per the RuleSnooze model docstring 'Null user_id value means snoozed for all users') whenever the rule has no owner/team. In can_edit_alert_rule, when user_id is None and rule.owner is falsy, the function falls through and returns True with no role/permission check. Combined with ProjectAlertRule"
+    }
+  ],
+  "tool_calls_total": 5,
+  "investigator_tool_calls": 8,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 26,
+  "reviewer_units": 5,
+  "findings": [
+    {
+      "finding_id": "authz:rule-snooze-endpoint.1:1",
+      "cwe_id": "CWE-863",
+      "explanation": "The new RuleSnoozeEndpoint allows an org-wide snooze (user_id=None, which mutes the rule for ALL users per the RuleSnooze model docstring 'Null user_id value means snoozed for all users') whenever the rule has no owner/team. In can_edit_alert_rule, when user_id is None and rule.owner is falsy, the function falls through and returns True with no role/permission check. Combined with ProjectAlertRulePermission (POST scope_map: project:write/project:admin/alerts:write) and ProjectPermission.has_object_permission (only requires project access), any project member with alerts:write can create a RuleSnooze with user_id=None that silences the alert for every user in the organization \u2014 a privilege escalation beyond the per-user 'me' snooze path. This is newly exposed by the PR.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            37,
+            49
+          ],
+          "source": null,
+          "content": "def can_edit_alert_rule(rule, organization, user_id, user):\n    if user_id:\n        if organization not in Organization.objects.get_for_user(user):\n            return False\n        return True\n    rule_owner = rule.owner\n    if rule_owner:\n        if rule_owner.team not in Team.objects.get_for_user(organization, user):\n            return False\n    return True",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            88,
+            95
+          ],
+          "source": null,
+          "content": "        rule = issue_alert_rule or metric_alert_rule\n        if not can_edit_alert_rule(rule, project.organization, user_id, request.user):\n            return Response(\n                {\"detail\": \"Requesting user cannot mute this rule.\"},\n                status=status.HTTP_401_UNAUTHORIZED,\n            )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/endpoints/rule_snooze.py",
+          "lines": [
+            97,
+            105
+          ],
+          "source": null,
+          "content": "        rule_snooze, created = RuleSnooze.objects.get_or_create(\n            user_id=user_id,\n            rule=issue_alert_rule,\n            alert_rule=metric_alert_rule,\n            defaults={\n                \"owner_id\": request.user.id,\n                \"until\": data.get(\"until\"),\n                \"date_added\": datetime.datetime.now(),\n            },\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/models/rulesnooze.py",
+          "lines": [
+            11,
+            15
+          ],
+          "source": null,
+          "content": "    \"\"\"\n    Duration an issue alert or metric alert is snoozed for a user.\n    Null `until` value means snoozed forever.\n    Null `user_id` value means snoozed for all users.\n    \"\"\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/bases/project.py",
+          "lines": [
+            77,
+            83
+          ],
+          "source": null,
+          "content": "class ProjectAlertRulePermission(ProjectPermission):\n    scope_map = {\n        \"GET\": [\"project:read\", \"project:write\", \"project:admin\", \"alerts:read\"],\n        \"POST\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n        \"PUT\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n        \"DELETE\": [\"project:write\", \"project:admin\", \"alerts:write\"],\n    }",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "src/sentry/api/bases/project.py",
+          "lines": [
+            30,
+            38
+          ],
+          "source": null,
+          "content": "    def has_object_permission(self, request: Request, view, project):\n        has_org_scope = super().has_object_permission(request, view, project.organization)\n        if has_org_scope and request.access.has_project_access(project):\n            return has_org_scope\n        allowed_scopes = set(self.scope_map.get(request.method, []))\n        return request.access.has_any_project_scope(project, allowed_scopes)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        }
+      ],
+      "suggested_fix": "Require an elevated role (e.g. organization admin/owner or a dedicated alerts:admin scope) for the org-wide snooze path (user_id is None) instead of allowing any project member with alerts:write. In can_edit_alert_rule, when user_id is None, verify the user has an org-level admin role (or that the rule's owner team grants admin) before returning True, rather than defaulting to True when rule.owner is falsy.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.7919,
+      "kev_verdict": "real",
+      "kev_severity": "high",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "authz_reviewer",
+      "file": "src/sentry/api/endpoints/rule_snooze.py",
+      "line": 49,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "sentry-rule-snooze-idor",
+  "url": "https://github.com/getsentry/sentry/pull/47050",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-v345-w9f2-mpm5",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "src/sentry/api/endpoints/rule_snooze.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

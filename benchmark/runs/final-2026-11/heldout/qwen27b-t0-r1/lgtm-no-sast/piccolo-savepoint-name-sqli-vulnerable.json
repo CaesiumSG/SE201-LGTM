@@ -1,0 +1,417 @@
+{
+  "id": "piccolo-savepoint-name-sqli-vulnerable",
+  "repo": "piccolo-orm/piccolo",
+  "pr": 778,
+  "title": "Adding transaction savepoints interpolated the caller-supplied savepoint name into SAVEPOINT/ROLLBACK TO/RELEASE statements with f-strings.",
+  "mode": "lgtm-no-sast",
+  "model": "qwen3.8:27b",
+  "base": "021d782b706ec6ed33b88355477c31b5826d8d26",
+  "pr_sha": "72b85975ef4364cb5609c5c6af5240e4f4782f90",
+  "files_changed": 5,
+  "python_files_changed": 4,
+  "added_lines": 279,
+  "diff_chars": 14554,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 179.4,
+  "index_seconds": 1.5,
+  "index_reused": false,
+  "index_chunks": 198,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 10,
+    "hunks_reviewed": 10,
+    "sections_scheduled": 3,
+    "sections_completed": 3,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": {
+    "supported": 2,
+    "unsupported": 1,
+    "not_judged": 0
+  },
+  "n_findings": 3,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 2,
+    "safe": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:piccolo/engine/postgres.py:132",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "piccolo/engine/postgres.py",
+      "line": 132,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The flagged line (piccolo/engine/postgres.py:132-134) executes `f\"ROLLBACK TO SAVEPOINT {self.name}\"` via `connection.execute`, interpolating `self.name` directly into the SQL string with no bound parameter. `self.name` is set in `Savepoint.__init__` (line 127-129) from the `name` argument, which is supplied by `PostgresTransaction.savepoint(name)` (line 237-240) and `PostgresTransaction.rollback_"
+    },
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:piccolo/engine/sqlite.py:312",
+      "agent": "sast_triage",
+      "category": "sqli",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 312,
+      "cwe_id": "CWE-89",
+      "supported": true,
+      "kev_verdict": "real",
+      "explanation": "The flagged line (piccolo/engine/sqlite.py:312) executes `f\"ROLLBACK TO SAVEPOINT {self.name}\"` via `connection.execute`, interpolating `self.name` directly into the SQL string with no bound parameter. `self.name` is set in `Savepoint.__init__` (line 307-309) from the `name` argument, which is supplied by `SQLiteTransaction.savepoint(name)` (line 414-417) and `SQLiteTransaction.rollback_to(savepoi"
+    }
+  ],
+  "tool_calls_total": 15,
+  "investigator_tool_calls": 16,
+  "sast_triage_tool_calls": 21,
+  "sast_triage_units": 4,
+  "reviewer_tool_calls": 26,
+  "reviewer_units": 5,
+  "findings": [
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:piccolo/engine/postgres.py:132",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line (piccolo/engine/postgres.py:132-134) executes `f\"ROLLBACK TO SAVEPOINT {self.name}\"` via `connection.execute`, interpolating `self.name` directly into the SQL string with no bound parameter. `self.name` is set in `Savepoint.__init__` (line 127-129) from the `name` argument, which is supplied by `PostgresTransaction.savepoint(name)` (line 237-240) and `PostgresTransaction.rollback_to(savepoint_name)` (line 225-229). Both are public API methods that accept an arbitrary caller-supplied string with no validation or whitelist. The project's own security documentation (docs/src/piccolo/features/security.rst) states Piccolo relies on keeping query parameters separate from the query string to prevent SQL injection, but this savepoint code path bypasses that mechanism by string-interpolating the name. Because a caller can pass an arbitrary string (e.g. `\"x; DROP TABLE y; --\"`) as the savepoint name, this constitutes a genuine SQL injection vector, not a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            131,
+            134
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            237,
+            240
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            225,
+            229
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self, savepoint_name: str):\n        \"\"\"\n        Used to rollback to a savepoint just using the name.\n        \"\"\"\n        await Savepoint(name=savepoint_name, transaction=self).rollback_to()",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection - If you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            414,
+            417
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "tests/engine/test_transaction.py",
+          "lines": [
+            286,
+            292
+          ],
+          "source": null,
+          "content": "    def test_named_savepoint(self):\n        async def run_test():\n            async with Manager._meta.db.transaction() as transaction:\n                await Manager.insert(Manager(name=\"Manager 1\"))\n                await transaction.savepoint(\"my_savepoint\")\n                await Manager.insert(Manager(name=\"Manager 2\"))\n                await transaction.rollback_to(\"my_savepoint\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            136,
+            139
+          ],
+          "source": null,
+          "content": "    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            131,
+            139
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection ... Piccolo uses a custom class called QueryString for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate the savepoint name against a strict identifier whitelist (e.g. `re.fullmatch(r\"[A-Za-z_][A-Za-z0-9_]*\", name)`) before interpolating it into the SQL, or quote it as a Postgres identifier using `psycopg`'s `sql.Identifier`/`sql.SQL` composition so the name is treated as an identifier rather than raw SQL text. Apply the same validation to the `SAVEPOINT {name}` statement at line 239.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9115,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/postgres.py",
+      "line": 132,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:piccolo/engine/sqlite.py:312",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line (piccolo/engine/sqlite.py:312) executes `f\"ROLLBACK TO SAVEPOINT {self.name}\"` via `connection.execute`, interpolating `self.name` directly into the SQL string with no bound parameter. `self.name` is set in `Savepoint.__init__` (line 307-309) from the `name` argument, which is supplied by `SQLiteTransaction.savepoint(name)` (line 414-417) and `SQLiteTransaction.rollback_to(savepoint_name)` (line 402-406). Both are public API methods that accept an arbitrary user-supplied string (e.g. `transaction.savepoint(\"my_savepoint\")` in tests/engine/test_transaction.py:290). There is no whitelist validation or sanitization of the name anywhere in the code path, so a caller could inject arbitrary SQL (e.g. a name containing `; DROP TABLE ...`). Note that the project's own security documentation (docs/src/piccolo/features/security.rst) states Piccolo relies on parameterized queries to prevent SQL injection, which this code path does not follow. The identical pattern also exists in piccolo/engine/postgres.py:131-139. This is a genuine SQL injection sink, not a false positive.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            306,
+            319
+          ],
+          "source": null,
+          "content": "class Savepoint:\n    def __init__(self, name: str, transaction: SQLiteTransaction):\n        self.name = name\n        self.transaction = transaction\n\n    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            402,
+            417
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self, savepoint_name: str):\n        \"\"\"\n        Used to rollback to a savepoint just using the name.\n        \"\"\"\n        await Savepoint(name=savepoint_name, transaction=self).rollback_to()\n\n    def get_savepoint_id(self) -> int:\n        self._savepoint_id += 1\n        return self._savepoint_id\n\n    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/postgres.py",
+          "lines": [
+            131,
+            139
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "tests/engine/test_transaction.py",
+          "lines": [
+            286,
+            292
+          ],
+          "source": null,
+          "content": "    def test_named_savepoint(self):\n        async def run_test():\n            async with Manager._meta.db.transaction() as transaction:\n                await Manager.insert(Manager(name=\"Manager 1\"))\n                await transaction.savepoint(\"my_savepoint\")\n                await Manager.insert(Manager(name=\"Manager 2\"))\n                await transaction.rollback_to(\"my_savepoint\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection - If you look under the hood, Piccolo uses a custom class called ``QueryString`` for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            414,
+            417
+          ],
+          "source": null,
+          "content": "    async def savepoint(self, name: t.Optional[str] = None) -> Savepoint:\n        name = name or f\"savepoint_{self.get_savepoint_id()}\"\n        await self.connection.execute(f\"SAVEPOINT {name}\")\n        return Savepoint(name=name, transaction=self)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            311,
+            319
+          ],
+          "source": null,
+          "content": "    async def rollback_to(self):\n        await self.transaction.connection.execute(\n            f\"ROLLBACK TO SAVEPOINT {self.name}\"\n        )\n\n    async def release(self):\n        await self.transaction.connection.execute(\n            f\"RELEASE SAVEPOINT {self.name}\"\n        )",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "policy",
+          "file": null,
+          "lines": null,
+          "source": "docs/src/piccolo/features/security.rst",
+          "content": "SQL Injection protection ... Piccolo uses a custom class called QueryString for composing queries. It keeps query parameters separate from the query string, so we can pass parameterised queries to the engine. This helps prevent SQL Injection attacks.",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": null
+        }
+      ],
+      "suggested_fix": "Validate the savepoint name against a strict whitelist (e.g. `re.fullmatch(r\"[A-Za-z_][A-Za-z0-9_]*\", name)`) and raise a ValueError on mismatch before interpolating it into the SQL string, since SAVEPOINT names cannot be bound as parameters in SQLite/Postgres. Apply the same validation in both piccolo/engine/sqlite.py (Savepoint.rollback_to, Savepoint.release, SQLiteTransaction.savepoint) and piccolo/engine/postgres.py (Savepoint.rollback_to, Savepoint.release, PostgresTransaction.savepoint).",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": true,
+      "provenance_confidence": 0.9262,
+      "kev_verdict": "real",
+      "kev_severity": "critical",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 312,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    },
+    {
+      "finding_id": "lgtm-no-sast.sql-sink-heuristic:piccolo/engine/sqlite.py:392",
+      "cwe_id": "CWE-89",
+      "explanation": "The flagged line 392 executes `f\"BEGIN {self.transaction_type.value}\"`. The interpolated value comes from `self.transaction_type`, which is typed as `TransactionType` (an enum) and set in `__init__` (line 335, `self.transaction_type = transaction_type`) from a parameter typed `transaction_type: TransactionType = TransactionType.deferred`. The `TransactionType` enum (lines 242-250) only defines three fixed string values: \"DEFERRED\", \"IMMEDIATE\", and \"EXCLUSIVE\". Because the value is constrained to a fixed enum whitelist and is not derived from any user-controlled input, the dynamic portion of the SQL statement cannot be influenced by an attacker. This is a false positive: the query uses a strictly validated whitelist of values rather than arbitrary user input.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            391,
+            392
+          ],
+          "source": null,
+          "content": "    async def begin(self):\n        await self.connection.execute(f\"BEGIN {self.transaction_type.value}\")",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            242,
+            250
+          ],
+          "source": null,
+          "content": "class TransactionType(enum.Enum):\n    \"\"\"\n    See the `SQLite <https://www.sqlite.org/lang_transaction.html>`_ docs for\n    more info.\n    \"\"\"\n\n    deferred = \"DEFERRED\"\n    immediate = \"IMMEDIATE\"\n    exclusive = \"EXCLUSIVE\"",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": false
+        },
+        {
+          "type": "code",
+          "file": "piccolo/engine/sqlite.py",
+          "lines": [
+            335,
+            335
+          ],
+          "source": null,
+          "content": "        self.transaction_type = transaction_type",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "No fix required for SQL injection: the interpolated value is constrained to a fixed enum whitelist (DEFERRED/IMMEDIATE/EXCLUSIVE) and cannot be attacker-controlled. If desired for defense-in-depth, the value could be validated against the allowed set before execution, but this is not necessary given the enum typing.",
+      "semgrep_rule_id": "lgtm-no-sast.sql-sink-heuristic",
+      "semgrep_severity": "WARNING",
+      "semgrep_message": "Added line appears to construct or execute SQL; verify it is parameterized.",
+      "verdict": "",
+      "severity": "",
+      "supported": false,
+      "provenance_confidence": 0.714,
+      "kev_verdict": "not_real",
+      "kev_severity": "low",
+      "judged": true,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "sast_triage",
+      "file": "piccolo/engine/sqlite.py",
+      "line": 392,
+      "tool_calls_used": 5,
+      "pr_graph_ok": true
+    }
+  ],
+  "advisory": "piccolo-savepoint-name-sqli",
+  "url": "https://github.com/piccolo-orm/piccolo/pull/778",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-xq59-7jf3-rjc6",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "piccolo/engine/postgres.py",
+    "piccolo/engine/sqlite.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "TP",
+  "correct": true,
+  "on_target": true
+}

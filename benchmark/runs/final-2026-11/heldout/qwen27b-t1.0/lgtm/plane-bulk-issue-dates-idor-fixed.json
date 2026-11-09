@@ -1,0 +1,398 @@
+{
+  "id": "plane-bulk-issue-dates-idor-fixed",
+  "repo": "makeplane/plane",
+  "pr": 8834,
+  "title": "The Timeline revamp PR added IssueBulkUpdateDateEndpoint, which fetches issues by caller-supplied ids without filtering by the URL's workspace and project, so a member of any project can change start/target dates of any issue on the instance.",
+  "mode": "lgtm",
+  "model": "qwen3.8:27b",
+  "base": "00a51f5e6a703b0475cca3568c35f1e2acbab42a",
+  "pr_sha": "a01b51fca5adff16923ad8148de0d0563f8cd738",
+  "files_changed": 1,
+  "python_files_changed": 1,
+  "added_lines": 1,
+  "diff_chars": 535,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 74.0,
+  "index_seconds": 0.9,
+  "index_reused": false,
+  "index_chunks": 111,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "fallback",
+    "investigator_status": "failed",
+    "hunks_total": 1,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 17,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 6,
+  "reviewer_units": 1,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/views/issue/base.py",
+                  "start_line": 1050,
+                  "end_line": 1250,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/app/views/issue/base.py lines=1050-1250]\n1050:         if self.expand:\n1051:             if \"issue_relation\" in self.expand:\n1052:                 issue = issue.prefetch_related(\n1053:                     Prefetch(\n1054:                         \"issue_relation\",\n1055:                         queryset=IssueRelation.objects.select_related(\"related_issue\"),\n1056:                     )\n1057:                 )\n1058:             if \"issue_related\" in self.expand:\n1059:                 issue = issue.prefetch_related(\n1060:                     Prefetch(\n1061:                         \"issue_related\",\n1062:                         queryset=IssueRelation.objects.select_related(\"issue\"),\n1063:                     )\n1064:                 )\n1065: \n1066:         # Apply filtering from filterset\n1067:         issue = self.filter_queryset(issue)\n1068: \n1069:         # Apply legacy filters\n1070:         issue = issue.filter(**filters)\n1071: \n1072:         # Total count queryset\n1073:         total_issue_queryset = copy.deepcopy(issue)\n1074: \n1075:         # Applying annotations to the issue queryset\n1076:         issue = self.apply_annotations(issue)\n1077: \n1078:         order_by_param = request.GET.get(\"order_by\", \"-created_at\")\n1079: \n1080:         # Issue queryset\n1081:         issue, order_by_param = order_issue_queryset(issue_queryset=issue, order_by_param=order_by_param)\n1082:         return self.paginate(\n1083:             request=request,\n1084:             order_by=order_by_param,\n1085:             queryset=issue,\n1086:             total_count_queryset=total_issue_queryset,\n1087:             on_results=lambda issue: IssueListDetailSerializer(\n1088:                 issue, many=True, fields=self.fields, expand=self.expand\n1089:             ).data,\n1090:         )\n1091: \n1092: \n1093: class IssueBulkUpdateDateEndpoint(BaseAPIView):\n1094:     def validate_dates(self, current_start, current_target, new_start, new_target):\n1095:         \"\"\"\n1096:         Validate that start date is before target date.\n1097:         \"\"\"\n1098:         from datetime import datetime\n1099: \n1100:         start = new_start or current_start\n1101:         target = new_target or current_target\n1102: \n1103:         # Convert string dates to datetime objects if they're strings\n1104:         if isinstance(start, str):\n1105:             start = datetime.strptime(start, \"%Y-%m-%d\").date()\n1106:         if isinstance(target, str):\n1107:             target = datetime.strptime(target, \"%Y-%m-%d\").date()\n1108: \n1109:         if start and target and start > target:\n1110:             return False\n1111:         return True\n1112: \n1113:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n1114:     def post(self, request, slug, project_id):\n1115:         updates = request.data.get(\"updates\", [])\n1116: \n1117:         issue_ids = [update[\"id\"] for update in updates]\n1118:         epoch = int(timezone.now().timestamp())\n1119: \n1120:         # Fetch all relevant issues in a single query\n1121:         issues = list(Issue.objects.filter(id__in=issue_ids, workspace__slug=slug, project_id=project_id))\n1122:         issues_dict = {str(issue.id): issue for issue in issues}\n1123:         issues_to_update = []\n1124: \n1125:         for update in updates:\n1126:             issue_id = update[\"id\"]\n1127:             issue = issues_dict.get(issue_id)\n1128: \n1129:             if not issue:\n1130:                 continue\n1131: \n1132:             start_date = update.get(\"start_date\")\n1133:             target_date = update.get(\"target_date\")\n1134:             validate_dates = self.validate_dates(issue.start_date, issue.target_date, start_date, target_date)\n1135:             if not validate_dates:\n1136:                 return Response(\n1137:                     {\"message\": \"Start date cannot exceed target date\"},\n1138:                     status=status.HTTP_400_BAD_REQUEST,\n1139:                 )\n1140: \n1141:             if start_date:\n1142:                 issue_activity.delay(\n1143:                     type=\"issue.activity.updated\",\n1144:                     requested_data=json.dumps({\"start_date\": update.get(\"start_date\")}),\n1145:                     current_instance=json.dumps({\"start_date\": str(issue.start_date)}),\n1146:                     issue_id=str(issue_id),\n1147:                     actor_id=str(request.user.id),\n1148:                     project_id=str(project_id),\n1149:                     epoch=epoch,\n1150:                 )\n1151:                 issue.start_date = start_date\n1152:                 issues_to_update.append(issue)\n1153: \n1154:             if target_date:\n1155:                 issue_activity.delay(\n1156:                     type=\"issue.activity.updated\",\n1157:                     requested_data=json.dumps({\"target_date\": update.get(\"target_date\")}),\n1158:                     current_instance=json.dumps({\"target_date\": str(issue.target_date)}),\n1159:                     issue_id=str(issue_id),\n1160:                     actor_id=str(request.user.id),\n1161:                     project_id=str(project_id),\n1162:                     epoch=epoch,\n1163:                 )\n1164:                 issue.target_date = target_date\n1165:                 issues_to_update.append(issue)\n1166: \n1167:         # Bulk update issues\n1168:         Issue.objects.bulk_update(issues_to_update, [\"start_date\", \"target_date\"])\n1169: \n1170:         return Response({\"message\": \"Issues updated successfully\"}, status=status.HTTP_200_OK)\n1171: \n1172: \n1173: class IssueMetaEndpoint(BaseAPIView):\n1174:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST], level=\"PROJECT\")\n1175:     def get(self, request, slug, project_id, issue_id):\n1176:         issue = Issue.issue_objects.only(\"sequence_id\", \"project__identifier\").get(\n1177:             id=issue_id, project_id=project_id, workspace__slug=slug\n1178:         )\n1179:         return Response(\n1180:             {\n1181:                 \"sequence_id\": issue.sequence_id,\n1182:                 \"project_identifier\": issue.project.identifier,\n1183:             },\n1184:             status=status.HTTP_200_OK,\n1185:         )\n1186: \n1187: \n1188: class IssueDetailIdentifierEndpoint(BaseAPIView):\n1189:     def strict_str_to_int(self, s):\n1190:         if not s.isdigit() and not (s.startswith(\"-\") and s[1:].isdigit()):\n1191:             raise ValueError(\"Invalid integer string\")\n1192:         return int(s)\n1193: \n1194:     def get(self, request, slug, project_identifier, issue_identifier):\n1195:         # Check if the issue identifier is a valid integer\n1196:         try:\n1197:             issue_identifier = self.strict_str_to_int(issue_identifier)\n1198:         except ValueError:\n1199:             return Response(\n1200:                 {\"error\": \"Invalid issue identifier\"},\n1201:                 status=status.HTTP_400_BAD_REQUEST,\n1202:             )\n1203: \n1204:         # Fetch the project\n1205:         project = Project.objects.get(identifier__iexact=project_identifier, workspace__slug=slug)\n1206: \n1207:         # Check if the user is a member of the project\n1208:         if not ProjectMember.objects.filter(\n1209:             workspace__slug=slug,\n1210:             project_id=project.id,\n1211:             member=request.user,\n1212:             is_active=True,\n1213:         ).exists():\n1214:             return Response(\n1215:                 {\"error\": \"You are not allowed to view this issue\"},\n1216:                 status=status.HTTP_403_FORBIDDEN,\n1217:             )\n1218: \n1219:         # Fetch the issue\n1220:         issue = (\n1221:             Issue.objects.filter(project_id=project.id)\n1222:             .filter(workspace__slug=slug)\n1223:             .select_related(\"workspace\", \"project\", \"state\", \"parent\")\n1224:             .prefetch_related(\"assignees\", \"labels\", \"issue_module__module\")\n1225:             .annotate(cycle_id=Subquery(CycleIssue.objects.filter(issue=OuterRef(\"id\")).values(\"cycle\n[TRUNCATED]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "allow_permission decorator implementation, how project membership and workspace slug are validated for ROLE.ADMIN MEMBER"
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 status=ok truncated=true incomplete=true query=\"allow_permission decorator implementation, how project membership and workspace \"]\n**Exploration: allow_permission decorator implementation, how project membership and workspace slug are validated for ROLE.ADMIN MEMBER**\n\nFound 41 symbols across 8 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `member` (apps/web/core/components/project/send-project-invitation-modal.tsx:31) \u2014 1 caller in `apps/web/core/components/project/send-project-invitation-modal.tsx`; no tests found within 3 caller hops\n- `IWorkspaceMembership` (apps/web/core/store/member/workspace/workspace-member-filters.store.ts:17) \u2014 1 caller in `apps/web/core/store/member/workspace/workspace-member-filters.store.ts`; no tests found within 3 caller hops\n- `IWorkspaceMembership` (apps/web/core/store/member/workspace/workspace-member.store.ts:25) \u2014 6 callers in `apps/web/core/store/issue/root.store.ts`, `apps/web/core/store/member/workspace/workspace-member.store.ts`; no tests found within 3 caller hops\n- `getProjectMemberships` (apps/web/core/store/member/project/base-project-member.store.ts:172) \u2014 2 callers in `apps/web/core/store/member/project/base-project-member.store.ts`; no tests found within 3 caller hops\n- `WorkspaceStore` (apps/admin/store/workspace.store.ts:32) \u2014 3 callers in `apps/admin/store/root.store.ts`; no tests found within 3 caller hops\n\n**Relationships**\n\n**implements:**\n- WorkspaceStore \u2192 IWorkspaceStore\n- BaseProjectMemberStore \u2192 IBaseProjectMemberStore\n\n**extends:**\n- WorkspaceMember \u2192 BaseModel\n- BaseModel \u2192 AuditModel\n- AuditModel \u2192 SoftDeleteModel\n- AuditModel \u2192 UserAuditModel\n- AuditModel \u2192 TimeAuditModel\n- ProjectMemberStore \u2192 BaseProjectMemberStore\n- PageLabel \u2192 BaseModel\n- InstanceAdmin \u2192 BaseModel\n- ExporterHistory \u2192 BaseModel\n- IssueType \u2192 BaseModel\n- ... and 3 more\n\n**references:**\n- FormValues \u2192 member\n- defaultValues \u2192 FormValues\n- onSubmit \u2192 FormValues\n- SendProjectInvitationModal \u2192 defaultValues\n- handleClose \u2192 defaultValues\n- SendProjectInvitationModal \u2192 defaultValues\n- onSubmit \u2192 defaultValues\n- SendProjectInvitationModal \u2192 onSubmit\n- getFilteredProjectMemberDetails \u2192 IProjectMemberDetails\n- constructor \u2192 RootStore\n- ... and 15 more\n\n**calls:**\n- onSubmit \u2192 setToast\n- onSubmit \u2192 onSuccess\n- getProjectMemberIds \u2192 getProjectMemberships\n- getFilteredProjectMemberDetails \u2192 getProjectMemberships\n- getFilteredProjectMemberDetails \u2192 getProjectMembershipByUserId\n- updateMemberRole \u2192 getProjectMembershipByUserId\n- updateMemberRole \u2192 updateProjectMember\n- updateMemberRole \u2192 getProjectMemberDetails\n- bulkAddMembersToProject \u2192 bulkAddMembersToProject\n- constructor \u2192 constructor\n- ... and 12 more\n\n**instantiates:**\n- constructor \u2192 ProjectMemberService\n- resetOnSignOut \u2192 WorkspaceStore\n- constructor \u2192 WorkspaceStore\n- constructor \u2192 InstanceWorkspaceService\n- resetOnSignOut \u2192 UserStore\n- resetOnSignOut \u2192 ThemeStore\n- resetOnSignOut \u2192 InstanceStore\n- constructor \u2192 UserStore\n- constructor \u2192 ThemeStore\n- constructor \u2192 InstanceStore\n- ... and 3 more\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`apps/api/plane/app/permissions/base.py`** \u2014 allow_permission(function), decorator(function)\n\n```python\n1\t# Copyright (c) 2023-present Plane Software, Inc. and contributors\n2\t# SPDX-License-Identifier: AGPL-3.0-only\n3\t# See the LICENSE file for details.\n4\t\n5\tfrom plane.db.models import WorkspaceMember, ProjectMember\n6\tfrom functools import wraps\n7\tfrom rest_framework.response import Response\n8\tfrom rest_framework import status\n9\t\n10\tfrom enum import Enum\n11\t\n12\t\n13\tclass ROLE(Enum):\n14\t    ADMIN = 20\n15\t    MEMBER = 15\n16\t    GUEST = 5\n17\t\n18\t\n19\tdef allow_permission(allowed_roles, level=\"PROJECT\", creator=False, model=None):\n20\t    def decorator(view_func):\n21\t        @wraps(view_func)\n22\t        def _wrapped_view(instance, request, *args, **kwargs):\n23\t            # Check for creator if required\n24\t            if creator and model:\n25\t                # check if the user is part of the workspace or not\n26\t                if not WorkspaceMember.objects.filter(\n27\t                    member=request.user,\n28\t                    workspace__slug=kwargs[\"slug\"],\n29\t                    is_active=True,\n30\t                ).exists():\n31\t                    return Response(\n32\t                        {\"error\": \"You don't have the required permissions.\"},\n33\t                        status=status.HTTP_403_FORBIDDEN,\n34\t                    )\n35\t\n36\t                obj = model.objects.filter(id=kwargs[\"pk\"], created_by=request.user).exists()\n37\t                if obj:\n38\t                    return view_func(instance, request, *args, **kwargs)\n39\t\n40\t            # Convert allowed_roles to their values if they are enum members\n41\t            allowed_role_values = [role.value if isinstance(role, ROLE) else role for role in allowed_roles]\n42\t\n43\t            # Check role permissions\n44\t            if level == \"WORKSPACE\":\n45\t                if WorkspaceMember.objects.filter(\n46\t                    member=request.user,\n47\t                    workspace__slug=kwargs[\"slug\"],\n48\t                    role__in=allowed_role_values,\n49\t                    is_active=True,\n50\t                ).exists():\n51\t                    return view_func(instance, request, *args, **kwargs)\n52\t            else:\n53\t                is_user_has_allowed_role = ProjectMember.objects.filter(\n54\t                    member=request.user,\n55\t                    workspace__\n[TRUNCATED omitted_chars=19336]\nNOTE: INCOMPLETE categories=unknown\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "IssueBulkUpdateDateEndpoint",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"IssueBulkUpdateDateEndpoint\"]\napps/api/plane/app/urls/issue.py:29:    IssueBulkUpdateDateEndpoint,\napps/api/plane/app/urls/issue.py:253:        IssueBulkUpdateDateEndpoint.as_view(),\napps/api/plane/app/views/__init__.py:126:    IssueBulkUpdateDateEndpoint,\napps/api/plane/app/views/issue/base.py:1093:class IssueBulkUpdateDateEndpoint(BaseAPIView):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/urls/issue.py",
+                  "start_line": 245,
+                  "end_line": 260,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/app/urls/issue.py lines=245-260]\n245:     ## End Issue Relation\n246:     path(\n247:         \"workspaces/<str:slug>/projects/<uuid:project_id>/deleted-issues/\",\n248:         DeletedIssuesListViewSet.as_view(),\n249:         name=\"deleted-issues\",\n250:     ),\n251:     path(\n252:         \"workspaces/<str:slug>/projects/<uuid:project_id>/issue-dates/\",\n253:         IssueBulkUpdateDateEndpoint.as_view(),\n254:         name=\"project-issue-dates\",\n255:     ),\n256:     path(\n257:         \"workspaces/<str:slug>/projects/<uuid:project_id>/issues/<uuid:issue_id>/versions/\",\n258:         IssueVersionEndpoint.as_view(),\n259:         name=\"issue-versions\",\n260:     ),\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/permissions/base.py",
+                  "start_line": 19,
+                  "end_line": 80,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/app/permissions/base.py lines=19-80]\n19: def allow_permission(allowed_roles, level=\"PROJECT\", creator=False, model=None):\n20:     def decorator(view_func):\n21:         @wraps(view_func)\n22:         def _wrapped_view(instance, request, *args, **kwargs):\n23:             # Check for creator if required\n24:             if creator and model:\n25:                 # check if the user is part of the workspace or not\n26:                 if not WorkspaceMember.objects.filter(\n27:                     member=request.user,\n28:                     workspace__slug=kwargs[\"slug\"],\n29:                     is_active=True,\n30:                 ).exists():\n31:                     return Response(\n32:                         {\"error\": \"You don't have the required permissions.\"},\n33:                         status=status.HTTP_403_FORBIDDEN,\n34:                     )\n35: \n36:                 obj = model.objects.filter(id=kwargs[\"pk\"], created_by=request.user).exists()\n37:                 if obj:\n38:                     return view_func(instance, request, *args, **kwargs)\n39: \n40:             # Convert allowed_roles to their values if they are enum members\n41:             allowed_role_values = [role.value if isinstance(role, ROLE) else role for role in allowed_roles]\n42: \n43:             # Check role permissions\n44:             if level == \"WORKSPACE\":\n45:                 if WorkspaceMember.objects.filter(\n46:                     member=request.user,\n47:                     workspace__slug=kwargs[\"slug\"],\n48:                     role__in=allowed_role_values,\n49:                     is_active=True,\n50:                 ).exists():\n51:                     return view_func(instance, request, *args, **kwargs)\n52:             else:\n53:                 is_user_has_allowed_role = ProjectMember.objects.filter(\n54:                     member=request.user,\n55:                     workspace__slug=kwargs[\"slug\"],\n56:                     project_id=kwargs[\"project_id\"],\n57:                     role__in=allowed_role_values,\n58:                     is_active=True,\n59:                 ).exists()\n60: \n61:                 # Return if the user has the allowed role else if they are workspace admin and part of the project regardless of the role # noqa: E501\n62:                 if is_user_has_allowed_role:\n63:                     return view_func(instance, request, *args, **kwargs)\n64:                 elif (\n65:                     ProjectMember.objects.filter(\n66:                         member=request.user,\n67:                         workspace__slug=kwargs[\"slug\"],\n68:                         project_id=kwargs[\"project_id\"],\n69:                         is_active=True,\n70:                     ).exists()\n71:                     and WorkspaceMember.objects.filter(\n72:                         member=request.user,\n73:                         workspace__slug=kwargs[\"slug\"],\n74:                         role=ROLE.ADMIN.value,\n75:                         is_active=True,\n76:                     ).exists()\n77:                 ):\n78:                     return view_func(instance, request, *args, **kwargs)\n79: \n80:             # Return permission denied if no conditions are met\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def issue_activity",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"def issue_activity\"]\napps/api/plane/bgtasks/issue_activities_task.py:1504:def issue_activity(\napps/api/plane/utils/openapi/decorators.py:196:def issue_activity_docs(**kwargs):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/bgtasks/issue_activities_task.py",
+                  "start_line": 1504,
+                  "end_line": 1600,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/bgtasks/issue_activities_task.py lines=1504-1600]\n1504: def issue_activity(\n1505:     type,\n1506:     requested_data,\n1507:     current_instance,\n1508:     issue_id,\n1509:     actor_id,\n1510:     project_id,\n1511:     epoch,\n1512:     subscriber=True,\n1513:     notification=False,\n1514:     origin=None,\n1515:     intake=None,\n1516: ):\n1517:     try:\n1518:         issue_activities = []\n1519: \n1520:         # check if project_id is valid\n1521:         if not is_valid_uuid(str(project_id)):\n1522:             return\n1523: \n1524:         project = Project.objects.get(pk=project_id)\n1525:         workspace_id = project.workspace_id\n1526: \n1527:         if issue_id is not None:\n1528:             if origin:\n1529:                 ri = redis_instance()\n1530:                 # set the request origin in redis\n1531:                 ri.set(str(issue_id), origin, ex=600)\n1532:             issue = Issue.objects.filter(pk=issue_id).first()\n1533:             if issue:\n1534:                 try:\n1535:                     issue.updated_at = timezone.now()\n1536:                     issue.save(update_fields=[\"updated_at\"])\n1537:                 except Exception:\n1538:                     pass\n1539: \n1540:         ACTIVITY_MAPPER = {\n1541:             \"issue.activity.created\": create_issue_activity,\n1542:             \"issue.activity.updated\": update_issue_activity,\n1543:             \"issue.activity.deleted\": delete_issue_activity,\n1544:             \"comment.activity.created\": create_comment_activity,\n1545:             \"comment.activity.updated\": update_comment_activity,\n1546:             \"comment.activity.deleted\": delete_comment_activity,\n1547:             \"cycle.activity.created\": create_cycle_issue_activity,\n1548:             \"cycle.activity.deleted\": delete_cycle_issue_activity,\n1549:             \"module.activity.created\": create_module_issue_activity,\n1550:             \"module.activity.deleted\": delete_module_issue_activity,\n1551:             \"link.activity.created\": create_link_activity,\n1552:             \"link.activity.updated\": update_link_activity,\n1553:             \"link.activity.deleted\": delete_link_activity,\n1554:             \"attachment.activity.created\": create_attachment_activity,\n1555:             \"attachment.activity.deleted\": delete_attachment_activity,\n1556:             \"issue_relation.activity.created\": create_issue_relation_activity,\n1557:             \"issue_relation.activity.deleted\": delete_issue_relation_activity,\n1558:             \"issue_reaction.activity.created\": create_issue_reaction_activity,\n1559:             \"issue_reaction.activity.deleted\": delete_issue_reaction_activity,\n1560:             \"comment_reaction.activity.created\": create_comment_reaction_activity,\n1561:             \"comment_reaction.activity.deleted\": delete_comment_reaction_activity,\n1562:             \"issue_vote.activity.created\": create_issue_vote_activity,\n1563:             \"issue_vote.activity.deleted\": delete_issue_vote_activity,\n1564:             \"issue_draft.activity.created\": create_draft_issue_activity,\n1565:             \"issue_draft.activity.updated\": update_draft_issue_activity,\n1566:             \"issue_draft.activity.deleted\": delete_draft_issue_activity,\n1567:             \"intake.activity.created\": create_intake_activity,\n1568:         }\n1569: \n1570:         func = ACTIVITY_MAPPER.get(type)\n1571:         if func is not None:\n1572:             func(\n1573:                 requested_data=requested_data,\n1574:                 current_instance=current_instance,\n1575:                 issue_id=issue_id,\n1576:                 project_id=project_id,\n1577:                 workspace_id=workspace_id,\n1578:                 actor_id=actor_id,\n1579:                 issue_activities=issue_activities,\n1580:                 epoch=epoch,\n1581:             )\n1582: \n1583:         # Save all the values to database\n1584:         issue_activities_created = IssueActivity.objects.bulk_create(issue_activities)\n1585: \n1586:         if notification:\n1587:             notifications.delay(\n1588:                 type=type,\n1589:                 issue_id=issue_id,\n1590:                 actor_id=actor_id,\n1591:                 project_id=project_id,\n1592:                 subscriber=subscriber,\n1593:                 issue_activities_created=json.dumps(\n1594:                     IssueActivitySerializer(issue_activities_created, many=True).data,\n1595:                     cls=DjangoJSONEncoder,\n1596:                 ),\n1597:                 requested_data=requested_data,\n1598:                 current_instance=current_instance,\n1599:             )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class Issue\\(",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"class Issue\\(\"]\napps/api/plane/db/models/issue.py:104:class Issue(ProjectBaseModel):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/db/models/issue.py",
+                  "start_line": 104,
+                  "end_line": 130,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/db/models/issue.py lines=104-130]\n104: class Issue(ProjectBaseModel):\n105:     PRIORITY_CHOICES = (\n106:         (\"urgent\", \"Urgent\"),\n107:         (\"high\", \"High\"),\n108:         (\"medium\", \"Medium\"),\n109:         (\"low\", \"Low\"),\n110:         (\"none\", \"None\"),\n111:     )\n112:     parent = models.ForeignKey(\n113:         \"self\",\n114:         on_delete=models.CASCADE,\n115:         null=True,\n116:         blank=True,\n117:         related_name=\"parent_issue\",\n118:     )\n119:     state = models.ForeignKey(\n120:         \"db.State\",\n121:         on_delete=models.CASCADE,\n122:         null=True,\n123:         blank=True,\n124:         related_name=\"state_issue\",\n125:     )\n126:     point = models.IntegerField(validators=[MinValueValidator(0), MaxValueValidator(12)], null=True, blank=True)\n127:     estimate_point = models.ForeignKey(\n128:         \"db.EstimatePoint\",\n129:         on_delete=models.SET_NULL,\n130:         related_name=\"issue_estimates\",\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "class ProjectBaseModel",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"class ProjectBaseModel\"]\napps/api/plane/db/models/project.py:180:class ProjectBaseModel(BaseModel):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/db/models/project.py",
+                  "start_line": 180,
+                  "end_line": 210,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/db/models/project.py lines=180-210]\n180: class ProjectBaseModel(BaseModel):\n181:     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name=\"project_%(class)s\")\n182:     workspace = models.ForeignKey(\"db.Workspace\", on_delete=models.CASCADE, related_name=\"workspace_%(class)s\")\n183: \n184:     class Meta:\n185:         abstract = True\n186: \n187:     def save(self, *args, **kwargs):\n188:         self.workspace = self.project.workspace\n189:         super(ProjectBaseModel, self).save(*args, **kwargs)\n190: \n191: \n192: class ProjectMemberInvite(ProjectBaseModel):\n193:     email = models.CharField(max_length=255)\n194:     accepted = models.BooleanField(default=False)\n195:     token = models.CharField(max_length=255)\n196:     message = models.TextField(null=True)\n197:     responded_at = models.DateTimeField(null=True)\n198:     role = models.PositiveSmallIntegerField(choices=ROLE_CHOICES, default=5)\n199: \n200:     class Meta:\n201:         verbose_name = \"Project Member Invite\"\n202:         verbose_name_plural = \"Project Member Invites\"\n203:         db_table = \"project_member_invites\"\n204:         ordering = (\"-created_at\",)\n205: \n206:     def __str__(self):\n207:         return f\"{self.project.name} {self.email} {self.accepted}\"\n208: \n209: \n210: class ProjectMember(ProjectBaseModel):\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "issue-dates",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"issue-dates\"]\napps/api/plane/app/urls/issue.py:252:        \"workspaces/<str:slug>/projects/<uuid:project_id>/issue-dates/\",\napps/api/plane/app/urls/issue.py:254:        name=\"project-issue-dates\",\napps/web/core/services/issue/issue.service.ts:247:    return this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/issue-dates/`, { updates })\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/web/core/services/issue/issue.service.ts",
+                  "start_line": 235,
+                  "end_line": 260,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/web/core/services/issue/issue.service.ts lines=235-260]\n235:     return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`)\n236:       .then((response) => response?.data)\n237:       .catch((error) => {\n238:         throw error?.response?.data;\n239:       });\n240:   }\n241: \n242:   async updateIssueDates(\n243:     workspaceSlug: string,\n244:     projectId: string,\n245:     updates: { id: string; start_date?: string; target_date?: string }[]\n246:   ): Promise<void> {\n247:     return this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/issue-dates/`, { updates })\n248:       .then((response) => response?.data)\n249:       .catch((error) => {\n250:         throw error?.response?.data;\n251:       });\n252:   }\n253: \n254:   async subIssues(\n255:     workspaceSlug: string,\n256:     projectId: string,\n257:     issueId: string,\n258:     queries?: Partial<Record<TIssueParams, string | boolean>>\n259:   ): Promise<TIssueSubIssues> {\n260:     return this.get(\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/views/issue/base.py",
+                  "start_line": 1090,
+                  "end_line": 1130,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=00a51f5e6a703b0475cca3568c35f1e2acbab42a path=apps/api/plane/app/views/issue/base.py lines=1090-1130]\n1090:         )\n1091: \n1092: \n1093: class IssueBulkUpdateDateEndpoint(BaseAPIView):\n1094:     def validate_dates(self, current_start, current_target, new_start, new_target):\n1095:         \"\"\"\n1096:         Validate that start date is before target date.\n1097:         \"\"\"\n1098:         from datetime import datetime\n1099: \n1100:         start = new_start or current_start\n1101:         target = new_target or current_target\n1102: \n1103:         # Convert string dates to datetime objects if they're strings\n1104:         if isinstance(start, str):\n1105:             start = datetime.strptime(start, \"%Y-%m-%d\").date()\n1106:         if isinstance(target, str):\n1107:             target = datetime.strptime(target, \"%Y-%m-%d\").date()\n1108: \n1109:         if start and target and start > target:\n1110:             return False\n1111:         return True\n1112: \n1113:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n1114:     def post(self, request, slug, project_id):\n1115:         updates = request.data.get(\"updates\", [])\n1116: \n1117:         issue_ids = [update[\"id\"] for update in updates]\n1118:         epoch = int(timezone.now().timestamp())\n1119: \n1120:         # Fetch all relevant issues in a single query\n1121:         issues = list(Issue.objects.filter(id__in=issue_ids))\n1122:         issues_dict = {str(issue.id): issue for issue in issues}\n1123:         issues_to_update = []\n1124: \n1125:         for update in updates:\n1126:             issue_id = update[\"id\"]\n1127:             issue = issues_dict.get(issue_id)\n1128: \n1129:             if not issue:\n1130:                 continue\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "I have all the evidence I need to group this single-hunk change.",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "Issue.objects.filter\\(id__in",
+                  "file_glob": "*.py",
+                  "snapshot": "pr"
+                },
+                "result": "[GREP snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 pattern=\"Issue.objects.filter\\(id__in\"]\napps/api/plane/app/views/issue/base.py:1121:        issues = list(Issue.objects.filter(id__in=issue_ids, workspace__slug=slug, project_id=project_id))\napps/api/plane/db/migrations/0077_draftissue_cycle_user_timezone_project_user_timezone_and_more.py:123:    # Issue.objects.filter(id__in=issue_ids_to_delete).delete()\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "I have all the evidence I need to group this single-hunk change.",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/permissions/base.py",
+                  "start_line": 80,
+                  "end_line": 90,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/app/permissions/base.py lines=80-88]\n80:             # Return permission denied if no conditions are met\n81:             return Response(\n82:                 {\"error\": \"You don't have the required permissions.\"},\n83:                 status=status.HTTP_403_FORBIDDEN,\n84:             )\n85: \n86:         return _wrapped_view\n87: \n88:     return decorator\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "I have all the evidence I need. The single changed hunk is a cross-project (IDOR) authorization fix in `IssueBulkUpdateDateEndpoint.post`, where the queryset was fetching issues by ID alone regardless of workspace/project. The decorator `allow_permission([ROLE.ADMIN, ROLE.MEMBER])` (level=PROJECT, default) only checks that the *requesting user* has the role in the *URL's* project; it does not constrain which issue objects the request body may reference. The fix scopes the fetch to the URL's `workspace__slug` and `project_id`, aligning with the `Issue(ProjectBaseModel)` model, the route (`workspaces/<slug>/projects/<project_id>/issue-dates/`), and the sibling `IssueMetaEndpoint` pattern.",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/views/issue/base.py",
+                  "start_line": 1113,
+                  "end_line": 1122,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=a01b51fca5adff16923ad8148de0d0563f8cd738 path=apps/api/plane/app/views/issue/base.py lines=1113-1122]\n1113:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n1114:     def post(self, request, slug, project_id):\n1115:         updates = request.data.get(\"updates\", [])\n1116: \n1117:         issue_ids = [update[\"id\"] for update in updates]\n1118:         epoch = int(timezone.now().timestamp())\n1119: \n1120:         # Fetch all relevant issues in a single query\n1121:         issues = list(Issue.objects.filter(id__in=issue_ids, workspace__slug=slug, project_id=project_id))\n1122:         issues_dict = {str(issue.id): issue for issue in issues}\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"scope-bulk-issue-date-update-to-request-project\",\"title\":\"Scope the bulk issue-date update queryset to the requesting workspace and project\",\"rationale\":\"The changed line sits inside `IssueBulkUpdateDateEndpoint.post`, an endpoint routed at `workspaces/<slug>/projects/<project_id>/issue-dates/`. The `@allow_permission([ROLE.ADMIN, ROLE.MEMBER])` decorator (level=PROJECT default) only verifies that the caller has a role in the URL's project; it does not constrain which `Issue` rows the request body's `issue_ids` may reference. Before the fix, `Issue.objects.filter(id__in=issue_ids)` would return issues belonging to any workspace/project the attacker could guess or enumerate, allowing members of one project to bulk-modify `start_date`/`target_date` (and trigger `issue_activity` notifications) on issues in other projects/workspaces \u2014 a classic IDOR / horizontal-privilege escalation. The fix adds `workspace__slug=slug, project_id=project_id` to the queryset, restricting the fetched objects to the same workspace and project the caller was already authorized against. Only one hunk is affected; it is a single, self-contained authorization boundary fix that touches the queryset, the `issues_dict` lookup, the per-issue validation/update loop, the `issue_activity.delay` fan-out, and the final `Issue.objects.bulk_update` \u2014 all of which operate on the now-scoped `issues_to_update`. The change is consistent with the sibling `IssueMetaEndpoint.get` (same file, lines 1173\u20131185) which already filters by `project_id=project_id, workspace__slug=slug` and with the `Issue(ProjectBaseModel)` model, whose `project` and `workspace` FKs (see `apps/api/plane/db/models/project.py:180-189`) make `workspace__slug` and `project_id` valid filter fields.\",\"hunks\":[\"apps/api/plane/app/views/issue/base.py#0\"],\"context\":[{\"path\":\"apps/api/plane/app/views/issue/base.py\",\"symbol\":\"IssueBulkUpdateDateEndpoint.post\",\"start_line\":1113,\"end_line\":1170,\"snapshot\":\"pr\",\"why\":\"Changed hunk and the surrounding handler (validation, per-issue loop, `issue_activity.delay`, `Issue.objects.bulk_update`) all operate on the newly scoped `issues` queryset; they define the access-control concern this fix addresses.\"},{\"path\":\"apps/api/plane/app/permissions/base.py\",\"symbol\":\"allow_permission\",\"start_line\":19,\"end_line\":84,\"snapshot\":\"pr\",\"why\":\"Decorator applied at `base.py:1113` (`@allow_permission([ROLE.ADMIN, ROLE.MEMBER])`, default `level='PROJECT'`). It checks ProjectMember existence for `kwargs['slug']`/`kwargs['project_id']` only \u2014 it does NOT restrict which issue IDs in the request body may be mutated. Confirms the role check alone was insufficient to prevent cross-project mutation, which is why the queryset scoping is the actual fix.\"},{\"path\":\"apps/api/plane/app/urls/issue.py\",\"symbol\":\"project-issue-dates\",\"start_line\":251,\"end_line\":255,\"snapshot\":\"pr\",\"why\":\"Route `workspaces/<str:slug>/projects/<uuid:project_id>/issue-dates/` mapping to `IssueBulkUpdateDateEndpoint.as_view()`. Establishes that the `slug`/`project_id` kwargs are the authorization scope that the queryset is now constrained to.\"},{\"path\":\"apps/api/plane/db/models/project.py\",\"symbol\":\"ProjectBaseModel\",\"start_line\":180,\"end_line\":189,\"snapshot\":\"pr\",\"why\":\"Abstract base that gives `Issue` the `project` FK (and thus `project_id`) and `workspace` FK (and thus `workspace__slug`) used by the new filter. `save()` enforces `workspace == project.workspace`, confirming these two fields are the canonical scoping pair for any project-scoped object.\"},{\"path\":\"apps/api/plane/db/models/issue.py\",\"symbol\":\"Issue\",\"start_line\":104,\"end_line\":130,\"snapshot\":\"pr\",\"why\":\"`Issue(ProjectBaseModel)` \u2014 the model whose queryset is being re-scoped by the fix. Confirms `project_id` and `workspace__slug` are valid filter fields on `Issue.objects.filter(...)`.\"},{\"path\":\"apps/api/plane/app/views/issue/base.py\",\"symbol\":\"IssueMetaEndpoint.get\",\"start_line\":1173,\"end_line\":1185,\"snapshot\":\"pr\",\"why\":\"Sibling handler in the same file that already filters with `id=issue_id, project_id=project_id, workspace__slug=slug` (line 1176-1178). Demonstrates the in-repo authorization pattern this fix aligns with.\"},{\"path\":\"apps/api/plane/bgtasks/issue_activities_task.py\",\"symbol\":\"issue_activity\",\"start_line\":1504,\"end_line\":1600,\"snapshot\":\"pr\",\"why\":\"Task invoked per updated issue (base.py:1142, 1155). It re-fetches `Issue.objects.filter(pk=issue_id).first()` at line 1532 without scoping, but it only writes an `IssueActivity` row and updates `updated_at`; the data-flow it depends on (which issue IDs reach it) is now scoped by the changed line, so the activity side effect is confined to the caller's project.\"},{\"path\":\"apps/web/core/services/issue/issue.service.ts\",\"symbol\":\"updateIssueDates\",\"start_line\":242,\"end_line\":252,\"snapshot\":\"pr\",\"why\":\"Front-end caller that posts `{updates: [{id, start_date?, target_date?}]}` to the endpoint. Shows the issue IDs arrive client-supplied in a bulk payload, which is what makes the server-side scoping to the URL's project the necessary authorization control.\"}]}]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"scope-bulk-issue-date-update-to-request-project\",\"title\":\"Scope bulk issue-date update queryset to the requesting workspace and project\",\"rationale\":\"The hunk in IssueBulkUpdateDateEndpoint.post was fetching issues by client-supplied id__in alone, bypassing the allow_permission project scope and allowing cross-project mutation.\",\"hunks\":[\"apps/api/plane/app/views/issue/base.py#0\"],\"context\":[{\"path\":\"apps/api/plane/app/views/issue/base.py\",\"symbol\":\"IssueBulkUpdateDateEndpoint.post\",\"start_line\":1113,\"end_line\":1170,\"snapshot\":\"pr\",\"why\":\"Changed line and the bulk_update/issue_activity handlers operating on the scoped queryset.\"},{\"path\":\"apps/api/plane/app/permissions/base.py\",\"symbol\":\"allow_permission\",\"start_line\":19,\"end_line\":84,\"snapshot\":\"pr\",\"why\":\"Decorator only checks caller's role in URL project, not which issue IDs the body may mutate \u2014 the fix scopes the queryset.\"},{\"path\":\"apps/api/plane/app/urls/issue.py\",\"symbol\":\"project-issue-dates\",\"start_line\":251,\"end_line\":255,\"snapshot\":\"pr\",\"why\":\"Route workspaces/<slug>/projects/<project_id>/issue-dates/ defines the slug/project_id authorization scope.\"},{\"path\":\"apps/api/plane/db/models/project.py\",\"symbol\":\"ProjectBaseModel\",\"start_line\":180,\"end_line\":189,\"snapshot\":\"pr\",\"why\":\"Gives Issue the project_id and workspace__slug fields used by the new filter.\"},{\"path\":\"apps/api/plane/app/views/issue/base.py\",\"symbol\":\"IssueMetaEndpoint.get\",\"start_line\":1173,\"end_line\":1185,\"snapshot\":\"pr\",\"why\":\"Sibling pattern already filtering by project_id and workspace__slug.\"}] }]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"sections\":[{\"id\":\"scope-bulk-issue-date-update-to-request-project\",\"title\":\"Scope bulk issue-date update queryset to the requesting workspace and project\",\"rationale\":\"The hunk was fetching issues by client-supplied id__in alone, bypassing the project scope enforced by allow_permission.\",\"hunks\":[\"apps/api/plane/app/views/issue/base.py#0\"],\"context\":[{\"path\":\"apps/api/plane/app/views/issue/base.py\",\"symbol\":\"IssueBulkUpdateDateEndpoint.post\",\"start_line\":1113,\"end_line\":1170,\"snapshot\":\"pr\",\"why\":\"Changed line and the bulk_update/issue_activity handlers operating on the scoped queryset.\"},{\"path\":\"apps/api/plane/app/permissions/base.py\",\"symbol\":\"allow_permission\",\"start_line\":19,\"end_line\":84,\"snapshot\":\"pr\",\"why\":\"Decorator only checks caller role in URL project, not which issue IDs the body may mutate.\"},{\"path\":\"apps/api/plane/app/urls/issue.py\",\"symbol\":\"project-issue-dates\",\"start_line\":251,\"end_line\":255,\"snapshot\":\"pr\",\"why\":\"Route defines the slug/project_id authorization scope.\"},{\"path\":\"apps/api/plane/db/models/project.py\",\"symbol\":\"ProjectBaseModel\",\"start_line\":180,\"end_line\":189,\"snapshot\":\"pr\",\"why\":\"Gives Issue the project_id and workspace__slug fields used by the new filter.\"}]}]",
+            "tool_calls": []
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "fallback:apps/api/plane/app/views/issue/base.py",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/views/issue/base.py",
+                  "start_line": 1105,
+                  "end_line": 1175,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=00a51f5e6a703b0475cca3568c35f1e2acbab42a path=apps/api/plane/app/views/issue/base.py lines=1105-1175]\n1105:             start = datetime.strptime(start, \"%Y-%m-%d\").date()\n1106:         if isinstance(target, str):\n1107:             target = datetime.strptime(target, \"%Y-%m-%d\").date()\n1108: \n1109:         if start and target and start > target:\n1110:             return False\n1111:         return True\n1112: \n1113:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER])\n1114:     def post(self, request, slug, project_id):\n1115:         updates = request.data.get(\"updates\", [])\n1116: \n1117:         issue_ids = [update[\"id\"] for update in updates]\n1118:         epoch = int(timezone.now().timestamp())\n1119: \n1120:         # Fetch all relevant issues in a single query\n1121:         issues = list(Issue.objects.filter(id__in=issue_ids))\n1122:         issues_dict = {str(issue.id): issue for issue in issues}\n1123:         issues_to_update = []\n1124: \n1125:         for update in updates:\n1126:             issue_id = update[\"id\"]\n1127:             issue = issues_dict.get(issue_id)\n1128: \n1129:             if not issue:\n1130:                 continue\n1131: \n1132:             start_date = update.get(\"start_date\")\n1133:             target_date = update.get(\"target_date\")\n1134:             validate_dates = self.validate_dates(issue.start_date, issue.target_date, start_date, target_date)\n1135:             if not validate_dates:\n1136:                 return Response(\n1137:                     {\"message\": \"Start date cannot exceed target date\"},\n1138:                     status=status.HTTP_400_BAD_REQUEST,\n1139:                 )\n1140: \n1141:             if start_date:\n1142:                 issue_activity.delay(\n1143:                     type=\"issue.activity.updated\",\n1144:                     requested_data=json.dumps({\"start_date\": update.get(\"start_date\")}),\n1145:                     current_instance=json.dumps({\"start_date\": str(issue.start_date)}),\n1146:                     issue_id=str(issue_id),\n1147:                     actor_id=str(request.user.id),\n1148:                     project_id=str(project_id),\n1149:                     epoch=epoch,\n1150:                 )\n1151:                 issue.start_date = start_date\n1152:                 issues_to_update.append(issue)\n1153: \n1154:             if target_date:\n1155:                 issue_activity.delay(\n1156:                     type=\"issue.activity.updated\",\n1157:                     requested_data=json.dumps({\"target_date\": update.get(\"target_date\")}),\n1158:                     current_instance=json.dumps({\"target_date\": str(issue.target_date)}),\n1159:                     issue_id=str(issue_id),\n1160:                     actor_id=str(request.user.id),\n1161:                     project_id=str(project_id),\n1162:                     epoch=epoch,\n1163:                 )\n1164:                 issue.target_date = target_date\n1165:                 issues_to_update.append(issue)\n1166: \n1167:         # Bulk update issues\n1168:         Issue.objects.bulk_update(issues_to_update, [\"start_date\", \"target_date\"])\n1169: \n1170:         return Response({\"message\": \"Issues updated successfully\"}, status=status.HTTP_200_OK)\n1171: \n1172: \n1173: class IssueMetaEndpoint(BaseAPIView):\n1174:     @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST], level=\"PROJECT\")\n1175:     def get(self, request, slug, project_id, issue_id):\n[END READ]"
+              },
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "issues belong to a project and workspace, workspace slug access control permission"
+                },
+                "result": "[LICENSE.txt:320-357] (relevance 0.31)\nthe User Product in which it has been modified or installed.  Access to a\nnetwork may be denied when the modification itself materially and\nadversely affects the operation of the network or violates the rules and\nprotocols for communication across the network.\n\n  Corresponding Source conveyed, and Installation Information provided,\nin accord with this section must be in a format that is publicly\ndocumented (and with an implementation available to the public in\nsource code form), and must require no special password or key for\nunpacking, reading or copying.\n\n  7. Additional Terms.\n\n  \"Additional permissions\" are terms that supplement the terms of this\nLicense by making exceptions from one or more of its conditions.\nAdditional permissions that are applicable to the entire Program shall\nbe treated as though they were included in this License, to the extent\nthat they are valid under applicable law.  If additional permissions\napply only to part of the Program, that part may be used separately\nunder those permissions, but the entire Program remains governed by\nthis License without regard to the additional permissions.\n\n  When you convey a copy of a covered work, you may at your option\nremove any additional permissions from that copy, or from any part of\nit.  (Additional permissions may be written to require their own\nremoval in certain cases when you modify the work.)  You may place\nadditional permissions on material, added by you to a covered work,\nfor which you have or can give appropriate copyright permission.\n\n  Notwithstanding any other provision of this License, for material you\nadd to a covered work, you may (if authorized by the copyright holders of\nthat material) supplement the terms of this License with terms:\n\n    a) Disclaiming warranty or limiting liability differently from the\n    terms of sections 15 and 16 of this License; or\n\n    b) Requiring preservation of specified reasonable legal notices or\n    author attributions in that material or in the Appropriate Legal\n\n---\n\n[LICENSE.txt:150-189] (relevance 0.27)\nrights of fair use or other equivalent, as provided by copyright law.\n\n  You may make, run and propagate covered works that you do not\nconvey, without conditions so long as your license otherwise remains\nin force.  You may convey covered works to others for the sole purpose\nof having them make modifications exclusively for you, or provide you\nwith facilities for running those works, provided that you comply with\nthe terms of this License in conveying all material for which you do\nnot control copyright.  Those thus making or running the covered works\nfor you must do so exclusively on your behalf, under your direction\nand control, on terms that prohibit them from making any copies of\nyour copyrighted material outside their relationship with you.\n\n  Conveying under any other circumstances is permitted solely under\nthe conditions stated below.  Sublicensing is not allowed; section 10\nmakes it unnecessary.\n\n  3. Protecting Users' Legal Rights From Anti-Circumvention Law.\n\n  No covered work shall be deemed part of an effective technological\nmeasure under any applicable law fulfilling obligations under article\n11 of the WIPO copyright treaty adopted on 20 December 1996, or\nsimilar laws prohibiting or restricting circumvention of such\nmeasures.\n\n  When you convey a covered work, you waive any legal power to forbid\ncircumvention of technological measures to the extent such circumvention\nis effected by exercising rights under this License with respect to\nthe covered work, and you disclaim any intention to limit operation or\nmodification of the work as a means of enforcing, against the work's\nusers, your or third parties' legal rights to forbid circumvention of\ntechnological measures.\n\n  4. Conveying Verbatim Copies.\n\n  You may convey verbatim copies of the Program's source code as you\nreceive it, in any medium, provided that you conspicuously and\nappropriately publish on each copy an appropriate copyright notice;\nkeep intact all notices stating that this License and any\nnon-permissive terms added in accord with section 7 apply to the code;\n\n---\n\n[README.md:132-159] (relevance 0.23)\nJoin the Plane community on [GitHub Discussions](https://github.com/orgs/makeplane/discussions) and our [Forum](https://forum.plane.so). We follow a [Code of conduct](https://github.com/makeplane/plane/blob/master/CODE_OF_CONDUCT.md) in all our community channels.\n\nFeel free to ask questions, report bugs, participate in discussions, share ideas, request features, or showcase your projects. We\u2019d love to hear from you!\n\n## \ud83d\udee1\ufe0f Security\n\nIf you discover a security vulnerability in Plane, please report it responsibly instead of opening a public issue. We take all legitimate reports seriously and will investigate them promptly. See [Security policy](https://github.com/makeplane/plane/blob/master/SECURITY.md) for more info.\n\nTo disclose any security issues, please email us at security@plane.so.\n\n## \ud83e\udd1d Contributing\n\nThere are many ways you can contribute to Plane:\n\n- Report [bugs](https://github.com/makeplane/plane/issues/new?assignees=srinivaspendem%2Cpushya22&labels=%F0%9F%90%9Bbug&projects=&template=--bug-report.yaml&title=%5Bbug%5D%3A+) or submit [feature requests](https://github.com/makeplane/plane/issues/new?assignees=srinivaspendem%2Cpushya22&labels=%E2%9C%A8feature&projects=&template=--feature-request.yaml&title=%5Bfeature%5D%3A+).\n- Review the [documentation](https://docs.plane.so/) and submit [pull requests](https://github.com/makeplane/docs) to improve it\u2014whether it's fixing typos or adding new content.\n- Talk or write about Plane or any other ecosystem integration and [let us know](https://forum.plane.so)!\n- Show your support by upvoting [popular feature requests](https://github.com/makeplane/plane/issues).\n\nPlease read [CONTRIBUTING.md](https://github.com/makeplane/plane/blob/master/CONTRIBUTING.md) for details on the process for submitting pull requests to us.\n\n### Repo activity\n\n![Plane Repo Activity](https://repobeats.axiom.co/api/embed/2523c6ed2f77c082b7908c33e2ab208981d76c39.svg \"Repobeats analytics image\")\n\n### We couldn't have done this without you.\n\n<a href=\"https://github.com/makeplane/plane/graphs/contributors\">\n\n---\n\n[apps/api/requirements.txt:1-3] (relevance 0.23)\n# This file is here because many Platforms as a Service look for\n#\trequirements.txt in the root directory of a project.\n-r requirements/production.txt\n\n---\n\n[apps/api/plane/utils/openapi/README.md:51-98] (relevance 0.21)\n- Generic asset responses: `GENERIC_ASSET_UPLOAD_SUCCESS_RESPONSE`, `ASSET_DOWNLOAD_SUCCESS_RESPONSE`, etc.\n\n### examples.py\n- `FILE_UPLOAD_EXAMPLE`, `WORKSPACE_EXAMPLE`, `PROJECT_EXAMPLE`, `ISSUE_EXAMPLE`\n\n### decorators.py\n- `workspace_docs()` - For workspace endpoints\n- `project_docs()` - For project endpoints  \n- `issue_docs()` - For issue/work item endpoints\n- `asset_docs()` - For asset endpoints\n\n### hooks.py\n- `preprocess_filter_api_v1_paths()` - Filters API v1 paths\n- `postprocess_assign_tags()` - Assigns tags based on URL patterns\n- `generate_operation_summary()` - Generates operation summaries\n\n## Migration Status\n\n\u2705 **FULLY COMPLETE** - All components from the legacy `openapi_spec_helpers.py` have been successfully migrated to this modular structure and the old file has been completely removed. All imports have been updated to use the new modular structure.\n\n### What was migrated:\n- \u2705 All authentication extensions\n- \u2705 All common parameters and responses\n- \u2705 All helper decorators \n- \u2705 All schema processing hooks\n- \u2705 All examples and reusable components\n- \u2705 All asset view decorators converted to use new helpers\n- \u2705 All view imports updated to new module paths\n- \u2705 Legacy file completely removed\n\n### Files updated:\n- `plane/api/views/asset.py` - All methods use new `@asset_docs` helpers\n- `plane/api/views/project.py` - Import updated\n- `plane/api/views/user.py` - Import updated  \n- `plane/api/views/state.py` - Import updated\n- `p"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "workspace__slug=slug, project_id=project_id",
+                  "file_glob": "apps/api/plane/app/views/issue/*.py",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=00a51f5e6a703b0475cca3568c35f1e2acbab42a pattern=\"workspace__slug=slug, project_id=project_id\"]\napps/api/plane/app/views/issue/archive.py:258:        issue = Issue.issue_objects.get(workspace__slug=slug, project_id=project_id, pk=pk)\napps/api/plane/app/views/issue/archive.py:315:        issues = Issue.objects.filter(workspace__slug=slug, project_id=project_id, pk__in=issue_ids).select_related(\napps/api/plane/app/views/issue/attachment.py:64:            pk=pk, workspace__slug=slug, project_id=project_id, issue_id=issue_id\napps/api/plane/app/views/issue/attachment.py:89:        issue_attachments = FileAsset.objects.filter(issue_id=issue_id, workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/attachment.py:150:        issue_attachment = FileAsset.objects.get(pk=pk, workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/attachment.py:173:            asset = FileAsset.objects.get(id=pk, workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/attachment.py:204:        issue_attachment = FileAsset.objects.get(pk=pk, workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/base.py:94:        queryset = Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id, pk__in=issue_ids)\napps/api/plane/app/views/issue/base.py:705:        issue = Issue.objects.get(workspace__slug=slug, project_id=project_id, pk=pk)\napps/api/plane/app/views/issue/base.py:768:        issues = Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id, pk__in=issue_ids)\napps/api/plane/app/views/issue/base.py:794:            Issue.all_objects.filter(workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/base.py:891:        base_queryset = Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id)\napps/api/plane/app/views/issue/base.py:1021:            Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id, id=OuterRef(\"id\"))\napps/api/plane/app/views/issue/base.py:1045:        issue = Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id).filter(\napps/api/plane/app/views/issue/comment.py:111:        issue_comment = IssueComment.objects.get(workspace__slug=slug, project_id=project_id, issue_id=issue_id, pk=pk)\napps/api/plane/app/views/issue/comment.py:146:        issue_comment = IssueComment.objects.get(workspace__slug=slug, project_id=project_id, issue_id=issue_id, pk=pk)\napps/api/plane/app/views/issue/link.py:72:        issue_link = IssueLink.objects.get(workspace__slug=slug, project_id=project_id, issue_id=issue_id, pk=pk)\napps/api/plane/app/views/issue/link.py:99:        issue_link = IssueLink.objects.get(workspace__slug=slug, project_id=project_id, issue_id=issue_id, pk=pk)\napps/api/plane/app/views/issue/subscriber.py:54:            workspace__slug=slug, project_id=project_id, is_active=True\napps/api/plane/app/views/issue/version.py:40:                workspace__slug=slug, project_id=project_id, issue_id=issue_id, pk=pk\napps/api/plane/app/views/issue/version.py:62:            workspace__slug=slug, project_id=project_id, issue_id=issue_id\napps/api/plane/app/views/issue/version.py:89:        issue = Issue.objects.get(workspace__slug=slug, project_id=project_id, pk=work_item_id)\napps/api/plane/app/views/issue/version.py:134:            workspace__slug=slug, project_id=project_id, issue_id=work_item_id\n[END GREP]"
+              },
+              {
+                "tool": "grep_repo",
+                "args": {
+                  "pattern": "def allow_permission",
+                  "snapshot": "base"
+                },
+                "result": "[GREP snapshot=base sha=00a51f5e6a703b0475cca3568c35f1e2acbab42a pattern=\"def allow_permission\"]\napps/api/plane/app/permissions/base.py:19:def allow_permission(allowed_roles, level=\"PROJECT\", creator=False, model=None):\napps/api/plane/utils/permissions/base.py:19:def allow_permission(allowed_roles, level=\"PROJECT\", creator=False, model=None):\n[END GREP]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/utils/permissions/base.py",
+                  "start_line": 1,
+                  "end_line": 80
+                },
+                "result": "[READ snapshot=base sha=00a51f5e6a703b0475cca3568c35f1e2acbab42a path=apps/api/plane/utils/permissions/base.py lines=1-77]\n1: # Copyright (c) 2023-present Plane Software, Inc. and contributors\n2: # SPDX-License-Identifier: AGPL-3.0-only\n3: # See the LICENSE file for details.\n4: \n5: from plane.db.models import WorkspaceMember, ProjectMember\n6: from functools import wraps\n7: from rest_framework.response import Response\n8: from rest_framework import status\n9: \n10: from enum import Enum\n11: \n12: \n13: class ROLE(Enum):\n14:     ADMIN = 20\n15:     MEMBER = 15\n16:     GUEST = 5\n17: \n18: \n19: def allow_permission(allowed_roles, level=\"PROJECT\", creator=False, model=None):\n20:     def decorator(view_func):\n21:         @wraps(view_func)\n22:         def _wrapped_view(instance, request, *args, **kwargs):\n23:             # Check for creator if required\n24:             if creator and model:\n25:                 obj = model.objects.filter(id=kwargs[\"pk\"], created_by=request.user).exists()\n26:                 if obj:\n27:                     return view_func(instance, request, *args, **kwargs)\n28: \n29:             # Convert allowed_roles to their values if they are enum members\n30:             allowed_role_values = [role.value if isinstance(role, ROLE) else role for role in allowed_roles]\n31: \n32:             # Check role permissions\n33:             if level == \"WORKSPACE\":\n34:                 if WorkspaceMember.objects.filter(\n35:                     member=request.user,\n36:                     workspace__slug=kwargs[\"slug\"],\n37:                     role__in=allowed_role_values,\n38:                     is_active=True,\n39:                 ).exists():\n40:                     return view_func(instance, request, *args, **kwargs)\n41:             else:\n42:                 is_user_has_allowed_role = ProjectMember.objects.filter(\n43:                     member=request.user,\n44:                     workspace__slug=kwargs[\"slug\"],\n45:                     project_id=kwargs[\"project_id\"],\n46:                     role__in=allowed_role_values,\n47:                     is_active=True,\n48:                 ).exists()\n49: \n50:                 # Return if the user has the allowed role else if they are workspace admin and part of the project regardless of the role # noqa: E501\n51:                 if is_user_has_allowed_role:\n52:                     return view_func(instance, request, *args, **kwargs)\n53:                 elif (\n54:                     ProjectMember.objects.filter(\n55:                         member=request.user,\n56:                         workspace__slug=kwargs[\"slug\"],\n57:                         project_id=kwargs[\"project_id\"],\n58:                         is_active=True,\n59:                     ).exists()\n60:                     and WorkspaceMember.objects.filter(\n61:                         member=request.user,\n62:                         workspace__slug=kwargs[\"slug\"],\n63:                         role=ROLE.ADMIN.value,\n64:                         is_active=True,\n65:                     ).exists()\n66:                 ):\n67:                     return view_func(instance, request, *args, **kwargs)\n68: \n69:             # Return permission denied if no conditions are met\n70:             return Response(\n71:                 {\"error\": \"You don't have the required permissions.\"},\n72:                 status=status.HTTP_403_FORBIDDEN,\n73:             )\n74: \n75:         return _wrapped_view\n76: \n77:     return decorator\n[END READ]"
+              },
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "apps/api/plane/app/views/issue/base.py",
+                  "start_line": 75,
+                  "end_line": 100,
+                  "snapshot": "pr"
+                },
+                "result": "ERROR: tool call budget exhausted. You must now produce your final JSON answer using the evidence gathered so far."
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"findings\": []\n}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "plane-bulk-issue-dates-idor",
+  "url": "https://github.com/makeplane/plane/pull/8834",
+  "category": "authz",
+  "cwe": "CWE-639",
+  "ghsa": "GHSA-4q54-h4x9-m329",
+  "expected": "safe",
+  "vulnerable_files": [
+    "apiserver/plane/app/views/issue/base.py",
+    "apps/api/plane/app/views/issue/base.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

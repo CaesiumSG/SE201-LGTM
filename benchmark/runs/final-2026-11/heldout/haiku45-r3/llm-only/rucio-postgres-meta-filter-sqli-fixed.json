@@ -1,0 +1,198 @@
+{
+  "id": "rucio-postgres-meta-filter-sqli-fixed",
+  "repo": "rucio/rucio",
+  "pr": null,
+  "title": "Adding the external Postgres metadata plugin introduced FilterEngine.create_postgres_query(), which str.format()s DID-search filter keys and values from the REST API straight into raw SQL.",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "base": "f9974126991707c92928b0917071f75def397c03",
+  "pr_sha": "5e15ae4ac2c0183ab1691debdc527012e3d62c51",
+  "files_changed": 2,
+  "python_files_changed": 2,
+  "added_lines": 14,
+  "diff_chars": 4683,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 8.6,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 3
+  },
+  "n_findings": 3,
+  "agent_errors": [],
+  "verdicts": {
+    "possible": 2,
+    "safe": 1
+  },
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "The code adds a regex validation for the `key` parameter (line 433), which is a positive step. However, the `key` variable is still used directly in string formatting for SQL expressions (e.g., lines 446, 448, 451, 453, 476, 479, 481). While the regex restricts keys to alphanumeric and underscore characters, this whitelist approach is effective for column names but the key is interpolated into LIKE expressions without parameterization. The primary concern is that `jsonb_column` is also interpolated without validation, which could be exploited. Additionally, while `safe_value` mitigates single quotes in string values through escaping, the overall SQL construction remains vulnerable if `jsonb_column` or `key` bypass validation through other code paths.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            432,
+            434
+          ],
+          "source": null,
+          "content": "                if not re.match(r'^[A-Za-z0-9_]+$', key):\n                    raise exception.DIDFilterSyntaxError(\"Invalid metadata key: '{}'\".format(key))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            446,
+            448
+          ],
+          "source": null,
+          "content": "                                expression = \"{}->>'{}' LIKE '{}' \".format(jsonb_column, key, safe_value)\n                            else:\n                                expression = \"{} LIKE '{}' \".format(key, safe_value)",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            476,
+            481
+          ],
+          "source": null,
+          "content": "                                expression = \"({}->>'{}')::timestamp {} '{}'\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], str(value).replace(\"'\", \"''\"))\n                            else:\n                                expression = \"{}::timestamp {} '{}'\".format(key, POSTGRES_OP_MAP[oper], str(value).replace(\"'\", \"''\"))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use parameterized queries instead of string formatting. If dynamic column selection is required, maintain a whitelist of allowed column names and validate `jsonb_column` similarly to `key`. For SQL string values, use parameterized queries with bound parameters rather than string escaping, which is error-prone.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "possible",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 433,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:sqli:1",
+      "cwe_id": "CWE-89",
+      "explanation": "The `datetime` value is converted to string and single quotes are escaped via `.replace(\"'\", \"'')\")`, but this is applied after converting a datetime object to string. If the datetime's string representation contains unexpected characters or if the conversion is somehow influenced by user input indirectly, this could be vulnerable. The escaping approach is fragile compared to parameterized queries. Additionally, the `POSTGRES_OP_MAP[oper]` is accessed without explicit validation that `oper` is in the map.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+          "lines": [
+            475,
+            478
+          ],
+          "source": null,
+          "content": "                        elif isinstance(value, datetime):\n                            if is_in_json_column:\n                                expression = \"({}->>'{}')::timestamp {} '{}'\".format(jsonb_column, key, POSTGRES_OP_MAP[oper], str(value).replace(\"'\", \"''\"))\n                            else:\n                                expression = \"{}::timestamp {} '{}'\".format(key, POSTGRES_OP_MAP[oper], str(value).replace(\"'\", \"''\"))",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Use parameterized queries with proper type binding for datetime values. Validate that `oper` exists in `POSTGRES_OP_MAP` before use.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "possible",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/filter_engine.py",
+      "line": 476,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:2",
+      "cwe_id": "CWE-862",
+      "explanation": "The change only adds exception handling to re-raise `DIDFilterSyntaxError` without swallowing it. This is a defensive coding practice and does not introduce or remove any authorization checks. No authorization logic is modified or bypassed in this change.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+          "lines": [
+            303,
+            305
+          ],
+          "source": null,
+          "content": "        except exception.DIDFilterSyntaxError:\n            raise",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "lib/rucio/core/did_meta_plugins/postgres_meta.py",
+      "line": 304,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "rucio-postgres-meta-filter-sqli",
+  "url": "https://github.com/rucio/rucio/commit/5e15ae4ac2c0183ab1691debdc527012e3d62c51",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-6j7p-qjhg-9947",
+  "expected": "safe",
+  "vulnerable_files": [
+    "lib/rucio/core/did_meta_plugins/filter_engine.py"
+  ],
+  "predicted": "safe",
+  "outcome": "TN",
+  "correct": true,
+  "on_target": false
+}

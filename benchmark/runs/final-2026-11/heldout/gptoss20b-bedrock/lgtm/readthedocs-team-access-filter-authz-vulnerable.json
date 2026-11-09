@@ -1,0 +1,154 @@
+{
+  "id": "readthedocs-team-access-filter-authz-vulnerable",
+  "repo": "readthedocs/readthedocs.org",
+  "pr": 12669,
+  "title": "A performance refactor of AdminPermission.projects split one combined Q filter into chained .filter(teams__members=user).filter(teams__access=ADMIN_ACCESS) calls, so read-only team members get admin rights on any project that also belongs to some admin team.",
+  "mode": "lgtm",
+  "model": "bedrock:openai.gpt-oss-20b-1:0",
+  "base": "8ca8c5e829e789b18c6e37030312f72a86503aa1",
+  "pr_sha": "5149ab2742150eea703be46303b43a17ae6bcdf1",
+  "files_changed": 1,
+  "python_files_changed": 1,
+  "added_lines": 9,
+  "diff_chars": 1230,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 62.9,
+  "index_seconds": 14.6,
+  "index_reused": false,
+  "index_chunks": 1219,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": "ok",
+  "coverage": {
+    "planner": "investigator",
+    "investigator_status": "ok",
+    "hunks_total": 1,
+    "hunks_reviewed": 1,
+    "sections_scheduled": 1,
+    "sections_completed": 1,
+    "sections_failed": 0,
+    "complete": true
+  },
+  "judged": null,
+  "n_findings": 0,
+  "agent_errors": [],
+  "verdicts": {},
+  "vulnerable_findings": [],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 4,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 1,
+  "reviewer_units": 1,
+  "findings": [],
+  "trace": {
+    "runs": [
+      {
+        "section": "investigator",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_base_code",
+                "args": {
+                  "query": "_get_projects_for_sso_user",
+                  "snapshot": "base"
+                },
+                "result": "[CODEGRAPH snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 status=ok truncated=true incomplete=true query=\"_get_projects_for_sso_user\"]\n**Exploration: _get_projects_for_sso_user**\n\nFound 90 symbols across 6 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `get` (readthedocs/projects/views/base.py:119) \u2014 1 caller; tests: `readthedocs/search/tests/test_signals.py`\n- `UserProjectInline` (readthedocs/core/admin.py:27) \u2014 1 caller in `readthedocs/core/admin.py`; no tests found within 3 caller hops\n- `_add_user_projects` (readthedocs/projects/querysets.py:23) \u2014 4 callers in `readthedocs/projects/querysets.py`; no tests found within 3 caller hops\n- `_add_from_user_projects` (readthedocs/projects/querysets.py:237) \u2014 1 caller in `readthedocs/projects/querysets.py`; no tests found within 3 caller hops\n\n**Relationships**\n\n**calls:**\n- get \u2192 is_show_dashboard_denied_wrapper\n- test_project_index_is_updated \u2192 get\n- is_show_dashboard_denied_wrapper \u2192 get_project\n- test_project_index_is_updated \u2192 save\n- test_project_index_is_updated \u2192 delete\n- sync_remote_repositories_action \u2192 sync_remote_repositories\n- ban_user \u2192 save\n- _add_user_projects \u2192 projects\n- public \u2192 _add_user_projects\n- for_user_and_viewer \u2192 _add_user_projects\n- ... and 42 more\n\n**extends:**\n- ProjectDetailViewBase \u2192 ProjectSpamMixin\n- BuildList \u2192 ProjectSpamMixin\n- BuildDetail \u2192 ProjectSpamMixin\n- ProjectDetailViewBase \u2192 FilterContextMixin\n- ProjectDetailViewBase \u2192 ProjectRelationListMixin\n- ProjectDetailViewBase \u2192 ProjectOnboardMixin\n- BuildList \u2192 BuildBase\n- BuildList \u2192 FilterContextMixin\n- UserAdminExtra \u2192 ExtraSimpleHistoryAdmin\n- UserProfileAdmin \u2192 ExtraSimpleHistoryAdmin\n- ... and 7 more\n\n**references:**\n- test_project_index_is_updated \u2192 Project\n- ProjectDetailViewBase \u2192 ProjectVersionListFilterSet\n- ProjectDetailViewBase \u2192 Project\n- ProjectDetailView \u2192 ProjectDetailViewBase\n- UserAdminExtra \u2192 UserProjectInline\n- ProjectQuerySet \u2192 ProjectQuerySetBase\n- AdminPermission \u2192 AdminPermissionBase\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`readthedocs/core/permissions.py`** \u2014 admins(calls), admins(method), members(calls), members(method), _get_projects_for_sso_user(calls), _get_projects_for_sso_user(method), AdminPermission(class), AdminPermissionBase(references), extends(extends), has_sso_enabled(method), +6 more\n\n```python\n11\t\n12\tclass AdminPermissionBase:\n13\t    @classmethod\n14\t    def projects(cls, user, admin=False, member=False):\n15\t        \"\"\"\n16\t        Return all the projects the user has access to as ``admin`` or ``member``.\n17\t\n18\t        If `RTD_ALLOW_ORGANIZATIONS` is enabled\n19\t        This function takes into consideration VCS SSO and Google SSO.\n20\t        It includes:\n21\t\n22\t        - projects where the user has access to via VCS SSO.\n23\t        - Projects where the user has access via Team,\n24\t          if VCS SSO is not enabled for the organization of that team.\n25\t\n26\t        .. note::\n27\t\n28\t           SSO is taken into consideration,\n29\t           but isn't implemented in .org yet.\n30\t\n31\t        :param user: user object to filter projects\n32\t        :type user: django.contrib.admin.models.User\n33\t        :param bool admin: include projects where the user has admin access to the project\n34\t        :param bool member: include projects where the user has read access to the project\n35\t        \"\"\"\n36\t        from readthedocs.projects.models import Project\n37\t        from readthedocs.sso.models import SSOIntegration\n38\t\n39\t        projects = Project.objects.none()\n40\t        if not user or not user.is_authenticated:\n41\t            return projects\n42\t\n43\t        if not settings.RTD_ALLOW_ORGANIZATIONS:\n44\t            # All users are admin and member of a project\n45\t            # when we aren't using organizations.\n46\t            return user.projects.all()\n47\t\n48\t        projects_from_sso = Project.objects.none()\n49\t        projects_from_teams = Project.objects.none()\n50\t        projects_from_owners = Project.objects.none()\n51\t\n52\t        if admin or member:\n53\t            # Projects from VCS SSO.\n54\t            projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55\t\n56\t            # Projects from teams that don't have VCS SSO enabled.\n57\t            filter = Q()\n58\t            if admin:\n59\t                filter |= Q(teams__access=ADMIN_ACCESS)\n60\t            if member:\n61\t                filter |= Q(teams__access=READ_ONLY_ACCESS)\n62\t            projects_from_teams = Project.objects.filter(filter, teams__members=user).exclude(\n63\t                organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n64\t            )\n65\t\n66\t        # Projects from organizations that don't have VCS SSO enabled,\n67\t        # where the user is an owner.\n68\t        if admin:\n69\t            projects_from_owners = Project.objects.filter(organizations__owners=user).exclude(\n70\t                organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n71\t            )\n72\t\n73\t        # NOTE: We use a filter with Q objects instead of several union operations\n74\t        # (e.g projects_from_sso | projects_from_teams | projects_from_owners),\n75\t        # as the latter can generate a very complex and slow query.\n76\t        return Project.objects.filter(\n77\t            Q(id__in=projects_from_sso)\n78\t            | Q(id__in=projects_from_teams)\n79\t            | Q(id__in=projects_from_owners)\n80\t        )\n81\t\n82\t    @classmethod\n83\t    def organizations(cls, user, owner=False, member=Fal\n[TRUNCATED omitted_chars=19326]\nNOTE: INCOMPLETE categories=gitlink,nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "start_line": 52,
+                  "end_line": 64,
+                  "snapshot": "base"
+                },
+                "result": "[READ snapshot=base sha=8ca8c5e829e789b18c6e37030312f72a86503aa1 path=readthedocs/core/permissions.py lines=52-64]\n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             filter = Q()\n58:             if admin:\n59:                 filter |= Q(teams__access=ADMIN_ACCESS)\n60:             if member:\n61:                 filter |= Q(teams__access=READ_ONLY_ACCESS)\n62:             projects_from_teams = Project.objects.filter(filter, teams__members=user).exclude(\n63:                 organizations__ssointegration__provider=SSOIntegration.PROVIDER_ALLAUTH,\n64:             )\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "search_policy",
+                "args": {
+                  "query": "class AdminPermissionBase",
+                  "snapshot": "base"
+                },
+                "result": "[docs/user/commercial/organizations.rst:1-52] (relevance 0.32)\nOrganizations\n-------------\n\n.. include:: /shared/admonition-rtd-business.rst\n\nIn this article, we explain how the *organizations* feature allows you to manage access to your projects.\nOn |com_brand|, your account is linked to an *organization*.\nOrganizations allow you to define both individual and team permissions for your projects.\n\n.. seealso::\n\n   :doc:`/guides/manage-read-the-docs-teams`\n     A step-by-step guide to managing teams.\n\nImportant objects\n~~~~~~~~~~~~~~~~~\n\n* **Owners** -- Get full access to both view and edit the organization and all projects\n* **Members** -- Get access to a subset of the organization projects\n* **Teams** -- Where you give members access to a set of projects.\n\nThe best way to think about this relationship is:\n\n*Owners* will create *Teams* to assign permissions to all *Members*.\n\n.. warning::\n\n   Owners, Members, and Teams behave differently if you are using\n   :ref:`sso_git_provider`.\n\nTeam types\n~~~~~~~~~~\n\nYou can create two types of teams:\n\n* **Admin** -- Team members have full access to administer the projects assigned to the team. Members are allowed to change all of the settings, set notifications, and perform any action under the :guilabel:`Admin` tab for each project.\n* **Read Only** -- Team members are only able to read the documentation of each project, and not able to change anything about each project.\n\nExample\n~~~~~~~\n\nACME would set up *Owners* of their organization,\nfor example, Frank Roadrunner would be an owner.\nHe has full access to the organization and all projects.\n\nWile E. Coyote is a contractor,\nand will just have access to the new project Road Builder.\n\nRoadrunner would set up a *Team* called *Contractors*.\nThat team would have *Read Only* access to the *Road Builder* project.\nThen he would add *Wile E. Coyote* to the team.\nThis would give him access to just this one project inside the organization.\n\n---\n\n[docs/user/guides/manage-read-the-docs-teams.rst:1-51] (relevance 0.32)\nHow to manage Read the Docs teams\n=================================\n\n.. include:: /shared/admonition-rtd-business.rst\n\nRead the Docs uses teams within an organization to group users and provide permissions to projects.\nThis guide will cover how to do team management,\nincluding adding and removing people from teams.\nYou can read more about organizations and teams in our :doc:`/commercial/organizations` documentation.\n\nAdding a user to a team\n-----------------------\n\nAdding a user to a team gives them all the permissions available to that team,\nwhether it's *read-only* or *admin*.\n\nFollow these steps:\n\n1. Navigate to the `teams management page <https://app.readthedocs.com/organizations/choose/organization_team_list/>`__.\n2. Click on a :guilabel:`<team name>`.\n3. Click :guilabel:`Invite Member`.\n4. Input the user's Read the Docs username or email address.\n5. Click :guilabel:`Add member`.\n\nRemoving a user from a team\n----------------------------\n\nRemoving a user from a team removes all permissions that team gave them.\n\nFollow these steps:\n\n1. Navigate to the `teams management page <https://app.readthedocs.com/organizations/choose/organization_team_list/>`__.\n2. Click on :guilabel:`<team name>`.\n3. Click :guilabel:`Remove` next to the user.\n\n\nGrant access to users to import a project\n-----------------------------------------\n\nMake the user a member of any team with *admin* permissions,\nthey will be granted access to import a project on that team.\n\nAutomating this process\n-----------------------\n\nYou can manage teams more easily using our :doc:`single sign-on </commercial/single-sign-on>` features.\n\n.. seealso::\n\n   :doc:`/commercial/organizations`\n     General information about the *organizations* feature.\n\n---\n\n[docs/user/guides/set-up-single-sign-on-saml.rst:123-153] (relevance 0.30)\n* Using :doc:`teams </guides/manage-read-the-docs-teams>` to provide access for ongoing contribution.\n* Using :doc:`sharing </commercial/sharing>` to provide short-term access requiring a login.\n\nRevoke user's access to all the projects\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nBy disabling access to the SAML integration to a user,\nyou revoke access to all the projects their linked Read the Docs user had access to,\nand disable login on Read the Docs completely for that user.\n\n.. warning::\n\n   If the user signed up to Read the Docs previously to enabling SAML on your organization,\n   they may still have access to their account and projects if they were manually added to a team.\n\n   To completely revoke access to a user, remove them from all the teams they are part of.\n\n.. warning::\n\n   If the user was already signed in to Read the Docs when their access was revoked,\n   they may still have access to documentation pages until their session expires.\n   This is three days for the dashboard and documentation pages.\n\n   To completely revoke access to a user, remove them from all the teams they are part of.\n\n.. seealso::\n\n   :doc:`/guides/manage-read-the-docs-teams`\n     Additional user management options\n   :doc:`/commercial/single-sign-on`\n     Information about choosing a single sign-on approach\n\n---\n\n[docs/user/guides/managing-maintainers.rst:1-43] (relevance 0.30)\nHow to manage maintainers for your project\n==========================================\n\n|org_brand| allows you to manage maintainers for your projects.\nEvery project is configured with its own list of maintainers\nwho will all have admin privileges to the project,\nso be careful when adding new maintainers.\n\nWhen you add a maintainer to your project,\nthey will be invited to join the project as a maintainer.\nThey will receive an email notification with a link to accept the invitation,\nand won't have access to the project until they accept the invitation.\n\nAdding a maintainer\n-------------------\n\nAdding a maintainer gives them admin access to your project.\n\nFollow these steps:\n\n* Navigate to the :guilabel:`Settings` tab of your project.\n* Under :guilabel:`Setup`, click on the :guilabel:`Maintainers` tab.\n* Click the :guilabel:`Add maintainer` button.\n* Fill out the form with the new maintainer's username or email address.\n* Click :guilabel:`Invite`.\n\nRemoving a maintainer\n---------------------\n\nRemoving a maintainer revokes their admin access to your project.\n\nFollow these steps:\n\n* Navigate to the :guilabel:`Settings` tab of your project.\n* Under :guilabel:`Setup`, click on the :guilabel:`Maintainers` tab.\n* Find the maintainer you want to remove in the list.\n* Click the :guilabel:`Remove` button next to their name.\n* Confirm the removal in the dialog that appears.\n\n.. seealso::\n\n   :doc:`/guides/manage-read-the-docs-teams`\n     Learn how to manage teams within an organization on |com_brand|.\n\n---\n\n[docs/user/commercial/privacy-level.rst:1-43] (relevance 0.28)\nPrivacy levels\n--------------\n\n.. include:: /shared/admonition-rtd-business.rst\n\nPrivacy levels allow you to set the visibility of your project and its versions.\nThis allows you to specify what information is available to the public and what is private.\nPrivacy can be controlled at the level of the project and each version,\nand nothing more granular (eg. specific directories or URLs) can be controlled.\n\nProject privacy\n~~~~~~~~~~~~~~~\n\nBy default, only users that belong to your organization can see the dashboard of your project and its builds.\nIf you want users outside your organization to be able to see the dashboard of your project,\nand the build output of *public versions* you can set the privacy level of your project to ``Public``.\n\nYou can set the project privacy level in your :term:`dashboard` by navigating to :menuselection:`Admin --> Settings`\nand changing :guilabel:`Privacy level` to `Public`.\n\n**Making a project public doesn't give access to any versions.**\nSo if you want all your versions to be accessible,\nyou need to configure those to be `Public` as well.\n\nVersion privacy\n~~~~~~~~~~~~~~~\n\nEach version of your documentation can be set to either `Public` or `Pri"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "read_file",
+                "args": {
+                  "path": "readthedocs/core/permissions.py",
+                  "start_line": 52,
+                  "end_line": 64,
+                  "snapshot": "pr"
+                },
+                "result": "[READ snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 path=readthedocs/core/permissions.py lines=52-64]\n52:         if admin or member:\n53:             # Projects from VCS SSO.\n54:             projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55: \n56:             # Projects from teams that don't have VCS SSO enabled.\n57:             projects_from_teams = Project.objects.filter(teams__members=user)\n58:             if admin and not member:\n59:                 projects_from_teams = projects_from_teams.filter(teams__access=ADMIN_ACCESS)\n60:             elif member and not admin:\n61:                 projects_from_teams = projects_from_teams.filter(teams__access=READ_ONLY_ACCESS)\n62:             else:\n63:                 # If both admin and member are True, we don't need to filter the queryset.\n64:                 pass\n[END READ]"
+              }
+            ]
+          },
+          {
+            "assistant": "{\n  \"sections\": [\n    {\n      \"id\": \"sec1\",\n      \"title\": \"Refactor team-based project filtering logic to correctly handle admin/member combinations\",\n      \"rationale\": \"The hunk replaces a Q\u2011object based filter that applied both admin and member access checks with a clearer conditional flow that only applies the appropriate filter when exactly one of the flags is true. This ensures that when both `admin` and `member` are true, the queryset is not unnecessarily filtered, matching the intended semantics of the `projects` method.\",\n      \"hunks\": [\n        \"readthedocs/core/permissions.py#0\"\n      ],\n      \"context\": [\n        {\n          \"path\": \"readthedocs/core/permissions.py\",\n          \"symbol\": \"projects\",\n          \"start_line\": 52,\n          \"end_line\": 64,\n          \"snapshot\": \"base\",\n          \"why\": \"Shows the original Q\u2011object filtering logic that the PR replaces.\"\n        },\n        {\n          \"path\": \"readthedocs/core/permissions.py\",\n          \"symbol\": \"projects\",\n          \"start_line\": 52,\n          \"end_line\": 64,\n          \"snapshot\": \"pr\",\n          \"why\": \"Shows the new conditional filtering logic introduced by the PR.\"\n        }\n      ]\n    }\n  ]\n}",
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "section": "sec1",
+        "turns": [
+          {
+            "assistant": "",
+            "tool_calls": [
+              {
+                "tool": "investigate_pr_code",
+                "args": {
+                  "query": "permissions.projects("
+                },
+                "result": "[CODEGRAPH snapshot=pr sha=5149ab2742150eea703be46303b43a17ae6bcdf1 status=ok truncated=true incomplete=true query=\"permissions.projects\"]\n**Exploration: permissions.projects**\n\nFound 76 symbols across 7 files.\n\n**Blast radius \u2014 what depends on these (update/verify before editing)**\n\n- `projects` (readthedocs/core/permissions.py:14) \u2014 12 callers in `readthedocs/oauth/migrate.py`, `readthedocs/projects/views/private.py`, `readthedocs/builds/querysets.py`, `readthedocs/redirects/querysets.py` +4 more; no tests found within 3 caller hops\n- `Project` (readthedocs/projects/models.py:288) \u2014 451 callers in `readthedocs/analytics/models.py`, `readthedocs/analytics/proxied_api.py`, `readthedocs/analytics/tests.py`, `readthedocs/api/v2/models.py` +59 more; tests: `readthedocs/analytics/tests/test_models.py`, `readthedocs/api/v2/test/test_tasks.py`, `readthedocs/api/v3/tests/mixins.py`, `readthedocs/api/v3/tests/test_projects.py` +97\n- `permission_check` (readthedocs/core/utils/tasks/public.py:92) \u2014 1 caller in `readthedocs/oauth/tasks.py`; tested via callers: `readthedocs/rtd_tests/tests/test_oauth_tasks.py`\n\n**Relationships**\n\n**references:**\n- projects/ \u2192 GoldProjectsListCreate\n- GoldProjectsListCreate \u2192 GoldProjectForm\n- get_context_data \u2192 user\n- get_form \u2192 user\n- permission_check \u2192 decorator\n- update_progress_data \u2192 STATUS_UPDATES_ENABLED\n- AdminPermission \u2192 AdminPermissionBase\n- SearchAPI \u2192 SearchExecutor\n- _get_projects_from_user \u2192 user\n- _get_project_version \u2192 user\n- ... and 8 more\n\n**extends:**\n- GoldProjectsListCreate \u2192 GoldProjectsMixin\n- GoldProjectsMixin \u2192 PrivateViewMixin\n- GoldProjectRemove \u2192 GoldProjectsMixin\n- ProjectsViewSet \u2192 SettingsOverrideObject\n- LoginView \u2192 SettingsOverrideObject\n- OrganizationQuerySet \u2192 SettingsOverrideObject\n- ReadTheDocsConfigJson \u2192 SettingsOverrideObject\n- ProjectDownloadMedia \u2192 SettingsOverrideObject\n- ServeError404 \u2192 SettingsOverrideObject\n- Foo \u2192 SettingsOverrideObject\n- ... and 14 more\n\n**calls:**\n- get_context_data \u2192 get_gold_projects\n- get_context_data \u2192 get_gold_user\n- form_valid \u2192 get_success_url\n- form_valid \u2192 get_gold_user\n- get_form \u2192 get_gold_projects\n- get_form \u2192 get_gold_user\n- get \u2192 get_form\n- get_context_data \u2192 get_form\n- get_context_data \u2192 get_form\n- post \u2192 get_form\n- ... and 56 more\n\n**instantiates:**\n- _searh_files \u2192 SearchExecutor\n- search \u2192 PageSearch\n- parser \u2192 SearchQueryParser\n- _searh_files \u2192 PageSearchSerializer\n\n**Source Code**\n\n> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.\n\n**`readthedocs/core/permissions.py`** \u2014 projects(method), AdminPermissionBase(class), _get_projects_for_sso_user(method), organizations(method), has_sso_enabled(method), admins(method), is_member(method), is_admin(method), members(method), owners(method), +1 more\n\n```python\n1\t\"\"\"Objects for User permission checks.\"\"\"\n2\t\n3\tfrom django.conf import settings\n4\tfrom django.contrib.auth.models import User\n5\tfrom django.db.models import Q\n6\t\n7\tfrom readthedocs.core.utils.extend import SettingsOverrideObject\n8\tfrom readthedocs.organizations.constants import ADMIN_ACCESS\n9\tfrom readthedocs.organizations.constants import READ_ONLY_ACCESS\n10\t\n11\t\n12\tclass AdminPermissionBase:\n13\t    @classmethod\n14\t    def projects(cls, user, admin=False, member=False):\n15\t        \"\"\"\n16\t        Return all the projects the user has access to as ``admin`` or ``member``.\n17\t\n18\t        If `RTD_ALLOW_ORGANIZATIONS` is enabled\n19\t        This function takes into consideration VCS SSO and Google SSO.\n20\t        It includes:\n21\t\n22\t        - projects where the user has access to via VCS SSO.\n23\t        - Projects where the user has access via Team,\n24\t          if VCS SSO is not enabled for the organization of that team.\n25\t\n26\t        .. note::\n27\t\n28\t           SSO is taken into consideration,\n29\t           but isn't implemented in .org yet.\n30\t\n31\t        :param user: user object to filter projects\n32\t        :type user: django.contrib.admin.models.User\n33\t        :param bool admin: include projects where the user has admin access to the project\n34\t        :param bool member: include projects where the user has read access to the project\n35\t        \"\"\"\n36\t        from readthedocs.projects.models import Project\n37\t        from readthedocs.sso.models import SSOIntegration\n38\t\n39\t        projects = Project.objects.none()\n40\t        if not user or not user.is_authenticated:\n41\t            return projects\n42\t\n43\t        if not settings.RTD_ALLOW_ORGANIZATIONS:\n44\t            # All users are admin and member of a project\n45\t            # when we aren't using organizations.\n46\t            return user.projects.all()\n47\t\n48\t        projects_from_sso = Project.objects.none()\n49\t        projects_from_teams = Project.objects.none()\n50\t        projects_from_owners = Project.objects.none()\n51\t\n52\t        if admin or member:\n53\t            # Projects from VCS SSO.\n54\t            projects_from_sso = cls._get_projects_for_sso_user(user, admin=admin, member=member)\n55\t\n56\t            # Projects from teams that don't have VCS SSO enabled.\n57\t            projects_from_teams = Project.objects.filter(teams__members=user)\n58\t            if admin and not member:\n59\t                projects_from_teams = projects_from_teams.filter(teams__access=ADMIN_ACCESS)\n60\t            elif member and not admin:\n61\t                projects_from_teams = projects_from_teams.filter(teams__access=READ_ONLY_ACCESS)\n62\t            else:\n63\t                # If both admin and member are True, we don't need to filter the queryset.\n64\t                pass\n65\t            projects_from_teams = p\n[TRUNCATED omitted_chars=19228]\nNOTE: INCOMPLETE categories=gitlink,nonregular\nNOTE: dynamic Python edges are best effort; a missing edge does not establish safety.\n[END CODEGRAPH]"
+              }
+            ]
+          },
+          {
+            "assistant": "",
+            "tool_calls": []
+          },
+          {
+            "assistant": "{\"findings\": []}",
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "kev": []
+  },
+  "advisory": "readthedocs-team-access-filter-authz",
+  "url": "https://github.com/readthedocs/readthedocs.org/pull/12669",
+  "category": "authz",
+  "cwe": "CWE-285",
+  "ghsa": "GHSA-cw37-xcph-qr86",
+  "expected": "vulnerable",
+  "vulnerable_files": [
+    "readthedocs/core/permissions.py"
+  ],
+  "predicted": "safe",
+  "outcome": "FN",
+  "correct": false,
+  "on_target": false
+}

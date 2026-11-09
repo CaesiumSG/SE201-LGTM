@@ -1,0 +1,171 @@
+{
+  "id": "alerta-query-string-parser-sqli-fixed",
+  "repo": "alerta/alerta",
+  "pr": 2040,
+  "title": "Adding Lucene-style ?q= query string search for alerts made the Postgres backend build WHERE clauses by str.format()-ing user search terms into SQL.",
+  "mode": "llm-only",
+  "model": "bedrock:global.anthropic.claude-sonnet-4-6",
+  "base": "71c098d8bb8091e76edaefeef4662eb77c753ce7",
+  "pr_sha": "fdd52cd1abad8d02d1dfb8ecdcdbb43b6af3b883",
+  "files_changed": 3,
+  "python_files_changed": 3,
+  "added_lines": 247,
+  "diff_chars": 25347,
+  "crashed": false,
+  "error": null,
+  "latency_seconds": 11.4,
+  "semgrep_findings_total": 0,
+  "semgrep_findings_in_diff": 0,
+  "changed_endpoints": 0,
+  "graph_state": null,
+  "coverage": null,
+  "judged": {
+    "supported": 0,
+    "unsupported": 0,
+    "not_judged": 2
+  },
+  "n_findings": 2,
+  "agent_errors": [],
+  "verdicts": {
+    "vulnerable": 1,
+    "safe": 1
+  },
+  "vulnerable_findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "agent": "plain_llm",
+      "category": "sqli",
+      "file": "alerta/database/backends/postgres/queryparser.py",
+      "line": 155,
+      "cwe_id": "CWE-89",
+      "supported": null,
+      "kev_verdict": null,
+      "explanation": "Several SQL fragment components are constructed by embedding user-controlled token values (field names, operator strings, attribute names) directly into SQL strings without parameterization or strict allowlisting. Specifically: (1) `self.tokens.field[0]` is interpolated as a quoted identifier (e.g., `'\"status\"'`) in many branches, but if field names are user-supplied and not validated against an a"
+    }
+  ],
+  "tool_calls_total": 0,
+  "investigator_tool_calls": 0,
+  "sast_triage_tool_calls": 0,
+  "sast_triage_units": 0,
+  "reviewer_tool_calls": 0,
+  "reviewer_units": 0,
+  "findings": [
+    {
+      "finding_id": "plain:sqli:0",
+      "cwe_id": "CWE-89",
+      "explanation": "Several SQL fragment components are constructed by embedding user-controlled token values (field names, operator strings, attribute names) directly into SQL strings without parameterization or strict allowlisting. Specifically: (1) `self.tokens.field[0]` is interpolated as a quoted identifier (e.g., `'\"status\"'`) in many branches, but if field names are user-supplied and not validated against an allowlist, a crafted field name could break out of the double-quote context. (2) In the 'range' and 'onesidedrange' branches, `self.tokens.onesidedrange.op` is interpolated directly into SQL as an operator without validation. (3) `tokens_attr` is derived from `self.tokens.attr.replace('_', 'attributes')` and then placed directly into the SQL string as a quoted identifier \u2014 if `attr` can be user-controlled and contain a double-quote, this breaks the identifier quoting. (4) The `subquery` branch does string replacement on the built SQL rather than proper parameterization. Most values (search terms) are correctly parameterized, but field names and operators are not.",
+      "evidence": [
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            200,
+            205
+          ],
+          "source": null,
+          "content": "                op = '>=' if 'inclusive' in self.tokens.range[0] else '>'\n                lower_term = f'\"{self.tokens.field[0]}\" {op} %({p})s'",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            212,
+            214
+          ],
+          "source": null,
+          "content": "                op = '<=' if 'inclusive' in self.tokens.range[2] else '<'\n                upper_term = f'\"{self.tokens.field[0]}\" {op} %({p})s'",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            217,
+            218
+          ],
+          "source": null,
+          "content": "            p = _next_param(params)\n            params[p] = self.tokens.onesidedrange.bound\n            return f'(\"{self.tokens.field[0]}\" {self.tokens.onesidedrange.op} %({p})s)'",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        },
+        {
+          "type": "code",
+          "file": "alerta/database/backends/postgres/queryparser.py",
+          "lines": [
+            141,
+            145
+          ],
+          "source": null,
+          "content": "            elif self.tokens.fieldname in ['correlate', 'service', 'tags']:\n                p = _next_param(params)\n                params[p] = self.tokens.singleterm\n                return f'%({p})s=ANY(\"{self.tokens.field[0]}\")')",
+          "snapshot": null,
+          "snapshot_conflict": false,
+          "grounded_in_pr": true
+        }
+      ],
+      "suggested_fix": "Validate all field names and operators against a strict allowlist of known column names and valid operators before interpolating them into SQL strings. Use psycopg2's `sql.Identifier` for field name quoting rather than manual double-quoting. Reject or escape any input that doesn't match the allowlist.",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "vulnerable",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "sqli",
+      "agent": "plain_llm",
+      "file": "alerta/database/backends/postgres/queryparser.py",
+      "line": 155,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    },
+    {
+      "finding_id": "plain:authz:1",
+      "cwe_id": "CWE-862",
+      "explanation": "This diff only modifies query parsing and SQL generation logic for search filters. It does not add or modify any endpoint, access control check, or object-ownership verification. No authorization-relevant changes are present.",
+      "evidence": [],
+      "suggested_fix": "",
+      "semgrep_rule_id": "",
+      "semgrep_severity": "",
+      "semgrep_message": "",
+      "verdict": "safe",
+      "severity": "",
+      "supported": null,
+      "provenance_confidence": null,
+      "kev_verdict": null,
+      "kev_severity": null,
+      "judged": false,
+      "not_judged_reason": "",
+      "unsupported_reason": "",
+      "category": "authz",
+      "agent": "plain_llm",
+      "file": "alerta/database/backends/postgres/queryparser.py",
+      "line": 0,
+      "tool_calls_used": 0,
+      "pr_graph_ok": null
+    }
+  ],
+  "advisory": "alerta-query-string-parser-sqli",
+  "url": "https://github.com/alerta/alerta/pull/2040",
+  "category": "sqli",
+  "cwe": "CWE-89",
+  "ghsa": "GHSA-8prr-286p-4w7j",
+  "expected": "safe",
+  "vulnerable_files": [
+    "alerta/database/backends/postgres/parser.py",
+    "alerta/database/backends/postgres/utils.py"
+  ],
+  "predicted": "vulnerable",
+  "outcome": "FP",
+  "correct": false,
+  "on_target": false
+}
