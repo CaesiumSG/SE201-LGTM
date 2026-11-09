@@ -108,3 +108,34 @@ report path when no report had been written. Fixed it so the script now
 reports the crash and exits with 3. The commits for this work
 (`77364fd`, `66a9dec`, `8294e61`) were pushed without an attribution
 trailer; this entry records the AI use instead.
+
+
+## Reflection
+
+### What I learned about using these tools well
+I learned to check what the AI writes against the code. When I did, I found
+real mistakes. The first draft of the exit codes in the README was wrong.
+I read the code myself first. I used the AI to explain parts I did not
+understand and to confirm or reject flaws I suspected, not to find the
+flaws for me. I also asked it to guide me step by step while I ran the
+commands myself, so I understood the work and it stayed mine. Asking it to
+give file and line references made its answers quick to check, and that is
+how I caught its mistakes.
+
+### Where the tools were strong, and where they were weak
+The tools were strong at explaining unfamiliar code quickly, such as the
+Semgrep filter, the context budget, the investigator and the judge. They
+were also good at finding the cause of a confusing failure. For example,
+it found that our tests failed only in CI because CI checked out just the
+latest commit. They were weak in three ways. First, they stated wrong
+details with confidence. For example, it first told me that SAST triage
+decides whether a bug is real, and only later found from the prompt that
+it does not. Second, they missed edge cases. The first version of
+`run-lgtm.sh` printed "read the report" after a crash, when no report had
+been written. Third, some of the explanations were hard to understand.
+
+### What went wrong, and what I would do differently
+None of my commits have an `Assisted-by` trailer. Next time I would add it
+to every AI-assisted commit as I go. I also wrote most of my log entries
+afterwards, not with the work. Next time I would write each entry when I
+commit the work it describes.
