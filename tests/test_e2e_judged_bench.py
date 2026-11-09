@@ -1,4 +1,4 @@
-"""E2E: every argv the cluster command hands to the four benchmark CLIs parses in that CLI's own argument parser."""
+"""E2E: every argv the cluster command hands to the two benchmark CLIs parses in that CLI's own argument parser."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from tests.test_kev_deploy import sb  # noqa: F401  fixture
 
 BENCH = kd.REPO / "benchmark"
 SCRIPTS = {
-    "runner.py": BENCH / "kev_support" / "runner.py",
-    "judge_eval.py": BENCH / "judge_eval.py",
     "evaluate.py": BENCH / "evaluate.py",
     "evaluate_real.py": BENCH / "real_world" / "evaluate_real.py",
 }
@@ -76,11 +74,6 @@ def test_wrapper_argv_parses_in_each_real_cli_in_order_with_one_cancel(run, monk
     assert cancels[0] > max(i for i, c in enumerate(b.sb.calls()) if c.startswith("PY\t"))
 
     parsed = {s: parse_with_real_cli(s, a, monkeypatch) for s, a in steps}
-    assert kd.inside(str(parsed["runner.py"].out), b.out) and not Path(parsed["runner.py"].out).exists()
-    judge = parsed["judge_eval.py"]
-    assert [Path(p).as_posix() for p in (judge.run_dir, judge.export, judge.labels)] == [
-        b.run_dir.as_posix(), b.export.as_posix(), b.labels.as_posix()]
-    assert judge.live is True
     subdirectories = {"evaluate.py": "evaluate", "evaluate_real.py": "evaluate-real"}
     for s in kd.RESUME_STEPS:
         assert parsed[s].resume is True

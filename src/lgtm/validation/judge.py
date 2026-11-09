@@ -45,10 +45,10 @@ VERDICT_ANSWERS = {
 }
 SEVERITY_LEVELS = ("low", "medium", "high", "critical")
 SEVERITY_DESCRIPTIONS = {
-    "low": "Limited impact, hard to exploit or exposing little.",
-    "medium": "Moderate impact or needs specific conditions to exploit.",
-    "high": "Serious impact, exploitable with little effort.",
-    "critical": "Severe impact, exploitable by anyone with no prerequisites.",
+    "low": "Limited impact or hard to reach.",
+    "medium": "Exploitable only with constraints, such as admin-only reach, or exposes partial data.",
+    "high": "Exploitable by any ordinary logged-in user, with significant data or integrity impact.",
+    "critical": "Exploitable without authentication, or trivially, with full compromise.",
 }
 
 JudgeCall = Callable[[dict], Mapping[str, Any]]

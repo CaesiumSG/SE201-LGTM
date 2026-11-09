@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from lgtm.agents import prompt_parts, registry
 from lgtm.agents.base import (
     AgentFinding,
+    FatalLLMError,
     RunRecord,
     answer_until_resolved,
     build_llm,
@@ -322,19 +323,23 @@ class AuthzReviewerAgent:
                 parse,
                 self.toolbox,
             )
+        except FatalLLMError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "%s section review failed for %s: %s", self.CATEGORY, section.section_id, exc
             )
-            message = registry.render("authz_reviewer.failed_explanation", where=where, error=exc)
+            message = registry.render(f"{self.PROMPTS}.failed_explanation", where=where, error=exc)
+            kind = "failed"
         else:
             if findings is not None:
                 return findings
             logger.warning(
                 "%s section review for %s had no parsable findings", self.CATEGORY, section.section_id
             )
-            message = registry.render("authz_reviewer.unparsable_explanation", where=where)
-        self.errors.append({"source": section.section_id, "message": message})
+            message = registry.render(f"{self.PROMPTS}.unparsable_explanation", where=where)
+            kind = "unparsable"
+        self.errors.append({"source": self._record_name(section), "kind": kind, "message": message})
         return []
 
     def _record_name(self, section: Section) -> str:

@@ -1,0 +1,96 @@
+{
+  "case_id": "superset-where-in-sqli",
+  "diff": "--- a/docs/docs/installation/sql-templating.mdx\n+++ b/docs/docs/installation/sql-templating.mdx\n@@ -206,10 +206,12 @@ Here's a concrete example:\n SELECT action, count(*) as times\n FROM logs\n WHERE\n-    action in ({{ \"'\" + \"','\".join(filter_values('action_type')) + \"'\" }})\n+    action in {{ filter_values('action_type')|where_in }}\n GROUP BY action\n ```\n \n+There `where_in` filter converts the list of values from `filter_values('action_type')` into a string suitable for an `IN` expression.\n+\n **Filters for a Specific Column**\n \n The `{{ get_filters() }}` macro returns the filters applied to a given column. In addition to\n@@ -243,7 +245,7 @@ Here's a concrete example:\n \n     {%- if filter.get('op') == 'IN' -%}\n         AND\n-        full_name IN ( {{ \"'\" + \"', '\".join(filter.get('val')) + \"'\" }} )\n+        full_name IN {{ filter.get('val')|where_in }}\n     {%- endif -%}\n \n     {%- if filter.get('op') == 'LIKE' -%}\n--- a/superset/jinja_context.py\n+++ b/superset/jinja_context.py\n@@ -401,6 +401,25 @@ def validate_template_context(\n     return validate_context_types(context)\n \n \n+def where_in(values: List[Any], mark: str = \"'\") -> str:\n+    \"\"\"\n+    Given a list of values, build a parenthesis list suitable for an IN expression.\n+\n+        >>> where_in([1, \"b\", 3])\n+        (1, 'b', 3)\n+\n+    \"\"\"\n+\n+    def quote(value: Any) -> str:\n+        if isinstance(value, str):\n+            value = value.replace(mark, mark * 2)\n+            return f\"{mark}{value}{mark}\"\n+        return str(value)\n+\n+    joined_values = \", \".join(quote(value) for value in values)\n+    return f\"({joined_values})\"\n+\n+\n class BaseTemplateProcessor:\n     \"\"\"\n     Base class for database-specific jinja context\n@@ -433,6 +452,9 @@ class BaseTemplateProcessor:\n         self._env = SandboxedEnvironment(undefined=DebugUndefined)\n         self.set_context(**kwargs)\n \n+        # custom filters\n+        self._env.filters[\"where_in\"] = where_in\n+\n     def set_context(self, **kwargs: Any) -> None:\n         self._context.update(kwargs)\n         self._context.update(context_addons())\n--- a/tests/unit_tests/jinja_context_test.py\n+++ b/tests/unit_tests/jinja_context_test.py\n@@ -0,0 +1,27 @@\n+# Licensed to the Apache Software Foundation (ASF) under one\n+# or more contributor license agreements.  See the NOTICE file\n+# distributed with this work for additional information\n+# regarding copyright ownership.  The ASF licenses this file\n+# to you under the Apache License, Version 2.0 (the\n+# \"License\"); you may not use this file except in compliance\n+# with the License.  You may obtain a copy of the License at\n+#\n+#   http://www.apache.org/licenses/LICENSE-2.0\n+#\n+# Unless required by applicable law or agreed to in writing,\n+# software distributed under the License is distributed on an\n+# \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n+# KIND, either express or implied.  See the License for the\n+# specific language governing permissions and limitations\n+# under the License.\n+\n+from superset.jinja_context import where_in\n+\n+\n+def test_where_in() -> None:\n+    \"\"\"\n+    Test the ``where_in`` Jinja2 filter.\n+    \"\"\"\n+    assert where_in([1, \"b\", 3]) == \"(1, 'b', 3)\"\n+    assert where_in([1, \"b\", 3], '\"') == '(1, \"b\", 3)'\n+    assert where_in([\"O'Malley's\"]) == \"('O''Malley''s')\"",
+  "sections": [
+    {
+      "id": "where-in-filter",
+      "title": "Add a `where_in` Jinja2 filter to the sandboxed SQL template context",
+      "rationale": "Hunks #0 and #1 together define the `where_in` helper and register it as a filter on the SandboxedEnvironment used to render user-supplied SQL templates, so they form one access-control surface (what template code can emit into SQL).",
+      "hunks": [
+        {
+          "hunk_id": "superset/jinja_context.py#0",
+          "lines": [
+            "     return validate_context_types(context)",
+            " ",
+            " ",
+            "+def where_in(values: List[Any], mark: str = \"'\") -> str:",
+            "+    \"\"\"",
+            "+    Given a list of values, build a parenthesis list suitable for an IN expression.",
+            "+",
+            "+        >>> where_in([1, \"b\", 3])",
+            "+        (1, 'b', 3)",
+            "+",
+            "+    \"\"\"",
+            "+",
+            "+    def quote(value: Any) -> str:",
+            "+        if isinstance(value, str):",
+            "+            value = value.replace(mark, mark * 2)",
+            "+            return f\"{mark}{value}{mark}\"",
+            "+        return str(value)",
+            "+",
+            "+    joined_values = \", \".join(quote(value) for value in values)",
+            "+    return f\"({joined_values})\"",
+            "+",
+            "+",
+            " class BaseTemplateProcessor:",
+            "     \"\"\"",
+            "     Base class for database-specific jinja context"
+          ]
+        },
+        {
+          "hunk_id": "superset/jinja_context.py#1",
+          "lines": [
+            "         self._env = SandboxedEnvironment(undefined=DebugUndefined)",
+            "         self.set_context(**kwargs)",
+            " ",
+            "+        # custom filters",
+            "+        self._env.filters[\"where_in\"] = where_in",
+            "+",
+            "     def set_context(self, **kwargs: Any) -> None:",
+            "         self._context.update(kwargs)",
+            "         self._context.update(context_addons())"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "where-in-test",
+      "title": "Unit test for the `where_in` filter quoting behavior",
+      "rationale": "The new test file exercises the `where_in` helper added in the previous section, including its SQL-quote-escaping logic, so it is grouped as the verification for that access-control surface.",
+      "hunks": [
+        {
+          "hunk_id": "tests/unit_tests/jinja_context_test.py#0",
+          "lines": [
+            "+# Licensed to the Apache Software Foundation (ASF) under one",
+            "+# or more contributor license agreements.  See the NOTICE file",
+            "+# distributed with this work for additional information",
+            "+# regarding copyright ownership.  The ASF licenses this file",
+            "+# to you under the Apache License, Version 2.0 (the",
+            "+# \"License\"); you may not use this file except in compliance",
+            "+# with the License.  You may obtain a copy of the License at",
+            "+#",
+            "+#   http://www.apache.org/licenses/LICENSE-2.0",
+            "+#",
+            "+# Unless required by applicable law or agreed to in writing,",
+            "+# software distributed under the License is distributed on an",
+            "+# \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY",
+            "+# KIND, either express or implied.  See the License for the",
+            "+# specific language governing permissions and limitations",
+            "+# under the License.",
+            "+",
+            "+from superset.jinja_context import where_in",
+            "+",
+            "+",
+            "+def test_where_in() -> None:",
+            "+    \"\"\"",
+            "+    Test the ``where_in`` Jinja2 filter.",
+            "+    \"\"\"",
+            "+    assert where_in([1, \"b\", 3]) == \"(1, 'b', 3)\"",
+            "+    assert where_in([1, \"b\", 3], '\"') == '(1, \"b\", 3)'",
+            "+    assert where_in([\"O'Malley's\"]) == \"('O''Malley''s')\""
+          ]
+        }
+      ]
+    }
+  ]
+}

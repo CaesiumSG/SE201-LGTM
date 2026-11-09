@@ -1,0 +1,272 @@
+{
+  "case_id": "redash-query-results-param-sqli",
+  "diff": "--- a/redash/query_runner/query_results.py\n+++ b/redash/query_runner/query_results.py\n@@ -1,6 +1,8 @@\n+import hashlib\n import logging\n import re\n import sqlite3\n+from urllib.parse import parse_qs\n \n from redash import models\n from redash.permissions import has_access, view_only\n@@ -24,6 +26,10 @@ class CreateTableError(Exception):\n     pass\n \n \n+def extract_query_params(query):\n+    return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)\n+\n+\n def extract_query_ids(query):\n     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)\n     return [int(q) for q in queries]\n@@ -48,7 +54,14 @@ def _load_query(user, query_id):\n     return query\n \n \n-def get_query_results(user, query_id, bring_from_cache):\n+def replace_query_parameters(query_text, params):\n+    qs = parse_qs(params)\n+    for key, value in qs.items():\n+        query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])\n+    return query_text\n+\n+\n+def get_query_results(user, query_id, bring_from_cache, params=None):\n     query = _load_query(user, query_id)\n     if bring_from_cache:\n         if query.latest_query_data_id is not None:\n@@ -56,7 +69,11 @@ def get_query_results(user, query_id, bring_from_cache):\n         else:\n             raise Exception(\"No cached result available for query {}.\".format(query.id))\n     else:\n-        results, error = query.data_source.query_runner.run_query(query.query_text, user)\n+        query_text = query.query_text\n+        if params is not None:\n+            query_text = replace_query_parameters(query_text, params)\n+\n+        results, error = query.data_source.query_runner.run_query(query_text, user)\n         if error:\n             raise Exception(\"Failed loading results for query id {}.\".format(query.id))\n         else:\n@@ -65,12 +82,18 @@ def get_query_results(user, query_id, bring_from_cache):\n     return results\n \n \n-def create_tables_from_query_ids(user, connection, query_ids, cached_query_ids=[]):\n+def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):\n     for query_id in set(cached_query_ids):\n         results = get_query_results(user, query_id, True)\n         table_name = \"cached_query_{query_id}\".format(query_id=query_id)\n         create_table(connection, table_name, results)\n \n+    for query in set(query_params):\n+        results = get_query_results(user, query[0], False, query[1])\n+        table_hash = hashlib.md5(\"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode()).hexdigest()\n+        table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)\n+        create_table(connection, table_name, results)\n+\n     for query_id in set(query_ids):\n         results = get_query_results(user, query_id, False)\n         table_name = \"query_{query_id}\".format(query_id=query_id)\n@@ -113,6 +136,15 @@ def create_table(connection, table_name, query_results):\n         connection.execute(insert_template, values)\n \n \n+def prepare_parameterized_query(query, query_params):\n+    for params in query_params:\n+        table_hash = hashlib.md5(\"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode()).hexdigest()\n+        key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])\n+        value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)\n+        query = query.replace(key, value)\n+    return query\n+\n+\n class Results(BaseQueryRunner):\n     should_annotate_query = False\n     noop_query = \"SELECT 1\"\n@@ -129,11 +161,17 @@ class Results(BaseQueryRunner):\n         connection = sqlite3.connect(\":memory:\")\n \n         query_ids = extract_query_ids(query)\n+\n+        query_params = extract_query_params(query)\n+\n         cached_query_ids = extract_cached_query_ids(query)\n-        create_tables_from_query_ids(user, connection, query_ids, cached_query_ids)\n+        create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)\n \n         cursor = connection.cursor()\n \n+        if query_params is not None:\n+            query = prepare_parameterized_query(query, query_params)\n+\n         try:\n             cursor.execute(query)\n \n--- a/tests/query_runner/test_query_results.py\n+++ b/tests/query_runner/test_query_results.py\n@@ -11,8 +11,11 @@ from redash.query_runner.query_results import (\n     create_table,\n     extract_cached_query_ids,\n     extract_query_ids,\n+    extract_query_params,\n     fix_column_name,\n     get_query_results,\n+    prepare_parameterized_query,\n+    replace_query_parameters,\n )\n from redash.utils import json_dumps\n from tests import BaseTestCase\n@@ -178,6 +181,40 @@ class TestExtractCachedQueryIds(TestCase):\n         self.assertEqual([123, 4566, 78], extract_cached_query_ids(query))\n \n \n+class TestExtractParamQueryIds(TestCase):\n+    def test_works_with_simple_query(self):\n+        query = \"SELECT 1\"\n+        self.assertEqual([], extract_query_params(query))\n+\n+    def test_ignores_non_param_queries(self):\n+        query = \"SELECT * FROM query_123\"\n+        self.assertEqual([], extract_query_params(query))\n+\n+    def test_ignores_cached_queries_to_load(self):\n+        query = \"SELECT * FROM cached_query_123\"\n+        self.assertEqual([], extract_query_params(query))\n+\n+    def test_finds_queries_to_load(self):\n+        query = \"SELECT * FROM param_query_123_{token=test}\"\n+        self.assertEqual([(\"123\", \"token=test\")], extract_query_params(query))\n+\n+    def test_finds_queries_in_joins(self):\n+        query = \"SELECT * FROM param_query_123_{token1=test1} JOIN param_query_456_{token2=test2}\"\n+        self.assertEqual([(\"123\", \"token1=test1\"), (\"456\", \"token2=test2\")], extract_query_params(query))\n+\n+\n+class TestPrepareParameterizedQuery(TestCase):\n+    def test_param_query_replacement(self):\n+        result = prepare_parameterized_query(\"SELECT * FROM param_query_123_{token=test}\", [(\"123\", \"token=test\")])\n+        self.assertEqual(\"SELECT * FROM query_123_1c5f1acad40f99b968836273d74baa89\", result)\n+\n+\n+class TestReplaceQueryParameters(TestCase):\n+    def test_replace_query_params(self):\n+        result = replace_query_parameters(\"SELECT '{{token1}}', '{{token2}}'\", \"token1=test1&token2=test2\")\n+        self.assertEqual(\"SELECT 'test1', 'test2'\", result)\n+\n+\n class TestFixColumnName(TestCase):\n     def test_fix_column_name(self):\n         self.assertEqual('\"a_b_c_d\"', fix_column_name(\"a:b.c d\"))",
+  "sections": [
+    {
+      "id": "param-query-authz",
+      "title": "Authorization of parameterized sub-queries via _load_query",
+      "rationale": "The new param_query path reuses get_query_results/_load_query, so the existing org + has_access(view_only) checks are the access-control gate for the newly added parameterized queries.",
+      "hunks": [
+        {
+          "hunk_id": "redash/query_runner/query_results.py#1",
+          "lines": [
+            "     pass",
+            " ",
+            " ",
+            "+def extract_query_params(query):",
+            "+    return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)",
+            "+",
+            "+",
+            " def extract_query_ids(query):",
+            "     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)",
+            "     return [int(q) for q in queries]"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#2",
+          "lines": [
+            "     return query",
+            " ",
+            " ",
+            "-def get_query_results(user, query_id, bring_from_cache):",
+            "+def replace_query_parameters(query_text, params):",
+            "+    qs = parse_qs(params)",
+            "+    for key, value in qs.items():",
+            "+        query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])",
+            "+    return query_text",
+            "+",
+            "+",
+            "+def get_query_results(user, query_id, bring_from_cache, params=None):",
+            "     query = _load_query(user, query_id)",
+            "     if bring_from_cache:",
+            "         if query.latest_query_data_id is not None:"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#3",
+          "lines": [
+            "         else:",
+            "             raise Exception(\"No cached result available for query {}.\".format(query.id))",
+            "     else:",
+            "-        results, error = query.data_source.query_runner.run_query(query.query_text, user)",
+            "+        query_text = query.query_text",
+            "+        if params is not None:",
+            "+            query_text = replace_query_parameters(query_text, params)",
+            "+",
+            "+        results, error = query.data_source.query_runner.run_query(query_text, user)",
+            "         if error:",
+            "             raise Exception(\"Failed loading results for query id {}.\".format(query.id))",
+            "         else:"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#4",
+          "lines": [
+            "     return results",
+            " ",
+            " ",
+            "-def create_tables_from_query_ids(user, connection, query_ids, cached_query_ids=[]):",
+            "+def create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids=[]):",
+            "     for query_id in set(cached_query_ids):",
+            "         results = get_query_results(user, query_id, True)",
+            "         table_name = \"cached_query_{query_id}\".format(query_id=query_id)",
+            "         create_table(connection, table_name, results)",
+            " ",
+            "+    for query in set(query_params):",
+            "+        results = get_query_results(user, query[0], False, query[1])",
+            "+        table_hash = hashlib.md5(\"query_{query}_{hash}\".format(query=query[0], hash=query[1]).encode()).hexdigest()",
+            "+        table_name = \"query_{query_id}_{param_hash}\".format(query_id=query[0], param_hash=table_hash)",
+            "+        create_table(connection, table_name, results)",
+            "+",
+            "     for query_id in set(query_ids):",
+            "         results = get_query_results(user, query_id, False)",
+            "         table_name = \"query_{query_id}\".format(query_id=query_id)"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#6",
+          "lines": [
+            "         connection = sqlite3.connect(\":memory:\")",
+            " ",
+            "         query_ids = extract_query_ids(query)",
+            "+",
+            "+        query_params = extract_query_params(query)",
+            "+",
+            "         cached_query_ids = extract_cached_query_ids(query)",
+            "-        create_tables_from_query_ids(user, connection, query_ids, cached_query_ids)",
+            "+        create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)",
+            " ",
+            "         cursor = connection.cursor()",
+            " ",
+            "+        if query_params is not None:",
+            "+            query = prepare_parameterized_query(query, query_params)",
+            "+",
+            "         try:",
+            "             cursor.execute(query)",
+            " "
+          ]
+        }
+      ]
+    },
+    {
+      "id": "param-injection",
+      "title": "Parameter substitution into query text (injection surface)",
+      "rationale": "replace_query_parameters and prepare_parameterized_query splice user-supplied param strings directly into SQL text, an injection/authorization-relevant behavior that must be reviewed together.",
+      "hunks": [
+        {
+          "hunk_id": "redash/query_runner/query_results.py#2",
+          "lines": [
+            "     return query",
+            " ",
+            " ",
+            "-def get_query_results(user, query_id, bring_from_cache):",
+            "+def replace_query_parameters(query_text, params):",
+            "+    qs = parse_qs(params)",
+            "+    for key, value in qs.items():",
+            "+        query_text = query_text.replace(\"{{{{{my_key}}}}}\".format(my_key=key), value[0])",
+            "+    return query_text",
+            "+",
+            "+",
+            "+def get_query_results(user, query_id, bring_from_cache, params=None):",
+            "     query = _load_query(user, query_id)",
+            "     if bring_from_cache:",
+            "         if query.latest_query_data_id is not None:"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#5",
+          "lines": [
+            "         connection.execute(insert_template, values)",
+            " ",
+            " ",
+            "+def prepare_parameterized_query(query, query_params):",
+            "+    for params in query_params:",
+            "+        table_hash = hashlib.md5(\"query_{query}_{hash}\".format(query=params[0], hash=params[1]).encode()).hexdigest()",
+            "+        key = \"param_query_{query_id}_{{{param_string}}}\".format(query_id=params[0], param_string=params[1])",
+            "+        value = \"query_{query_id}_{param_hash}\".format(query_id=params[0], param_hash=table_hash)",
+            "+        query = query.replace(key, value)",
+            "+    return query",
+            "+",
+            "+",
+            " class Results(BaseQueryRunner):",
+            "     should_annotate_query = False",
+            "     noop_query = \"SELECT 1\""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "param-extraction",
+      "title": "Extraction of param_query references from user query",
+      "rationale": "extract_query_params parses the attacker/user-controlled query to derive which sub-queries and params are loaded, feeding the authorization and injection paths above.",
+      "hunks": [
+        {
+          "hunk_id": "redash/query_runner/query_results.py#1",
+          "lines": [
+            "     pass",
+            " ",
+            " ",
+            "+def extract_query_params(query):",
+            "+    return re.findall(r\"(?:join|from)\\s+param_query_(\\d+)_{([^}]+)}\", query, re.IGNORECASE)",
+            "+",
+            "+",
+            " def extract_query_ids(query):",
+            "     queries = re.findall(r\"(?:join|from)\\s+query_(\\d+)\", query, re.IGNORECASE)",
+            "     return [int(q) for q in queries]"
+          ]
+        },
+        {
+          "hunk_id": "redash/query_runner/query_results.py#6",
+          "lines": [
+            "         connection = sqlite3.connect(\":memory:\")",
+            " ",
+            "         query_ids = extract_query_ids(query)",
+            "+",
+            "+        query_params = extract_query_params(query)",
+            "+",
+            "         cached_query_ids = extract_cached_query_ids(query)",
+            "-        create_tables_from_query_ids(user, connection, query_ids, cached_query_ids)",
+            "+        create_tables_from_query_ids(user, connection, query_ids, query_params, cached_query_ids)",
+            " ",
+            "         cursor = connection.cursor()",
+            " ",
+            "+        if query_params is not None:",
+            "+            query = prepare_parameterized_query(query, query_params)",
+            "+",
+            "         try:",
+            "             cursor.execute(query)",
+            " "
+          ]
+        }
+      ]
+    },
+    {
+      "id": "param-tests",
+      "title": "Tests for parameterized query handling",
+      "rationale": "The new test hunks exercise extract_query_params, prepare_parameterized_query and replace_query_parameters, documenting the intended (and security-relevant) behavior of the param feature.",
+      "hunks": [
+        {
+          "hunk_id": "tests/query_runner/test_query_results.py#0",
+          "lines": [
+            "     create_table,",
+            "     extract_cached_query_ids,",
+            "     extract_query_ids,",
+            "+    extract_query_params,",
+            "     fix_column_name,",
+            "     get_query_results,",
+            "+    prepare_parameterized_query,",
+            "+    replace_query_parameters,",
+            " )",
+            " from redash.utils import json_dumps",
+            " from tests import BaseTestCase"
+          ]
+        },
+        {
+          "hunk_id": "tests/query_runner/test_query_results.py#1",
+          "lines": [
+            "         self.assertEqual([123, 4566, 78], extract_cached_query_ids(query))",
+            " ",
+            " ",
+            "+class TestExtractParamQueryIds(TestCase):",
+            "+    def test_works_with_simple_query(self):",
+            "+        query = \"SELECT 1\"",
+            "+        self.assertEqual([], extract_query_params(query))",
+            "+",
+            "+    def test_ignores_non_param_queries(self):",
+            "+        query = \"SELECT * FROM query_123\"",
+            "+        self.assertEqual([], extract_query_params(query))",
+            "+",
+            "+    def test_ignores_cached_queries_to_load(self):",
+            "+        query = \"SELECT * FROM cached_query_123\"",
+            "+        self.assertEqual([], extract_query_params(query))",
+            "+",
+            "+    def test_finds_queries_to_load(self):",
+            "+        query = \"SELECT * FROM param_query_123_{token=test}\"",
+            "+        self.assertEqual([(\"123\", \"token=test\")], extract_query_params(query))",
+            "+",
+            "+    def test_finds_queries_in_joins(self):",
+            "+        query = \"SELECT * FROM param_query_123_{token1=test1} JOIN param_query_456_{token2=test2}\"",
+            "+        self.assertEqual([(\"123\", \"token1=test1\"), (\"456\", \"token2=test2\")], extract_query_params(query))",
+            "+",
+            "+",
+            "+class TestPrepareParameterizedQuery(TestCase):",
+            "+    def test_param_query_replacement(self):",
+            "+        result = prepare_parameterized_query(\"SELECT * FROM param_query_123_{token=test}\", [(\"123\", \"token=test\")])",
+            "+        self.assertEqual(\"SELECT * FROM query_123_1c5f1acad40f99b968836273d74baa89\", result)",
+            "+",
+            "+",
+            "+class TestReplaceQueryParameters(TestCase):",
+            "+    def test_replace_query_params(self):",
+            "+        result = replace_query_parameters(\"SELECT '{{token1}}', '{{token2}}'\", \"token1=test1&token2=test2\")",
+            "+        self.assertEqual(\"SELECT 'test1', 'test2'\", result)",
+            "+",
+            "+",
+            " class TestFixColumnName(TestCase):",
+            "     def test_fix_column_name(self):",
+            "         self.assertEqual('\"a_b_c_d\"', fix_column_name(\"a:b.c d\"))"
+          ]
+        }
+      ]
+    }
+  ]
+}

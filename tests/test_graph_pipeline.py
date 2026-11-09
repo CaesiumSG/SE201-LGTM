@@ -2139,3 +2139,18 @@ class TestSQLiSectionReview:
         off = _review(repo, off_llm, sqli_review=False)
         assert off.findings == []
         assert not [p for p in off_llm.user_prompts["section"] if SQLI_USER_MARK in p]
+
+    def test_a_failed_sqli_pass_is_reported_and_marks_its_section_incomplete(
+        self, repo, install_graph, no_semgrep
+    ):
+        install_graph()
+
+        def section(prompt):
+            return "no json here" if SQLI_USER_MARK in prompt else _findings()
+
+        result = _review(repo, RoutedLLM(section=section), sqli_review=True)
+
+        sources = sorted(e["source"] for e in result.meta.agent_errors)
+        assert sources and all(s.startswith("sqli:") for s in sources)
+        assert all("SQL injection review" in e["message"] for e in result.meta.agent_errors)
+        assert result.meta.coverage["complete"] is False
