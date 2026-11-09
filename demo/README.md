@@ -48,7 +48,7 @@ The second shoply task, *"Add user search"*, shows SQL injection in the app (as 
 3. **Start LGTM** from the repository root (the webhook relay and the polling fallback start with it):
 
    ```bash
-   /Users/lyejiajun/projects/se201-lgtm/.venv/bin/python demo/server.py
+   .venv/bin/python demo/server.py
    ```
 
 4. Open http://127.0.0.1:8765/ and **sign in with GitHub** (GitHub shows its account picker: Continue). The status dots in the header should show Reviewer, Judge and Webhooks all green. If Webhooks is amber, the relay is down; polling still picks up new PRs within 30 seconds. Restarting the server signs you out, so don't restart it mid-recording.
