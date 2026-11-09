@@ -44,10 +44,18 @@ built from the committed results in `demo/benchmark-results/` and `benchmark/run
 You run LGTM's dashboard on your laptop, connect it to your own GitHub account, have a small AI model write a
 feature with a security bug, push it as a pull request, and watch LGTM review it on GitHub.
 
-You need: Python 3.13+, git, a GitHub account, the [GitHub CLI](https://cli.github.com) signed in
-(`gh auth login`), and an Amazon Bedrock API key (the team sends it privately; it is never in the repository or
-the zip). Optional: [Ollama](https://ollama.com) with `ollama pull llama3.2` (2 GB) for "Write it live"; without
-it, use "Replay the prepared change" instead.
+**Prerequisites** (check each before step 1):
+
+- **Python 3.13+**: `python3 --version`.
+- **git**: `git --version` (macOS: `xcode-select --install` or `brew install git`; Windows:
+  [git-scm.com](https://git-scm.com)).
+- **GitHub CLI (`gh`)**, signed in to the same GitHub account you will fork with: `brew install gh` (or see
+  [cli.github.com](https://cli.github.com)), then `gh auth login` and check with `gh auth status`. The dashboard
+  clones, pushes and opens the pull request through `gh`, so the demo cannot push without it.
+- **A GitHub account.**
+- **An Amazon Bedrock API key.** The team sends it privately; it is never in the repository or the zip.
+- Optional: [Ollama](https://ollama.com) with `ollama pull llama3.2` (2 GB) for "Write it live". Without it, use
+  "Replay the prepared change" instead.
 
 1. **Install** (from the repository root):
 
