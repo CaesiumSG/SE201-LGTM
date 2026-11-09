@@ -17,7 +17,7 @@ change had a second reviewer: the initial implementation and checkpoint
 documents were pushed directly to `main`, and some pull requests were merged
 by their author without a review. The team declaration in
 [`ai-log/README.md`](../ai-log/README.md) gives the counts. The table below
-is a team-level summary and stops at 6 Nov; later work (the final
+is a team-level summary and covers only part of the work after 6 Nov; the rest (the final
 evaluation, the component benchmark, token counting, `run-lgtm.sh`, the
 slides) and Jin Rae's work with Pi are recorded in the members' own logs in
 [`ai-log/`](../ai-log/README.md).

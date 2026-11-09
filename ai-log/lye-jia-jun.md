@@ -239,6 +239,28 @@ kept or changed.
 | **How I checked it** | I checked every figure against the final results file and every link. The first draft of the declaration said every PR had been reviewed, but GitHub showed 15 PRs merged by their own author, so I had it corrected. |
 | **What I kept or changed** | I kept the edits after removing two claims the results did not support. I wrote my reflection in my own words, and the AI only tidied the wording. |
 
+## 2026-11-07 – 2026-11-08 · Demo flow for the presentation
+
+| | |
+|---|---|
+| **Tool (model)** | Claude Code (Claude Opus 5.5 and Claude Sonnet 5.5) |
+| **Files** | demo/ (the Workspace and its App tab, "Write it live", the shop storefront, the landing page, the reset script), tests for the Bedrock backend |
+| **Outcome** | Changed |
+| **What I asked for** | I asked the AI for a demo that shows the whole story: an AI coding assistant writes a feature for the shop, leaves out an ownership check, and LGTM blocks the pull request on GitHub. |
+| **How I checked it** | I ran the flow end to end several times. The small local writer model (llama3.2) left out the ownership check in 6 of 6 tries, while qwen2.5-coder never did, so I chose llama3.2. Kev-4B rejected correct fix suggestions that the Claude judge accepted, so the reliable fix step is pasting LGTM's comment back to the AI. Review comments on the PR found that a cancelled run could restart and that a GitHub outage could stop the worker, and I had both fixed. CI failed because the tests imported the optional `anthropic` package, so I had them stub it. |
+| **What I kept or changed** | I dropped the AI's guided "Live demo" tab, which felt staged, and kept the Workspace, whose App tab runs the shop on whatever code the workspace holds. |
+
+## 2026-11-09 – 2026-11-10 · Token counting and running LGTM from a fresh clone
+
+| | |
+|---|---|
+| **Tool (model)** | Claude Code (Claude Opus 5.5) |
+| **Files** | src/lgtm/usage.py and the reviewer and judge call sites, benchmark runners (PR #41); .env.example, demo/, demo/benchmark-results/, README.md (PR #44) |
+| **Outcome** | Changed |
+| **What I asked for** | I asked the AI to report the real tokens each review uses, which our proposal named as a metric, and to make LGTM runnable from the submission zip or a fresh clone with only a Bedrock key. |
+| **How I checked it** | The old `est_tokens` figure only sized the findings and undercounted model use by about 10 times; the new counts come from what each backend reports, and calls without usage are marked as unreported rather than guessed. I checked that the frozen scoring code did not change. For the fresh clone, I found that a wrong key made API reviews pass with 0 findings, so I had a key check added at startup. |
+| **What I kept or changed** | I kept both. I made the taiga and wagtail replay repositories public, but kept the authentik replay repository private because the replayed change is under authentik's Enterprise licence. |
+
 ## Reflection
 
 ### What I learned about using these tools well

@@ -57,6 +57,8 @@ Every other vulnerability class is out of scope.
 
 ## Demo
 
+**Demo video:** [youtube.com/watch?v=wGdx2J-7w2A](https://www.youtube.com/watch?v=wGdx2J-7w2A)
+
 LGTM also runs as a real **GitHub App with a dashboard** (`demo/`). In the demo, an AI coding assistant (a small local
 model) writes a feature for a demo shop and leaves out an ownership check; the dashboard's App tab shows what that lets
 a customer do (read another customer's order and address); the pull request goes to GitHub, and LGTM's review blocks
@@ -136,6 +138,10 @@ judge and key status when it starts. Restarting the server signs you out (sign i
 `demo/README.md` has the full runbook, including the GPU setup the team used for the evaluation.
 
 ## Architecture
+
+![LGTM architecture: gather context, investigate with LLM agents, validate with an evidence check and the Kev-4B judge, report](docs/architecture.png)
+
+Figure: [`docs/architecture.png`](docs/architecture.png) (source [`docs/architecture-figure.html`](docs/architecture-figure.html)). How a candidate finding is checked: [`docs/validation.png`](docs/validation.png). The same flow as text:
 
 ```
             ┌──────────────────────────────────────────────────┐
