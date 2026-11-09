@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lgtm import usage
 from lgtm.agents.authz_reviewer import AuthzReviewerAgent
 from lgtm.agents.base import AgentFinding, RunRecord, build_llm
 from lgtm.agents.investigator import run_investigator
@@ -129,6 +130,12 @@ class ReviewPipeline:
     def run(
         self, base: str, pr: str, output_dir: str | Path | None = None
     ) -> ReviewResult:
+        with usage.metering():
+            return self._run(base, pr, output_dir)
+
+    def _run(
+        self, base: str, pr: str, output_dir: str | Path | None = None
+    ) -> ReviewResult:
         if self.config.mode not in LGTM_MODES:
             return self._review(base, pr, base, pr, output_dir)
 
@@ -223,7 +230,8 @@ class ReviewPipeline:
             findings = [self._sast_finding_to_agent_finding(f) for f in semgrep_in_diff]
         elif mode == "llm-only":
             llm = self._llm or build_llm(self.config)
-            findings = PlainLLMReviewer(self.config, llm).review(llm_diffs)
+            with usage.stage("plain_reviewer"):
+                findings = PlainLLMReviewer(self.config, llm).review(llm_diffs)
         else:
             llm = self._llm or build_llm(self.config)
             toolbox = AgentToolbox(
@@ -244,7 +252,8 @@ class ReviewPipeline:
                 facts = ""
                 if self.config.static_facts:
                     facts = sql_sink_facts(self._pr_source(pr_rev, sf.path), sf.start_line)
-                finding = triage_agent.triage(sf, fd, facts)
+                with usage.stage("sast_triage"):
+                    finding = triage_agent.triage(sf, fd, facts)
                 if finding is None:
                     continue
                 finding.pr_graph_ok = toolbox.graph_stamp("pr")
@@ -303,6 +312,7 @@ class ReviewPipeline:
 
         # ---- Stage 5: report ------------------------------------------
         meta.duration_seconds = time.monotonic() - start
+        meta.token_usage = usage.current_summary()
         builder = ReportBuilder(findings, meta)
         json_path = md_path = None
         if output_dir is not None:
@@ -347,7 +357,8 @@ class ReviewPipeline:
             plan.hunks_gated = gated_out
         else:
             if any(d.path.endswith(".py") and d.hunks for d in scan_diffs):
-                investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
+                with usage.stage("investigator"):
+                    investigation = run_investigator(scan_diffs, self.config, toolbox, llm)
                 investigator_status = investigation.status
                 investigator_input = investigation.input_mode
                 investigator_error = investigation.error
@@ -371,7 +382,8 @@ class ReviewPipeline:
                 if sf.path in scoped.files
             )
             seen_errors = len(authz_agent.errors)
-            reviewed = authz_agent.review_section(scoped, notes)
+            with usage.stage("authz_reviewer"):
+                reviewed = authz_agent.review_section(scoped, notes)
             error = authz_agent.errors[seen_errors:]
             for finding in reviewed:
                 finding.pr_graph_ok = toolbox.graph_stamp("pr")
@@ -380,7 +392,9 @@ class ReviewPipeline:
             )
             section_findings.extend(reviewed)
             if sqli_agent is not None and needs_sql_review(scoped, toolbox):
-                for finding in sqli_agent.review_section(scoped, notes):
+                with usage.stage("sqli_reviewer"):
+                    sqli_findings = sqli_agent.review_section(scoped, notes)
+                for finding in sqli_findings:
                     finding.pr_graph_ok = toolbox.graph_stamp("pr")
                     section_findings.append(finding)
 

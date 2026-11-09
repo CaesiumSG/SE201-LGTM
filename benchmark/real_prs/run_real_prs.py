@@ -113,9 +113,11 @@ def summarize(records: list[dict]) -> dict:
         },
         "vulnerable_caught_on_target": sum(1 for r in records if r.get("outcome") == "TP" and r.get("on_target")),
         "median_latency_seconds": round(statistics.median(lat), 1) if lat else None,
+        "tokens": ft.usage.summarize_records([r for r in records if r.get("outcome") != "ERROR"]),
         "per_case": [
             {"id": r["id"], "outcome": r.get("outcome"), "on_target": r.get("on_target"),
-             "n_findings": r.get("n_findings"), "latency_seconds": r.get("latency_seconds"), "error": r.get("error")}
+             "n_findings": r.get("n_findings"), "latency_seconds": r.get("latency_seconds"),
+             "total_tokens": r.get("total_tokens"), "error": r.get("error")}
             for r in records
         ],
     }

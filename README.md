@@ -261,8 +261,19 @@ findings under `docs/kev-labeling-criteria.md`.
 
 Reported metrics: precision / recall / F1 (overall and per category),
 false-positive rate on safe controls, evidence grounding rate,
-`possible` / `insufficient_evidence` rates, median latency and estimated
+`possible` / `insufficient_evidence` rates, median latency, and median
 tokens per PR. See `benchmark/README.md` for details.
+
+Token counts are what the model backends report (Ollama's prompt and output
+counts, Bedrock's input including cached prompt tokens, and Kev's input
+tokens), summed per review in `lgtm.usage`. Each report carries them under
+`review.token_usage`, split by stage (investigator, reviewers, SAST triage,
+plain reviewer). Each benchmark record has `input_tokens`, `output_tokens`,
+`total_tokens` and `judge_input_tokens`, and the summaries add a `tokens`
+block of medians. Ollama may count fewer prompt tokens when it reuses its
+prompt cache, so `estimated_input_tokens` (prompt characters / 4) is kept as
+a cross-check. The older `est_tokens` field only sizes the findings JSON and
+is not a token count.
 
 A case where the pipeline raises, or where an agent reports an
 execution, LLM or unparsable-output failure, is recorded as `ERROR`.

@@ -15,6 +15,7 @@ from typing import Any
 
 from lgtm.agents.base import AgentFinding, EvidenceItem
 from lgtm.config import LGTMConfig
+from lgtm.usage import record_judge_reply
 from lgtm.validation.cwe_criteria import CWE_CRITERIA
 from lgtm.validation.judge_examples import EXAMPLES
 
@@ -300,7 +301,9 @@ def judge_candidates(
                 request_format=request_format,
                 few_shot=few_shot,
             )
-            apply_judge_answer(finding, judge(request))
+            reply = judge(request)
+            record_judge_reply(reply)
+            apply_judge_answer(finding, reply)
         except RequestTooLarge as exc:
             logger.warning("Judge skipped for %s: %s", finding.finding_id, exc)
             finding.not_judged_reason = REASON_REQUEST_TOO_LARGE
