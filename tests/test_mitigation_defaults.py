@@ -47,6 +47,7 @@ def _invoke(tmp_path, monkeypatch, *options):
     pipeline.return_value.run.return_value.meta.duration_seconds = 0.0
     pipeline.return_value.run.return_value.json_path = None
     pipeline.return_value.run.return_value.meta.agent_errors = []
+    pipeline.return_value.run.return_value.meta.policy_docs_changed = []
     monkeypatch.setattr("lgtm.pipeline.ReviewPipeline", pipeline)
     result = CliRunner().invoke(main, [
         "review", "--repo", str(tmp_path), "--base", "main", "--pr", "feature",
