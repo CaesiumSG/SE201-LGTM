@@ -73,7 +73,9 @@ it, use "Replay the prepared change" instead.
    your forks only (Only select repositories). The app is yours; its keys stay in `demo/.secrets/` on your
    laptop.
 
-6. **Sign in with GitHub.** The dots in the header should show Reviewer, Judge and Webhooks green.
+6. **Sign in with GitHub.** In the header, **API** should be selected with a green dot, and **Judge: Claude** and
+   **Webhooks** should be green. The **GPU** dot stays grey; that is expected without the team's GPU job. A red
+   API dot means the key in `.env` is missing or rejected (hover it for Bedrock's reason).
 
 7. **The demo:** Workspace → shoply-demo → the task *"Customers want to track one order…"* → **Write it live**
    (or Replay). The **App** tab runs that code: sign in as Bob, open *Track an order*, enter 1, and Bob sees
