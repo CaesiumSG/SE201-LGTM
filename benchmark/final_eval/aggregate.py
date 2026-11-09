@@ -62,19 +62,20 @@ SHORT_MODE = {"lgtm": "lgtm", "lgtm-no-sast": "no-SAST", "llm-only": "llm", "sas
 
 
 def load_cases(name: str) -> dict[str, dict]:
-    data = json.loads((REPO / "benchmark" / "real_prs" / name).read_text())
+    data = json.loads((REPO / "benchmark" / "real_prs" / name).read_text(encoding="utf-8"))
     return {c["id"]: c for c in data["cases"]}
 
 
 LEDGER = Path.home() / ".lgtm" / "bedrock-spend.jsonl"
 
 
-def ledger_by_label(path: Path = LEDGER) -> dict[str, float]:
-    """Bedrock USD per ledger `run` label (real_prs:<output folder name>)."""
-    out: dict[str, float] = {}
+def ledger_by_label(path: Path | None = None) -> dict[str, float] | None:
+    """Bedrock USD per ledger `run` label (real_prs:<output folder name>); None when there is no ledger."""
+    path = LEDGER if path is None else path
     if not path.is_file():
-        return out
-    for line in path.read_text().splitlines():
+        return None
+    out: dict[str, float] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
         try:
             r = json.loads(line)
             out[r.get("run") or ""] = out.get(r.get("run") or "", 0.0) + float(r.get("usd") or 0)
@@ -91,21 +92,25 @@ def bedrock_label(command: str) -> str | None:
     return "real_prs:" + Path(args[args.index("--output") + 1]).name
 
 
-def load_manifest(root: Path) -> dict[str, dict]:
+def load_manifest(root: Path, ledger: dict[str, float] | None = None,
+                  committed_costs: dict[str, float] | None = None) -> dict[str, dict]:
     """Last ok entry per run id (a restarted run keeps its final entry), plus Bedrock cost and attempts.
 
     Cost comes from the spend ledger's per-run label, not from the manifest's before/after
     ledger totals: streams ran in parallel, so those deltas include other streams' spend.
     A label is charged to the first run id that used it (a later case rerun into the same
     output folder writes the same label and is already included there).
+
+    The ledger is local to the machine that ran the evaluation. Without it (``ledger`` is
+    None), each run's cost is taken from ``committed_costs``, the per-run-id ``bedrock_usd``
+    of the committed results.json, so a clean checkout regenerates the same numbers.
     """
     path = HERE / "manifest.jsonl"
     out: dict[str, dict] = {}
     if not path.is_file():
         return out
-    ledger = ledger_by_label()
     charged: set[str] = set()
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         r = json.loads(line)
         if r["run_id"].startswith("_"):
             continue
@@ -115,7 +120,8 @@ def load_manifest(root: Path) -> dict[str, dict]:
         label = bedrock_label(r.get("command", ""))
         if label and label not in charged:
             charged.add(label)
-            e["bedrock_usd"] = round(ledger.get(label, 0.0), 4)
+            usd = ledger.get(label, 0.0) if ledger is not None else (committed_costs or {}).get(r["run_id"], 0.0)
+            e["bedrock_usd"] = round(usd, 4)
             e["bedrock_label"] = label
         elif label:
             e["bedrock_label"] = label
@@ -139,7 +145,7 @@ def score_real_prs(mode_dir: Path, cases: dict[str, dict]) -> dict | None:
         if not (v_path.is_file() and f_path.is_file()):
             per[adv] = None
             continue
-        v, f = json.loads(v_path.read_text()), json.loads(f_path.read_text())
+        v, f = json.loads(v_path.read_text(encoding="utf-8")), json.loads(f_path.read_text(encoding="utf-8"))
         for r in (v, f):
             if r.get("outcome") == "ERROR":
                 errors += 1
@@ -210,7 +216,41 @@ def heldout_table(rows: list[tuple[str, dict]], manifest_cost: dict[str, float] 
 
 
 def summary_json(path: Path) -> dict | None:
-    return json.loads(path.read_text()) if path.is_file() else None
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+# Copied benchmark summaries: section -> modes. field_trial/ is git-ignored (see copy_summaries).
+COPIED_SECTIONS = (("shoply", ("lgtm", "llm-only")), ("real_world", ("lgtm", "llm-only")),
+                   ("injection", ("lgtm", "llm-only")), ("field_trial", ("lgtm", "llm-only")))
+
+
+def copy_summaries(root: Path, committed: dict) -> dict[str, dict]:
+    """Each section's own summary per mode, read from its run folder.
+
+    A section whose run folder is absent keeps its entry from the committed results.json:
+    the field-trial folder is git-ignored (its per-PR rows would name flagged PRs), so on
+    any checkout but the one that ran it only the published totals exist.
+    """
+    out: dict[str, dict] = {}
+    for name, sub in COPIED_SECTIONS:
+        if not (root / name).is_dir():
+            if name in committed:
+                out[name] = committed[name]
+            continue
+        got = {}
+        for m in sub:
+            for cand in (root / name / m / "summary.json", root / name / f"{m}.json", root / name / m / "results.json"):
+                s = summary_json(cand)
+                if s is not None:
+                    summ = dict(s.get("summary", s))
+                    if name == "field_trial":
+                        # Per-PR rows would show which PR was flagged, and flagged PRs are unreported findings.
+                        summ.pop("per_case", None)
+                    got[m] = {"file": cand.relative_to(REPO).as_posix(), "summary": summ}
+                    break
+        if got:
+            out[name] = got
+    return out
 
 
 def main() -> int:
@@ -218,9 +258,14 @@ def main() -> int:
     ap.add_argument("--root", type=Path, default=REPO / "benchmark" / "runs" / "final-2026-11")
     args = ap.parse_args()
     root = args.root
-    manifest = load_manifest(root)
+    committed = summary_json(root / "results.json") or {}
+    ledger = ledger_by_label()
+    if ledger is None:
+        print(f"no spend ledger at {LEDGER}; Bedrock costs are kept from the committed results.json")
+    committed_costs = {k: v.get("bedrock_usd", 0.0) for k, v in (committed.get("manifest") or {}).items()}
+    manifest = load_manifest(root, ledger, committed_costs)
     heldout_cases, dev_cases = load_cases("heldout.json"), load_cases("cases.json")
-    results: dict = {"root": str(root.relative_to(REPO)), "manifest": {k: {kk: vv for kk, vv in v.items() if kk != "entries"} for k, v in manifest.items()}}
+    results: dict = {"root": root.relative_to(REPO).as_posix(), "manifest": {k: {kk: vv for kk, vv in v.items() if kk != "entries"} for k, v in manifest.items()}}
     md = ["# Final evaluation results", "",
           "Generated by `benchmark/final_eval/aggregate.py` from the run folders in this directory and "
           "`benchmark/final_eval/manifest.jsonl`. Every run used the integrated pipeline; the commit of each run "
@@ -321,22 +366,7 @@ def main() -> int:
                *heldout_table([(f"Qwen3.8 27B — {m}" if m != "sast-only" else "Semgrep only", s) for m, s in dev.items()]), ""]
 
     # Shoply, real-world CVEs, injection, field trial: copy their own summaries, then tabulate
-    for name, sub in (("shoply", ("lgtm", "llm-only")), ("real_world", ("lgtm", "llm-only")),
-                      ("injection", ("lgtm", "llm-only")), ("field_trial", ("lgtm", "llm-only"))):
-        got = {}
-        for m in sub:
-            for cand in (root / name / m / "summary.json", root / name / f"{m}.json", root / name / m / "results.json"):
-                s = summary_json(cand)
-                if s is not None:
-                    summ = dict(s.get("summary", s))
-                    if name == "field_trial":
-                        # Per-PR rows would show which PR was flagged, and flagged PRs are unreported findings.
-                        # The field-trial run folder stays local (git-ignored); only the totals are published.
-                        summ.pop("per_case", None)
-                    got[m] = {"file": str(cand.relative_to(REPO)), "summary": summ}
-                    break
-        if got:
-            results[name] = got
+    results.update(copy_summaries(root, committed))
 
     def f2(x) -> str:
         return "–" if x is None else f"{x:.2f}"
@@ -410,8 +440,9 @@ def main() -> int:
            "runs on the GPU cluster cost nothing on Bedrock).", ""]
     results["bedrock_usd_total"] = round(total, 4)
 
-    (root / "results.json").write_text(json.dumps(results, indent=2))
-    (root / "RESULTS.md").write_text("\n".join(md))
+    # UTF-8 and \n on every platform: the tables hold em dashes, and Windows defaults to cp1252 and \r\n.
+    (root / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8", newline="\n")
+    (root / "RESULTS.md").write_text("\n".join(md), encoding="utf-8", newline="\n")
     print(f"wrote {root / 'RESULTS.md'} and results.json")
     return 0
 
